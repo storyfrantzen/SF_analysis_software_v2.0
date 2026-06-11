@@ -43,11 +43,11 @@ Exclusivity cuts should normally be post-processing cuts because their exact win
 
 ## Code Organization Direction
 
-The current converter now delegates hipo-level cuts through `include/Cuts.h` and `src/Cuts.cpp`. Future post-processing cuts should use a separate ROOT-level module, for example:
+The current converter keeps its small hipo-level preselection helpers inside `src/hipo2root.cpp`. Future post-processing cuts should use a separate ROOT-level module, reserving the generic `Cuts` name for that purpose, for example:
 
 ```text
-include/PostCuts.h
-src/PostCuts.cpp
+include/Cuts.h
+src/Cuts.cpp
 src/apply_cuts.cpp
 configs/cuts/*.json
 ```

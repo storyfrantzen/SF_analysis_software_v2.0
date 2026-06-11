@@ -34,7 +34,6 @@ link_directories(
 )
 
 set(HIPO2ROOT_SOURCES
-  ${PROJECT_SOURCE_DIR}/src/Cuts.cpp
   ${PROJECT_SOURCE_DIR}/src/ROOTBranches.cpp
 )
 
