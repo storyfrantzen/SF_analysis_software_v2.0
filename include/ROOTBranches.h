@@ -28,6 +28,8 @@ struct EventBranches : public TObject {
     int    helicity = -999;
     double charge   = NAN;
 
+    void reset();
+
     #ifndef __CLING__
     void fill(clas12::clas12reader& c12);
     #endif
@@ -89,6 +91,8 @@ struct RecBranches : public TObject {
     double theta_cvt  = NAN;
     double phi_cvt    = NAN;
 
+    void reset();
+
     #ifndef __CLING__
     void fill(clas12::region_particle* rec, int runNum, int eventNum, int idx);
     void fill(clas12::region_particle* rec, int runNum, int eventNum, int idx,
@@ -111,6 +115,8 @@ struct GenBranches : public TObject {
     double p     = NAN;
     double theta = NAN;
     double phi   = NAN;
+
+    void reset();
 
     #ifndef __CLING__
     void fill(clas12::mcparticle* mc, int runNum, int eventNum, int idx);

@@ -12,7 +12,16 @@ int getDetector(int status) {
 
 // ─── EventBranches ───────────────────────────────────────────────────────────────
 
+void EventBranches::reset() {
+    runNum = -999;
+    eventNum = -999;
+    helicity = -999;
+    charge = NAN;
+}
+
 void EventBranches::fill(clas12::clas12reader& c12) {
+    reset();
+
     runNum   = c12.runconfig()->getRun();
     eventNum = c12.runconfig()->getEvent();
     helicity = c12.event()->getHelicity();
@@ -21,7 +30,43 @@ void EventBranches::fill(clas12::clas12reader& c12) {
 
 // ─── RecBranches ─────────────────────────────────────────────────────────────────
 
+void RecBranches::reset() {
+    runNum = -999;
+    eventNum = -999;
+    particleIdx = -999;
+
+    pid = -999;
+    charge = -999;
+    status = -999;
+    det = -999;
+    sector = -999;
+
+    p = NAN;
+    px = NAN;
+    py = NAN;
+    pz = NAN;
+    theta = NAN;
+    phi = NAN;
+    beta = NAN;
+    chi2pid = NAN;
+
+    vx = NAN;
+    vy = NAN;
+    vz = NAN;
+    time = NAN;
+
+    xFT = yFT = NAN;
+    xDC1 = yDC1 = xDC2 = yDC2 = xDC3 = yDC3 = NAN;
+    uPCAL = vPCAL = wPCAL = E_PCAL = NAN;
+    uECIN = vECIN = wECIN = E_ECIN = NAN;
+    uECOUT = vECOUT = wECOUT = E_ECOUT = NAN;
+    edge_cvt1 = edge_cvt3 = edge_cvt5 = edge_cvt7 = edge_cvt12 = NAN;
+    theta_cvt = phi_cvt = NAN;
+}
+
 void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx) {
+    reset();
+
     runNum      = rn;
     eventNum    = en;
     particleIdx = idx;
@@ -45,14 +90,6 @@ void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx) {
     vy      = safeGet(rec->par()->getVy());
     vz      = safeGet(rec->par()->getVz());
     time    = safeGet(rec->getTime());
-
-    xFT = yFT = NAN;
-    xDC1 = yDC1 = xDC2 = yDC2 = xDC3 = yDC3 = NAN;
-    uPCAL = vPCAL = wPCAL = E_PCAL = NAN;
-    uECIN = vECIN = wECIN = E_ECIN = NAN;
-    uECOUT = vECOUT = wECOUT = E_ECOUT = NAN;
-    edge_cvt1 = edge_cvt3 = edge_cvt5 = edge_cvt7 = edge_cvt12 = NAN;
-    theta_cvt = phi_cvt = NAN;
 
     // ── FT ───────────────────────────────────────────────
     if (det == 0) {
@@ -116,7 +153,20 @@ void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx,
 
 // ─── GenBranches ─────────────────────────────────────────────────────────────────
 
+void GenBranches::reset() {
+    runNum = -999;
+    eventNum = -999;
+    particleIdx = -999;
+
+    pid = -999;
+    p = NAN;
+    theta = NAN;
+    phi = NAN;
+}
+
 void GenBranches::fill(clas12::mcparticle* mc, int rn, int en, int idx) {
+    reset();
+
     runNum      = rn;
     eventNum    = en;
     particleIdx = idx;
