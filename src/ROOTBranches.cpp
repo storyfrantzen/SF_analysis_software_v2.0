@@ -46,6 +46,14 @@ void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx) {
     vz      = safeGet(rec->par()->getVz());
     time    = safeGet(rec->getTime());
 
+    xFT = yFT = NAN;
+    xDC1 = yDC1 = xDC2 = yDC2 = xDC3 = yDC3 = NAN;
+    uPCAL = vPCAL = wPCAL = E_PCAL = NAN;
+    uECIN = vECIN = wECIN = E_ECIN = NAN;
+    uECOUT = vECOUT = wECOUT = E_ECOUT = NAN;
+    edge_cvt1 = edge_cvt3 = edge_cvt5 = edge_cvt7 = edge_cvt12 = NAN;
+    theta_cvt = phi_cvt = NAN;
+
     // ── FT ───────────────────────────────────────────────
     if (det == 0) {
         xFT = safeGet(rec->ft(FTCAL)->getX());

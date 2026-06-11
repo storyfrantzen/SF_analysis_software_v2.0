@@ -1,64 +1,20 @@
 #include <iostream>
 #include <filesystem>
-#include <fstream>
 #include <string>
 #include <vector>
 #include <algorithm>
 
-#include "nlohmann/json.hpp"
-
 #include "TFile.h"
 #include "TTree.h"
 
-#include "hipo4/reader.h"
 #include "clas12reader.h"
 
 #include "Config.h"
-#include "PhysicalConstants.h"
+#include "Cuts.h"
 #include "ROOTBranches.h"
-
-#include "TLorentzVector.h"
-#include "TVector3.h"
 
 using namespace clas12;
 namespace fs = std::filesystem;
-
-// ─── Final state filter ───────────────────────────────────────────────────────
-
-bool passesFinalState(const Config& cfg, clas12::clas12reader& c12) {
-    if (cfg.finalState.empty()) return true;
-
-    for (const auto& s : cfg.finalState) {
-        int n = static_cast<int>(c12.getByID(s.pid).size());
-        if ( s.exact && n != s.count) return false;
-        if (!s.exact && n <  s.count) return false;
-    }
-    return true;
-}
-
-// ─── DIS skim ────────────────────────────────────────────────────────────────
-
-bool passesSkim(const Config& cfg, clas12::clas12reader& c12) {
-    if (!cfg.enableSkim) return true;
-
-    auto electrons = c12.getByID(11);
-    if (electrons.empty()) return false;
-
-    auto* e = electrons[0];
-    TLorentzVector lv_e(e->par()->getPx(), e->par()->getPy(), e->par()->getPz(), 
-                        std::sqrt(e->getP() * e->getP() + M_ELECTRON * M_ELECTRON));  
-
-    TLorentzVector lv_beam(0, 0, cfg.beamEnergy, cfg.beamEnergy);
-    TLorentzVector q = lv_beam - lv_e;
-
-    double Q2 = -q.M2();
-    double nu  = cfg.beamEnergy - lv_e.E();
-    double y   = nu / cfg.beamEnergy;
-    double W   = std::sqrt(std::max(0.0,
-                     (TLorentzVector(0, 0, 0, M_PROTON) + q).M2()));
-
-    return (Q2 >= cfg.Q2_min && W >= cfg.W_min && y <= cfg.y_max);
-}
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
@@ -142,7 +98,7 @@ int main(int argc, char** argv) {
             ++nTotal;
 
             if (!passesFinalState(cfg, c12)) { ++nFSFail;   continue; }
-            if (!passesSkim(cfg, c12))        { ++nSkimFail; continue; }
+            if (!passesDISSkim(cfg, c12))     { ++nSkimFail; continue; }
 
             evBranches.fill(c12);
             int rn = evBranches.runNum;

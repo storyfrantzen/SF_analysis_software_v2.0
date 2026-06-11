@@ -33,13 +33,15 @@ link_directories(
   ${CCDB_HOME}/lib
 )
 
-# Collect all .cpp files
-file(GLOB ALL_SOURCES ${PROJECT_SOURCE_DIR}/src/*.cpp)
+set(HIPO2ROOT_SOURCES
+  ${PROJECT_SOURCE_DIR}/src/Cuts.cpp
+  ${PROJECT_SOURCE_DIR}/src/ROOTBranches.cpp
+)
 
 # Add the ROOT dictionary
 set(ROOTBRANCHES_HEADERS ${PROJECT_SOURCE_DIR}/include/ROOTBranches.h)
 ROOT_GENERATE_DICTIONARY(G__ROOTBranchesDict ${ROOTBRANCHES_HEADERS} LINKDEF ${PROJECT_SOURCE_DIR}/include/ROOTBranchesLinkDef.h)
-list(APPEND ALL_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/G__ROOTBranchesDict.cxx)
+list(APPEND HIPO2ROOT_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/G__ROOTBranchesDict.cxx)
 
 # --- Library ---
 add_library(ROOTBranchesDict SHARED ${CMAKE_CURRENT_BINARY_DIR}/G__ROOTBranchesDict.cxx)
@@ -52,7 +54,7 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libROOTBranchesDict_rdict.pcm DESTINAT
 # --- Executable 1: processHipoFiles ---
 add_executable(hipo2root
   ${PROJECT_SOURCE_DIR}/src/hipo2root.cpp
-  ${ALL_SOURCES}   # shared code only
+  ${HIPO2ROOT_SOURCES}
 )
 target_link_libraries(hipo2root
   ${ROOT_LIBRARIES}
