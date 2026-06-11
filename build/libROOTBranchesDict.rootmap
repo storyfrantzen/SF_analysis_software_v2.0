@@ -1,0 +1,6 @@
+[ libROOTBranchesDict.so ]
+# List of selected classes
+class EventBranches
+class GenBranches
+class RecBranches
+header ROOTBranches.h

@@ -1,0 +1,9 @@
+/work/clas12/storyf/SF_analysis_software_v2.0/build/CMakeFiles/G__ROOTBranchesDict.dir
+/work/clas12/storyf/SF_analysis_software_v2.0/build/CMakeFiles/ROOTBranchesDict.dir
+/work/clas12/storyf/SF_analysis_software_v2.0/build/CMakeFiles/hipo2root.dir
+/work/clas12/storyf/SF_analysis_software_v2.0/build/CMakeFiles/edit_cache.dir
+/work/clas12/storyf/SF_analysis_software_v2.0/build/CMakeFiles/rebuild_cache.dir
+/work/clas12/storyf/SF_analysis_software_v2.0/build/CMakeFiles/list_install_components.dir
+/work/clas12/storyf/SF_analysis_software_v2.0/build/CMakeFiles/install.dir
+/work/clas12/storyf/SF_analysis_software_v2.0/build/CMakeFiles/install/local.dir
+/work/clas12/storyf/SF_analysis_software_v2.0/build/CMakeFiles/install/strip.dir

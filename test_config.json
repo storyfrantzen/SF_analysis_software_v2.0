@@ -1,0 +1,19 @@
+{
+    "outputFile": "output.root",
+    "treeName":   "Events",
+
+    "beamEnergy": 10.6,
+
+    "finalState": [
+        { "pid": 11,  "count": 1, "mode": "exact"  },
+        { "pid": 2212, "count": 1, "mode": "exact" },
+        { "pid": 22, "count": 2, "mode": "atleast" }
+    ],
+
+    "enableSkim": true,
+    "Q2_min": 1.0,
+    "W_min":  2.0,
+    "y_max":  0.8,
+
+    "fillMC": false
+}
