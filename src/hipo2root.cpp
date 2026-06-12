@@ -28,6 +28,17 @@ bool passesFinalState(const Config& cfg, clas12::clas12reader& c12) {
         if (s.exact && n != s.count) return false;
         if (!s.exact && n < s.count) return false;
     }
+
+    if (!cfg.allowUnlistedFinalStatePids) {
+        const auto& particles = c12.getDetParticles();
+        for (const auto* particle : particles) {
+            const int pid = particle->getPid();
+            const bool listed = std::any_of(cfg.finalState.begin(), cfg.finalState.end(),
+                                            [pid](const FinalState& s) { return s.pid == pid; });
+            if (!listed) return false;
+        }
+    }
+
     return true;
 }
 
@@ -101,6 +112,8 @@ int main(int argc, char** argv) {
         for (const auto& s : cfg.finalState)
             std::cout << "  PID " << s.pid
                       << "  " << (s.exact ? "==" : ">=") << s.count << "\n";
+        std::cout << "  Unlisted PIDs: "
+                  << (cfg.allowUnlistedFinalStatePids ? "allowed" : "rejected") << "\n";
     }
     if (cfg.enableSkim) {
         std::cout << "[INFO] DIS skim: Q2 >= " << cfg.Q2_min

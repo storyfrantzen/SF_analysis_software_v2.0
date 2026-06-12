@@ -26,6 +26,7 @@ struct Config {
 
     // ── Final state filter ────────────────────
     std::vector<FinalState> finalState;
+    bool allowUnlistedFinalStatePids = false;
 
     // ── DIS skim ──────────────────────────────
     bool   enableSkim = true;
@@ -59,6 +60,9 @@ struct Config {
         y_max      = j.value("y_max",      y_max);
 
         fillMC = j.value("fillMC", fillMC);
+
+        allowUnlistedFinalStatePids = j.value("allowUnlistedFinalStatePids",
+                                              allowUnlistedFinalStatePids);
 
         if (j.contains("finalState")) {
             for (const auto& p : j["finalState"]) {
