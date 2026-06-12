@@ -87,7 +87,7 @@ namespace ROOT {
       ::RecBranches *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TInstrumentedIsAProxy< ::RecBranches >(nullptr);
       static ::ROOT::TGenericClassInfo 
-         instance("RecBranches", ::RecBranches::Class_Version(), "ROOTBranches.h", 42,
+         instance("RecBranches", ::RecBranches::Class_Version(), "ROOTBranches.h", 44,
                   typeid(::RecBranches), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &::RecBranches::Dictionary, isa_proxy, 4,
                   sizeof(::RecBranches) );
@@ -119,7 +119,7 @@ namespace ROOT {
       ::GenBranches *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TInstrumentedIsAProxy< ::GenBranches >(nullptr);
       static ::ROOT::TGenericClassInfo 
-         instance("GenBranches", ::GenBranches::Class_Version(), "ROOTBranches.h", 105,
+         instance("GenBranches", ::GenBranches::Class_Version(), "ROOTBranches.h", 109,
                   typeid(::GenBranches), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &::GenBranches::Dictionary, isa_proxy, 4,
                   sizeof(::GenBranches) );

@@ -26,7 +26,7 @@ struct Config {
 
     // ── Final state filter ────────────────────
     std::vector<FinalState> finalState;
-    bool allowUnlistedFinalStatePids = false;
+    bool inclusive = false;
 
     // ── DIS skim ──────────────────────────────
     bool   enableSkim = true;
@@ -61,8 +61,7 @@ struct Config {
 
         fillMC = j.value("fillMC", fillMC);
 
-        allowUnlistedFinalStatePids = j.value("allowUnlistedFinalStatePids",
-                                              allowUnlistedFinalStatePids);
+        inclusive = j.value("inclusive", inclusive);
 
         if (j.contains("finalState")) {
             for (const auto& p : j["finalState"]) {

@@ -9,7 +9,8 @@
         { "pid": 2212, "count": 1, "mode": "exact" },
         { "pid": 22, "count": 2, "mode": "atleast" }
     ],
-    "allowUnlistedFinalStatePids": false,
+
+    "inclusive": false,
 
     "enableSkim": true,
     "Q2_min": 1.0,
