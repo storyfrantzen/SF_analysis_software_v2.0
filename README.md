@@ -15,7 +15,7 @@ The converter currently supports:
 - reconstructed-particle branches
 - optional MC truth branches
 
-By default, `finalState` rejects reconstructed particles whose PIDs are not listed in the config. Set `allowUnlistedFinalStatePids` to `true` for inclusive final-state skims.
+By default, `finalState` rejects reconstructed particles whose PIDs are not listed in the config. Set `inclusive` to `true` for inclusive final-state skims.
 
 ## Cut strategy
 
