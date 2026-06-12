@@ -1,6 +1,12 @@
 #include "ROOTBranches.h"
+
+#ifndef POST_PROCESSING_ONLY
+#include "clas12reader.h"
+#include "mcparticle.h"
+#include "region_particle.h"
+#endif
+
 #include "TVector3.h"
-using namespace clas12;
 
 int getDetector(int status) {
     const int abs_s = std::abs(status);
@@ -19,6 +25,7 @@ void EventBranches::reset() {
     charge = NAN;
 }
 
+#ifndef POST_PROCESSING_ONLY
 void EventBranches::fill(clas12::clas12reader& c12) {
     reset();
 
@@ -27,6 +34,7 @@ void EventBranches::fill(clas12::clas12reader& c12) {
     helicity = c12.event()->getHelicity();
     charge   = c12.event()->getBeamCharge();
 }
+#endif
 
 // ─── RecBranches ─────────────────────────────────────────────────────────────────
 
@@ -57,6 +65,8 @@ void RecBranches::reset() {
 
     xFT = yFT = NAN;
     xDC1 = yDC1 = xDC2 = yDC2 = xDC3 = yDC3 = NAN;
+    edgeDC1 = edgeDC2 = edgeDC3 = NAN;
+    xPCAL = yPCAL = NAN;
     uPCAL = vPCAL = wPCAL = E_PCAL = NAN;
     uECIN = vECIN = wECIN = E_ECIN = NAN;
     uECOUT = vECOUT = wECOUT = E_ECOUT = NAN;
@@ -64,6 +74,7 @@ void RecBranches::reset() {
     theta_cvt = phi_cvt = NAN;
 }
 
+#ifndef POST_PROCESSING_ONLY
 void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx) {
     reset();
 
@@ -105,7 +116,12 @@ void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx) {
         yDC2 = safeGet(rec->traj(DC, 18)->getY());
         xDC3 = safeGet(rec->traj(DC, 36)->getX());
         yDC3 = safeGet(rec->traj(DC, 36)->getY());
+        edgeDC1 = safeGet(rec->traj(DC,  6)->getEdge());
+        edgeDC2 = safeGet(rec->traj(DC, 18)->getEdge());
+        edgeDC3 = safeGet(rec->traj(DC, 36)->getEdge());
 
+        xPCAL  = safeGet(rec->cal(1)->getX());
+        yPCAL  = safeGet(rec->cal(1)->getY());
         uPCAL  = safeGet(rec->cal(1)->getLu());
         vPCAL  = safeGet(rec->cal(1)->getLv());
         wPCAL  = safeGet(rec->cal(1)->getLw());
@@ -150,6 +166,7 @@ void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx,
     py    = p * std::sin(theta) * std::sin(phi);
     pz    = p * std::cos(theta);
 }
+#endif
 
 // ─── GenBranches ─────────────────────────────────────────────────────────────────
 
@@ -164,6 +181,7 @@ void GenBranches::reset() {
     phi = NAN;
 }
 
+#ifndef POST_PROCESSING_ONLY
 void GenBranches::fill(clas12::mcparticle* mc, int rn, int en, int idx) {
     reset();
 
@@ -177,6 +195,7 @@ void GenBranches::fill(clas12::mcparticle* mc, int rn, int en, int idx) {
     theta = v.Theta();
     phi   = v.Phi();
 }
+#endif
 
 ClassImp(EventBranches);
 ClassImp(RecBranches);

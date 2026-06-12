@@ -1,0 +1,40 @@
+{
+    "outputFile": "eppi0_post_processed.root",
+    "inputTree": "Events",
+    "outputTree": "Events",
+    "beamEnergy": 10.6,
+    "torus": -1,
+    "saveFailedCandidates": false,
+
+    "fiducialCuts": [
+        "FT_RGA",
+        "ECAL_RGA",
+        "CVT_RGA"
+    ],
+
+    "samplingFraction": {
+        "enabled": false,
+        "numSigma": 3.5,
+        "triangleYScale": 1.0,
+        "triangleXScale": 1.0,
+        "triangleHypotenuse": 0.2,
+        "htccThreshold": 4.5,
+        "params": {}
+    },
+
+    "eppi0": {
+        "electronMinP": 1.0,
+        "protonMinP": 0.3,
+        "photonMinP": 0.4,
+        "photonMinBeta": 0.9,
+        "photonMaxBeta": 1.1,
+        "photonMinCalEnergy": 0.15,
+        "rejectPhotonsInCD": true,
+        "rejectPhotonsInElectronSector": true,
+        "pi0MassWindow": 0.15,
+        "maxAbsMissingEnergy": 2.0,
+        "minElectronPhotonAngleDeg": 4.0,
+        "minPhotonPhotonAngleDeg": 1.0,
+        "maxPi0ConeAngleDeg": 4.0
+    }
+}

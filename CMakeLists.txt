@@ -37,6 +37,11 @@ set(HIPO2ROOT_SOURCES
   ${PROJECT_SOURCE_DIR}/src/ROOTBranches.cpp
 )
 
+set(POST_PROCESSING_SOURCES
+  ${PROJECT_SOURCE_DIR}/src/Cuts.cpp
+  ${PROJECT_SOURCE_DIR}/src/ROOTBranches.cpp
+)
+
 # Add the ROOT dictionary
 set(ROOTBRANCHES_HEADERS ${PROJECT_SOURCE_DIR}/include/ROOTBranches.h)
 ROOT_GENERATE_DICTIONARY(G__ROOTBranchesDict ${ROOTBRANCHES_HEADERS} LINKDEF ${PROJECT_SOURCE_DIR}/include/ROOTBranchesLinkDef.h)
@@ -60,6 +65,19 @@ target_link_libraries(hipo2root
   Clas12Root
   Clas12Banks
   hipo4
+  EG
+  pthread
+)
+
+# --- Executable 2: apply post-processing cuts ---
+add_executable(apply_cuts
+  ${PROJECT_SOURCE_DIR}/src/apply_cuts.cpp
+  ${POST_PROCESSING_SOURCES}
+  ${CMAKE_CURRENT_BINARY_DIR}/G__ROOTBranchesDict.cxx
+)
+target_compile_definitions(apply_cuts PRIVATE POST_PROCESSING_ONLY)
+target_link_libraries(apply_cuts
+  ${ROOT_LIBRARIES}
   EG
   pthread
 )

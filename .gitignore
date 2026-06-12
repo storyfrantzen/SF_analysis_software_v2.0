@@ -6,6 +6,7 @@
 # CMake local build directories
 work-build/
 cmake-build-*/
+*_post_processed.root
 
 # User-specific files
 *.rsuser

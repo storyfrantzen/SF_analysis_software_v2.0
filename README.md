@@ -6,6 +6,7 @@ This project converts CLAS12 hipo files into ROOT TTrees for downstream analysis
 
 ```bash
 hipo2root <config.json> <hipo_directory> [max_files]
+apply_cuts <post_config.json> <input.root>
 ```
 
 The converter currently supports:
@@ -16,6 +17,8 @@ The converter currently supports:
 - optional MC truth branches
 
 By default, `finalState` rejects reconstructed particles whose PIDs are not listed in the config. Set `inclusive` to `true` for inclusive final-state skims.
+
+`apply_cuts` performs ROOT post-processing. The initial module builds one EPPI0 candidate per event and applies configurable fiducial, sampling-fraction, topology, and loose exclusivity cuts. See `config/post_cuts_eppi0.json`.
 
 ## Cut strategy
 

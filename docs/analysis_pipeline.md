@@ -49,7 +49,7 @@ The current converter keeps its small hipo-level preselection helpers inside `sr
 include/Cuts.h
 src/Cuts.cpp
 src/apply_cuts.cpp
-configs/cuts/*.json
+config/post_cuts_*.json
 ```
 
 That keeps the hipo reader stage independent from the analysis selection stage while still sharing config conventions.

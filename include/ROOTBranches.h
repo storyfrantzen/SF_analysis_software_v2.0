@@ -4,9 +4,11 @@
 #include "TObject.h"
 
 #ifndef __CLING__
-    #include "clas12reader.h"
-    #include "region_particle.h"
-    #include "mcparticle.h"
+namespace clas12 {
+    class clas12reader;
+    class region_particle;
+    class mcparticle;
+}
 #endif
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -76,8 +78,10 @@ struct RecBranches : public TObject {
     double xDC1   = NAN,  yDC1  = NAN;
     double xDC2   = NAN,  yDC2  = NAN;
     double xDC3   = NAN,  yDC3  = NAN;
+    double edgeDC1 = NAN, edgeDC2 = NAN, edgeDC3 = NAN;
 
     // ── FD calorimeter (det == 1 only, else NAN) ──────────
+    double xPCAL  = NAN,  yPCAL  = NAN;
     double uPCAL  = NAN,  vPCAL  = NAN,  wPCAL  = NAN,  E_PCAL  = NAN;
     double uECIN  = NAN,  vECIN  = NAN,  wECIN  = NAN,  E_ECIN  = NAN;
     double uECOUT = NAN,  vECOUT = NAN,  wECOUT = NAN,  E_ECOUT = NAN;
@@ -99,7 +103,7 @@ struct RecBranches : public TObject {
               double pCorr, double thetaCorr, double phiCorr);
     #endif
 
-    ClassDef(RecBranches, 1);
+    ClassDef(RecBranches, 2);
 };
 
 // ─── GenBranches ─────────────────────────────────────────────────────────────────
