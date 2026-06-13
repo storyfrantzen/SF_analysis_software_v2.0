@@ -3,6 +3,7 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 
 using json = nlohmann::json;
@@ -13,6 +14,171 @@ constexpr double kPi = 3.14159265358979323846;
 bool isFinite(double value) {
     return std::isfinite(value);
 }
+
+PrimitiveCutSpec makeCut(const std::string& name,
+                         const std::string& op,
+                         double min = NAN,
+                         double max = NAN,
+                         int detector = -999,
+                         const std::string& refRole = "") {
+    PrimitiveCutSpec cut;
+    cut.name = name;
+    cut.op = op;
+    cut.min = min;
+    cut.max = max;
+    cut.detector = detector;
+    cut.refRole = refRole;
+    return cut;
+}
+
+PrimitiveCutSpec parseCutSpec(const json& j) {
+    PrimitiveCutSpec cut;
+    cut.op = j.value("op", "");
+    cut.name = j.value("name", cut.op);
+    cut.min = j.value("min", cut.min);
+    cut.max = j.value("max", cut.max);
+    cut.detector = j.value("detector", cut.detector);
+    cut.refRole = j.value("refRole", cut.refRole);
+    return cut;
+}
+
+ParticleRoleSpec parseRoleSpec(const json& j) {
+    ParticleRoleSpec role;
+    role.role = j.value("role", "");
+    role.pid = j.value("pid", role.pid);
+    role.count = j.value("count", role.count);
+    if (j.contains("cuts")) {
+        for (const auto& cut : j["cuts"]) role.cuts.push_back(parseCutSpec(cut));
+    }
+    return role;
+}
+
+CompositeSpec parseCompositeSpec(const json& j) {
+    CompositeSpec composite;
+    composite.role = j.value("role", "");
+    composite.type = j.value("type", "");
+    composite.daughters = j.value("daughters", composite.daughters);
+    composite.mass = j.value("mass", composite.mass);
+    composite.window = j.value("window", composite.window);
+    return composite;
+}
+
+ChannelSpec parseChannelSpec(const json& j) {
+    ChannelSpec channel;
+    channel.name = j.value("name", channel.name);
+    if (j.contains("particles")) {
+        for (const auto& particle : j["particles"]) channel.particles.push_back(parseRoleSpec(particle));
+    }
+    if (j.contains("composites")) {
+        for (const auto& composite : j["composites"]) {
+            channel.composites.push_back(parseCompositeSpec(composite));
+        }
+    }
+    return channel;
+}
+
+ChannelSpec legacyEppi0Channel(const json& eppi0) {
+    const double electronMinP = eppi0.value("electronMinP", 1.0);
+    const double protonMinP = eppi0.value("protonMinP", 0.3);
+    const double photonMinP = eppi0.value("photonMinP", 0.4);
+    const double photonMinBeta = eppi0.value("photonMinBeta", 0.9);
+    const double photonMaxBeta = eppi0.value("photonMaxBeta", 1.1);
+    const double photonMinCalEnergy = eppi0.value("photonMinCalEnergy", 0.15);
+    const bool rejectPhotonsInCD = eppi0.value("rejectPhotonsInCD", true);
+    const bool rejectPhotonsInElectronSector = eppi0.value("rejectPhotonsInElectronSector", true);
+    const double maxElectronProtonVertexDiff = eppi0.value("maxElectronProtonVertexDiff", 20.0);
+    const double pi0MassWindow = eppi0.value("pi0MassWindow", 0.15);
+
+    ChannelSpec channel;
+    channel.name = "eppi0";
+
+    ParticleRoleSpec electron;
+    electron.role = "electron";
+    electron.pid = 11;
+    electron.count = 1;
+    electron.cuts = {
+        makeCut("electron.min_p", "minP", electronMinP),
+        makeCut("electron.fiducial", "fiducial"),
+        makeCut("electron.sampling_fraction", "samplingFraction")
+    };
+    channel.particles.push_back(electron);
+
+    ParticleRoleSpec proton;
+    proton.role = "proton";
+    proton.pid = 2212;
+    proton.count = 1;
+    proton.cuts = {
+        makeCut("proton.min_p", "minP", protonMinP),
+        makeCut("proton.vertex", "vertexDiff", NAN, maxElectronProtonVertexDiff, -999, "electron"),
+        makeCut("proton.fiducial", "fiducial")
+    };
+    channel.particles.push_back(proton);
+
+    ParticleRoleSpec gamma;
+    gamma.role = "gamma";
+    gamma.pid = 22;
+    gamma.count = 2;
+    gamma.cuts = {
+        makeCut("gamma.min_p", "minP", photonMinP),
+        makeCut("gamma.beta", "betaRange", photonMinBeta, photonMaxBeta),
+        makeCut("gamma.cal_energy", "minCalEnergy", photonMinCalEnergy),
+        makeCut("gamma.fiducial", "fiducial")
+    };
+    if (rejectPhotonsInCD) gamma.cuts.push_back(makeCut("gamma.not_cd", "rejectDetector", NAN, NAN, 2));
+    if (rejectPhotonsInElectronSector) {
+        gamma.cuts.push_back(makeCut("gamma.not_electron_sector",
+                                     "rejectSameSectorAsRole",
+                                     NAN,
+                                     NAN,
+                                     -999,
+                                     "electron"));
+    }
+    channel.particles.push_back(gamma);
+
+    CompositeSpec pi0;
+    pi0.role = "pi0";
+    pi0.type = "pairMass";
+    pi0.daughters = {"gamma", "gamma"};
+    pi0.mass = 0.1349768;
+    pi0.window = pi0MassWindow;
+    channel.composites.push_back(pi0);
+    return channel;
+}
+}
+
+const ParticleRoleSpec* ChannelSpec::findRole(const std::string& role) const {
+    for (const auto& particle : particles) {
+        if (particle.role == role) return &particle;
+    }
+    return nullptr;
+}
+
+const CompositeSpec* ChannelSpec::findComposite(const std::string& role) const {
+    for (const auto& composite : composites) {
+        if (composite.role == role) return &composite;
+    }
+    return nullptr;
+}
+
+void CutDecision::require(bool condition, const std::string& name) {
+    if (condition) return;
+    pass = false;
+    failed.push_back(name);
+}
+
+void CutDecision::merge(const CutDecision& other) {
+    if (other.pass) return;
+    pass = false;
+    failed.insert(failed.end(), other.failed.begin(), other.failed.end());
+}
+
+std::string CutDecision::failedCsv() const {
+    std::ostringstream out;
+    for (size_t i = 0; i < failed.size(); ++i) {
+        if (i > 0) out << ",";
+        out << failed[i];
+    }
+    return out.str();
 }
 
 PostCutConfig PostCutConfig::fromFile(const std::string& filename) {
@@ -44,18 +210,24 @@ PostCutConfig PostCutConfig::fromFile(const std::string& filename) {
         if (sf.contains("params")) cfg.sfParams = sf["params"];
     }
 
+    if (j.contains("channel")) {
+        cfg.channel = parseChannelSpec(j["channel"]);
+    } else if (j.contains("eppi0")) {
+        cfg.channel = legacyEppi0Channel(j["eppi0"]);
+    }
+
+    if (j.contains("exclusivity")) {
+        const auto& exclusivity = j["exclusivity"];
+        cfg.maxAbsMissingEnergy = exclusivity.value("maxAbsMissingEnergy", cfg.maxAbsMissingEnergy);
+        cfg.minElectronPhotonAngleDeg = exclusivity.value("minElectronPhotonAngleDeg",
+                                                          cfg.minElectronPhotonAngleDeg);
+        cfg.minPhotonPhotonAngleDeg = exclusivity.value("minPhotonPhotonAngleDeg",
+                                                        cfg.minPhotonPhotonAngleDeg);
+        cfg.maxPi0ConeAngleDeg = exclusivity.value("maxPi0ConeAngleDeg", cfg.maxPi0ConeAngleDeg);
+    }
+
     if (j.contains("eppi0")) {
         const auto& eppi0 = j["eppi0"];
-        cfg.electronMinP = eppi0.value("electronMinP", cfg.electronMinP);
-        cfg.protonMinP = eppi0.value("protonMinP", cfg.protonMinP);
-        cfg.photonMinP = eppi0.value("photonMinP", cfg.photonMinP);
-        cfg.photonMinBeta = eppi0.value("photonMinBeta", cfg.photonMinBeta);
-        cfg.photonMaxBeta = eppi0.value("photonMaxBeta", cfg.photonMaxBeta);
-        cfg.photonMinCalEnergy = eppi0.value("photonMinCalEnergy", cfg.photonMinCalEnergy);
-        cfg.rejectPhotonsInCD = eppi0.value("rejectPhotonsInCD", cfg.rejectPhotonsInCD);
-        cfg.rejectPhotonsInElectronSector = eppi0.value("rejectPhotonsInElectronSector",
-                                                       cfg.rejectPhotonsInElectronSector);
-        cfg.pi0MassWindow = eppi0.value("pi0MassWindow", cfg.pi0MassWindow);
         cfg.maxAbsMissingEnergy = eppi0.value("maxAbsMissingEnergy", cfg.maxAbsMissingEnergy);
         cfg.minElectronPhotonAngleDeg = eppi0.value("minElectronPhotonAngleDeg",
                                                    cfg.minElectronPhotonAngleDeg);
@@ -141,34 +313,68 @@ void Cuts::loadSamplingFractionParams(const json& params) {
 }
 
 bool Cuts::passesFiducial(const RecBranches& p) const {
-    if (p.det == 0) return passesFT(p);
-    if (p.det == 1) return passesDC(p) && passesECAL(p);
-    if (p.det == 2) return passesCVT(p);
-    return true;
+    return evaluateFiducial(p).pass;
 }
 
-bool Cuts::passesElectronPreselection(const RecBranches& e) const {
-    if (e.pid != 11) return false;
-    if (e.p < cfg_.electronMinP) return false;
-    if (!passesFiducial(e)) return false;
-    return passesSamplingFraction(e);
+CutDecision Cuts::evaluateParticle(const RecBranches& p,
+                                   const ParticleRoleSpec& role,
+                                   const std::map<std::string, const RecBranches*>& selected) const {
+    CutDecision decision;
+    decision.require(p.pid == role.pid, role.role + ".pid");
+
+    for (const auto& cut : role.cuts) {
+        const std::string name = cut.name.empty() ? (role.role + "." + cut.op) : cut.name;
+
+        if (cut.op == "minP") {
+            decision.require(isFinite(p.p) && isFinite(cut.min) && p.p >= cut.min, name);
+        } else if (cut.op == "maxP") {
+            decision.require(isFinite(p.p) && isFinite(cut.max) && p.p <= cut.max, name);
+        } else if (cut.op == "pRange") {
+            decision.require(isFinite(p.p) && isFinite(cut.min) && isFinite(cut.max) &&
+                             p.p >= cut.min && p.p <= cut.max, name);
+        } else if (cut.op == "betaRange") {
+            decision.require(isFinite(p.beta) && isFinite(cut.min) && isFinite(cut.max) &&
+                             p.beta >= cut.min && p.beta <= cut.max, name);
+        } else if (cut.op == "minCalEnergy") {
+            const double calEnergy = p.E_PCAL + p.E_ECIN + p.E_ECOUT;
+            decision.require(isFinite(calEnergy) && isFinite(cut.min) && calEnergy >= cut.min, name);
+        } else if (cut.op == "rejectDetector") {
+            decision.require(p.det != cut.detector, name);
+        } else if (cut.op == "rejectSameSectorAsRole") {
+            const auto ref = selected.find(cut.refRole);
+            decision.require(ref == selected.end() || !ref->second || p.sector != ref->second->sector, name);
+        } else if (cut.op == "vertexDiff") {
+            const auto ref = selected.find(cut.refRole);
+            const bool pass = ref == selected.end() || !ref->second ||
+                              !isFinite(ref->second->vz) || !isFinite(p.vz) ||
+                              (isFinite(cut.max) && std::abs(p.vz - ref->second->vz) <= cut.max);
+            decision.require(pass, name);
+        } else if (cut.op == "removeCVTPhi") {
+            decision.require(isFinite(cut.min) && isFinite(cut.max) &&
+                             passesCVTPhiVeto(p, cut.min, cut.max), name);
+        } else if (cut.op == "fiducial") {
+            decision.require(evaluateFiducial(p).pass, name);
+        } else if (cut.op == "samplingFraction") {
+            decision.require(evaluateSamplingFraction(p).pass, name);
+        } else {
+            decision.require(false, name.empty() ? "unknown_cut" : name);
+        }
+    }
+
+    return decision;
 }
 
-bool Cuts::passesProtonPreselection(const RecBranches& p, double electronVz) const {
-    if (p.pid != 2212) return false;
-    if (p.p < cfg_.protonMinP) return false;
-    if (isFinite(electronVz) && isFinite(p.vz) && std::abs(p.vz - electronVz) > 20.0) return false;
-    return passesFiducial(p);
-}
-
-bool Cuts::passesPhotonPreselection(const RecBranches& g, int electronSector) const {
-    if (g.pid != 22) return false;
-    if (g.p < cfg_.photonMinP) return false;
-    if (cfg_.rejectPhotonsInCD && g.det == 2) return false;
-    if (cfg_.rejectPhotonsInElectronSector && g.sector == electronSector) return false;
-    if (g.beta < cfg_.photonMinBeta || g.beta > cfg_.photonMaxBeta) return false;
-    if ((g.E_PCAL + g.E_ECIN + g.E_ECOUT) < cfg_.photonMinCalEnergy) return false;
-    return passesFiducial(g);
+CutDecision Cuts::evaluateFiducial(const RecBranches& p) const {
+    CutDecision decision;
+    if (p.det == 0) {
+        decision.require(passesFT(p), "fiducial.ft");
+    } else if (p.det == 1) {
+        decision.require(passesDC(p), "fiducial.dc_edges");
+        decision.require(passesECAL(p), "fiducial.ecal");
+    } else if (p.det == 2) {
+        decision.require(passesCVT(p), "fiducial.cvt");
+    }
+    return decision;
 }
 
 bool Cuts::passesLooseExclusivity(double missingEnergy,
@@ -176,12 +382,26 @@ bool Cuts::passesLooseExclusivity(double missingEnergy,
                                   double thetaEG2Deg,
                                   double thetaG1G2Deg,
                                   double pi0ConeAngleDeg) const {
-    if (std::abs(missingEnergy) > cfg_.maxAbsMissingEnergy) return false;
-    if (thetaEG1Deg < cfg_.minElectronPhotonAngleDeg) return false;
-    if (thetaEG2Deg < cfg_.minElectronPhotonAngleDeg) return false;
-    if (thetaG1G2Deg < cfg_.minPhotonPhotonAngleDeg) return false;
-    if (pi0ConeAngleDeg > cfg_.maxPi0ConeAngleDeg) return false;
-    return true;
+    return evaluateLooseExclusivity({missingEnergy,
+                                     thetaEG1Deg,
+                                     thetaEG2Deg,
+                                     thetaG1G2Deg,
+                                     pi0ConeAngleDeg}).pass;
+}
+
+CutDecision Cuts::evaluateLooseExclusivity(const ExclusivityVars& vars) const {
+    CutDecision decision;
+    decision.require(std::abs(vars.missingEnergy) <= cfg_.maxAbsMissingEnergy,
+                     "exclusivity.missing_energy");
+    decision.require(vars.thetaEG1Deg >= cfg_.minElectronPhotonAngleDeg,
+                     "exclusivity.theta_e_g1");
+    decision.require(vars.thetaEG2Deg >= cfg_.minElectronPhotonAngleDeg,
+                     "exclusivity.theta_e_g2");
+    decision.require(vars.thetaG1G2Deg >= cfg_.minPhotonPhotonAngleDeg,
+                     "exclusivity.theta_g1_g2");
+    decision.require(vars.pi0ConeAngleDeg <= cfg_.maxPi0ConeAngleDeg,
+                     "exclusivity.pi0_cone");
+    return decision;
 }
 
 bool Cuts::passesDC(const RecBranches& p) const {
@@ -267,21 +487,33 @@ bool Cuts::passesCVT(const RecBranches& p) const {
     if (p.edge_cvt1 <= 0 || p.edge_cvt3 <= 0 || p.edge_cvt5 <= 0 ||
         p.edge_cvt7 <= 0 || p.edge_cvt12 <= 0) return false;
     if (!isFinite(p.phi_cvt)) return false;
-
-    double phiDeg = p.phi_cvt * 180.0 / kPi;
-    if (phiDeg < 0) phiDeg += 360.0;
-    if ((25 <= phiDeg && phiDeg <= 40) ||
-        (143 <= phiDeg && phiDeg <= 158) ||
-        (265 <= phiDeg && phiDeg <= 280)) return false;
     return true;
 }
 
+bool Cuts::passesCVTPhiVeto(const RecBranches& p, double minDeg, double maxDeg) const {
+    if (p.det != 2) return true;
+    if (!isFinite(p.phi_cvt)) return false;
+    double phiDeg = p.phi_cvt * 180.0 / kPi;
+    if (phiDeg < 0) phiDeg += 360.0;
+
+    if (minDeg <= maxDeg) return !(minDeg <= phiDeg && phiDeg <= maxDeg);
+    return !(phiDeg >= minDeg || phiDeg <= maxDeg);
+}
+
 bool Cuts::passesSamplingFraction(const RecBranches& e) const {
-    if (!cfg_.sfEnabled || sfCoeffs_.empty() || e.det != 1) return true;
-    if (e.E_PCAL <= 0.07) return false;
+    return evaluateSamplingFraction(e).pass;
+}
+
+CutDecision Cuts::evaluateSamplingFraction(const RecBranches& e) const {
+    CutDecision decision;
+    if (!cfg_.sfEnabled || sfCoeffs_.empty() || e.det != 1) return decision;
+    decision.require(e.E_PCAL > 0.07, "sampling_fraction.min_pcal");
     const double sf = (e.E_PCAL + e.E_ECIN + e.E_ECOUT) / e.p;
-    return passSFTriangleCut(e.E_PCAL, e.E_ECIN, e.p) &&
-           passSFSigmaCut(e.sector, sf, e.p);
+    decision.require(passSFTriangleCut(e.E_PCAL, e.E_ECIN, e.p),
+                     "sampling_fraction.triangle");
+    decision.require(passSFSigmaCut(e.sector, sf, e.p),
+                     "sampling_fraction.sigma");
+    return decision;
 }
 
 bool Cuts::inFTHole(double x, double y) const {

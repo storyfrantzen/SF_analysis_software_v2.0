@@ -53,3 +53,20 @@ config/post_cuts_*.json
 ```
 
 That keeps the hipo reader stage independent from the analysis selection stage while still sharing config conventions.
+
+## Post-Processing Cut Pattern
+
+Post-processing cuts should prefer small named decisions over monolithic pass/fail functions. The `Cuts` class exposes evaluators that return a `CutDecision` with:
+
+- a final pass/fail bit
+- the names of failed cut components
+
+Particle-level cuts are now configured as primitive operations inside channel roles instead of hard-coded eppi0 preselection functions. A channel declares the reconstructed particle roles it needs, the PID for each role, how many particles of that role to choose, and the cuts that apply to each candidate. For example, a CVT phi gap should be expressed as a configurable primitive:
+
+```json
+{ "name": "proton.cvt_phi_25_40", "op": "removeCVTPhi", "min": 25.0, "max": 40.0 }
+```
+
+This keeps a cut like `removeCVTPhi(min, max)` reusable across channels and systematic variations. The current primitive vocabulary includes `minP`, `maxP`, `pRange`, `betaRange`, `minCalEnergy`, `rejectDetector`, `rejectSameSectorAsRole`, `vertexDiff`, `removeCVTPhi`, `fiducial`, and `samplingFraction`.
+
+The `apply_cuts` workflow reads `channel.particles` in order and recursively builds valid candidate combinations. This makes the topology generic enough for channels beyond eppi0. Channel-specific derived quantities can still be layered on top: the current output preserves the eppi0 pi0/exclusivity variables when the selected roles include `electron`, `proton`, and two `gamma` particles, while all channels get generic selected-particle branches such as `selectedRoles`, `selectedIdx`, `selectedPid`, and `selectedP`.

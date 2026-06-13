@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <map>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -19,6 +21,8 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kTargetMass = 0.9382720813;
+
+using Selection = std::map<std::string, std::vector<const RecBranches*>>;
 
 struct EventRows {
     EventBranches event;
@@ -46,6 +50,14 @@ struct OutputRow {
     int passFiducial = 0;
     int passSamplingFraction = 0;
     int passExclusivity = 0;
+    std::string failedCuts;
+    std::vector<std::string> selectedRoles;
+    std::vector<int> selectedIdx;
+    std::vector<int> selectedPid;
+    std::vector<int> selectedDet;
+    std::vector<double> selectedP;
+    std::vector<double> selectedTheta;
+    std::vector<double> selectedPhi;
 
     double charge = NAN;
     double Q2 = NAN;
@@ -91,6 +103,14 @@ struct OutputRow {
         tree.Branch("passFiducial", &passFiducial, "passFiducial/I");
         tree.Branch("passSamplingFraction", &passSamplingFraction, "passSamplingFraction/I");
         tree.Branch("passExclusivity", &passExclusivity, "passExclusivity/I");
+        tree.Branch("failedCuts", &failedCuts);
+        tree.Branch("selectedRoles", &selectedRoles);
+        tree.Branch("selectedIdx", &selectedIdx);
+        tree.Branch("selectedPid", &selectedPid);
+        tree.Branch("selectedDet", &selectedDet);
+        tree.Branch("selectedP", &selectedP);
+        tree.Branch("selectedTheta", &selectedTheta);
+        tree.Branch("selectedPhi", &selectedPhi);
         tree.Branch("Q2", &Q2, "Q2/D");
         tree.Branch("nu", &nu, "nu/D");
         tree.Branch("xB", &xB, "xB/D");
@@ -116,6 +136,16 @@ struct OutputRow {
     }
 };
 
+double massForPid(int pid) {
+    switch (std::abs(pid)) {
+        case 11: return M_ELECTRON;
+        case 22: return 0.0;
+        case 111: return M_PI0;
+        case 2212: return M_PROTON;
+        default: return 0.0;
+    }
+}
+
 TLorentzVector particleLV(const RecBranches& p, double mass) {
     TLorentzVector lv;
     lv.SetPxPyPzE(p.px, p.py, p.pz, std::sqrt(mass * mass + p.p * p.p));
@@ -133,14 +163,97 @@ double computeTrentoPhi(const TLorentzVector& beam,
     return std::atan2(sinPhi, cosPhi);
 }
 
+const RecBranches* firstParticle(const Selection& selection, const std::string& role) {
+    const auto it = selection.find(role);
+    if (it == selection.end() || it->second.empty()) return nullptr;
+    return it->second.front();
+}
+
+void fillSelectedParticleBranches(const Selection& selection,
+                                  const PostCutConfig& cfg,
+                                  OutputRow& out) {
+    for (const auto& roleSpec : cfg.channel.particles) {
+        const auto it = selection.find(roleSpec.role);
+        if (it == selection.end()) continue;
+        const auto& particles = it->second;
+        for (const auto* particle : particles) {
+            if (!particle) continue;
+            out.selectedRoles.push_back(roleSpec.role);
+            out.selectedIdx.push_back(particle->particleIdx);
+            out.selectedPid.push_back(particle->pid);
+            out.selectedDet.push_back(particle->det);
+            out.selectedP.push_back(particle->p);
+            out.selectedTheta.push_back(particle->theta);
+            out.selectedPhi.push_back(particle->phi);
+        }
+    }
+}
+
+bool evaluateCompositeRank(const Selection& selection,
+                           const PostCutConfig& cfg,
+                           double& rank) {
+    rank = 0.0;
+    bool usedComposite = false;
+
+    for (const auto& composite : cfg.channel.composites) {
+        if (composite.type != "pairMass" || composite.daughters.size() != 2) continue;
+
+        const std::string& leftRole = composite.daughters[0];
+        const std::string& rightRole = composite.daughters[1];
+        const RecBranches* left = nullptr;
+        const RecBranches* right = nullptr;
+
+        if (leftRole == rightRole) {
+            const auto it = selection.find(leftRole);
+            if (it == selection.end() || it->second.size() < 2) return false;
+            left = it->second[0];
+            right = it->second[1];
+        } else {
+            left = firstParticle(selection, leftRole);
+            right = firstParticle(selection, rightRole);
+            if (!left || !right) return false;
+        }
+
+        const TLorentzVector lvLeft = particleLV(*left, massForPid(left->pid));
+        const TLorentzVector lvRight = particleLV(*right, massForPid(right->pid));
+        const double mass = (lvLeft + lvRight).M();
+        const double delta = std::abs(mass - composite.mass);
+        if (std::isfinite(composite.window) && delta > composite.window) return false;
+        rank += delta;
+        usedComposite = true;
+    }
+
+    if (!usedComposite) rank = 0.0;
+    return true;
+}
+
 void fillCandidate(const EventRows& rows,
-                   const RecBranches& e,
-                   const RecBranches& p,
-                   const RecBranches& g1,
-                   const RecBranches& g2,
+                   const Selection& selection,
                    const Cuts& cuts,
                    OutputRow& out) {
     const auto& cfg = cuts.config();
+    const RecBranches* ePtr = firstParticle(selection, "electron");
+    const RecBranches* pPtr = firstParticle(selection, "proton");
+    const auto gammaIt = selection.find("gamma");
+
+    out.reset();
+    out.runNum = rows.event.runNum;
+    out.eventNum = rows.event.eventNum;
+    out.helicity = rows.event.helicity;
+    out.charge = rows.event.charge;
+    out.passTopology = 1;
+    out.passFiducial = 1;
+    out.passSamplingFraction = 1;
+    out.passExclusivity = 1;
+    fillSelectedParticleBranches(selection, cfg, out);
+
+    if (!ePtr || !pPtr || gammaIt == selection.end() || gammaIt->second.size() < 2) return;
+
+    const RecBranches& e = *ePtr;
+    const RecBranches& p = *pPtr;
+    const RecBranches& g1 = *gammaIt->second[0];
+    const RecBranches& g2 = *gammaIt->second[1];
+
     const TLorentzVector beam(0, 0, cfg.beamEnergy, cfg.beamEnergy);
     const TLorentzVector target(0, 0, 0, kTargetMass);
     const TLorentzVector lvE = particleLV(e, M_ELECTRON);
@@ -156,11 +269,6 @@ void fillCandidate(const EventRows& rows,
     const TLorentzVector epX = beam + target - lvE - lvP;
     const TLorentzVector epi0X = beam + target - lvE - lvPi0;
 
-    out.reset();
-    out.runNum = rows.event.runNum;
-    out.eventNum = rows.event.eventNum;
-    out.helicity = rows.event.helicity;
-    out.charge = rows.event.charge;
     out.eIdx = e.particleIdx;
     out.pIdx = p.particleIdx;
     out.g1Idx = g1.particleIdx;
@@ -169,9 +277,6 @@ void fillCandidate(const EventRows& rows,
     out.pDet = p.det;
     out.g1Det = g1.det;
     out.g2Det = g2.det;
-    out.passTopology = 1;
-    out.passFiducial = 1;
-    out.passSamplingFraction = 1;
 
     out.Q2 = -q.M2();
     out.nu = cfg.beamEnergy - lvE.E();
@@ -195,53 +300,90 @@ void fillCandidate(const EventRows& rows,
     out.theta_e_g1 = lvE.Vect().Angle(lvG1.Vect());
     out.theta_e_g2 = lvE.Vect().Angle(lvG2.Vect());
     out.theta_g1_g2 = lvG1.Vect().Angle(lvG2.Vect());
-    out.passExclusivity = cuts.passesLooseExclusivity(out.E_miss,
-                                                      out.theta_e_g1 * 180.0 / kPi,
-                                                      out.theta_e_g2 * 180.0 / kPi,
-                                                      out.theta_g1_g2 * 180.0 / kPi,
-                                                      out.pi0_thetaX * 180.0 / kPi);
+    const CutDecision exclusivity = cuts.evaluateLooseExclusivity({
+        out.E_miss,
+        out.theta_e_g1 * 180.0 / kPi,
+        out.theta_e_g2 * 180.0 / kPi,
+        out.theta_g1_g2 * 180.0 / kPi,
+        out.pi0_thetaX * 180.0 / kPi
+    });
+    out.passExclusivity = exclusivity.pass;
+    out.failedCuts = exclusivity.failedCsv();
 }
 
 bool processEvent(const EventRows& rows, const Cuts& cuts, OutputRow& out) {
-    std::vector<const RecBranches*> electrons;
-    std::vector<const RecBranches*> protons;
-    std::vector<const RecBranches*> photons;
+    const auto& cfg = cuts.config();
 
-    for (const auto& rec : rows.recs) {
-        if (rec.pid == 11) electrons.push_back(&rec);
-        else if (rec.pid == 2212) protons.push_back(&rec);
-        else if (rec.pid == 22) photons.push_back(&rec);
-    }
-
-    double bestDeltaM = std::numeric_limits<double>::max();
+    double bestRank = std::numeric_limits<double>::max();
     OutputRow best;
     bool found = false;
+    Selection selection;
 
-    for (const auto* e : electrons) {
-        if (!cuts.passesElectronPreselection(*e)) continue;
-        for (const auto* p : protons) {
-            if (!cuts.passesProtonPreselection(*p, e->vz)) continue;
-            for (size_t i = 0; i < photons.size(); ++i) {
-                if (!cuts.passesPhotonPreselection(*photons[i], e->sector)) continue;
-                for (size_t j = i + 1; j < photons.size(); ++j) {
-                    if (!cuts.passesPhotonPreselection(*photons[j], e->sector)) continue;
-
-                    OutputRow candidate;
-                    fillCandidate(rows, *e, *p, *photons[i], *photons[j], cuts, candidate);
-                    const double deltaM = std::abs(candidate.m_gg - M_PI0);
-                    if (deltaM > cuts.config().pi0MassWindow) continue;
-                    if (deltaM < bestDeltaM) {
-                        bestDeltaM = deltaM;
-                        best = candidate;
-                        found = true;
-                    }
-                }
+    const auto alreadySelected = [&](const RecBranches* candidate) {
+        for (const auto& [_, particles] : selection) {
+            for (const auto* selected : particles) {
+                if (selected == candidate) return true;
             }
         }
-    }
+        return false;
+    };
+
+    const auto selectedContext = [&]() {
+        std::map<std::string, const RecBranches*> context;
+        for (const auto& [role, particles] : selection) {
+            if (!particles.empty()) context[role] = particles.front();
+        }
+        return context;
+    };
+
+    std::function<void(size_t)> visitRole;
+    visitRole = [&](size_t roleIndex) {
+        if (roleIndex >= cfg.channel.particles.size()) {
+            double rank = 0.0;
+            if (!evaluateCompositeRank(selection, cfg, rank)) return;
+
+            OutputRow candidate;
+            fillCandidate(rows, selection, cuts, candidate);
+            if (!candidate.passExclusivity && !cfg.saveFailedCandidates) return;
+            if (!found || rank < bestRank) {
+                bestRank = rank;
+                best = candidate;
+                found = true;
+            }
+            return;
+        }
+
+        const ParticleRoleSpec& role = cfg.channel.particles[roleIndex];
+        std::vector<const RecBranches*> chosen;
+
+        std::function<void(size_t)> chooseParticle;
+        chooseParticle = [&](size_t start) {
+            if (chosen.size() == static_cast<size_t>(role.count)) {
+                selection[role.role] = chosen;
+                visitRole(roleIndex + 1);
+                selection.erase(role.role);
+                return;
+            }
+
+            for (size_t i = start; i < rows.recs.size(); ++i) {
+                const RecBranches* candidate = &rows.recs[i];
+                if (candidate->pid != role.pid || alreadySelected(candidate)) continue;
+
+                const auto context = selectedContext();
+                if (!cuts.evaluateParticle(*candidate, role, context).pass) continue;
+
+                chosen.push_back(candidate);
+                chooseParticle(i + 1);
+                chosen.pop_back();
+            }
+        };
+
+        chooseParticle(0);
+    };
+
+    visitRole(0);
 
     if (!found) return false;
-    if (!best.passExclusivity && !cuts.config().saveFailedCandidates) return false;
     out = best;
     return true;
 }
