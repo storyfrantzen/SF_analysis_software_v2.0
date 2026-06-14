@@ -104,21 +104,21 @@ void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx) {
 
     // ── FT ───────────────────────────────────────────────
     if (det == 0) {
-        xFT = safeGet(rec->ft(FTCAL)->getX());
-        yFT = safeGet(rec->ft(FTCAL)->getY());
+        xFT = safeGet(rec->ft(clas12::FTCAL)->getX());
+        yFT = safeGet(rec->ft(clas12::FTCAL)->getY());
     }
 
     // ── FD ───────────────────────────────────────────────
     if (det == 1) {
-        xDC1 = safeGet(rec->traj(DC,  6)->getX());
-        yDC1 = safeGet(rec->traj(DC,  6)->getY());
-        xDC2 = safeGet(rec->traj(DC, 18)->getX());
-        yDC2 = safeGet(rec->traj(DC, 18)->getY());
-        xDC3 = safeGet(rec->traj(DC, 36)->getX());
-        yDC3 = safeGet(rec->traj(DC, 36)->getY());
-        edgeDC1 = safeGet(rec->traj(DC,  6)->getEdge());
-        edgeDC2 = safeGet(rec->traj(DC, 18)->getEdge());
-        edgeDC3 = safeGet(rec->traj(DC, 36)->getEdge());
+        xDC1 = safeGet(rec->traj(clas12::DC,  6)->getX());
+        yDC1 = safeGet(rec->traj(clas12::DC,  6)->getY());
+        xDC2 = safeGet(rec->traj(clas12::DC, 18)->getX());
+        yDC2 = safeGet(rec->traj(clas12::DC, 18)->getY());
+        xDC3 = safeGet(rec->traj(clas12::DC, 36)->getX());
+        yDC3 = safeGet(rec->traj(clas12::DC, 36)->getY());
+        edgeDC1 = safeGet(rec->traj(clas12::DC,  6)->getEdge());
+        edgeDC2 = safeGet(rec->traj(clas12::DC, 18)->getEdge());
+        edgeDC3 = safeGet(rec->traj(clas12::DC, 36)->getEdge());
 
         xPCAL  = safeGet(rec->cal(1)->getX());
         yPCAL  = safeGet(rec->cal(1)->getY());
@@ -140,15 +140,15 @@ void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx) {
 
     // ── CD ───────────────────────────────────────────────
     if (det == 2) {
-        edge_cvt1  = safeGet(rec->traj(CVT,  1)->getEdge());
-        edge_cvt3  = safeGet(rec->traj(CVT,  3)->getEdge());
-        edge_cvt5  = safeGet(rec->traj(CVT,  5)->getEdge());
-        edge_cvt7  = safeGet(rec->traj(CVT,  7)->getEdge());
-        edge_cvt12 = safeGet(rec->traj(CVT, 12)->getEdge());
+        edge_cvt1  = safeGet(rec->traj(clas12::CVT,  1)->getEdge());
+        edge_cvt3  = safeGet(rec->traj(clas12::CVT,  3)->getEdge());
+        edge_cvt5  = safeGet(rec->traj(clas12::CVT,  5)->getEdge());
+        edge_cvt7  = safeGet(rec->traj(clas12::CVT,  7)->getEdge());
+        edge_cvt12 = safeGet(rec->traj(clas12::CVT, 12)->getEdge());
 
-        double x = safeGet(rec->traj(CVT, 1)->getX());
-        double y = safeGet(rec->traj(CVT, 1)->getY());
-        double z = safeGet(rec->traj(CVT, 1)->getZ());
+        double x = safeGet(rec->traj(clas12::CVT, 1)->getX());
+        double y = safeGet(rec->traj(clas12::CVT, 1)->getY());
+        double z = safeGet(rec->traj(clas12::CVT, 1)->getZ());
         double r = (!std::isnan(x) && !std::isnan(y) && !std::isnan(z)) ? std::sqrt(x*x + y*y + z*z) : NAN;
 
         theta_cvt = (!std::isnan(r) && r > 0) ? std::acos(z / r) : NAN;
