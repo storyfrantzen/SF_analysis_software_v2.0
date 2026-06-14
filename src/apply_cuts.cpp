@@ -34,23 +34,11 @@ struct EventRows {
     }
 };
 
-struct OutputRow {
+struct CandidateOutput {
     int runNum = -999;
     int eventNum = -999;
     int helicity = -999;
-    int eIdx = -999;
-    int pIdx = -999;
-    int g1Idx = -999;
-    int g2Idx = -999;
-    int eDet = -999;
-    int pDet = -999;
-    int g1Det = -999;
-    int g2Det = -999;
     int passTopology = 0;
-    int passFiducial = 0;
-    int passSamplingFraction = 0;
-    int passExclusivity = 0;
-    std::string failedCuts;
     std::vector<std::string> selectedRoles;
     std::vector<int> selectedIdx;
     std::vector<int> selectedPid;
@@ -60,6 +48,19 @@ struct OutputRow {
     std::vector<double> selectedPhi;
 
     double charge = NAN;
+
+    int eppi0_eIdx = -999;
+    int eppi0_pIdx = -999;
+    int eppi0_g1Idx = -999;
+    int eppi0_g2Idx = -999;
+    int eppi0_eDet = -999;
+    int eppi0_pDet = -999;
+    int eppi0_g1Det = -999;
+    int eppi0_g2Det = -999;
+    int eppi0_passFiducial = 0;
+    int eppi0_passSamplingFraction = 0;
+    int eppi0_passExclusivity = 0;
+    std::string eppi0_failedCuts;
     double Q2 = NAN;
     double nu = NAN;
     double xB = NAN;
@@ -84,26 +85,14 @@ struct OutputRow {
     double theta_e_g2 = NAN;
     double theta_g1_g2 = NAN;
 
-    void reset() { *this = OutputRow{}; }
+    void reset() { *this = CandidateOutput{}; }
 
-    void makeBranches(TTree& tree) {
+    void registerGenericBranches(TTree& tree) {
         tree.Branch("runNum", &runNum, "runNum/I");
         tree.Branch("eventNum", &eventNum, "eventNum/I");
         tree.Branch("helicity", &helicity, "helicity/I");
         tree.Branch("charge", &charge, "charge/D");
-        tree.Branch("eIdx", &eIdx, "eIdx/I");
-        tree.Branch("pIdx", &pIdx, "pIdx/I");
-        tree.Branch("g1Idx", &g1Idx, "g1Idx/I");
-        tree.Branch("g2Idx", &g2Idx, "g2Idx/I");
-        tree.Branch("eDet", &eDet, "eDet/I");
-        tree.Branch("pDet", &pDet, "pDet/I");
-        tree.Branch("g1Det", &g1Det, "g1Det/I");
-        tree.Branch("g2Det", &g2Det, "g2Det/I");
         tree.Branch("passTopology", &passTopology, "passTopology/I");
-        tree.Branch("passFiducial", &passFiducial, "passFiducial/I");
-        tree.Branch("passSamplingFraction", &passSamplingFraction, "passSamplingFraction/I");
-        tree.Branch("passExclusivity", &passExclusivity, "passExclusivity/I");
-        tree.Branch("failedCuts", &failedCuts);
         tree.Branch("selectedRoles", &selectedRoles);
         tree.Branch("selectedIdx", &selectedIdx);
         tree.Branch("selectedPid", &selectedPid);
@@ -111,6 +100,21 @@ struct OutputRow {
         tree.Branch("selectedP", &selectedP);
         tree.Branch("selectedTheta", &selectedTheta);
         tree.Branch("selectedPhi", &selectedPhi);
+    }
+
+    void registerEppi0Branches(TTree& tree) {
+        tree.Branch("eIdx", &eppi0_eIdx, "eIdx/I");
+        tree.Branch("pIdx", &eppi0_pIdx, "pIdx/I");
+        tree.Branch("g1Idx", &eppi0_g1Idx, "g1Idx/I");
+        tree.Branch("g2Idx", &eppi0_g2Idx, "g2Idx/I");
+        tree.Branch("eDet", &eppi0_eDet, "eDet/I");
+        tree.Branch("pDet", &eppi0_pDet, "pDet/I");
+        tree.Branch("g1Det", &eppi0_g1Det, "g1Det/I");
+        tree.Branch("g2Det", &eppi0_g2Det, "g2Det/I");
+        tree.Branch("passFiducial", &eppi0_passFiducial, "passFiducial/I");
+        tree.Branch("passSamplingFraction", &eppi0_passSamplingFraction, "passSamplingFraction/I");
+        tree.Branch("passExclusivity", &eppi0_passExclusivity, "passExclusivity/I");
+        tree.Branch("failedCuts", &eppi0_failedCuts);
         tree.Branch("Q2", &Q2, "Q2/D");
         tree.Branch("nu", &nu, "nu/D");
         tree.Branch("xB", &xB, "xB/D");
@@ -133,6 +137,11 @@ struct OutputRow {
         tree.Branch("theta_e_g1", &theta_e_g1, "theta_e_g1/D");
         tree.Branch("theta_e_g2", &theta_e_g2, "theta_e_g2/D");
         tree.Branch("theta_g1_g2", &theta_g1_g2, "theta_g1_g2/D");
+    }
+
+    void registerBranches(TTree& tree, bool includeEppi0Branches) {
+        registerGenericBranches(tree);
+        if (includeEppi0Branches) registerEppi0Branches(tree);
     }
 };
 
@@ -171,7 +180,7 @@ const RecBranches* firstParticle(const Selection& selection, const std::string& 
 
 void fillSelectedParticleBranches(const Selection& selection,
                                   const PostCutConfig& cfg,
-                                  OutputRow& out) {
+                                  CandidateOutput& out) {
     for (const auto& roleSpec : cfg.channel.particles) {
         const auto it = selection.find(roleSpec.role);
         if (it == selection.end()) continue;
@@ -227,25 +236,39 @@ bool evaluateCompositeRank(const Selection& selection,
     return true;
 }
 
-void fillCandidate(const EventRows& rows,
-                   const Selection& selection,
-                   const Cuts& cuts,
-                   OutputRow& out) {
-    const auto& cfg = cuts.config();
-    const RecBranches* ePtr = firstParticle(selection, "electron");
-    const RecBranches* pPtr = firstParticle(selection, "proton");
-    const auto gammaIt = selection.find("gamma");
+bool supportsEppi0Logic(const PostCutConfig& cfg) {
+    const auto countForRole = [&](const std::string& role) {
+        for (const auto& roleSpec : cfg.channel.particles) {
+            if (roleSpec.role == role) return roleSpec.count;
+        }
+        return 0;
+    };
 
+    return countForRole("electron") >= 1 &&
+           countForRole("proton") >= 1 &&
+           countForRole("gamma") >= 2;
+}
+
+void fillGenericCandidate(const EventRows& rows,
+                          const Selection& selection,
+                          const PostCutConfig& cfg,
+                          CandidateOutput& out) {
     out.reset();
     out.runNum = rows.event.runNum;
     out.eventNum = rows.event.eventNum;
     out.helicity = rows.event.helicity;
     out.charge = rows.event.charge;
     out.passTopology = 1;
-    out.passFiducial = 1;
-    out.passSamplingFraction = 1;
-    out.passExclusivity = 1;
     fillSelectedParticleBranches(selection, cfg, out);
+}
+
+void runEppi0Logic(const Selection& selection,
+                   const Cuts& cuts,
+                   CandidateOutput& out) {
+    const auto& cfg = cuts.config();
+    const RecBranches* ePtr = firstParticle(selection, "electron");
+    const RecBranches* pPtr = firstParticle(selection, "proton");
+    const auto gammaIt = selection.find("gamma");
 
     if (!ePtr || !pPtr || gammaIt == selection.end() || gammaIt->second.size() < 2) return;
 
@@ -269,14 +292,16 @@ void fillCandidate(const EventRows& rows,
     const TLorentzVector epX = beam + target - lvE - lvP;
     const TLorentzVector epi0X = beam + target - lvE - lvPi0;
 
-    out.eIdx = e.particleIdx;
-    out.pIdx = p.particleIdx;
-    out.g1Idx = g1.particleIdx;
-    out.g2Idx = g2.particleIdx;
-    out.eDet = e.det;
-    out.pDet = p.det;
-    out.g1Det = g1.det;
-    out.g2Det = g2.det;
+    out.eppi0_eIdx = e.particleIdx;
+    out.eppi0_pIdx = p.particleIdx;
+    out.eppi0_g1Idx = g1.particleIdx;
+    out.eppi0_g2Idx = g2.particleIdx;
+    out.eppi0_eDet = e.det;
+    out.eppi0_pDet = p.det;
+    out.eppi0_g1Det = g1.det;
+    out.eppi0_g2Det = g2.det;
+    out.eppi0_passFiducial = 1;
+    out.eppi0_passSamplingFraction = 1;
 
     out.Q2 = -q.M2();
     out.nu = cfg.beamEnergy - lvE.E();
@@ -307,15 +332,26 @@ void fillCandidate(const EventRows& rows,
         out.theta_g1_g2 * 180.0 / kPi,
         out.pi0_thetaX * 180.0 / kPi
     });
-    out.passExclusivity = exclusivity.pass;
-    out.failedCuts = exclusivity.failedCsv();
+    out.eppi0_passExclusivity = exclusivity.pass;
+    out.eppi0_failedCuts = exclusivity.failedCsv();
 }
 
-bool processEvent(const EventRows& rows, const Cuts& cuts, OutputRow& out) {
+void buildCandidateOutput(const EventRows& rows,
+                          const Selection& selection,
+                          const Cuts& cuts,
+                          CandidateOutput& out) {
+    fillGenericCandidate(rows, selection, cuts.config(), out);
+    if (supportsEppi0Logic(cuts.config())) {
+        runEppi0Logic(selection, cuts, out);
+    }
+}
+
+bool processEvent(const EventRows& rows, const Cuts& cuts, CandidateOutput& out) {
     const auto& cfg = cuts.config();
+    const bool runEppi0 = supportsEppi0Logic(cfg);
 
     double bestRank = std::numeric_limits<double>::max();
-    OutputRow best;
+    CandidateOutput best;
     bool found = false;
     Selection selection;
 
@@ -342,9 +378,11 @@ bool processEvent(const EventRows& rows, const Cuts& cuts, OutputRow& out) {
             double rank = 0.0;
             if (!evaluateCompositeRank(selection, cfg, rank)) return;
 
-            OutputRow candidate;
-            fillCandidate(rows, selection, cuts, candidate);
-            if (!candidate.passExclusivity && !cfg.saveFailedCandidates) return;
+            CandidateOutput candidate;
+            buildCandidateOutput(rows, selection, cuts, candidate);
+            if (runEppi0 && !candidate.eppi0_passExclusivity && !cfg.saveFailedCandidates) {
+                return;
+            }
             if (!found || rank < bestRank) {
                 bestRank = rank;
                 best = candidate;
@@ -418,8 +456,8 @@ int main(int argc, char** argv) {
 
     TFile output(cfg.outputFile.c_str(), "RECREATE");
     TTree outTree(cfg.outputTree.c_str(), cfg.outputTree.c_str());
-    OutputRow out;
-    out.makeBranches(outTree);
+    CandidateOutput out;
+    out.registerBranches(outTree, supportsEppi0Logic(cfg));
 
     EventRows rows;
     bool haveRows = false;
@@ -430,7 +468,7 @@ int main(int argc, char** argv) {
     const auto flushEvent = [&]() {
         if (!haveRows || rows.recs.empty()) return;
         ++nEvents;
-        OutputRow candidate;
+        CandidateOutput candidate;
         if (processEvent(rows, cuts, candidate)) {
             out = candidate;
             outTree.Fill();
