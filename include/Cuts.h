@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "ROOTBranches.h"
-#include "json.hpp"
+#include "nlohmann/json.hpp"
 
 struct CutDecision {
     bool pass = true;
