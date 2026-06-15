@@ -9,6 +9,12 @@ hipo2root <config.json> <hipo_directory> [max_files]
 apply_cuts <post_config.json> <input.root>
 ```
 
+Example configs live in `configs/examples/`, so a typical local run looks like:
+
+```bash
+./build/hipo2root configs/examples/test_config.json /path/to/hipo/files
+```
+
 The converter currently supports:
 
 - final-state filtering
@@ -25,3 +31,13 @@ By default, `finalState` rejects reconstructed particles whose PIDs are not list
 Use hipo-to-ROOT conversion for stable, IO-saving preselection and branch building. Use ROOT post-processing for tuneable physics selections such as fiducial and exclusivity cuts.
 
 See `docs/analysis_pipeline.md` for the recommended modular layout.
+
+## Repository layout
+
+- `src/` - converter source files
+- `include/` - project headers and ROOT dictionary LinkDef
+- `vendor/` - vendored header-only dependencies
+- `configs/examples/` - runnable example configuration files
+- `docs/` - design notes and setup references
+- `data/` - local input/output data products, ignored by git
+- `build/`, `work-build/`, `cmake-build-*` - local CMake build trees, ignored by git

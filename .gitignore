@@ -3,10 +3,14 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/main/VisualStudio.gitignore
 
-# CMake local build directories
+# Project-local generated output
+build/
 work-build/
 cmake-build-*/
-*_post_processed.root
+*.root
+!data/
+!data/processed/
+!data/raw/
 
 # User-specific files
 *.rsuser

@@ -17,6 +17,7 @@ set(QADB $ENV{QADB})
 # Include directories
 include_directories(
   ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_SOURCE_DIR}/vendor
   ${CLAS12ROOT}/hipo4
   ${CLAS12ROOT}/Clas12Banks
   ${CLAS12ROOT}/Clas12Root
