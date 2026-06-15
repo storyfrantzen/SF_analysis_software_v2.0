@@ -10,17 +10,14 @@
 #include "TFile.h"
 #include "TLorentzVector.h"
 #include "TTree.h"
-#include "TVector2.h"
-#include "TVector3.h"
 
 #include "Cuts.h"
-#include "PhysicalConstants.h"
+#include "Kinematics.h"
 #include "ROOTBranches.h"
 
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
-constexpr double kTargetMass = 0.9382720813;
 
 using Selection = std::map<std::string, std::vector<const RecBranches*>>;
 
@@ -145,33 +142,6 @@ struct CandidateOutput {
     }
 };
 
-double massForPid(int pid) {
-    switch (std::abs(pid)) {
-        case 11: return M_ELECTRON;
-        case 22: return 0.0;
-        case 111: return M_PI0;
-        case 2212: return M_PROTON;
-        default: return 0.0;
-    }
-}
-
-TLorentzVector particleLV(const RecBranches& p, double mass) {
-    TLorentzVector lv;
-    lv.SetPxPyPzE(p.px, p.py, p.pz, std::sqrt(mass * mass + p.p * p.p));
-    return lv;
-}
-
-double computeTrentoPhi(const TLorentzVector& beam,
-                        const TLorentzVector& electron,
-                        const TLorentzVector& hadron) {
-    const TVector3 q = beam.Vect() - electron.Vect();
-    const TVector3 nLepton = beam.Vect().Cross(electron.Vect()).Unit();
-    const TVector3 nHadron = hadron.Vect().Cross(q).Unit();
-    const double cosPhi = nLepton.Dot(nHadron);
-    const double sinPhi = q.Unit().Dot(nLepton.Cross(nHadron));
-    return std::atan2(sinPhi, cosPhi);
-}
-
 const RecBranches* firstParticle(const Selection& selection, const std::string& role) {
     const auto it = selection.find(role);
     if (it == selection.end() || it->second.empty()) return nullptr;
@@ -204,15 +174,12 @@ void fillDISBranches(const Selection& selection,
     const RecBranches* electron = firstParticle(selection, "electron");
     if (!electron || electron->pid != 11) return;
 
-    const TLorentzVector beam(0, 0, cfg.beamEnergy, cfg.beamEnergy);
-    const TLorentzVector lvE = particleLV(*electron, M_ELECTRON);
-    const TLorentzVector q = beam - lvE;
+    const TLorentzVector lvE = Kinematics::particle(*electron);
+    const Kinematics::DIS dis = Kinematics::dis(lvE, cfg.beamEnergy);
 
-    out.Q2 = -q.M2();
-    out.nu = cfg.beamEnergy - lvE.E();
-    if (std::isfinite(out.nu) && out.nu != 0.0) {
-        out.xB = out.Q2 / (2.0 * kTargetMass * out.nu);
-    }
+    out.Q2 = dis.Q2;
+    out.nu = dis.nu;
+    out.xB = dis.xB;
 }
 
 bool evaluateCompositeRank(const Selection& selection,
@@ -240,8 +207,8 @@ bool evaluateCompositeRank(const Selection& selection,
             if (!left || !right) return false;
         }
 
-        const TLorentzVector lvLeft = particleLV(*left, massForPid(left->pid));
-        const TLorentzVector lvRight = particleLV(*right, massForPid(right->pid));
+        const TLorentzVector lvLeft = Kinematics::particle(*left);
+        const TLorentzVector lvRight = Kinematics::particle(*right);
         const double mass = (lvLeft + lvRight).M();
         const double delta = std::abs(mass - composite.mass);
         if (std::isfinite(composite.window) && delta > composite.window) return false;
@@ -295,20 +262,19 @@ void runEppi0Logic(const Selection& selection,
     const RecBranches& g1 = *gammaIt->second[0];
     const RecBranches& g2 = *gammaIt->second[1];
 
-    const TLorentzVector beam(0, 0, cfg.beamEnergy, cfg.beamEnergy);
-    const TLorentzVector target(0, 0, 0, kTargetMass);
-    const TLorentzVector lvE = particleLV(e, M_ELECTRON);
-    const TLorentzVector lvP = particleLV(p, M_PROTON);
+    const TLorentzVector beam = Kinematics::beam(cfg.beamEnergy);
+    const TLorentzVector target = Kinematics::target();
+    const TLorentzVector lvE = Kinematics::particle(e);
+    const TLorentzVector lvP = Kinematics::particle(p);
+    const Kinematics::DIS dis = Kinematics::dis(lvE, cfg.beamEnergy);
 
-    TLorentzVector lvG1, lvG2;
-    lvG1.SetPxPyPzE(g1.px, g1.py, g1.pz, g1.p);
-    lvG2.SetPxPyPzE(g2.px, g2.py, g2.pz, g2.p);
+    const TLorentzVector lvG1 = Kinematics::particle(g1);
+    const TLorentzVector lvG2 = Kinematics::particle(g2);
     const TLorentzVector lvPi0 = lvG1 + lvG2;
 
-    const TLorentzVector q = beam - lvE;
-    const TLorentzVector missing = beam + target - lvE - lvP - lvPi0;
-    const TLorentzVector epX = beam + target - lvE - lvP;
-    const TLorentzVector epi0X = beam + target - lvE - lvPi0;
+    const TLorentzVector missing = Kinematics::missingSystem(cfg.beamEnergy, {lvE, lvP, lvPi0});
+    const TLorentzVector epX = Kinematics::missingSystem(cfg.beamEnergy, {lvE, lvP});
+    const TLorentzVector epi0X = Kinematics::missingSystem(cfg.beamEnergy, {lvE, lvPi0});
 
     out.eppi0_eIdx = e.particleIdx;
     out.eppi0_pIdx = p.particleIdx;
@@ -321,25 +287,25 @@ void runEppi0Logic(const Selection& selection,
     out.eppi0_passFiducial = 1;
     out.eppi0_passSamplingFraction = 1;
 
-    out.y = out.nu / cfg.beamEnergy;
-    out.W = std::sqrt(std::max(0.0, (target + q).M2()));
+    out.y = dis.y;
+    out.W = dis.W;
     out.t = -1.0 * (target - lvP).M2();
-    out.trentoPhi = computeTrentoPhi(beam, lvE, lvP);
+    out.trentoPhi = Kinematics::trentoPhi(beam, lvE, lvP);
     out.pi0_p = lvPi0.P();
     out.pi0_theta = lvPi0.Theta();
     out.pi0_phi = lvPi0.Phi();
-    out.pi0_deltaPhi = TVector2::Phi_mpi_pi(lvPi0.Phi() - epX.Phi());
-    out.pi0_thetaX = lvPi0.Vect().Angle(epX.Vect());
+    out.pi0_deltaPhi = Kinematics::deltaPhi(lvPi0.Phi(), epX.Phi());
+    out.pi0_thetaX = Kinematics::angle(lvPi0, epX);
     out.m_gg = lvPi0.M();
     out.m2_miss = missing.M2();
     out.m2_epX = epX.M2();
     out.m2_epi0X = epi0X.M2();
-    out.m_eggX = out.m2_epi0X >= 0.0 ? std::sqrt(out.m2_epi0X) : NAN;
+    out.m_eggX = Kinematics::massIfTimelike(epi0X);
     out.E_miss = missing.E();
     out.pT_miss = missing.Pt();
-    out.theta_e_g1 = lvE.Vect().Angle(lvG1.Vect());
-    out.theta_e_g2 = lvE.Vect().Angle(lvG2.Vect());
-    out.theta_g1_g2 = lvG1.Vect().Angle(lvG2.Vect());
+    out.theta_e_g1 = Kinematics::angle(lvE, lvG1);
+    out.theta_e_g2 = Kinematics::angle(lvE, lvG2);
+    out.theta_g1_g2 = Kinematics::angle(lvG1, lvG2);
     const CutDecision exclusivity = cuts.evaluateLooseExclusivity({
         out.E_miss,
         out.theta_e_g1 * 180.0 / kPi,

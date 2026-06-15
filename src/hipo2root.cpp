@@ -7,12 +7,11 @@
 
 #include "TFile.h"
 #include "TTree.h"
-#include "TLorentzVector.h"
 
 #include "clas12reader.h"
 
 #include "Config.h"
-#include "PhysicalConstants.h"
+#include "Kinematics.h"
 #include "ROOTBranches.h"
 
 using namespace clas12;
@@ -51,18 +50,13 @@ bool passesDISSkim(const Config& cfg, clas12::clas12reader& c12) {
     if (electrons.empty()) return false;
 
     auto* e = electrons[0];
-    TLorentzVector lv_e(e->par()->getPx(), e->par()->getPy(), e->par()->getPz(),
-                        std::sqrt(e->getP() * e->getP() + M_ELECTRON * M_ELECTRON));
+    const TLorentzVector lvE = Kinematics::particle(e->par()->getPx(),
+                                                    e->par()->getPy(),
+                                                    e->par()->getPz(),
+                                                    Kinematics::massForPid(11));
+    const Kinematics::DIS dis = Kinematics::dis(lvE, cfg.beamEnergy);
 
-    TLorentzVector lv_beam(0, 0, cfg.beamEnergy, cfg.beamEnergy);
-    TLorentzVector q = lv_beam - lv_e;
-
-    const double Q2 = -q.M2();
-    const double nu = cfg.beamEnergy - lv_e.E();
-    const double y = nu / cfg.beamEnergy;
-    const double W = std::sqrt(std::max(0.0, (TLorentzVector(0, 0, 0, M_PROTON) + q).M2()));
-
-    return (Q2 >= cfg.Q2_min && W >= cfg.W_min && y <= cfg.y_max);
+    return (dis.Q2 >= cfg.Q2_min && dis.W >= cfg.W_min && dis.y <= cfg.y_max);
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
