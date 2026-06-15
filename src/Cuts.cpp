@@ -15,6 +15,14 @@ bool isFinite(double value) {
     return std::isfinite(value);
 }
 
+bool isFirstPidInstance(const RecBranches& p, const std::vector<RecBranches>& eventParticles) {
+    for (const auto& eventParticle : eventParticles) {
+        if (eventParticle.pid != p.pid) continue;
+        return eventParticle.particleIdx == p.particleIdx;
+    }
+    return false;
+}
+
 PrimitiveCutSpec makeCut(const std::string& name,
                          const std::string& op,
                          double min = NAN,
@@ -97,6 +105,7 @@ ChannelSpec legacyEppi0Channel(const json& eppi0) {
     electron.pid = 11;
     electron.count = 1;
     electron.cuts = {
+        makeCut("electron.trigger", "firstPidInstance"),
         makeCut("electron.min_p", "minP", electronMinP),
         makeCut("electron.fiducial", "fiducial"),
         makeCut("electron.sampling_fraction", "samplingFraction")
@@ -319,6 +328,7 @@ bool Cuts::passesFiducial(const RecBranches& p) const {
 
 CutDecision Cuts::evaluateParticle(const RecBranches& p,
                                    const ParticleRoleSpec& role,
+                                   const std::vector<RecBranches>& eventParticles,
                                    const std::map<std::string, const RecBranches*>& selected) const {
     CutDecision decision;
     decision.require(p.pid == role.pid, role.role + ".pid");
@@ -339,6 +349,8 @@ CutDecision Cuts::evaluateParticle(const RecBranches& p,
         } else if (cut.op == "minCalEnergy") {
             const double calEnergy = p.E_PCAL + p.E_ECIN + p.E_ECOUT;
             decision.require(isFinite(calEnergy) && isFinite(cut.min) && calEnergy >= cut.min, name);
+        } else if (cut.op == "firstPidInstance") {
+            decision.require(isFirstPidInstance(p, eventParticles), name);
         } else if (cut.op == "rejectDetector") {
             decision.require(p.det != cut.detector, name);
         } else if (cut.op == "rejectSameSectorAsRole") {

@@ -423,7 +423,7 @@ bool processEvent(const EventRows& rows, const Cuts& cuts, CandidateOutput& out)
                 if (candidate->pid != role.pid || alreadySelected(candidate)) continue;
 
                 const auto context = selectedContext();
-                if (!cuts.evaluateParticle(*candidate, role, context).pass) continue;
+                if (!cuts.evaluateParticle(*candidate, role, rows.recs, context).pass) continue;
 
                 chosen.push_back(candidate);
                 chooseParticle(i + 1);

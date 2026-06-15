@@ -97,6 +97,7 @@ public:
 
     CutDecision evaluateParticle(const RecBranches& p,
                                  const ParticleRoleSpec& role,
+                                 const std::vector<RecBranches>& eventParticles,
                                  const std::map<std::string, const RecBranches*>& selected) const;
 
     CutDecision evaluateFiducial(const RecBranches& p) const;
