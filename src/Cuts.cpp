@@ -32,6 +32,14 @@ bool isFirstPidInstance(const RecBranches& p, const std::vector<RecBranches>& ev
     return found && p.particleIdx == firstIdx;
 }
 
+bool detectorAllowed(int det, const std::vector<int>& allowedDetectors) {
+    if (allowedDetectors.empty()) return true;
+    for (const int allowed : allowedDetectors) {
+        if (det == allowed) return true;
+    }
+    return false;
+}
+
 PrimitiveCutSpec makeCut(const std::string& name,
                          const std::string& op,
                          double min = NAN,
@@ -64,6 +72,7 @@ ParticleRoleSpec parseRoleSpec(const json& j) {
     role.role = j.value("role", "");
     role.pid = j.value("pid", role.pid);
     role.count = j.value("count", role.count);
+    role.detectors = j.value("detectors", role.detectors);
     if (j.contains("cuts")) {
         for (const auto& cut : j["cuts"]) role.cuts.push_back(parseCutSpec(cut));
     }
@@ -142,7 +151,7 @@ ChannelSpec legacyEppi0Channel(const json& eppi0) {
         makeCut("gamma.cal_energy", "minCalEnergy", photonMinCalEnergy),
         makeCut("gamma.fiducial", "fiducial")
     };
-    if (rejectPhotonsInCD) gamma.cuts.push_back(makeCut("gamma.not_cd", "rejectDetector", NAN, NAN, 2));
+    if (rejectPhotonsInCD) gamma.detectors = {0, 1};
     if (rejectPhotonsInElectronSector) {
         gamma.cuts.push_back(makeCut("gamma.not_electron_sector",
                                      "rejectSameSectorAsRole",
@@ -340,6 +349,7 @@ CutDecision Cuts::evaluateParticle(const RecBranches& p,
                                    const std::map<std::string, const RecBranches*>& selected) const {
     CutDecision decision;
     decision.require(p.pid == role.pid, role.role + ".pid");
+    decision.require(detectorAllowed(p.det, role.detectors), role.role + ".detector");
 
     for (const auto& cut : role.cuts) {
         const std::string name = cut.name.empty() ? (role.role + "." + cut.op) : cut.name;

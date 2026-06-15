@@ -39,6 +39,7 @@ struct ParticleRoleSpec {
     std::string role;
     int pid = -999;
     int count = 1;
+    std::vector<int> detectors;
     std::vector<PrimitiveCutSpec> cuts;
 };
 
