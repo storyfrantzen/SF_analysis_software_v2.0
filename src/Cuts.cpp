@@ -16,11 +16,20 @@ bool isFinite(double value) {
 }
 
 bool isFirstPidInstance(const RecBranches& p, const std::vector<RecBranches>& eventParticles) {
+    bool found = false;
+    int firstIdx = -1;
+
     for (const auto& eventParticle : eventParticles) {
         if (eventParticle.pid != p.pid) continue;
-        return eventParticle.particleIdx == p.particleIdx;
+        if (eventParticle.particleIdx < 0) continue;
+
+        if (!found || eventParticle.particleIdx < firstIdx) {
+            firstIdx = eventParticle.particleIdx;
+            found = true;
+        }
     }
-    return false;
+
+    return found && p.particleIdx == firstIdx;
 }
 
 PrimitiveCutSpec makeCut(const std::string& name,
