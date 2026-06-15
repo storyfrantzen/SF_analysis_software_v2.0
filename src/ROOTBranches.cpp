@@ -55,6 +55,12 @@ void RecBranches::reset() {
     pz = NAN;
     theta = NAN;
     phi = NAN;
+    p_raw = NAN;
+    theta_raw = NAN;
+    phi_raw = NAN;
+    delta_p = 0.0;
+    delta_theta = 0.0;
+    delta_phi = 0.0;
     beta = NAN;
     chi2pid = NAN;
 
@@ -94,6 +100,12 @@ void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx) {
     pz      = safeGet(rec->par()->getPz());
     theta   = safeGet(rec->getTheta());
     phi     = safeGet(rec->getPhi());
+    p_raw     = p;
+    theta_raw = theta;
+    phi_raw   = phi;
+    delta_p = 0.0;
+    delta_theta = 0.0;
+    delta_phi = 0.0;
     beta    = safeGet(rec->par()->getBeta());
     chi2pid = safeGet(rec->par()->getChi2Pid());
 
@@ -159,6 +171,9 @@ void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx) {
 void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx,
                    double pCorr, double thetaCorr, double phiCorr) {
     fill(rec, rn, en, idx);
+    delta_p = pCorr - p_raw;
+    delta_theta = thetaCorr - theta_raw;
+    delta_phi = phiCorr - phi_raw;
     p     = pCorr;
     theta = thetaCorr;
     phi   = phiCorr;

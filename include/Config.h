@@ -1,4 +1,5 @@
 #pragma once
+#include <filesystem>
 #include <string>
 #include <vector>
 #include <fstream>
@@ -37,6 +38,9 @@ struct Config {
     // ── MC ────────────────────────────────────
     bool fillMC = false;
 
+    // ── Kinematic corrections ─────────────────
+    nlohmann::json kinematicCorrections;
+
     // ── Constructors ──────────────────────────
 
     Config() = default;
@@ -48,6 +52,7 @@ struct Config {
 
         nlohmann::json j;
         f >> j;
+        const auto configDir = std::filesystem::path(filename).parent_path();
 
         outputFile = j.value("outputFile", outputFile);
         treeName   = j.value("treeName",   treeName);
@@ -62,6 +67,25 @@ struct Config {
         fillMC = j.value("fillMC", fillMC);
 
         inclusive = j.value("inclusive", inclusive);
+
+        if (j.contains("kinematicCorrections")) {
+            const auto& corrections = j["kinematicCorrections"];
+            if (corrections.is_string()) {
+                std::filesystem::path correctionPath = corrections.get<std::string>();
+                if (correctionPath.is_relative() && !configDir.empty()) {
+                    correctionPath = configDir / correctionPath;
+                }
+
+                std::ifstream cf(correctionPath);
+                if (!cf.is_open()) {
+                    throw std::runtime_error("Cannot open kinematic corrections file: " +
+                                             correctionPath.string());
+                }
+                cf >> kinematicCorrections;
+            } else {
+                kinematicCorrections = corrections;
+            }
+        }
 
         if (j.contains("finalState")) {
             for (const auto& p : j["finalState"]) {

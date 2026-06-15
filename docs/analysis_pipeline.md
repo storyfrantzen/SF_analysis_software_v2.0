@@ -16,6 +16,7 @@ The converter should make a reusable analysis ntuple. Physics selections that ar
    - loose final-state requirements used only to reduce file size
    - loose DIS skims such as broad `Q2`, `W`, and `y` ranges
    - optional precomputed helper variables or cut flags, as long as the raw ingredients are still saved
+   - configured proton kinematic corrections, with raw values and correction deltas saved alongside corrected branches
 
 2. ROOT post-processing
 
@@ -72,6 +73,12 @@ Detector acceptance is configured at the particle-role level with `detectors`, f
 This keeps a cut like `removeCVTPhi(min, max)` reusable across channels and systematic variations. The current primitive vocabulary includes `minP`, `maxP`, `pRange`, `betaRange`, `minCalEnergy`, `firstPidInstance`, `rejectDetector` for backward compatibility, `rejectSameSectorAsRole`, `vertexDiff`, `removeCVTPhi`, `fiducial`, and `samplingFraction`.
 
 The `apply_cuts` workflow reads `channel.particles` in order and recursively builds valid candidate combinations. This makes the topology generic enough for channels beyond eppi0. Every channel gets the generic selected-particle branches such as `selectedRoles`, `selectedIdx`, `selectedPid`, and `selectedP`, plus electron-derived DIS branches `Q2`, `nu`, and `xB` when the `electron` role is selected. Use `firstPidInstance` on that role when it must be the trigger/scattered electron, meaning the first particle with that PID in the reconstructed bank.
+
+## Proton Kinematic Corrections
+
+`hipo2root` accepts optional proton correction coefficients through `kinematicCorrections` in the conversion config. The field can be either an inline JSON object or a path to a JSON coefficient file, resolved relative to the config file when the path is relative. The supported coefficient format matches the legacy `protonEnergyLoss_params_*.json` files with keys such as `p_delta_p_FD`, `p_delta_theta_CD`, and `p_delta_phi_CD`.
+
+When corrections are enabled, proton `p`, `px`, `py`, `pz`, `theta`, and `phi` are the corrected values used by downstream kinematics. The original measured values remain available as `p_raw`, `theta_raw`, and `phi_raw`, and the applied corrections are saved as `delta_p`, `delta_theta`, and `delta_phi`. Non-proton particles carry raw values equal to the nominal values and zero deltas.
 
 Channel-specific derived quantities should be isolated behind small channel logic functions. The eppi0 derived variables and loose exclusivity checks now live behind the eppi0 logic path, which is enabled when the configured roles include `electron`, `proton`, and two `gamma` particles. Future channels should follow that pattern: keep role selection and primitive cuts generic, then add a narrow function for channel-specific kinematics and output branches.
 

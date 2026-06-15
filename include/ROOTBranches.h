@@ -62,6 +62,12 @@ struct RecBranches : public TObject {
     double pz     = NAN;
     double theta  = NAN;
     double phi    = NAN;
+    double p_raw     = NAN;
+    double theta_raw = NAN;
+    double phi_raw   = NAN;
+    double delta_p     = 0.0;
+    double delta_theta = 0.0;
+    double delta_phi   = 0.0;
     double beta   = NAN;
     double chi2pid = NAN;
 
@@ -103,7 +109,7 @@ struct RecBranches : public TObject {
               double pCorr, double thetaCorr, double phiCorr);
     #endif
 
-    ClassDef(RecBranches, 2);
+    ClassDef(RecBranches, 3);
 };
 
 // ─── GenBranches ─────────────────────────────────────────────────────────────────
