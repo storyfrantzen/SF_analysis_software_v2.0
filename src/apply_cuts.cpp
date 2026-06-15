@@ -4,6 +4,7 @@
 #include <map>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,30 @@ struct EventRows {
         recs.clear();
     }
 };
+
+struct ProcessingStats {
+    long long eventsWithoutSavedCandidate = 0;
+    long long compositeFailures = 0;
+    long long exclusivityFailures = 0;
+    std::map<std::string, long long> cutFailures;
+
+    void addFailures(const CutDecision& decision) {
+        for (const auto& name : decision.failed) ++cutFailures[name];
+    }
+};
+
+void addCsvFailures(const std::string& failedCuts, ProcessingStats& stats) {
+    if (failedCuts.empty()) {
+        ++stats.cutFailures["exclusivity"];
+        return;
+    }
+
+    std::istringstream stream(failedCuts);
+    std::string name;
+    while (std::getline(stream, name, ',')) {
+        if (!name.empty()) ++stats.cutFailures[name];
+    }
+}
 
 struct CandidateOutput {
     int runNum = -999;
@@ -184,9 +209,11 @@ void fillDISBranches(const Selection& selection,
 
 bool evaluateCompositeRank(const Selection& selection,
                            const PostCutConfig& cfg,
-                           double& rank) {
+                           double& rank,
+                           std::string& failedCut) {
     rank = 0.0;
     bool usedComposite = false;
+    failedCut.clear();
 
     for (const auto& composite : cfg.channel.composites) {
         if (composite.type != "pairMass" || composite.daughters.size() != 2) continue;
@@ -211,7 +238,10 @@ bool evaluateCompositeRank(const Selection& selection,
         const TLorentzVector lvRight = Kinematics::particle(*right);
         const double mass = (lvLeft + lvRight).M();
         const double delta = std::abs(mass - composite.mass);
-        if (std::isfinite(composite.window) && delta > composite.window) return false;
+        if (std::isfinite(composite.window) && delta > composite.window) {
+            failedCut = composite.role + ".mass_window";
+            return false;
+        }
         rank += delta;
         usedComposite = true;
     }
@@ -284,8 +314,15 @@ void runEppi0Logic(const Selection& selection,
     out.eppi0_pDet = p.det;
     out.eppi0_g1Det = g1.det;
     out.eppi0_g2Det = g2.det;
-    out.eppi0_passFiducial = 1;
-    out.eppi0_passSamplingFraction = 1;
+    const CutDecision fiducial = cuts.evaluateFiducial(e);
+    CutDecision fiducialP = cuts.evaluateFiducial(p);
+    CutDecision fiducialG1 = cuts.evaluateFiducial(g1);
+    CutDecision fiducialG2 = cuts.evaluateFiducial(g2);
+    fiducialP.merge(fiducialG1);
+    fiducialP.merge(fiducialG2);
+    fiducialP.merge(fiducial);
+    out.eppi0_passFiducial = fiducialP.pass;
+    out.eppi0_passSamplingFraction = cuts.evaluateSamplingFraction(e).pass;
 
     out.y = dis.y;
     out.W = dis.W;
@@ -327,7 +364,10 @@ void buildCandidateOutput(const EventRows& rows,
     }
 }
 
-bool processEvent(const EventRows& rows, const Cuts& cuts, CandidateOutput& out) {
+bool processEvent(const EventRows& rows,
+                  const Cuts& cuts,
+                  CandidateOutput& out,
+                  ProcessingStats& stats) {
     const auto& cfg = cuts.config();
     const bool runEppi0 = supportsEppi0Logic(cfg);
 
@@ -357,11 +397,18 @@ bool processEvent(const EventRows& rows, const Cuts& cuts, CandidateOutput& out)
     visitRole = [&](size_t roleIndex) {
         if (roleIndex >= cfg.channel.particles.size()) {
             double rank = 0.0;
-            if (!evaluateCompositeRank(selection, cfg, rank)) return;
+            std::string failedCompositeCut;
+            if (!evaluateCompositeRank(selection, cfg, rank, failedCompositeCut)) {
+                ++stats.compositeFailures;
+                ++stats.cutFailures[failedCompositeCut.empty() ? "composite" : failedCompositeCut];
+                return;
+            }
 
             CandidateOutput candidate;
             buildCandidateOutput(rows, selection, cuts, candidate);
             if (runEppi0 && !candidate.eppi0_passExclusivity && !cfg.saveFailedCandidates) {
+                ++stats.exclusivityFailures;
+                addCsvFailures(candidate.eppi0_failedCuts, stats);
                 return;
             }
             if (!found || rank < bestRank) {
@@ -389,7 +436,11 @@ bool processEvent(const EventRows& rows, const Cuts& cuts, CandidateOutput& out)
                 if (candidate->pid != role.pid || alreadySelected(candidate)) continue;
 
                 const auto context = selectedContext();
-                if (!cuts.evaluateParticle(*candidate, role, rows.recs, context).pass) continue;
+                const CutDecision decision = cuts.evaluateParticle(*candidate, role, rows.recs, context);
+                if (!decision.pass) {
+                    stats.addFailures(decision);
+                    continue;
+                }
 
                 chosen.push_back(candidate);
                 chooseParticle(i + 1);
@@ -402,7 +453,10 @@ bool processEvent(const EventRows& rows, const Cuts& cuts, CandidateOutput& out)
 
     visitRole(0);
 
-    if (!found) return false;
+    if (!found) {
+        ++stats.eventsWithoutSavedCandidate;
+        return false;
+    }
     out = best;
     return true;
 }
@@ -441,6 +495,7 @@ int main(int argc, char** argv) {
     out.registerBranches(outTree, supportsEppi0Logic(cfg));
 
     EventRows rows;
+    ProcessingStats stats;
     bool haveRows = false;
     long long nInputRows = 0;
     long long nEvents = 0;
@@ -450,7 +505,7 @@ int main(int argc, char** argv) {
         if (!haveRows || rows.recs.empty()) return;
         ++nEvents;
         CandidateOutput candidate;
-        if (processEvent(rows, cuts, candidate)) {
+        if (processEvent(rows, cuts, candidate, stats)) {
             out = candidate;
             outTree.Fill();
             ++nWritten;
@@ -485,7 +540,17 @@ int main(int argc, char** argv) {
               << "  Input rows       : " << nInputRows << "\n"
               << "  Events processed : " << nEvents << "\n"
               << "  Candidates saved : " << nWritten << "\n"
+              << "  Events rejected  : " << stats.eventsWithoutSavedCandidate << "\n"
+              << "  Composite rejects: " << stats.compositeFailures << "\n"
+              << "  Exclusivity rejects: " << stats.exclusivityFailures << "\n"
               << "  Output file      : " << cfg.outputFile << "\n";
+
+    if (!stats.cutFailures.empty()) {
+        std::cout << "  Cut rejection counts:\n";
+        for (const auto& [name, count] : stats.cutFailures) {
+            std::cout << "    " << name << ": " << count << "\n";
+        }
+    }
 
     return 0;
 }
