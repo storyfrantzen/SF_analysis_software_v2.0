@@ -213,7 +213,6 @@ PostCutConfig PostCutConfig::fromFile(const std::string& filename) {
     cfg.inputTree = j.value("inputTree", cfg.inputTree);
     cfg.outputTree = j.value("outputTree", cfg.outputTree);
     cfg.beamEnergy = j.value("beamEnergy", cfg.beamEnergy);
-    cfg.disElectronRole = j.value("disElectronRole", cfg.disElectronRole);
     cfg.torus = j.value("torus", cfg.torus);
     cfg.saveFailedCandidates = j.value("saveFailedCandidates", cfg.saveFailedCandidates);
     cfg.fiducialCuts = j.value("fiducialCuts", cfg.fiducialCuts);

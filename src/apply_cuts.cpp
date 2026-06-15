@@ -201,7 +201,7 @@ void fillSelectedParticleBranches(const Selection& selection,
 void fillDISBranches(const Selection& selection,
                      const PostCutConfig& cfg,
                      CandidateOutput& out) {
-    const RecBranches* electron = firstParticle(selection, cfg.disElectronRole);
+    const RecBranches* electron = firstParticle(selection, "electron");
     if (!electron || electron->pid != 11) return;
 
     const TLorentzVector beam(0, 0, cfg.beamEnergy, cfg.beamEnergy);

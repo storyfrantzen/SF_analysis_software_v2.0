@@ -3,7 +3,6 @@
     "inputTree": "Events",
     "outputTree": "Events",
     "beamEnergy": 10.6,
-    "disElectronRole": "electron",
     "torus": -1,
     "saveFailedCandidates": false,
 

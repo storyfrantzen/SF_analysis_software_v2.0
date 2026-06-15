@@ -65,7 +65,6 @@ struct PostCutConfig {
     std::string outputTree = "Events";
 
     double beamEnergy = 10.6;
-    std::string disElectronRole = "electron";
     int torus = -1;
     bool saveFailedCandidates = false;
 
