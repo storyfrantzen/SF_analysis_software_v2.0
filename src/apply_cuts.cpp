@@ -100,6 +100,9 @@ struct CandidateOutput {
         tree.Branch("selectedP", &selectedP);
         tree.Branch("selectedTheta", &selectedTheta);
         tree.Branch("selectedPhi", &selectedPhi);
+        tree.Branch("Q2", &Q2, "Q2/D");
+        tree.Branch("nu", &nu, "nu/D");
+        tree.Branch("xB", &xB, "xB/D");
     }
 
     void registerEppi0Branches(TTree& tree) {
@@ -115,9 +118,6 @@ struct CandidateOutput {
         tree.Branch("passSamplingFraction", &eppi0_passSamplingFraction, "passSamplingFraction/I");
         tree.Branch("passExclusivity", &eppi0_passExclusivity, "passExclusivity/I");
         tree.Branch("failedCuts", &eppi0_failedCuts);
-        tree.Branch("Q2", &Q2, "Q2/D");
-        tree.Branch("nu", &nu, "nu/D");
-        tree.Branch("xB", &xB, "xB/D");
         tree.Branch("y", &y, "y/D");
         tree.Branch("W", &W, "W/D");
         tree.Branch("t", &t, "t/D");
@@ -198,6 +198,23 @@ void fillSelectedParticleBranches(const Selection& selection,
     }
 }
 
+void fillDISBranches(const Selection& selection,
+                     const PostCutConfig& cfg,
+                     CandidateOutput& out) {
+    const RecBranches* electron = firstParticle(selection, cfg.disElectronRole);
+    if (!electron || electron->pid != 11) return;
+
+    const TLorentzVector beam(0, 0, cfg.beamEnergy, cfg.beamEnergy);
+    const TLorentzVector lvE = particleLV(*electron, M_ELECTRON);
+    const TLorentzVector q = beam - lvE;
+
+    out.Q2 = -q.M2();
+    out.nu = cfg.beamEnergy - lvE.E();
+    if (std::isfinite(out.nu) && out.nu != 0.0) {
+        out.xB = out.Q2 / (2.0 * kTargetMass * out.nu);
+    }
+}
+
 bool evaluateCompositeRank(const Selection& selection,
                            const PostCutConfig& cfg,
                            double& rank) {
@@ -260,6 +277,7 @@ void fillGenericCandidate(const EventRows& rows,
     out.charge = rows.event.charge;
     out.passTopology = 1;
     fillSelectedParticleBranches(selection, cfg, out);
+    fillDISBranches(selection, cfg, out);
 }
 
 void runEppi0Logic(const Selection& selection,
@@ -303,9 +321,6 @@ void runEppi0Logic(const Selection& selection,
     out.eppi0_passFiducial = 1;
     out.eppi0_passSamplingFraction = 1;
 
-    out.Q2 = -q.M2();
-    out.nu = cfg.beamEnergy - lvE.E();
-    out.xB = out.Q2 / (2.0 * kTargetMass * out.nu);
     out.y = out.nu / cfg.beamEnergy;
     out.W = std::sqrt(std::max(0.0, (target + q).M2()));
     out.t = -1.0 * (target - lvP).M2();
