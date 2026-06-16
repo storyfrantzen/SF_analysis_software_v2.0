@@ -313,7 +313,7 @@ Cuts::Cuts(PostCutConfig cfg) : cfg_(std::move(cfg)) {
 }
 
 void Cuts::enableFiducialTag(const std::string& tag) {
-    if (tag == "DCEdges_RGA") dcEdgesRGA_ = true;
+    if (tag == "DCEdges" || tag == "DCEdges_RGA") dcEdgesRGA_ = true;
     else if (tag == "FT_RGA") ftRGA_ = true;
     else if (tag == "ECAL_RGA") ecalRGA_ = true;
     else if (tag == "ECAL_RGAS19") {

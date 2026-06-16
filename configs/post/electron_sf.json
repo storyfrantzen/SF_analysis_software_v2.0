@@ -3,12 +3,12 @@
     "inputTree": "Events",
     "outputTree": "Events",
     "beamEnergy": 10.6,
-    "torus": -1,
+    "torus": 1,
     "saveFailedCandidates": false,
 
     "fiducialCuts": [
-        "DCEdges_RGA",
-        "ECAL_RGA"
+        "DCEdges",
+        "ECAL_RGK"
     ],
 
     "samplingFraction": {
