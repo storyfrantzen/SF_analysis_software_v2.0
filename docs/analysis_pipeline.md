@@ -111,6 +111,8 @@ python3 scripts/derive_sampling_fraction.py electron_sf_candidates.root \
 
 The processing config keeps events with at least one reconstructed electron and loose DIS cuts. The post-processing config currently targets RGK outbending data, selects one FD electron per event, applies common DC-edge and RGK ECAL fiducial cuts, writes explicit selected-electron branches such as `electronP`, `electronSector`, and `electronEPCAL`, and leaves the sampling-fraction cut disabled so the selected sample can be used to derive the cut parameters.
 
+`apply_cuts` prints progress every 1,000,000 input rows by default. Pass a third argument to change that interval, or `0` to disable progress messages.
+
 Sampling-fraction mu/sigma parameters can be derived with:
 
 ```bash

@@ -6,7 +6,7 @@ This project converts CLAS12 hipo files into ROOT TTrees for downstream analysis
 
 ```bash
 hipo2root <config.json> <hipo_directory> [max_files]
-apply_cuts <post_config.json> <input.root>
+apply_cuts <post_config.json> <input.root> [progress_rows]
 ```
 
 Processing configs live in `configs/processing/`, so a typical local run looks like:

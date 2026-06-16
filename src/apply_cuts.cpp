@@ -1,6 +1,8 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <functional>
+#include <iomanip>
 #include <map>
 #include <iostream>
 #include <limits>
@@ -19,6 +21,7 @@
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
+using Clock = std::chrono::steady_clock;
 
 using Selection = std::map<std::string, std::vector<const RecBranches*>>;
 
@@ -54,6 +57,51 @@ void addCsvFailures(const std::string& failedCuts, ProcessingStats& stats) {
     while (std::getline(stream, name, ',')) {
         if (!name.empty()) ++stats.cutFailures[name];
     }
+}
+
+double fraction(long long numerator, long long denominator) {
+    if (denominator <= 0) return 0.0;
+    return static_cast<double>(numerator) / static_cast<double>(denominator);
+}
+
+void printChannelSummary(const PostCutConfig& cfg) {
+    std::cout << "[INFO] Channel     : " << cfg.channel.name << "\n"
+              << "[INFO] Roles       :";
+    for (const auto& role : cfg.channel.particles) {
+        std::cout << " " << role.role << "(pid=" << role.pid
+                  << ", count=" << role.count;
+        if (!role.detectors.empty()) {
+            std::cout << ", det=";
+            for (size_t i = 0; i < role.detectors.size(); ++i) {
+                if (i > 0) std::cout << "/";
+                std::cout << role.detectors[i];
+            }
+        }
+        std::cout << ")";
+    }
+    std::cout << "\n";
+}
+
+void printProgress(Long64_t currentRow,
+                   Long64_t totalRows,
+                   long long nEvents,
+                   long long nWritten,
+                   const ProcessingStats& stats,
+                   const Clock::time_point& startTime) {
+    const auto now = Clock::now();
+    const double elapsed = std::chrono::duration<double>(now - startTime).count();
+    const double rowRate = elapsed > 0.0 ? static_cast<double>(currentRow) / elapsed : 0.0;
+    const double pct = 100.0 * fraction(currentRow, totalRows);
+    const long long rejected = stats.eventsWithoutSavedCandidate;
+
+    std::cout << std::fixed << std::setprecision(1)
+              << "[PROGRESS] rows " << currentRow << "/" << totalRows
+              << " (" << pct << "%)"
+              << "  events " << nEvents
+              << "  saved " << nWritten
+              << "  rejected " << rejected
+              << "  rate " << rowRate << " rows/s"
+              << "  elapsed " << elapsed << " s\n";
 }
 
 struct CandidateOutput {
@@ -500,8 +548,14 @@ bool processEvent(const EventRows& rows,
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::cerr << "Usage: apply_cuts <post_config.json> <input.root>\n";
+        std::cerr << "Usage: apply_cuts <post_config.json> <input.root> [progress_rows]\n";
         return 1;
+    }
+
+    long long progressEvery = 1000000;
+    if (argc >= 4) {
+        progressEvery = std::stoll(argv[3]);
+        if (progressEvery < 0) progressEvery = 0;
     }
 
     const PostCutConfig cfg = PostCutConfig::fromFile(argv[1]);
@@ -518,6 +572,20 @@ int main(int argc, char** argv) {
         std::cerr << "[ERROR] Could not find input tree: " << cfg.inputTree << "\n";
         return 1;
     }
+    const Long64_t nEntries = inTree->GetEntries();
+
+    std::cout << "[INFO] Config file : " << argv[1] << "\n"
+              << "[INFO] Input file  : " << argv[2] << "\n"
+              << "[INFO] Input tree  : " << cfg.inputTree << "\n"
+              << "[INFO] Input rows  : " << nEntries << "\n"
+              << "[INFO] Output file : " << cfg.outputFile << "\n"
+              << "[INFO] Output tree : " << cfg.outputTree << "\n"
+              << "[INFO] Beam energy : " << cfg.beamEnergy << " GeV\n"
+              << "[INFO] Torus       : " << cfg.torus << "\n"
+              << "[INFO] Progress    : "
+              << (progressEvery > 0 ? std::to_string(progressEvery) + " rows" : "disabled")
+              << "\n";
+    printChannelSummary(cfg);
 
     EventBranches* event = nullptr;
     RecBranches* rec = nullptr;
@@ -535,6 +603,8 @@ int main(int argc, char** argv) {
     long long nInputRows = 0;
     long long nEvents = 0;
     long long nWritten = 0;
+    long long lastProgressRow = 0;
+    const Clock::time_point startTime = Clock::now();
 
     const auto flushEvent = [&]() {
         if (!haveRows || rows.recs.empty()) return;
@@ -547,10 +617,14 @@ int main(int argc, char** argv) {
         }
     };
 
-    const Long64_t nEntries = inTree->GetEntries();
     for (Long64_t i = 0; i < nEntries; ++i) {
         inTree->GetEntry(i);
         ++nInputRows;
+        if (progressEvery > 0 && nInputRows - lastProgressRow >= progressEvery) {
+            printProgress(nInputRows, nEntries, nEvents, nWritten, stats, startTime);
+            lastProgressRow = nInputRows;
+        }
+
         if (!event || !rec || rec->pid == -999) continue;
 
         const bool newEvent = haveRows &&
@@ -567,17 +641,27 @@ int main(int argc, char** argv) {
     }
 
     flushEvent();
+    if (progressEvery > 0 && nInputRows != lastProgressRow) {
+        printProgress(nInputRows, nEntries, nEvents, nWritten, stats, startTime);
+    }
 
     output.Write();
     output.Close();
+
+    const double elapsed = std::chrono::duration<double>(Clock::now() - startTime).count();
+    const double savedFraction = 100.0 * fraction(nWritten, nEvents);
 
     std::cout << "[DONE]\n"
               << "  Input rows       : " << nInputRows << "\n"
               << "  Events processed : " << nEvents << "\n"
               << "  Candidates saved : " << nWritten << "\n"
+              << "  Selection yield  : " << std::fixed << std::setprecision(2)
+              << savedFraction << "%\n"
               << "  Events rejected  : " << stats.eventsWithoutSavedCandidate << "\n"
               << "  Composite rejects: " << stats.compositeFailures << "\n"
               << "  Exclusivity rejects: " << stats.exclusivityFailures << "\n"
+              << "  Elapsed time     : " << std::fixed << std::setprecision(1)
+              << elapsed << " s\n"
               << "  Output file      : " << cfg.outputFile << "\n";
 
     if (!stats.cutFailures.empty()) {
