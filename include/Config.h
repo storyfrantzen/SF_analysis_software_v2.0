@@ -37,6 +37,9 @@ struct Config {
 
     // ── MC ────────────────────────────────────
     bool fillMC = false;
+    bool matchMC = false;
+    bool saveUnmatchedMC = true;
+    double matchMaxAngleDeg = 3.0;
 
     // ── Kinematic corrections ─────────────────
     nlohmann::json kinematicCorrections;
@@ -65,6 +68,9 @@ struct Config {
         y_max      = j.value("y_max",      y_max);
 
         fillMC = j.value("fillMC", fillMC);
+        matchMC = j.value("matchMC", matchMC);
+        saveUnmatchedMC = j.value("saveUnmatchedMC", saveUnmatchedMC);
+        matchMaxAngleDeg = j.value("matchMaxAngleDeg", matchMaxAngleDeg);
 
         inclusive = j.value("inclusive", inclusive);
 

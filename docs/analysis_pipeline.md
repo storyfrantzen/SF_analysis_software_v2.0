@@ -17,6 +17,7 @@ The converter should make a reusable analysis ntuple. Physics selections that ar
    - loose DIS skims such as broad `Q2`, `W`, and `y` ranges
    - optional precomputed helper variables or cut flags, as long as the raw ingredients are still saved
    - configured proton kinematic corrections, with raw values and correction deltas saved alongside corrected branches
+   - optional REC/GEN matching for calibration and acceptance studies
 
 2. ROOT post-processing
 
@@ -102,6 +103,21 @@ python3 scripts/derive_sampling_fraction.py rec.root \
 ```
 
 Use `--gemc` when one sector-independent MC fit should be copied to all six sectors. The output JSON contains `sector_1` through `sector_6`, each with `mu_coeffs` and `sigma_coeffs`, matching the format read by the post-processing `samplingFraction` cut.
+
+## REC/GEN Matching
+
+`hipo2root` can emit matched REC/GEN rows by setting:
+
+```json
+{
+  "fillMC": true,
+  "matchMC": true,
+  "saveUnmatchedMC": true,
+  "matchMaxAngleDeg": 3.0
+}
+```
+
+With matching enabled, each reconstructed particle row is paired with the closest unused generator particle of the same PID within `matchMaxAngleDeg`. Matched rows carry both `rec` and `gen` branches, with `rec.matchedGenIdx` and `rec.matchAngleDeg` recording the match. Reconstructed rows without a match have `matchedGenIdx == -999` and a reset `gen` branch. If `saveUnmatchedMC` is true, unmatched generator particles are also written as GEN-only rows with a reset `rec` branch. This layout supports both calibration scripts, which select matched rows, and acceptance studies, which can count unmatched generator rows.
 
 Channel-specific derived quantities should be isolated behind small channel logic functions. The eppi0 derived variables and loose exclusivity checks now live behind the eppi0 logic path, which is enabled when the configured roles include `electron`, `proton`, and two `gamma` particles. Future channels should follow that pattern: keep role selection and primitive cuts generic, then add a narrow function for channel-specific kinematics and output branches.
 

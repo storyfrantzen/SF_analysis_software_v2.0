@@ -42,6 +42,8 @@ void RecBranches::reset() {
     runNum = -999;
     eventNum = -999;
     particleIdx = -999;
+    matchedGenIdx = -999;
+    matchAngleDeg = NAN;
 
     pid = -999;
     charge = -999;
@@ -182,6 +184,11 @@ void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx,
     pz    = p * std::cos(theta);
 }
 #endif
+
+void RecBranches::setMatch(int genIdx, double angleDeg) {
+    matchedGenIdx = genIdx;
+    matchAngleDeg = angleDeg;
+}
 
 // ─── GenBranches ─────────────────────────────────────────────────────────────────
 

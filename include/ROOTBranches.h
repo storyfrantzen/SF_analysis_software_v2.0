@@ -48,6 +48,8 @@ struct RecBranches : public TObject {
     int    runNum      = -999;
     int    eventNum    = -999;
     int    particleIdx = -999;  // position in clas12reader particle list
+    int    matchedGenIdx = -999;
+    double matchAngleDeg = NAN;
 
     // ── Particle bank ─────────────────────────────────────
     int    pid    = -999;
@@ -102,6 +104,7 @@ struct RecBranches : public TObject {
     double phi_cvt    = NAN;
 
     void reset();
+    void setMatch(int genIdx, double angleDeg);
 
     #ifndef __CLING__
     void fill(clas12::region_particle* rec, int runNum, int eventNum, int idx);
@@ -109,7 +112,7 @@ struct RecBranches : public TObject {
               double pCorr, double thetaCorr, double phiCorr);
     #endif
 
-    ClassDef(RecBranches, 3);
+    ClassDef(RecBranches, 4);
 };
 
 // ─── GenBranches ─────────────────────────────────────────────────────────────────

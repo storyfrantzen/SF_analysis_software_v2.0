@@ -7,6 +7,7 @@
 
 #include "TFile.h"
 #include "TTree.h"
+#include "TVector3.h"
 
 #include "clas12reader.h"
 
@@ -17,6 +18,11 @@
 
 using namespace clas12;
 namespace fs = std::filesystem;
+
+struct MatchResult {
+    int genIdx = -1;
+    double angleDeg = NAN;
+};
 
 // ─── Final state filter ───────────────────────────────────────────────────────
 
@@ -58,6 +64,56 @@ bool passesDISSkim(const Config& cfg, clas12::clas12reader& c12) {
     const Kinematics::DIS dis = Kinematics::dis(lvE, cfg.beamEnergy);
 
     return (dis.Q2 >= cfg.Q2_min && dis.W >= cfg.W_min && dis.y <= cfg.y_max);
+}
+
+// ─── MC matching ─────────────────────────────────────────────────────────────
+
+MatchResult findBestGenMatch(clas12::region_particle* rec,
+                             clas12::mcparticle* mc,
+                             const std::vector<bool>& usedGen,
+                             double maxAngleDeg) {
+    MatchResult best;
+    double bestAngle = maxAngleDeg;
+    const TVector3 recVec(rec->par()->getPx(), rec->par()->getPy(), rec->par()->getPz());
+    if (recVec.Mag2() <= 0.0) return best;
+
+    for (int i = 0; i < mc->getRows(); ++i) {
+        if (usedGen[i]) continue;
+        if (mc->getPid(i) != rec->getPid()) continue;
+
+        const TVector3 genVec(mc->getPx(i), mc->getPy(i), mc->getPz(i));
+        if (genVec.Mag2() <= 0.0) continue;
+
+        const double angleDeg = recVec.Angle(genVec) * 180.0 / 3.14159265358979323846;
+        if (!std::isfinite(angleDeg)) continue;
+        if (angleDeg <= bestAngle) {
+            best.genIdx = i;
+            best.angleDeg = angleDeg;
+            bestAngle = angleDeg;
+        }
+    }
+
+    return best;
+}
+
+void fillRecBranch(RecBranches& recBranches,
+                   clas12::region_particle* particle,
+                   int runNum,
+                   int eventNum,
+                   int particleIdx,
+                   const ProtonEnergyLossCorrections& corrections) {
+    if (particle->getPid() == 2212 && corrections.enabled()) {
+        const int det = getDetector(particle->par()->getStatus());
+        const double p = particle->getP();
+        const double theta = particle->getTheta();
+        const double phi = particle->getPhi();
+        const CorrectedKinematics corrected = corrections.correct(p, theta, phi, det);
+        recBranches.fill(particle, runNum, eventNum, particleIdx,
+                         corrected.p, corrected.theta, corrected.phi);
+        return;
+    }
+
+    recBranches.fill(particle, runNum, eventNum, particleIdx);
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -102,6 +158,7 @@ int main(int argc, char** argv) {
               << "[INFO] Tree name   : " << cfg.treeName   << "\n"
               << "[INFO] Beam energy : " << cfg.beamEnergy << " GeV\n"
               << "[INFO] Fill MC     : " << (cfg.fillMC ? "yes" : "no") << "\n"
+              << "[INFO] Match MC    : " << (cfg.matchMC ? "yes" : "no") << "\n"
               << "[INFO] Corrections : "
               << (corrections.enabled() ? "enabled" : "disabled") << "\n";
 
@@ -137,6 +194,7 @@ int main(int argc, char** argv) {
 
     // ── Event loop ────────────────────────────────────────────────────────────
     long long nTotal = 0, nFSFail = 0, nSkimFail = 0, nWritten = 0;
+    long long nMatched = 0, nUnmatchedRec = 0, nUnmatchedGen = 0;
 
     for (const auto& hipoPath : hipoFiles) {
         std::cout << "[INFO] Processing: " << hipoPath << "\n";
@@ -154,26 +212,37 @@ int main(int argc, char** argv) {
             int en = evBranches.eventNum;
 
             const auto& particles = c12.getDetParticles();
+            auto* mc = cfg.fillMC ? c12.mcparts() : nullptr;
+            std::vector<bool> usedGen(mc ? mc->getRows() : 0, false);
+
             for (int i = 0; i < static_cast<int>(particles.size()); ++i) {
                 auto* particle = particles[i];
-                if (particle->getPid() == 2212 && corrections.enabled()) {
-                    const int det = getDetector(particle->par()->getStatus());
-                    const double p = particle->getP();
-                    const double theta = particle->getTheta();
-                    const double phi = particle->getPhi();
-                    const CorrectedKinematics corrected = corrections.correct(p, theta, phi, det);
-                    recBranches.fill(particle, rn, en, i, corrected.p, corrected.theta, corrected.phi);
-                } else {
-                    recBranches.fill(particle, rn, en, i);
+
+                fillRecBranch(recBranches, particle, rn, en, i, corrections);
+                if (cfg.fillMC) genBranches.reset();
+
+                if (cfg.fillMC && cfg.matchMC && mc) {
+                    const MatchResult match = findBestGenMatch(particle, mc, usedGen, cfg.matchMaxAngleDeg);
+                    if (match.genIdx >= 0) {
+                        usedGen[match.genIdx] = true;
+                        recBranches.setMatch(match.genIdx, match.angleDeg);
+                        genBranches.fill(mc, rn, en, match.genIdx);
+                        ++nMatched;
+                    } else {
+                        ++nUnmatchedRec;
+                    }
                 }
+
                 tree->Fill();
             }
 
-            if (cfg.fillMC) {
-                auto* mc = c12.mcparts();
+            if (cfg.fillMC && mc && (!cfg.matchMC || cfg.saveUnmatchedMC)) {
                 for (int i = 0; i < mc->getRows(); ++i) {
+                    if (cfg.matchMC && usedGen[i]) continue;
+                    recBranches.reset();
                     genBranches.fill(mc, rn, en, i);
                     tree->Fill();
+                    ++nUnmatchedGen;
                 }
             }
 
@@ -187,6 +256,11 @@ int main(int argc, char** argv) {
               << "  Failed final state: " << nFSFail   << "\n"
               << "  Failed skim       : " << nSkimFail << "\n"
               << "  Written           : " << nWritten  << "\n";
+    if (cfg.fillMC && cfg.matchMC) {
+        std::cout << "  Matched REC rows  : " << nMatched << "\n"
+                  << "  Unmatched REC rows: " << nUnmatchedRec << "\n"
+                  << "  Unmatched GEN rows: " << nUnmatchedGen << "\n";
+    }
 
     outFile->Write();
     outFile->Close();

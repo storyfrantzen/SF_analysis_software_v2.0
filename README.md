@@ -15,6 +15,12 @@ Example configs live in `configs/examples/`, so a typical local run looks like:
 ./build/hipo2root configs/examples/test_config.json /path/to/hipo/files
 ```
 
+For matched REC/GEN rows used by calibration and acceptance studies:
+
+```bash
+./build/hipo2root configs/examples/matched_config.json /path/to/hipo/files
+```
+
 The converter currently supports:
 
 - final-state filtering
