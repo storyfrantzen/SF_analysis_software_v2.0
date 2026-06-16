@@ -17,6 +17,10 @@ def load_dataframe(input_file: str | Path, tree: str):
     return ROOT.RDataFrame(tree, str(input_file))
 
 
+def has_column(df, column: str) -> bool:
+    return column in {str(name) for name in df.GetColumnNames()}
+
+
 def arrays_from_dataframe(df, columns: list[str], max_rows: int | None = None) -> dict[str, np.ndarray]:
     if max_rows is not None:
         df = df.Range(max_rows)
@@ -41,8 +45,18 @@ def define_common_proton_residuals(df):
 
 
 def define_common_electron_sf(df):
+    if has_column(df, "electronP"):
+        return (
+            df.Define("sf_p", "electronP")
+            .Define("sf_sector", "electronSector")
+            .Define("sampling_fraction", "(electronEPCAL + electronEECIN + electronEECOUT) / electronP")
+            .Filter("electronP > 0 && sampling_fraction > 0 && electronSector >= 1 && electronSector <= 6")
+        )
+
     return (
         df.Filter("rec.pid == 11")
+        .Define("sf_p", "rec.p")
+        .Define("sf_sector", "rec.sector")
         .Define("sampling_fraction", "(rec.E_PCAL + rec.E_ECIN + rec.E_ECOUT) / rec.p")
         .Filter("rec.p > 0 && sampling_fraction > 0 && rec.sector >= 1 && rec.sector <= 6")
     )

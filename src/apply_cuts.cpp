@@ -60,7 +60,6 @@ struct CandidateOutput {
     int runNum = -999;
     int eventNum = -999;
     int helicity = -999;
-    RecBranches rec;
     int passTopology = 0;
     std::vector<std::string> selectedRoles;
     std::vector<int> selectedIdx;
@@ -71,6 +70,16 @@ struct CandidateOutput {
     std::vector<double> selectedPhi;
 
     double charge = NAN;
+
+    int electronIdx = -999;
+    int electronDet = -999;
+    int electronSector = -999;
+    double electronP = NAN;
+    double electronTheta = NAN;
+    double electronPhi = NAN;
+    double electronEPCAL = NAN;
+    double electronEECIN = NAN;
+    double electronEECOUT = NAN;
 
     int eppi0_eIdx = -999;
     int eppi0_pIdx = -999;
@@ -114,7 +123,6 @@ struct CandidateOutput {
         tree.Branch("runNum", &runNum, "runNum/I");
         tree.Branch("eventNum", &eventNum, "eventNum/I");
         tree.Branch("helicity", &helicity, "helicity/I");
-        tree.Branch("rec", &rec);
         tree.Branch("charge", &charge, "charge/D");
         tree.Branch("passTopology", &passTopology, "passTopology/I");
         tree.Branch("selectedRoles", &selectedRoles);
@@ -124,6 +132,15 @@ struct CandidateOutput {
         tree.Branch("selectedP", &selectedP);
         tree.Branch("selectedTheta", &selectedTheta);
         tree.Branch("selectedPhi", &selectedPhi);
+        tree.Branch("electronIdx", &electronIdx, "electronIdx/I");
+        tree.Branch("electronDet", &electronDet, "electronDet/I");
+        tree.Branch("electronSector", &electronSector, "electronSector/I");
+        tree.Branch("electronP", &electronP, "electronP/D");
+        tree.Branch("electronTheta", &electronTheta, "electronTheta/D");
+        tree.Branch("electronPhi", &electronPhi, "electronPhi/D");
+        tree.Branch("electronEPCAL", &electronEPCAL, "electronEPCAL/D");
+        tree.Branch("electronEECIN", &electronEECIN, "electronEECIN/D");
+        tree.Branch("electronEECOUT", &electronEECOUT, "electronEECOUT/D");
         tree.Branch("Q2", &Q2, "Q2/D");
         tree.Branch("nu", &nu, "nu/D");
         tree.Branch("xB", &xB, "xB/D");
@@ -195,19 +212,18 @@ void fillSelectedParticleBranches(const Selection& selection,
     }
 }
 
-void fillPrimaryRecBranch(const Selection& selection,
-                          const PostCutConfig& cfg,
+void fillElectronBranches(const Selection& selection,
                           CandidateOutput& out) {
     if (const RecBranches* electron = firstParticle(selection, "electron")) {
-        out.rec = *electron;
-        return;
-    }
-
-    for (const auto& roleSpec : cfg.channel.particles) {
-        if (const RecBranches* particle = firstParticle(selection, roleSpec.role)) {
-            out.rec = *particle;
-            return;
-        }
+        out.electronIdx = electron->particleIdx;
+        out.electronDet = electron->det;
+        out.electronSector = electron->sector;
+        out.electronP = electron->p;
+        out.electronTheta = electron->theta;
+        out.electronPhi = electron->phi;
+        out.electronEPCAL = electron->E_PCAL;
+        out.electronEECIN = electron->E_ECIN;
+        out.electronEECOUT = electron->E_ECOUT;
     }
 }
 
@@ -292,7 +308,7 @@ void fillGenericCandidate(const EventRows& rows,
     out.charge = rows.event.charge;
     out.passTopology = 1;
     fillSelectedParticleBranches(selection, cfg, out);
-    fillPrimaryRecBranch(selection, cfg, out);
+    fillElectronBranches(selection, out);
     fillDISBranches(selection, cfg, out);
 }
 

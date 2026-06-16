@@ -23,15 +23,15 @@ def electron_arrays(input_file: Path,
                     tree: str,
                     max_rows: int | None) -> dict[str, np.ndarray]:
     df = define_common_electron_sf(load_dataframe(input_file, tree))
-    return arrays_from_dataframe(df, ["rec.p", "rec.sector", "sampling_fraction"], max_rows=max_rows)
+    return arrays_from_dataframe(df, ["sf_p", "sf_sector", "sampling_fraction"], max_rows=max_rows)
 
 
 def derive_sf_coefficients(arrays: dict[str, np.ndarray],
                            cfg: SamplingFractionConfig,
                            sector_independent: bool) -> dict[str, dict[str, list[float]]]:
-    p = arrays["rec.p"]
+    p = arrays["sf_p"]
     sf = arrays["sampling_fraction"]
-    sector = arrays["rec.sector"].astype(int)
+    sector = arrays["sf_sector"].astype(int)
     p_edges = fixed_edges(cfg.momentum_bins, cfg.momentum_range)
     centers = 0.5 * (p_edges[:-1] + p_edges[1:])
 
@@ -65,9 +65,9 @@ def maybe_plot(arrays: dict[str, np.ndarray],
     import matplotlib.pyplot as plt
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    p = arrays["rec.p"]
+    p = arrays["sf_p"]
     sf = arrays["sampling_fraction"]
-    sector = arrays["rec.sector"].astype(int)
+    sector = arrays["sf_sector"].astype(int)
     x = np.linspace(cfg.momentum_range[0], cfg.momentum_range[1], 300)
 
     fig, axes = plt.subplots(2, 3, figsize=(16, 9), sharex=True, sharey=True)
