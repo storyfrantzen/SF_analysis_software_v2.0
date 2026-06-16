@@ -36,6 +36,7 @@ See `docs/analysis_pipeline.md` for the recommended modular layout.
 
 - `src/` - converter source files
 - `include/` - project headers and ROOT dictionary LinkDef
+- `scripts/` - calibration and analysis helper scripts
 - `vendor/` - vendored header-only dependencies
 - `configs/examples/` - runnable example configuration files
 - `docs/` - design notes and setup references

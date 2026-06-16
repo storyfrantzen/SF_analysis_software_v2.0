@@ -1,0 +1,223 @@
+from __future__ import annotations
+
+import argparse
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+
+from .fit_utils import (
+    adaptive_edges,
+    binned_profile,
+    fit_linear_form,
+    fixed_edges,
+    json_ready,
+    weighted_polyfit_ascending,
+)
+from .root_arrays import arrays_from_dataframe, define_common_proton_residuals, load_dataframe
+
+
+@dataclass(frozen=True)
+class DetectorFitConfig:
+    label: str
+    detector: int
+    theta_range: tuple[float, float]
+    momentum_range: tuple[float, float]
+    theta_bins: int
+    momentum_bins: int
+    residual_forms: dict[str, str]
+    theta_poly_orders: dict[str, int]
+    residual_ranges: dict[str, tuple[float, float]]
+
+
+DEFAULT_CONFIGS = {
+    "FD": DetectorFitConfig(
+        label="FD",
+        detector=1,
+        theta_range=(15.0, 40.0),
+        momentum_range=(0.55, 5.0),
+        theta_bins=24,
+        momentum_bins=28,
+        residual_forms={
+            "delta_p": "[0] + [1]/p + [2]/(p^2)",
+            "delta_theta": "[0] + [1]/p",
+            "delta_phi": "[0] + [1]/p + [2]/(p^2)",
+        },
+        theta_poly_orders={"delta_p": 1, "delta_theta": 3, "delta_phi": 4},
+        residual_ranges={
+            "delta_p": (-0.06, 0.06),
+            "delta_theta": (-1.0, 1.0),
+            "delta_phi": (-1.0, 1.0),
+        },
+    ),
+    "CD": DetectorFitConfig(
+        label="CD",
+        detector=2,
+        theta_range=(40.0, 58.0),
+        momentum_range=(0.3, 2.4),
+        theta_bins=10,
+        momentum_bins=22,
+        residual_forms={
+            "delta_p": "[0] + [1]*p + [2]*p^2",
+            "delta_theta": "[0] + [1]/p",
+            "delta_phi": "[0] + [1]/p + [2]/(p^2)",
+        },
+        theta_poly_orders={"delta_p": 2, "delta_theta": 2, "delta_phi": 2},
+        residual_ranges={
+            "delta_p": (-0.2, 0.2),
+            "delta_theta": (-0.2, 0.2),
+            "delta_phi": (-0.2, 0.2),
+        },
+    ),
+}
+
+
+RESIDUAL_COLUMNS = {
+    "delta_p": "delta_p_fit",
+    "delta_theta": "delta_theta_fit",
+    "delta_phi": "delta_phi_fit",
+}
+
+
+def filtered_arrays(input_file: Path,
+                    tree: str,
+                    cfg: DetectorFitConfig,
+                    max_rows: int | None) -> dict[str, np.ndarray]:
+    df = define_common_proton_residuals(load_dataframe(input_file, tree))
+    df = df.Filter(f"rec.det == {cfg.detector}")
+    df = df.Filter(f"theta_deg >= {cfg.theta_range[0]} && theta_deg <= {cfg.theta_range[1]}")
+    df = df.Filter(f"rec.p >= {cfg.momentum_range[0]} && rec.p <= {cfg.momentum_range[1]}")
+    for name, (lo, hi) in cfg.residual_ranges.items():
+        col = RESIDUAL_COLUMNS[name]
+        df = df.Filter(f"{col} >= {lo} && {col} <= {hi}")
+
+    return arrays_from_dataframe(
+        df,
+        ["rec.p", "theta_deg", "delta_p_fit", "delta_theta_fit", "delta_phi_fit"],
+        max_rows=max_rows,
+    )
+
+
+def fit_detector(arrays: dict[str, np.ndarray],
+                 cfg: DetectorFitConfig,
+                 adaptive_theta: bool,
+                 min_entries: int) -> dict[str, dict[str, object]]:
+    p = arrays["rec.p"]
+    theta = arrays["theta_deg"]
+    theta_edges = (
+        adaptive_edges(theta, cfg.theta_bins, cfg.theta_range)
+        if adaptive_theta
+        else fixed_edges(cfg.theta_bins, cfg.theta_range)
+    )
+    p_edges = fixed_edges(cfg.momentum_bins, cfg.momentum_range)
+
+    output: dict[str, dict[str, object]] = {}
+    for residual_name, residual_column in RESIDUAL_COLUMNS.items():
+        form = cfg.residual_forms[residual_name]
+        n_params = form.count("[")
+        param_values = [[] for _ in range(n_params)]
+        param_errors = [[] for _ in range(n_params)]
+        theta_centers = []
+
+        residual = arrays[residual_column]
+        for theta_lo, theta_hi in zip(theta_edges[:-1], theta_edges[1:]):
+            theta_mask = (theta >= theta_lo) & (theta < theta_hi)
+            profile = binned_profile(p[theta_mask], residual[theta_mask], p_edges, min_entries)
+            beta, beta_err = fit_linear_form(profile.centers, profile.means, form, profile.errors)
+            if not np.all(np.isfinite(beta)):
+                continue
+
+            theta_centers.append(0.5 * (theta_lo + theta_hi))
+            for i, value in enumerate(beta):
+                param_values[i].append(value)
+                param_errors[i].append(beta_err[i] if i < len(beta_err) else np.nan)
+
+        theta_array = np.asarray(theta_centers, dtype=float)
+        coeffs = {}
+        order = cfg.theta_poly_orders[residual_name]
+        for i, values in enumerate(param_values):
+            y = np.asarray(values, dtype=float)
+            yerr = np.asarray(param_errors[i], dtype=float)
+            coeffs[str(i)] = json_ready(weighted_polyfit_ascending(theta_array, y, order, yerr))
+
+        key = f"p_{residual_name}_{cfg.label}"
+        output[key] = {"form": form, "coeffs": coeffs}
+
+    return output
+
+
+def maybe_plot(arrays: dict[str, np.ndarray],
+               cfg: DetectorFitConfig,
+               output_dir: Path) -> None:
+    import matplotlib.pyplot as plt
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    p = arrays["rec.p"]
+    theta = arrays["theta_deg"]
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
+    for ax, (name, col) in zip(axes, RESIDUAL_COLUMNS.items()):
+        hist = ax.hist2d(p, arrays[col], bins=80, cmap="magma", cmin=1)
+        fig.colorbar(hist[3], ax=ax)
+        ax.set_xlabel("p_rec [GeV]")
+        ax.set_ylabel(name)
+        ax.set_title(f"{cfg.label} {name}")
+    fig.tight_layout()
+    fig.savefig(output_dir / f"{cfg.label}_proton_residuals_vs_p.png", dpi=180)
+    plt.close(fig)
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
+    for ax, (name, col) in zip(axes, RESIDUAL_COLUMNS.items()):
+        hist = ax.hist2d(theta, arrays[col], bins=80, cmap="viridis", cmin=1)
+        fig.colorbar(hist[3], ax=ax)
+        ax.set_xlabel("theta_rec [deg]")
+        ax.set_ylabel(name)
+        ax.set_title(f"{cfg.label} {name}")
+    fig.tight_layout()
+    fig.savefig(output_dir / f"{cfg.label}_proton_residuals_vs_theta.png", dpi=180)
+    plt.close(fig)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Derive proton energy-loss correction coefficients from matched REC/GEMC ROOT rows."
+    )
+    parser.add_argument("input_file", type=Path)
+    parser.add_argument("--tree", default="Events")
+    parser.add_argument("--detector", choices=["FD", "CD", "both"], default="both")
+    parser.add_argument("--output", type=Path, default=Path("protonEnergyLoss_params.json"))
+    parser.add_argument("--plot-dir", type=Path)
+    parser.add_argument("--max-rows", type=int)
+    parser.add_argument("--fixed-theta-bins", action="store_true")
+    parser.add_argument("--min-bin-entries", type=int, default=20)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    detectors = ["FD", "CD"] if args.detector == "both" else [args.detector]
+
+    combined: dict[str, dict[str, object]] = {}
+    for label in detectors:
+        cfg = DEFAULT_CONFIGS[label]
+        arrays = filtered_arrays(args.input_file, args.tree, cfg, args.max_rows)
+        combined.update(
+            fit_detector(
+                arrays,
+                cfg,
+                adaptive_theta=not args.fixed_theta_bins,
+                min_entries=args.min_bin_entries,
+            )
+        )
+        if args.plot_dir:
+            maybe_plot(arrays, cfg, args.plot_dir)
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("w") as f:
+        json.dump(combined, f, indent=2)
+        f.write("\n")
+    print(f"Wrote proton energy-loss corrections to {args.output}")
+
+
+if __name__ == "__main__":
+    main()

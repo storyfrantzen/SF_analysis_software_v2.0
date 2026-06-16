@@ -80,6 +80,29 @@ The `apply_cuts` workflow reads `channel.particles` in order and recursively bui
 
 When corrections are enabled, proton `p`, `px`, `py`, `pz`, `theta`, and `phi` are the corrected values used by downstream kinematics. The original measured values remain available as `p_raw`, `theta_raw`, and `phi_raw`, and the applied corrections are saved as `delta_p`, `delta_theta`, and `delta_phi`. Non-proton particles carry raw values equal to the nominal values and zero deltas.
 
+Correction parameters can be derived from matched REC/GEMC ROOT rows with:
+
+```bash
+python3 scripts/derive_proton_energy_loss.py matched.root \
+  --detector both \
+  --output config/protonEnergyLoss_params.json \
+  --plot-dir calibration_plots/proton_eloss
+```
+
+The script fits residual profiles in theta and momentum bins, then writes the JSON format consumed by `hipo2root`.
+
+## Sampling-Fraction Parameters
+
+Sampling-fraction mu/sigma parameters can be derived with:
+
+```bash
+python3 scripts/derive_sampling_fraction.py rec.root \
+  --output config/SF_sigma_cut_params_REC.json \
+  --plot-dir calibration_plots/sampling_fraction
+```
+
+Use `--gemc` when one sector-independent MC fit should be copied to all six sectors. The output JSON contains `sector_1` through `sector_6`, each with `mu_coeffs` and `sigma_coeffs`, matching the format read by the post-processing `samplingFraction` cut.
+
 Channel-specific derived quantities should be isolated behind small channel logic functions. The eppi0 derived variables and loose exclusivity checks now live behind the eppi0 logic path, which is enabled when the configured roles include `electron`, `proton`, and two `gamma` particles. Future channels should follow that pattern: keep role selection and primitive cuts generic, then add a narrow function for channel-specific kinematics and output branches.
 
 Shared derived-kinematics formulas live in `Kinematics`. Use that module for four-vector construction, DIS variables, missing systems, angle/delta-phi helpers, and Trento phi instead of redefining those formulas inside executables or channel logic.
