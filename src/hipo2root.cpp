@@ -11,20 +11,12 @@
 #include "clas12reader.h"
 
 #include "Config.h"
-#include "KinematicCorrections.h"
+#include "ProtonEnergyLossCorrections.h"
 #include "Kinematics.h"
 #include "ROOTBranches.h"
 
 using namespace clas12;
 namespace fs = std::filesystem;
-
-constexpr double kPi = 3.14159265358979323846;
-
-double normalizePhi(double phi) {
-    while (phi > kPi) phi -= 2.0 * kPi;
-    while (phi < -kPi) phi += 2.0 * kPi;
-    return phi;
-}
 
 // ─── Final state filter ───────────────────────────────────────────────────────
 
@@ -84,7 +76,7 @@ int main(int argc, char** argv) {
     }
 
     Config cfg(argv[1]);
-    const KinematicCorrections corrections(cfg.kinematicCorrections);
+    const ProtonEnergyLossCorrections corrections(cfg.kinematicCorrections);
     const std::string hipoDir = argv[2];
 
     // ── Collect .hipo files ───────────────────────────────────────────────────
@@ -169,13 +161,8 @@ int main(int argc, char** argv) {
                     const double p = particle->getP();
                     const double theta = particle->getTheta();
                     const double phi = particle->getPhi();
-                    recBranches.fill(particle,
-                                     rn,
-                                     en,
-                                     i,
-                                     p + corrections.deltaP(p, theta, det),
-                                     theta + corrections.deltaTheta(p, theta, det),
-                                     normalizePhi(phi + corrections.deltaPhi(p, theta, det)));
+                    const CorrectedKinematics corrected = corrections.correct(p, theta, phi, det);
+                    recBranches.fill(particle, rn, en, i, corrected.p, corrected.theta, corrected.phi);
                 } else {
                     recBranches.fill(particle, rn, en, i);
                 }

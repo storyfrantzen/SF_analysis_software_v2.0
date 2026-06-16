@@ -35,7 +35,7 @@ link_directories(
 )
 
 set(HIPO2ROOT_SOURCES
-  ${PROJECT_SOURCE_DIR}/src/KinematicCorrections.cpp
+  ${PROJECT_SOURCE_DIR}/src/ProtonEnergyLossCorrections.cpp
   ${PROJECT_SOURCE_DIR}/src/Kinematics.cpp
   ${PROJECT_SOURCE_DIR}/src/ROOTBranches.cpp
 )
