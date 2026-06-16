@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .fit_utils import binned_profile, fixed_edges, json_ready, weighted_polyfit_descending
+from .fit_utils import BinnedProfile, binned_profile, fixed_edges, json_ready, weighted_polyfit_descending
 from .root_arrays import arrays_from_dataframe, define_common_electron_sf, load_dataframe
 
 
@@ -19,11 +19,32 @@ class SamplingFractionConfig:
     min_entries: int = 30
 
 
+@dataclass(frozen=True)
+class SamplingFractionProfile:
+    profile: BinnedProfile
+    sigma_values: np.ndarray
+
+
 def electron_arrays(input_file: Path,
                     tree: str,
                     max_rows: int | None) -> dict[str, np.ndarray]:
     df = define_common_electron_sf(load_dataframe(input_file, tree))
     return arrays_from_dataframe(df, ["sf_p", "sf_sector", "sampling_fraction"], max_rows=max_rows)
+
+
+def sampling_fraction_profile(p: np.ndarray,
+                              sf: np.ndarray,
+                              p_edges: np.ndarray,
+                              min_entries: int) -> SamplingFractionProfile:
+    profile = binned_profile(p, sf, p_edges, min_entries)
+    sigma_values = np.full_like(profile.means, np.nan, dtype=float)
+    for i, (lo, hi) in enumerate(zip(p_edges[:-1], p_edges[1:])):
+        upper_mask = p <= hi if i == len(p_edges) - 2 else p < hi
+        bin_mask = (p >= lo) & upper_mask & np.isfinite(sf)
+        vals = sf[bin_mask]
+        if vals.size >= min_entries:
+            sigma_values[i] = float(np.std(vals, ddof=1))
+    return SamplingFractionProfile(profile=profile, sigma_values=sigma_values)
 
 
 def derive_sf_coefficients(arrays: dict[str, np.ndarray],
@@ -38,17 +59,15 @@ def derive_sf_coefficients(arrays: dict[str, np.ndarray],
     output: dict[str, dict[str, list[float]]] = {}
     for sec in range(1, 7):
         mask = np.ones_like(p, dtype=bool) if sector_independent else sector == sec
-        profile = binned_profile(p[mask], sf[mask], p_edges, cfg.min_entries)
+        sf_profile = sampling_fraction_profile(p[mask], sf[mask], p_edges, cfg.min_entries)
 
-        sigma_values = np.full_like(profile.means, np.nan, dtype=float)
-        for i, (lo, hi) in enumerate(zip(p_edges[:-1], p_edges[1:])):
-            bin_mask = mask & (p >= lo) & (p < hi) & np.isfinite(sf)
-            vals = sf[bin_mask]
-            if vals.size >= cfg.min_entries:
-                sigma_values[i] = float(np.std(vals, ddof=1))
-
-        mu_coeffs = weighted_polyfit_descending(centers, profile.means, cfg.poly_degree, profile.errors)
-        sigma_coeffs = weighted_polyfit_descending(centers, sigma_values, cfg.poly_degree)
+        mu_coeffs = weighted_polyfit_descending(
+            centers,
+            sf_profile.profile.means,
+            cfg.poly_degree,
+            sf_profile.profile.errors,
+        )
+        sigma_coeffs = weighted_polyfit_descending(centers, sf_profile.sigma_values, cfg.poly_degree)
         output[f"sector_{sec}"] = {
             "mu_coeffs": json_ready(mu_coeffs),
             "sigma_coeffs": json_ready(sigma_coeffs),
@@ -68,24 +87,64 @@ def maybe_plot(arrays: dict[str, np.ndarray],
     p = arrays["sf_p"]
     sf = arrays["sampling_fraction"]
     sector = arrays["sf_sector"].astype(int)
+    p_edges = fixed_edges(cfg.momentum_bins, cfg.momentum_range)
     x = np.linspace(cfg.momentum_range[0], cfg.momentum_range[1], 300)
 
     fig, axes = plt.subplots(2, 3, figsize=(16, 9), sharex=True, sharey=True)
     for idx, ax in enumerate(axes.flat, start=1):
         mask = np.ones_like(p, dtype=bool) if sector_independent else sector == idx
         ax.hist2d(p[mask], sf[mask], bins=[80, 80], cmap="cividis", cmin=1)
+        sf_profile = sampling_fraction_profile(p[mask], sf[mask], p_edges, cfg.min_entries)
+        centers = sf_profile.profile.centers
+        means = sf_profile.profile.means
+        mean_errors = sf_profile.profile.errors
+        sigmas = sf_profile.sigma_values
         sector_coeffs = coeffs[f"sector_{idx}"]
         mu = sector_coeffs["mu_coeffs"]
         sigma = sector_coeffs["sigma_coeffs"]
         mu_poly = np.poly1d(mu)
         sigma_poly = np.poly1d(sigma)
-        ax.plot(x, mu_poly(x), color="red", lw=2)
-        ax.plot(x, mu_poly(x) + 3.0 * sigma_poly(x), color="cyan", lw=1.5, ls="--")
+        valid_profile = np.isfinite(means)
+        valid_sigma = valid_profile & np.isfinite(sigmas)
+        ax.errorbar(
+            centers[valid_profile],
+            means[valid_profile],
+            yerr=mean_errors[valid_profile],
+            fmt="o",
+            ms=3.5,
+            color="white",
+            ecolor="white",
+            elinewidth=0.8,
+            capsize=2,
+            label="profile mean",
+            zorder=3,
+        )
+        ax.scatter(
+            centers[valid_sigma],
+            means[valid_sigma] + sigmas[valid_sigma],
+            marker="_",
+            s=55,
+            color="orange",
+            label="profile mean +/- sigma",
+            zorder=3,
+        )
+        ax.scatter(
+            centers[valid_sigma],
+            means[valid_sigma] - sigmas[valid_sigma],
+            marker="_",
+            s=55,
+            color="orange",
+            zorder=3,
+        )
+        ax.plot(x, mu_poly(x), color="red", lw=2, label="mu fit")
+        ax.plot(x, mu_poly(x) + 3.0 * sigma_poly(x), color="cyan", lw=1.5, ls="--", label="mu +/- 3 sigma fit")
         ax.plot(x, mu_poly(x) - 3.0 * sigma_poly(x), color="cyan", lw=1.5, ls="--")
         ax.set_title(f"Sector {idx}")
         ax.set_xlabel("p [GeV]")
         ax.set_ylabel("Sampling fraction")
         ax.grid(True, alpha=0.25)
+        if idx == 1:
+            ax.legend(fontsize=8, loc="best")
     fig.tight_layout()
     fig.savefig(output_dir / "sampling_fraction_sector_fits.png", dpi=180)
     plt.close(fig)
