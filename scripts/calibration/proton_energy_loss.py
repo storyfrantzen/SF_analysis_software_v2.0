@@ -20,7 +20,6 @@ from .root_arrays import arrays_from_dataframe, define_common_proton_residuals, 
 
 @dataclass(frozen=True)
 class DetectorFitConfig:
-    label: str
     detector: int
     theta_range: tuple[float, float]
     momentum_range: tuple[float, float]
@@ -33,7 +32,6 @@ class DetectorFitConfig:
 
 DEFAULT_CONFIGS = {
     "FD": DetectorFitConfig(
-        label="FD",
         detector=1,
         theta_range=(15.0, 40.0),
         momentum_range=(0.55, 5.0),
@@ -52,7 +50,6 @@ DEFAULT_CONFIGS = {
         },
     ),
     "CD": DetectorFitConfig(
-        label="CD",
         detector=2,
         theta_range=(40.0, 58.0),
         momentum_range=(0.3, 2.4),
@@ -100,6 +97,7 @@ def filtered_arrays(input_file: Path,
 
 
 def fit_detector(arrays: dict[str, np.ndarray],
+                 detector_name: str,
                  cfg: DetectorFitConfig,
                  adaptive_theta: bool,
                  min_entries: int) -> dict[str, dict[str, object]]:
@@ -141,13 +139,14 @@ def fit_detector(arrays: dict[str, np.ndarray],
             yerr = np.asarray(param_errors[i], dtype=float)
             coeffs[str(i)] = json_ready(weighted_polyfit_ascending(theta_array, y, order, yerr))
 
-        key = f"p_{residual_name}_{cfg.label}"
+        key = f"p_{residual_name}_{detector_name}"
         output[key] = {"form": form, "coeffs": coeffs}
 
     return output
 
 
 def maybe_plot(arrays: dict[str, np.ndarray],
+               detector_name: str,
                cfg: DetectorFitConfig,
                output_dir: Path) -> None:
     import matplotlib.pyplot as plt
@@ -161,9 +160,9 @@ def maybe_plot(arrays: dict[str, np.ndarray],
         fig.colorbar(hist[3], ax=ax)
         ax.set_xlabel("p_rec [GeV]")
         ax.set_ylabel(name)
-        ax.set_title(f"{cfg.label} {name}")
+        ax.set_title(f"{detector_name} {name}")
     fig.tight_layout()
-    fig.savefig(output_dir / f"{cfg.label}_proton_residuals_vs_p.png", dpi=180)
+    fig.savefig(output_dir / f"{detector_name}_proton_residuals_vs_p.png", dpi=180)
     plt.close(fig)
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
@@ -172,9 +171,9 @@ def maybe_plot(arrays: dict[str, np.ndarray],
         fig.colorbar(hist[3], ax=ax)
         ax.set_xlabel("theta_rec [deg]")
         ax.set_ylabel(name)
-        ax.set_title(f"{cfg.label} {name}")
+        ax.set_title(f"{detector_name} {name}")
     fig.tight_layout()
-    fig.savefig(output_dir / f"{cfg.label}_proton_residuals_vs_theta.png", dpi=180)
+    fig.savefig(output_dir / f"{detector_name}_proton_residuals_vs_theta.png", dpi=180)
     plt.close(fig)
 
 
@@ -198,19 +197,20 @@ def main() -> None:
     detectors = ["FD", "CD"] if args.detector == "both" else [args.detector]
 
     combined: dict[str, dict[str, object]] = {}
-    for label in detectors:
-        cfg = DEFAULT_CONFIGS[label]
+    for detector_name in detectors:
+        cfg = DEFAULT_CONFIGS[detector_name]
         arrays = filtered_arrays(args.input_file, args.tree, cfg, args.max_rows)
         combined.update(
             fit_detector(
                 arrays,
+                detector_name,
                 cfg,
                 adaptive_theta=not args.fixed_theta_bins,
                 min_entries=args.min_bin_entries,
             )
         )
         if args.plot_dir:
-            maybe_plot(arrays, cfg, args.plot_dir)
+            maybe_plot(arrays, detector_name, cfg, args.plot_dir)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w") as f:
