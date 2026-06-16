@@ -99,6 +99,18 @@ The script fits residual profiles in theta and momentum bins, then writes the JS
 
 ## Sampling-Fraction Parameters
 
+For a first inclusive-electron SIDIS test, run:
+
+```bash
+./build/hipo2root configs/processing/sidis_electrons.json /path/to/hipo/files
+./build/apply_cuts configs/post/electron_sf.json sidis_electrons.root
+python3 scripts/derive_sampling_fraction.py electron_sf_candidates.root \
+  --output configs/post/SF_sigma_cut_params_REC.json \
+  --plot-dir calibration_plots/sampling_fraction
+```
+
+The processing config keeps events with at least one reconstructed electron and loose DIS cuts. The post-processing config selects one FD electron per event, applies electron fiducial cuts, writes that selected electron as the output `rec` branch, and leaves the sampling-fraction cut disabled so the selected sample can be used to derive the cut parameters.
+
 Sampling-fraction mu/sigma parameters can be derived with:
 
 ```bash

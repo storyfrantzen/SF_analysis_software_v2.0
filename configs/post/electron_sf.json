@@ -1,0 +1,41 @@
+{
+    "outputFile": "electron_sf_candidates.root",
+    "inputTree": "Events",
+    "outputTree": "Events",
+    "beamEnergy": 10.6,
+    "torus": -1,
+    "saveFailedCandidates": false,
+
+    "fiducialCuts": [
+        "DCEdges_RGA",
+        "ECAL_RGA"
+    ],
+
+    "samplingFraction": {
+        "enabled": false,
+        "numSigma": 3.5,
+        "triangleYScale": 1.0,
+        "triangleXScale": 1.0,
+        "triangleHypotenuse": 0.2,
+        "htccThreshold": 4.5,
+        "params": {}
+    },
+
+    "channel": {
+        "name": "electron_sf",
+        "particles": [
+            {
+                "role": "electron",
+                "pid": 11,
+                "count": 1,
+                "detectors": [1],
+                "cuts": [
+                    { "name": "electron.trigger", "op": "firstPidInstance" },
+                    { "name": "electron.min_p", "op": "minP", "min": 1.0 },
+                    { "name": "electron.fiducial", "op": "fiducial" }
+                ]
+            }
+        ],
+        "composites": []
+    }
+}

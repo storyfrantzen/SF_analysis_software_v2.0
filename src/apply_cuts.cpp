@@ -60,6 +60,7 @@ struct CandidateOutput {
     int runNum = -999;
     int eventNum = -999;
     int helicity = -999;
+    RecBranches rec;
     int passTopology = 0;
     std::vector<std::string> selectedRoles;
     std::vector<int> selectedIdx;
@@ -113,6 +114,7 @@ struct CandidateOutput {
         tree.Branch("runNum", &runNum, "runNum/I");
         tree.Branch("eventNum", &eventNum, "eventNum/I");
         tree.Branch("helicity", &helicity, "helicity/I");
+        tree.Branch("rec", &rec);
         tree.Branch("charge", &charge, "charge/D");
         tree.Branch("passTopology", &passTopology, "passTopology/I");
         tree.Branch("selectedRoles", &selectedRoles);
@@ -189,6 +191,22 @@ void fillSelectedParticleBranches(const Selection& selection,
             out.selectedP.push_back(particle->p);
             out.selectedTheta.push_back(particle->theta);
             out.selectedPhi.push_back(particle->phi);
+        }
+    }
+}
+
+void fillPrimaryRecBranch(const Selection& selection,
+                          const PostCutConfig& cfg,
+                          CandidateOutput& out) {
+    if (const RecBranches* electron = firstParticle(selection, "electron")) {
+        out.rec = *electron;
+        return;
+    }
+
+    for (const auto& roleSpec : cfg.channel.particles) {
+        if (const RecBranches* particle = firstParticle(selection, roleSpec.role)) {
+            out.rec = *particle;
+            return;
         }
     }
 }
@@ -274,6 +292,7 @@ void fillGenericCandidate(const EventRows& rows,
     out.charge = rows.event.charge;
     out.passTopology = 1;
     fillSelectedParticleBranches(selection, cfg, out);
+    fillPrimaryRecBranch(selection, cfg, out);
     fillDISBranches(selection, cfg, out);
 }
 
