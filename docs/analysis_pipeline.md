@@ -51,10 +51,15 @@ The current converter keeps its small hipo-level preselection helpers inside `sr
 include/Cuts.h
 src/Cuts.cpp
 src/apply_cuts.cpp
-config/post_cuts_*.json
+configs/post/*.json
 ```
 
 That keeps the hipo reader stage independent from the analysis selection stage while still sharing config conventions.
+
+Configuration files are grouped by stage under `configs/`:
+
+- `configs/processing/` for `hipo2root` conversion configs
+- `configs/post/` for `apply_cuts` post-processing configs
 
 ## Post-Processing Cut Pattern
 
@@ -86,7 +91,7 @@ Correction parameters can be derived from matched REC/GEMC ROOT rows with:
 ```bash
 python3 scripts/derive_proton_energy_loss.py matched.root \
   --detector both \
-  --output config/protonEnergyLoss_params.json \
+  --output configs/processing/protonEnergyLoss_params.json \
   --plot-dir calibration_plots/proton_eloss
 ```
 
@@ -98,7 +103,7 @@ Sampling-fraction mu/sigma parameters can be derived with:
 
 ```bash
 python3 scripts/derive_sampling_fraction.py rec.root \
-  --output config/SF_sigma_cut_params_REC.json \
+  --output configs/post/SF_sigma_cut_params_REC.json \
   --plot-dir calibration_plots/sampling_fraction
 ```
 

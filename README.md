@@ -9,16 +9,16 @@ hipo2root <config.json> <hipo_directory> [max_files]
 apply_cuts <post_config.json> <input.root>
 ```
 
-Example configs live in `configs/examples/`, so a typical local run looks like:
+Processing configs live in `configs/processing/`, so a typical local run looks like:
 
 ```bash
-./build/hipo2root configs/examples/test_config.json /path/to/hipo/files
+./build/hipo2root configs/processing/eppi0.json /path/to/hipo/files
 ```
 
 For matched REC/GEN rows used by calibration and acceptance studies:
 
 ```bash
-./build/hipo2root configs/examples/matched_config.json /path/to/hipo/files
+./build/hipo2root configs/processing/eppi0_matched.json /path/to/hipo/files
 ```
 
 The converter currently supports:
@@ -30,7 +30,7 @@ The converter currently supports:
 
 By default, `finalState` rejects reconstructed particles whose PIDs are not listed in the config. Set `inclusive` to `true` for inclusive final-state skims.
 
-`apply_cuts` performs ROOT post-processing. The initial module builds one EPPI0 candidate per event and applies configurable fiducial, sampling-fraction, topology, and loose exclusivity cuts. See `config/post_cuts_eppi0.json`.
+`apply_cuts` performs ROOT post-processing. The initial module builds one EPPI0 candidate per event and applies configurable fiducial, sampling-fraction, topology, and loose exclusivity cuts. Post-processing configs live in `configs/post/`, for example `configs/post/eppi0.json`.
 
 ## Cut strategy
 
@@ -44,7 +44,8 @@ See `docs/analysis_pipeline.md` for the recommended modular layout.
 - `include/` - project headers and ROOT dictionary LinkDef
 - `scripts/` - calibration and analysis helper scripts
 - `vendor/` - vendored header-only dependencies
-- `configs/examples/` - runnable example configuration files
+- `configs/processing/` - hipo-to-ROOT conversion configs
+- `configs/post/` - ROOT post-processing configs
 - `docs/` - design notes and setup references
 - `data/` - local input/output data products, ignored by git
 - `build/`, `work-build/`, `cmake-build-*` - local CMake build trees, ignored by git
