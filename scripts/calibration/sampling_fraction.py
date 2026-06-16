@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -74,6 +75,42 @@ def derive_sf_coefficients(arrays: dict[str, np.ndarray],
         }
 
     return output
+
+
+def build_metadata(args: argparse.Namespace,
+                   arrays: dict[str, np.ndarray],
+                   cfg: SamplingFractionConfig,
+                   sector_independent: bool) -> dict[str, object]:
+    sector = arrays["sf_sector"].astype(int)
+    sector_counts = {
+        f"sector_{sec}": int(np.count_nonzero(sector == sec))
+        for sec in range(1, 7)
+    }
+    metadata: dict[str, object] = {
+        "createdUtc": datetime.now(timezone.utc).isoformat(),
+        "datasetTag": args.dataset_tag,
+        "beamEnergy": args.beam_energy,
+        "inputFile": str(args.input_file),
+        "inputTree": args.tree,
+        "selectedElectronCount": int(len(arrays["sf_p"])),
+        "sectorCounts": sector_counts,
+        "sectorIndependentFit": bool(sector_independent),
+        "fitConfig": {
+            "momentumRange": list(cfg.momentum_range),
+            "momentumBins": cfg.momentum_bins,
+            "polyDegree": cfg.poly_degree,
+            "minBinEntries": cfg.min_entries,
+            "maxRows": args.max_rows,
+        },
+        "notes": args.note,
+    }
+    if args.run_group:
+        metadata["runGroup"] = args.run_group
+    if args.skim:
+        metadata["skim"] = args.skim
+    if args.torus is not None:
+        metadata["torus"] = args.torus
+    return metadata
 
 
 def maybe_plot(arrays: dict[str, np.ndarray],
@@ -163,6 +200,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--p-bins", type=int, default=22)
     parser.add_argument("--poly-degree", type=int, default=2)
     parser.add_argument("--min-bin-entries", type=int, default=30)
+    parser.add_argument("--dataset-tag", default="", help="Short label for this parameter set, e.g. 6.535RGKSKIM1.")
+    parser.add_argument("--beam-energy", type=float, help="Beam energy associated with this parameter set.")
+    parser.add_argument("--run-group", default="", help="Run group or campaign label, e.g. RGK.")
+    parser.add_argument("--skim", default="", help="Skim or production label.")
+    parser.add_argument("--torus", type=int, help="Torus polarity used for this parameter set.")
+    parser.add_argument("--note", default="", help="Free-form note stored in the output metadata.")
     return parser.parse_args()
 
 
@@ -176,10 +219,14 @@ def main() -> None:
     )
     arrays = electron_arrays(args.input_file, args.tree, args.max_rows)
     coeffs = derive_sf_coefficients(arrays, cfg, sector_independent=args.gemc)
+    output = {
+        "_metadata": build_metadata(args, arrays, cfg, sector_independent=args.gemc),
+        **coeffs,
+    }
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w") as f:
-        json.dump(coeffs, f, indent=2)
+        json.dump(output, f, indent=2)
         f.write("\n")
     print(f"Wrote sampling-fraction coefficients to {args.output}")
 

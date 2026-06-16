@@ -106,7 +106,12 @@ For a first inclusive-electron SIDIS test, run:
 ./build/apply_cuts configs/post/electron_sf.json sidis_electrons.root
 python3 scripts/derive_sampling_fraction.py electron_sf_candidates.root \
   --output configs/post/SF_sigma_cut_params_REC.json \
-  --plot-dir calibration_plots/sampling_fraction
+  --plot-dir calibration_plots/sampling_fraction \
+  --dataset-tag 6.535RGKSKIM1 \
+  --beam-energy 6.535 \
+  --run-group RGK \
+  --skim SKIM1 \
+  --torus 1
 ```
 
 The processing config keeps events with at least one reconstructed electron and loose DIS cuts. The post-processing config currently targets RGK outbending data, selects one FD electron per event, applies common DC-edge and RGK ECAL fiducial cuts, writes explicit selected-electron branches such as `electronP`, `electronSector`, and `electronEPCAL`, and leaves the sampling-fraction cut disabled so the selected sample can be used to derive the cut parameters.
@@ -122,6 +127,8 @@ python3 scripts/derive_sampling_fraction.py rec.root \
 ```
 
 Use `--gemc` when one sector-independent MC fit should be copied to all six sectors. The output JSON contains `sector_1` through `sector_6`, each with `mu_coeffs` and `sigma_coeffs`, matching the format read by the post-processing `samplingFraction` cut.
+
+The output JSON also includes a `_metadata` block with the dataset tag, input file, selected electron count, per-sector counts, fit settings, and timestamp. `apply_cuts` ignores `_metadata` and reads only the sector coefficient blocks, so the same file can serve as both machine-readable parameters and a provenance record.
 
 ## REC/GEN Matching
 
