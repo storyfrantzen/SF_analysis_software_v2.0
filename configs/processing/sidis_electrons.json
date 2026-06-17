@@ -4,6 +4,19 @@
 
     "beamEnergy": 6.535,
 
+    "qadb": {
+        "enabled": true,
+        "database": "latest",
+        "rejectDefects": [
+            "MarginalOutlier",
+            "TerminalOutlier",
+            "TotalOutlier",
+            "SectorLoss",
+            "LowLiveTime"
+        ],
+        "allowMiscRuns": []
+    },
+
     "finalState": [
         { "pid": 11, "count": 1, "mode": "atleast" }
     ],

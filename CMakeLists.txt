@@ -12,7 +12,10 @@ set(CLAS12ROOT $ENV{CLAS12ROOT})
 set(HIPO $ENV{HIPO})
 set(CCDB_HOME $ENV{CCDB_HOME})
 set(RCDB_HOME $ENV{RCDB_HOME})
-set(QADB $ENV{QADB})
+
+find_path(QADB_INCLUDE_DIR QADB.h
+  HINTS $ENV{QADB}/srcC/include
+)
 
 # Include directories
 include_directories(
@@ -24,7 +27,6 @@ include_directories(
   ${HIPO}/include
   ${CCDB_HOME}/include
   ${RCDB_HOME}/cpp/include
-  ${QADB}/srcC/include
 )
 
 # Link directories
@@ -36,6 +38,7 @@ link_directories(
 
 set(HIPO2ROOT_SOURCES
   ${PROJECT_SOURCE_DIR}/src/ProtonEnergyLossCorrections.cpp
+  ${PROJECT_SOURCE_DIR}/src/QualityAssurance.cpp
   ${PROJECT_SOURCE_DIR}/src/Kinematics.cpp
   ${PROJECT_SOURCE_DIR}/src/ROOTBranches.cpp
 )
@@ -72,6 +75,13 @@ target_link_libraries(hipo2root
   EG
   pthread
 )
+if(QADB_INCLUDE_DIR)
+  target_include_directories(hipo2root PRIVATE ${QADB_INCLUDE_DIR})
+  target_compile_definitions(hipo2root PRIVATE HAVE_QADB=1)
+  message(STATUS "QADB support enabled: ${QADB_INCLUDE_DIR}")
+else()
+  message(STATUS "QADB support disabled (QADB.h not found)")
+endif()
 
 # --- Executable 2: apply post-processing cuts ---
 add_executable(apply_cuts

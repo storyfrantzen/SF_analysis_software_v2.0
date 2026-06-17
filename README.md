@@ -23,6 +23,7 @@ For matched REC/GEN rows used by calibration and acceptance studies:
 
 The converter currently supports:
 
+- optional QADB filtering and accumulated-charge bookkeeping for data
 - final-state filtering
 - loose DIS skim cuts
 - reconstructed-particle branches

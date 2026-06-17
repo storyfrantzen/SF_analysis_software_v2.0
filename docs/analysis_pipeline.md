@@ -32,6 +32,34 @@ The converter should make a reusable analysis ntuple. Physics selections that ar
    - systematic variations of all selection boundaries
    - final histogramming and plotting
 
+## Data Quality
+
+For reconstructed data, `hipo2root` can reject bad QADB bins before topology and DIS
+selection. Enable it in a processing config with:
+
+```json
+"qadb": {
+  "enabled": true,
+  "database": "latest",
+  "rejectDefects": [
+    "MarginalOutlier", "TerminalOutlier", "TotalOutlier",
+    "SectorLoss", "LowLiveTime"
+  ],
+  "allowMiscRuns": []
+}
+```
+
+The defect list is an analysis choice. Add `"Misc"` only after reviewing its comments
+with `qadb-info misc`; individual acceptable `Misc` runs can then be listed in
+`allowMiscRuns`. QADB is bypassed for simulation (`runNum == 11`). The terminal summary
+reports rejected events and accumulated DAQ-gated charge. The output ROOT file stores the
+processing counters in its `Summary` tree and the file-level charge separately as a
+top-level `TParameter<double>` named `AccumulatedCharge`.
+
+Load QADB before configuring and building on JLab, for example `module load qadb/3.1`.
+If QADB is requested by a config but was unavailable at build time, `hipo2root` exits with
+an explicit error.
+
 ## Practical Rule
 
 If a cut is part of defining a compact but broadly reusable ntuple, it can run during conversion. If a cut is part of the physics interpretation, optimization, or systematic uncertainty, run it on ROOT.

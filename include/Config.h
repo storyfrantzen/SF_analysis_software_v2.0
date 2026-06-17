@@ -14,6 +14,13 @@ struct FinalState {
     bool exact;   // true = ==count, false = >=count
 };
 
+struct QADBConfig {
+    bool enabled = false;
+    std::string database = "latest";
+    std::vector<std::string> rejectDefects;
+    std::vector<int> allowMiscRuns;
+};
+
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 struct Config {
@@ -40,6 +47,9 @@ struct Config {
     bool matchMC = false;
     bool saveUnmatchedMC = true;
     double matchMaxAngleDeg = 3.0;
+
+    // ── Data quality ──────────────────────────
+    QADBConfig qadb;
 
     // ── Kinematic corrections ─────────────────
     nlohmann::json kinematicCorrections;
@@ -71,6 +81,17 @@ struct Config {
         matchMC = j.value("matchMC", matchMC);
         saveUnmatchedMC = j.value("saveUnmatchedMC", saveUnmatchedMC);
         matchMaxAngleDeg = j.value("matchMaxAngleDeg", matchMaxAngleDeg);
+
+        if (j.contains("qadb")) {
+            const auto& qa = j["qadb"];
+            if (!qa.is_object()) {
+                throw std::runtime_error("qadb must be a JSON object");
+            }
+            qadb.enabled = qa.value("enabled", qadb.enabled);
+            qadb.database = qa.value("database", qadb.database);
+            qadb.rejectDefects = qa.value("rejectDefects", qadb.rejectDefects);
+            qadb.allowMiscRuns = qa.value("allowMiscRuns", qadb.allowMiscRuns);
+        }
 
         inclusive = j.value("inclusive", inclusive);
 

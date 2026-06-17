@@ -4,8 +4,11 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <memory>
+#include <sstream>
 
 #include "TFile.h"
+#include "TParameter.h"
 #include "TTree.h"
 #include "TVector3.h"
 
@@ -13,6 +16,7 @@
 
 #include "Config.h"
 #include "ProtonEnergyLossCorrections.h"
+#include "QualityAssurance.h"
 #include "Kinematics.h"
 #include "ROOTBranches.h"
 
@@ -133,6 +137,13 @@ int main(int argc, char** argv) {
 
     Config cfg(argv[1]);
     const ProtonEnergyLossCorrections corrections(cfg.kinematicCorrections);
+    std::unique_ptr<QualityAssurance> qa;
+    try {
+        qa = std::make_unique<QualityAssurance>(cfg.qadb);
+    } catch (const std::exception& error) {
+        std::cerr << "[ERROR] " << error.what() << "\n";
+        return 1;
+    }
     const std::string hipoDir = argv[2];
 
     // ── Collect .hipo files ───────────────────────────────────────────────────
@@ -159,8 +170,16 @@ int main(int argc, char** argv) {
               << "[INFO] Beam energy : " << cfg.beamEnergy << " GeV\n"
               << "[INFO] Fill MC     : " << (cfg.fillMC ? "yes" : "no") << "\n"
               << "[INFO] Match MC    : " << (cfg.matchMC ? "yes" : "no") << "\n"
+              << "[INFO] QADB        : " << (qa->enabled() ? "enabled" : "disabled") << "\n"
               << "[INFO] Corrections : "
               << (corrections.enabled() ? "enabled" : "disabled") << "\n";
+
+    if (qa->enabled()) {
+        std::cout << "[INFO] QADB source : " << cfg.qadb.database << "\n"
+                  << "[INFO] QA defects  :";
+        for (const auto& defect : cfg.qadb.rejectDefects) std::cout << " " << defect;
+        std::cout << "\n";
+    }
 
     if (!cfg.finalState.empty()) {
         std::cout << "[INFO] Final state filter:\n";
@@ -193,7 +212,7 @@ int main(int argc, char** argv) {
     if (cfg.fillMC) tree->Branch("gen", &genBranches);
 
     // ── Event loop ────────────────────────────────────────────────────────────
-    long long nTotal = 0, nFSFail = 0, nSkimFail = 0, nWritten = 0;
+    long long nTotal = 0, nQAFail = 0, nFSFail = 0, nSkimFail = 0, nWritten = 0;
     long long nMatched = 0, nUnmatchedRec = 0, nUnmatchedGen = 0;
 
     for (const auto& hipoPath : hipoFiles) {
@@ -203,6 +222,10 @@ int main(int argc, char** argv) {
 
         while (c12.next()) {
             ++nTotal;
+
+            const int runNum = c12.runconfig()->getRun();
+            const int eventNum = c12.runconfig()->getEvent();
+            if (!qa->pass(runNum, eventNum)) { ++nQAFail; continue; }
 
             if (!passesFinalState(cfg, c12)) { ++nFSFail;   continue; }
             if (!passesDISSkim(cfg, c12))     { ++nSkimFail; continue; }
@@ -251,16 +274,43 @@ int main(int argc, char** argv) {
     }
 
     // ── Summary ───────────────────────────────────────────────────────────────
+    double accumulatedCharge = qa->accumulatedCharge();
     std::cout << "\n[DONE]\n"
               << "  Total events      : " << nTotal    << "\n"
+              << "  Failed QADB       : " << nQAFail   << "\n"
               << "  Failed final state: " << nFSFail   << "\n"
               << "  Failed skim       : " << nSkimFail << "\n"
               << "  Written           : " << nWritten  << "\n";
+    if (qa->enabled()) {
+        std::cout << "  Accumulated charge: " << accumulatedCharge << " nC\n";
+    }
     if (cfg.fillMC && cfg.matchMC) {
         std::cout << "  Matched REC rows  : " << nMatched << "\n"
                   << "  Unmatched REC rows: " << nUnmatchedRec << "\n"
                   << "  Unmatched GEN rows: " << nUnmatchedGen << "\n";
     }
+
+    TTree summary("Summary", "Processing summary");
+    bool qadbEnabled = qa->enabled();
+    std::string qadbDatabase = qadbEnabled ? cfg.qadb.database : "";
+    std::ostringstream defectStream;
+    for (std::size_t i = 0; i < cfg.qadb.rejectDefects.size(); ++i) {
+        if (i > 0) defectStream << ",";
+        defectStream << cfg.qadb.rejectDefects[i];
+    }
+    std::string qadbRejectDefects = defectStream.str();
+    summary.Branch("QADBEnabled", &qadbEnabled, "QADBEnabled/O");
+    summary.Branch("QADBDatabase", &qadbDatabase);
+    summary.Branch("QADBRejectDefects", &qadbRejectDefects);
+    summary.Branch("TotalEvents", &nTotal, "TotalEvents/L");
+    summary.Branch("FailedQADB", &nQAFail, "FailedQADB/L");
+    summary.Branch("FailedFinalState", &nFSFail, "FailedFinalState/L");
+    summary.Branch("FailedSkim", &nSkimFail, "FailedSkim/L");
+    summary.Branch("WrittenEvents", &nWritten, "WrittenEvents/L");
+    summary.Fill();
+
+    TParameter<double> chargeMetadata("AccumulatedCharge", accumulatedCharge);
+    chargeMetadata.Write();
 
     outFile->Write();
     outFile->Close();
