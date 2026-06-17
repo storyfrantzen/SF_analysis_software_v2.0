@@ -15,6 +15,7 @@ from .fit_utils import (
     json_ready,
     weighted_polyfit_ascending,
 )
+from .plot_utils import save_plot
 from .root_arrays import arrays_from_dataframe, define_common_proton_residuals, load_dataframe
 
 
@@ -148,7 +149,9 @@ def fit_detector(arrays: dict[str, np.ndarray],
 def maybe_plot(arrays: dict[str, np.ndarray],
                detector_name: str,
                cfg: DetectorFitConfig,
-               output_dir: Path) -> None:
+               output_dir: Path,
+               dataset_tag: str = "",
+               beam_energy: float | None = None) -> None:
     import matplotlib.pyplot as plt
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -161,8 +164,13 @@ def maybe_plot(arrays: dict[str, np.ndarray],
         ax.set_xlabel("p_rec [GeV]")
         ax.set_ylabel(name)
         ax.set_title(f"{detector_name} {name}")
-    fig.tight_layout()
-    fig.savefig(output_dir / f"{detector_name}_proton_residuals_vs_p.png", dpi=180)
+    save_plot(
+        fig,
+        output_dir / f"{detector_name}_proton_residuals_vs_p.png",
+        f"{detector_name} proton residuals vs reconstructed momentum",
+        dataset_tag,
+        beam_energy,
+    )
     plt.close(fig)
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
@@ -172,8 +180,13 @@ def maybe_plot(arrays: dict[str, np.ndarray],
         ax.set_xlabel("theta_rec [deg]")
         ax.set_ylabel(name)
         ax.set_title(f"{detector_name} {name}")
-    fig.tight_layout()
-    fig.savefig(output_dir / f"{detector_name}_proton_residuals_vs_theta.png", dpi=180)
+    save_plot(
+        fig,
+        output_dir / f"{detector_name}_proton_residuals_vs_theta.png",
+        f"{detector_name} proton residuals vs reconstructed theta",
+        dataset_tag,
+        beam_energy,
+    )
     plt.close(fig)
 
 
@@ -189,6 +202,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-rows", type=int)
     parser.add_argument("--fixed-theta-bins", action="store_true")
     parser.add_argument("--min-bin-entries", type=int, default=20)
+    parser.add_argument("--dataset-tag", default="", help="Short label shown on generated plots.")
+    parser.add_argument("--beam-energy", type=float, help="Beam energy in GeV shown on generated plots.")
     return parser.parse_args()
 
 
@@ -210,7 +225,14 @@ def main() -> None:
             )
         )
         if args.plot_dir:
-            maybe_plot(arrays, detector_name, cfg, args.plot_dir)
+            maybe_plot(
+                arrays,
+                detector_name,
+                cfg,
+                args.plot_dir,
+                args.dataset_tag,
+                args.beam_energy,
+            )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w") as f:

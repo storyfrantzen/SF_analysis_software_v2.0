@@ -92,10 +92,13 @@ Correction parameters can be derived from matched REC/GEMC ROOT rows with:
 python3 scripts/derive_proton_energy_loss.py matched.root \
   --detector both \
   --output configs/processing/protonEnergyLoss_params.json \
-  --plot-dir calibration_plots/proton_eloss
+  --plot-dir calibration_plots/proton_eloss \
+  --dataset-tag 6.535RGK_GEMC1 \
+  --beam-energy 6.535
 ```
 
 The script fits residual profiles in theta and momentum bins, then writes the JSON format consumed by `hipo2root`.
+When supplied, the dataset tag and beam energy are printed visibly on every plot and embedded in the PNG metadata.
 
 ## Sampling-Fraction Parameters
 
@@ -150,6 +153,7 @@ Use `--gemc` when one sector-independent MC fit should be copied to all six sect
 The application config resolves `sigma.paramsFile` relative to its own directory. Its electron cut list exposes `minPcalEnergy`, `samplingFractionDiagonal`, and `samplingFractionSigma` separately, so any component can be omitted for a systematic check.
 
 The output JSON also includes a `_metadata` block with the dataset tag, input file, selected electron count, per-sector counts, fit settings, and timestamp. `apply_cuts` ignores `_metadata` and reads only the sector coefficient blocks, so the same file can serve as both machine-readable parameters and a provenance record.
+The dataset tag and beam energy are also printed visibly on every generated plot and embedded in its PNG metadata.
 
 ## REC/GEN Matching
 

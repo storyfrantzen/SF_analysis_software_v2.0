@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from .fit_utils import BinnedProfile, binned_profile, fixed_edges, json_ready, weighted_polyfit_descending
+from .plot_utils import save_plot
 from .root_arrays import arrays_from_dataframe, define_common_electron_sf, load_dataframe
 
 
@@ -188,7 +189,9 @@ def maybe_plot(arrays: dict[str, np.ndarray],
                coeffs: dict[str, dict[str, list[float]]],
                cfg: SamplingFractionConfig,
                sector_independent: bool,
-               output_dir: Path) -> None:
+               output_dir: Path,
+               dataset_tag: str = "",
+               beam_energy: float | None = None) -> None:
     import matplotlib.pyplot as plt
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -253,14 +256,21 @@ def maybe_plot(arrays: dict[str, np.ndarray],
         ax.grid(True, alpha=0.25)
         if idx == 1:
             ax.legend(fontsize=8, loc="best")
-    fig.tight_layout()
-    fig.savefig(output_dir / "sampling_fraction_sector_fits.png", dpi=180)
+    save_plot(
+        fig,
+        output_dir / "sampling_fraction_sector_fits.png",
+        "Sampling-fraction sector fits",
+        dataset_tag,
+        beam_energy,
+    )
     plt.close(fig)
 
 
 def plot_diagonal_cut(arrays: dict[str, np.ndarray],
                       cfg: SamplingFractionConfig,
-                      output_dir: Path) -> None:
+                      output_dir: Path,
+                      dataset_tag: str = "",
+                      beam_energy: float | None = None) -> None:
     import matplotlib.pyplot as plt
     from matplotlib.colors import LogNorm
 
@@ -299,12 +309,14 @@ def plot_diagonal_cut(arrays: dict[str, np.ndarray],
         ax.set_ylabel(r"$E_{PCAL}/p$")
         ax.grid(True, alpha=0.2)
 
-    fig.suptitle(
+    save_plot(
+        fig,
+        output_dir / "sampling_fraction_diagonal_cut.png",
         f"Diagonal SF cut for p >= {cfg.diagonal_momentum_threshold:g} GeV "
-        f"(accepted above red line)"
+        f"(accepted above red line)",
+        dataset_tag,
+        beam_energy,
     )
-    fig.tight_layout()
-    fig.savefig(output_dir / "sampling_fraction_diagonal_cut.png", dpi=180)
     plt.close(fig)
 
 
@@ -393,8 +405,22 @@ def main() -> None:
     print(f"Wrote sampling-fraction coefficients to {args.output}")
 
     if args.plot_dir:
-        plot_diagonal_cut(input_arrays, cfg, args.plot_dir)
-        maybe_plot(arrays, coeffs, cfg, args.gemc, args.plot_dir)
+        plot_diagonal_cut(
+            input_arrays,
+            cfg,
+            args.plot_dir,
+            args.dataset_tag,
+            args.beam_energy,
+        )
+        maybe_plot(
+            arrays,
+            coeffs,
+            cfg,
+            args.gemc,
+            args.plot_dir,
+            args.dataset_tag,
+            args.beam_energy,
+        )
 
 
 if __name__ == "__main__":
