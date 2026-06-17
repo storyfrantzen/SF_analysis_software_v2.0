@@ -49,25 +49,42 @@ set(POST_PROCESSING_SOURCES
   ${PROJECT_SOURCE_DIR}/src/ROOTBranches.cpp
 )
 
-# Add the ROOT dictionary
+# Generate and compile the ROOT dictionary exactly once.
 set(ROOTBRANCHES_HEADERS ${PROJECT_SOURCE_DIR}/include/ROOTBranches.h)
-ROOT_GENERATE_DICTIONARY(G__ROOTBranchesDict ${ROOTBRANCHES_HEADERS} LINKDEF ${PROJECT_SOURCE_DIR}/include/ROOTBranchesLinkDef.h)
-list(APPEND HIPO2ROOT_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/G__ROOTBranchesDict.cxx)
+ROOT_GENERATE_DICTIONARY(
+  G__ROOTBranchesDict
+  ${ROOTBRANCHES_HEADERS}
+  LINKDEF ${PROJECT_SOURCE_DIR}/include/ROOTBranchesLinkDef.h
+)
+add_library(
+  ROOTBranchesDictObjects OBJECT
+  ${CMAKE_CURRENT_BINARY_DIR}/G__ROOTBranchesDict.cxx
+)
+set_target_properties(ROOTBranchesDictObjects PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(ROOTBranchesDictObjects PRIVATE ${PROJECT_SOURCE_DIR}/include)
 
 # --- Library ---
-add_library(ROOTBranchesDict SHARED ${CMAKE_CURRENT_BINARY_DIR}/G__ROOTBranchesDict.cxx)
-target_include_directories(ROOTBranchesDict PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(ROOTBranchesDict PRIVATE ROOT::Core ROOT::RIO ROOT::Net ROOT::Hist ROOT::Tree ROOT::Physics ROOT::EG)
+add_library(
+  ROOTBranchesDict SHARED
+  $<TARGET_OBJECTS:ROOTBranchesDictObjects>
+)
+target_link_libraries(
+  ROOTBranchesDict PRIVATE
+  ROOT::Core ROOT::RIO ROOT::Net ROOT::Hist ROOT::Tree ROOT::Physics ROOT::EG
+)
 
 install(TARGETS ROOTBranchesDict LIBRARY DESTINATION lib)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libROOTBranchesDict_rdict.pcm DESTINATION lib)
 
-# --- Executable 1: processHipoFiles ---
-add_executable(hipo2root
+# --- Executable 1: hipo2root ---
+add_executable(
+  hipo2root
   ${PROJECT_SOURCE_DIR}/src/hipo2root.cpp
   ${HIPO2ROOT_SOURCES}
+  $<TARGET_OBJECTS:ROOTBranchesDictObjects>
 )
-target_link_libraries(hipo2root
+target_link_libraries(
+  hipo2root
   ${ROOT_LIBRARIES}
   Clas12Root
   Clas12Banks
@@ -84,13 +101,15 @@ else()
 endif()
 
 # --- Executable 2: apply post-processing cuts ---
-add_executable(apply_cuts
+add_executable(
+  apply_cuts
   ${PROJECT_SOURCE_DIR}/src/apply_cuts.cpp
   ${POST_PROCESSING_SOURCES}
-  ${CMAKE_CURRENT_BINARY_DIR}/G__ROOTBranchesDict.cxx
+  $<TARGET_OBJECTS:ROOTBranchesDictObjects>
 )
 target_compile_definitions(apply_cuts PRIVATE POST_PROCESSING_ONLY)
-target_link_libraries(apply_cuts
+target_link_libraries(
+  apply_cuts
   ${ROOT_LIBRARIES}
   EG
   pthread
