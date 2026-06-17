@@ -133,8 +133,8 @@ When supplied, the dataset tag and beam energy are printed visibly on every plot
 For a first inclusive-electron SIDIS test, run:
 
 ```bash
-./build/hipo2root configs/processing/sidis_electrons.json /path/to/hipo/files
-./build/apply_cuts configs/post/electron_sf.json sidis_electrons.root
+./build/hipo2root configs/processing/6.535_sidis_electrons.json /path/to/hipo/files
+./build/apply_cuts configs/post/electron_sf.json 6.535_sidis_electrons.root
 python3 scripts/derive_sampling_fraction.py electron_sf_candidates.root \
   --output configs/post/SF_sigma_cut_params_6.535RGKSKIM1.json \
   --plot-dir calibration_plots/sampling_fraction \
@@ -145,17 +145,9 @@ python3 scripts/derive_sampling_fraction.py electron_sf_candidates.root \
   --torus 1
 ```
 
-The processing config keeps events with at least one reconstructed electron and loose DIS cuts. The `electron_sf.json` post-processing config targets RGK outbending data, selects one FD electron per event, applies common DC-edge and RGK ECAL fiducial cuts, and writes explicit selected-electron branches such as `electronP`, `electronSector`, and `electronEPCAL`. It deliberately applies no sampling-fraction cuts. The derivation script then applies the minimum-PCAL and diagonal preselection before fitting the sigma band.
+The energy-specific processing configs keep events with at least one reconstructed electron, apply QADB filtering, and use loose DIS cuts. Use `10.604_sidis_electrons.json` for the corresponding RGA energy. The `electron_sf.json` post-processing config targets RGK outbending data, selects one FD electron per event, applies common DC-edge and RGK ECAL fiducial cuts, and writes explicit selected-electron branches such as `electronP`, `electronSector`, and `electronEPCAL`. It deliberately applies no sampling-fraction cuts. The derivation script then applies the minimum-PCAL and diagonal preselection before fitting the sigma band.
 
 `apply_cuts` prints progress every 1,000,000 input rows by default. Pass a third argument to change that interval, or `0` to disable progress messages.
-
-Sampling-fraction mu/sigma parameters can be derived with:
-
-```bash
-python3 scripts/derive_sampling_fraction.py rec.root \
-  --output configs/post/SF_sigma_cut_params_REC.json \
-  --plot-dir calibration_plots/sampling_fraction
-```
 
 For the 6.535 GeV RGK test sample, use:
 
@@ -175,7 +167,7 @@ The defaults reproduce the established preselection: `E_PCAL > 0.07 GeV`, follow
 Use `--gemc` when one sector-independent MC fit should be copied to all six sectors. The output JSON contains `sector_1` through `sector_6`, each with `mu_coeffs` and `sigma_coeffs`. After deriving the file, apply all three independent SF cuts with:
 
 ```bash
-./build/apply_cuts configs/post/electron_sf_apply.json sidis_electrons.root
+./build/apply_cuts configs/post/electron_sf_apply.json 6.535_sidis_electrons.root
 ```
 
 The application config resolves `sigma.paramsFile` relative to its own directory. Its electron cut list exposes `minPcalEnergy`, `samplingFractionDiagonal`, and `samplingFractionSigma` separately, so any component can be omitted for a systematic check.
