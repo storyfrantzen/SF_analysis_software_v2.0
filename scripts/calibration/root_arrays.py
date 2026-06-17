@@ -49,6 +49,8 @@ def define_common_electron_sf(df):
         return (
             df.Define("sf_p", "electronP")
             .Define("sf_sector", "electronSector")
+            .Define("sf_epcal", "electronEPCAL")
+            .Define("sf_ecin", "electronEECIN")
             .Define("sampling_fraction", "(electronEPCAL + electronEECIN + electronEECOUT) / electronP")
             .Filter("electronP > 0 && sampling_fraction > 0 && electronSector >= 1 && electronSector <= 6")
         )
@@ -57,6 +59,8 @@ def define_common_electron_sf(df):
         df.Filter("rec.pid == 11")
         .Define("sf_p", "rec.p")
         .Define("sf_sector", "rec.sector")
+        .Define("sf_epcal", "rec.E_PCAL")
+        .Define("sf_ecin", "rec.E_ECIN")
         .Define("sampling_fraction", "(rec.E_PCAL + rec.E_ECIN + rec.E_ECOUT) / rec.p")
         .Filter("rec.p > 0 && sampling_fraction > 0 && rec.sector >= 1 && rec.sector <= 6")
     )

@@ -18,6 +18,11 @@ class SamplingFractionConfig:
     momentum_bins: int = 22
     poly_degree: int = 2
     min_entries: int = 30
+    min_pcal_energy: float = 0.07
+    diagonal_y_scale: float = 1.0
+    diagonal_x_scale: float = 1.0
+    diagonal_threshold: float = 0.2
+    diagonal_momentum_threshold: float = 4.5
 
 
 @dataclass(frozen=True)
@@ -30,7 +35,38 @@ def electron_arrays(input_file: Path,
                     tree: str,
                     max_rows: int | None) -> dict[str, np.ndarray]:
     df = define_common_electron_sf(load_dataframe(input_file, tree))
-    return arrays_from_dataframe(df, ["sf_p", "sf_sector", "sampling_fraction"], max_rows=max_rows)
+    return arrays_from_dataframe(
+        df,
+        ["sf_p", "sf_sector", "sf_epcal", "sf_ecin", "sampling_fraction"],
+        max_rows=max_rows,
+    )
+
+
+def sf_diagonal_mask(arrays: dict[str, np.ndarray],
+                     cfg: SamplingFractionConfig) -> np.ndarray:
+    p = arrays["sf_p"]
+    e_pcal = arrays["sf_epcal"]
+    e_ecin = arrays["sf_ecin"]
+    finite = np.isfinite(p) & np.isfinite(e_pcal) & np.isfinite(e_ecin) & (p > 0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        diagonal_value = (
+            cfg.diagonal_y_scale * e_pcal / p
+            + cfg.diagonal_x_scale * e_ecin / p
+        )
+    return finite & (
+        (p < cfg.diagonal_momentum_threshold)
+        | (diagonal_value > cfg.diagonal_threshold)
+    )
+
+
+def sf_preselection_mask(arrays: dict[str, np.ndarray],
+                         cfg: SamplingFractionConfig) -> np.ndarray:
+    e_pcal = arrays["sf_epcal"]
+    return sf_diagonal_mask(arrays, cfg) & (e_pcal > cfg.min_pcal_energy)
+
+
+def select_arrays(arrays: dict[str, np.ndarray], mask: np.ndarray) -> dict[str, np.ndarray]:
+    return {name: values[mask] for name, values in arrays.items()}
 
 
 def effective_momentum_range(p: np.ndarray,
@@ -100,6 +136,7 @@ def derive_sf_coefficients(arrays: dict[str, np.ndarray],
 
 
 def build_metadata(args: argparse.Namespace,
+                   input_arrays: dict[str, np.ndarray],
                    arrays: dict[str, np.ndarray],
                    cfg: SamplingFractionConfig,
                    requested_momentum_range: tuple[float, float],
@@ -115,6 +152,7 @@ def build_metadata(args: argparse.Namespace,
         "beamEnergy": args.beam_energy,
         "inputFile": str(args.input_file),
         "inputTree": args.tree,
+        "inputElectronCount": int(len(input_arrays["sf_p"])),
         "selectedElectronCount": int(len(arrays["sf_p"])),
         "sectorCounts": sector_counts,
         "sectorIndependentFit": bool(sector_independent),
@@ -125,6 +163,15 @@ def build_metadata(args: argparse.Namespace,
             "polyDegree": cfg.poly_degree,
             "minBinEntries": cfg.min_entries,
             "maxRows": args.max_rows,
+            "preselection": {
+                "minPcalEnergy": cfg.min_pcal_energy,
+                "diagonal": {
+                    "yScale": cfg.diagonal_y_scale,
+                    "xScale": cfg.diagonal_x_scale,
+                    "threshold": cfg.diagonal_threshold,
+                    "momentumThreshold": cfg.diagonal_momentum_threshold,
+                },
+            },
         },
         "notes": args.note,
     }
@@ -211,6 +258,56 @@ def maybe_plot(arrays: dict[str, np.ndarray],
     plt.close(fig)
 
 
+def plot_diagonal_cut(arrays: dict[str, np.ndarray],
+                      cfg: SamplingFractionConfig,
+                      output_dir: Path) -> None:
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LogNorm
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    p = arrays["sf_p"]
+    sector = arrays["sf_sector"].astype(int)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        x = arrays["sf_ecin"] / p
+        y = arrays["sf_epcal"] / p
+    diagonal_pass = sf_diagonal_mask(arrays, cfg)
+    active = p >= cfg.diagonal_momentum_threshold
+
+    fig, axes = plt.subplots(2, 3, figsize=(12, 7.5), sharex=True, sharey=True)
+    x_line = np.linspace(0.0, 0.35, 300)
+    y_line = (
+        cfg.diagonal_threshold - cfg.diagonal_x_scale * x_line
+    ) / cfg.diagonal_y_scale
+    for sec, ax in enumerate(axes.flat, start=1):
+        mask = (sector == sec) & active & np.isfinite(x) & np.isfinite(y)
+        ax.hist2d(
+            x[mask],
+            y[mask],
+            bins=90,
+            range=[[0.0, 0.35], [0.0, 0.35]],
+            cmap="cividis",
+            norm=LogNorm(),
+            cmin=1,
+        )
+        visible_line = (y_line >= 0.0) & (y_line <= 0.35)
+        ax.plot(x_line[visible_line], y_line[visible_line], color="red", lw=1.8)
+        total = int(np.count_nonzero(mask))
+        passed = int(np.count_nonzero(mask & diagonal_pass))
+        retained = 100.0 * passed / total if total else 0.0
+        ax.set_title(f"Sector {sec}: {retained:.1f}% retained")
+        ax.set_xlabel(r"$E_{ECIN}/p$")
+        ax.set_ylabel(r"$E_{PCAL}/p$")
+        ax.grid(True, alpha=0.2)
+
+    fig.suptitle(
+        f"Diagonal SF cut for p >= {cfg.diagonal_momentum_threshold:g} GeV "
+        f"(accepted above red line)"
+    )
+    fig.tight_layout()
+    fig.savefig(output_dir / "sampling_fraction_diagonal_cut.png", dpi=180)
+    plt.close(fig)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Derive electron sampling-fraction mu/sigma parameters.")
     parser.add_argument("input_file", type=Path)
@@ -224,6 +321,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--p-bins", type=int, default=22)
     parser.add_argument("--poly-degree", type=int, default=2)
     parser.add_argument("--min-bin-entries", type=int, default=30)
+    parser.add_argument("--min-pcal-energy", type=float, default=0.07)
+    parser.add_argument("--diagonal-y-scale", type=float, default=1.0)
+    parser.add_argument("--diagonal-x-scale", type=float, default=1.0)
+    parser.add_argument("--diagonal-threshold", type=float, default=0.2)
+    parser.add_argument("--diagonal-momentum-threshold", type=float, default=4.5)
     parser.add_argument("--dataset-tag", default="", help="Short label for this parameter set, e.g. 6.535RGKSKIM1.")
     parser.add_argument("--beam-energy", type=float, help="Beam energy associated with this parameter set.")
     parser.add_argument("--run-group", default="", help="Run group or campaign label, e.g. RGK.")
@@ -235,14 +337,36 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.diagonal_y_scale == 0:
+        raise ValueError("diagonal-y-scale must be nonzero")
     requested_momentum_range = (args.p_min, args.p_max)
-    arrays = electron_arrays(args.input_file, args.tree, args.max_rows)
+    input_arrays = electron_arrays(args.input_file, args.tree, args.max_rows)
+    preselection = sf_preselection_mask(
+        input_arrays,
+        SamplingFractionConfig(
+            min_pcal_energy=args.min_pcal_energy,
+            diagonal_y_scale=args.diagonal_y_scale,
+            diagonal_x_scale=args.diagonal_x_scale,
+            diagonal_threshold=args.diagonal_threshold,
+            diagonal_momentum_threshold=args.diagonal_momentum_threshold,
+        ),
+    )
+    arrays = select_arrays(input_arrays, preselection)
+    print(
+        f"SF preselection retained {len(arrays['sf_p'])}/{len(input_arrays['sf_p'])} "
+        f"electrons ({100.0 * len(arrays['sf_p']) / max(1, len(input_arrays['sf_p'])):.2f}%)"
+    )
     momentum_range = effective_momentum_range(arrays["sf_p"], requested_momentum_range)
     cfg = SamplingFractionConfig(
         momentum_range=momentum_range,
         momentum_bins=args.p_bins,
         poly_degree=args.poly_degree,
         min_entries=args.min_bin_entries,
+        min_pcal_energy=args.min_pcal_energy,
+        diagonal_y_scale=args.diagonal_y_scale,
+        diagonal_x_scale=args.diagonal_x_scale,
+        diagonal_threshold=args.diagonal_threshold,
+        diagonal_momentum_threshold=args.diagonal_momentum_threshold,
     )
     if momentum_range != requested_momentum_range:
         print(
@@ -253,6 +377,7 @@ def main() -> None:
     output = {
         "_metadata": build_metadata(
             args,
+            input_arrays,
             arrays,
             cfg,
             requested_momentum_range,
@@ -268,6 +393,7 @@ def main() -> None:
     print(f"Wrote sampling-fraction coefficients to {args.output}")
 
     if args.plot_dir:
+        plot_diagonal_cut(input_arrays, cfg, args.plot_dir)
         maybe_plot(arrays, coeffs, cfg, args.gemc, args.plot_dir)
 
 

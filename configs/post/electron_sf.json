@@ -11,16 +11,6 @@
         "ECAL_RGK"
     ],
 
-    "samplingFraction": {
-        "enabled": false,
-        "numSigma": 3.5,
-        "triangleYScale": 1.0,
-        "triangleXScale": 1.0,
-        "triangleHypotenuse": 0.2,
-        "htccThreshold": 4.5,
-        "params": {}
-    },
-
     "channel": {
         "name": "electron_sf",
         "particles": [

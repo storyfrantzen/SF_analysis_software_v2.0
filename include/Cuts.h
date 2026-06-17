@@ -72,6 +72,7 @@ struct PostCutConfig {
     std::vector<std::string> fiducialCuts;
 
     bool sfEnabled = false;
+    double sfMinPcalEnergy = 0.07;
     double sfNumSigma = 3.5;
     double sfTriangleYScale = 1.0;
     double sfTriangleXScale = 1.0;
@@ -150,6 +151,7 @@ private:
     double evalPoly(const std::vector<double>& coeffs, double p) const;
     double sfMu(int sector, double p) const;
     double sfSigma(int sector, double p) const;
+    bool passSFMinPcalCut(double ePCAL) const;
     bool passSFSigmaCut(int sector, double sf, double p) const;
     bool passSFTriangleCut(double ePCAL, double eECIN, double p) const;
 };

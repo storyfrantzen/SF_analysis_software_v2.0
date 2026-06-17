@@ -1,6 +1,7 @@
 #include "Cuts.h"
 
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -229,11 +230,37 @@ PostCutConfig PostCutConfig::fromFile(const std::string& filename) {
     if (j.contains("samplingFraction")) {
         const auto& sf = j["samplingFraction"];
         cfg.sfEnabled = sf.value("enabled", cfg.sfEnabled);
+        cfg.sfMinPcalEnergy = sf.value("minPcalEnergy", cfg.sfMinPcalEnergy);
         cfg.sfNumSigma = sf.value("numSigma", cfg.sfNumSigma);
         cfg.sfTriangleYScale = sf.value("triangleYScale", cfg.sfTriangleYScale);
         cfg.sfTriangleXScale = sf.value("triangleXScale", cfg.sfTriangleXScale);
         cfg.sfTriangleHypotenuse = sf.value("triangleHypotenuse", cfg.sfTriangleHypotenuse);
         cfg.sfHtccThreshold = sf.value("htccThreshold", cfg.sfHtccThreshold);
+
+        if (sf.contains("diagonal")) {
+            const auto& diagonal = sf["diagonal"];
+            cfg.sfTriangleYScale = diagonal.value("yScale", cfg.sfTriangleYScale);
+            cfg.sfTriangleXScale = diagonal.value("xScale", cfg.sfTriangleXScale);
+            cfg.sfTriangleHypotenuse = diagonal.value("threshold", cfg.sfTriangleHypotenuse);
+            cfg.sfHtccThreshold = diagonal.value("momentumThreshold", cfg.sfHtccThreshold);
+        }
+        if (sf.contains("sigma")) {
+            const auto& sigma = sf["sigma"];
+            cfg.sfNumSigma = sigma.value("numSigma", cfg.sfNumSigma);
+            if (sigma.contains("params")) cfg.sfParams = sigma["params"];
+            if (sigma.contains("paramsFile")) {
+                std::filesystem::path paramsPath = sigma["paramsFile"].get<std::string>();
+                if (paramsPath.is_relative()) {
+                    paramsPath = std::filesystem::path(filename).parent_path() / paramsPath;
+                }
+                std::ifstream paramsFile(paramsPath);
+                if (!paramsFile.is_open()) {
+                    throw std::runtime_error("Cannot open sampling-fraction parameter file: " +
+                                             paramsPath.string());
+                }
+                paramsFile >> cfg.sfParams;
+            }
+        }
         if (sf.contains("params")) cfg.sfParams = sf["params"];
     }
 
@@ -309,7 +336,7 @@ Cuts::Cuts(PostCutConfig cfg) : cfg_(std::move(cfg)) {
     }};
 
     for (const auto& tag : cfg_.fiducialCuts) enableFiducialTag(tag);
-    if (cfg_.sfEnabled) loadSamplingFractionParams(cfg_.sfParams);
+    if (!cfg_.sfParams.empty()) loadSamplingFractionParams(cfg_.sfParams);
 }
 
 void Cuts::enableFiducialTag(const std::string& tag) {
@@ -385,6 +412,14 @@ CutDecision Cuts::evaluateParticle(const RecBranches& p,
                              passesCVTPhiVeto(p, cut.min, cut.max), name);
         } else if (cut.op == "fiducial") {
             decision.require(evaluateFiducial(p).pass, name);
+        } else if (cut.op == "minPcalEnergy") {
+            decision.require(p.det != 1 || passSFMinPcalCut(p.E_PCAL), name);
+        } else if (cut.op == "samplingFractionDiagonal") {
+            decision.require(p.det != 1 || passSFTriangleCut(p.E_PCAL, p.E_ECIN, p.p), name);
+        } else if (cut.op == "samplingFractionSigma") {
+            const double sf = (p.E_PCAL + p.E_ECIN + p.E_ECOUT) / p.p;
+            decision.require(p.det != 1 ||
+                             (!sfCoeffs_.empty() && passSFSigmaCut(p.sector, sf, p.p)), name);
         } else if (cut.op == "samplingFraction") {
             decision.require(evaluateSamplingFraction(p).pass, name);
         } else {
@@ -538,7 +573,7 @@ bool Cuts::passesSamplingFraction(const RecBranches& e) const {
 CutDecision Cuts::evaluateSamplingFraction(const RecBranches& e) const {
     CutDecision decision;
     if (!cfg_.sfEnabled || sfCoeffs_.empty() || e.det != 1) return decision;
-    decision.require(e.E_PCAL > 0.07, "sampling_fraction.min_pcal");
+    decision.require(passSFMinPcalCut(e.E_PCAL), "sampling_fraction.min_pcal");
     const double sf = (e.E_PCAL + e.E_ECIN + e.E_ECOUT) / e.p;
     decision.require(passSFTriangleCut(e.E_PCAL, e.E_ECIN, e.p),
                      "sampling_fraction.triangle");
@@ -599,7 +634,12 @@ bool Cuts::passSFSigmaCut(int sector, double sf, double p) const {
     return sf > mu - cfg_.sfNumSigma * sigma && sf < mu + cfg_.sfNumSigma * sigma;
 }
 
+bool Cuts::passSFMinPcalCut(double ePCAL) const {
+    return isFinite(ePCAL) && ePCAL > cfg_.sfMinPcalEnergy;
+}
+
 bool Cuts::passSFTriangleCut(double ePCAL, double eECIN, double p) const {
+    if (!isFinite(ePCAL) || !isFinite(eECIN) || !isFinite(p) || p <= 0) return false;
     if (p < cfg_.sfHtccThreshold) return true;
     const double y = ePCAL / p;
     const double x = eECIN / p;
