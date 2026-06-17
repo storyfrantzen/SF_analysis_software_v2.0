@@ -2,7 +2,7 @@
     "outputFile": "electron_sf_candidates.root",
     "inputTree": "Events",
     "outputTree": "Events",
-    "beamEnergy": 10.6,
+    "beamEnergy": 6.535,
     "torus": 1,
     "saveFailedCandidates": false,
 

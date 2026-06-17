@@ -2,7 +2,7 @@
     "outputFile": "sidis_electrons.root",
     "treeName": "Events",
 
-    "beamEnergy": 10.6,
+    "beamEnergy": 6.535,
 
     "finalState": [
         { "pid": 11, "count": 1, "mode": "atleast" }
