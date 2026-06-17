@@ -27,5 +27,5 @@ def save_plot(fig,
     if dataset_tag:
         metadata["DatasetTag"] = dataset_tag
     if beam_energy is not None:
-        metadata["BeamEnergyGeV"] = f"{beam_energy:g}"
+        metadata["BeamEnergy"] = f"{beam_energy:g}"
     fig.savefig(output_path, dpi=dpi, metadata=metadata)
