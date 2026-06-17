@@ -33,6 +33,28 @@ def electron_arrays(input_file: Path,
     return arrays_from_dataframe(df, ["sf_p", "sf_sector", "sampling_fraction"], max_rows=max_rows)
 
 
+def effective_momentum_range(p: np.ndarray,
+                             requested_range: tuple[float, float]) -> tuple[float, float]:
+    requested_min, requested_max = requested_range
+    if requested_min >= requested_max:
+        raise ValueError("p-min must be less than p-max")
+
+    finite_p = p[np.isfinite(p)]
+    if finite_p.size == 0:
+        raise ValueError("Cannot determine momentum range from an empty sample")
+
+    sample_min = float(np.min(finite_p))
+    sample_max = float(np.max(finite_p))
+    effective_min = max(requested_min, sample_min)
+    effective_max = min(requested_max, sample_max)
+    if effective_min >= effective_max:
+        raise ValueError(
+            f"Requested momentum range [{requested_min}, {requested_max}] does not overlap "
+            f"sample range [{sample_min}, {sample_max}]"
+        )
+    return effective_min, effective_max
+
+
 def sampling_fraction_profile(p: np.ndarray,
                               sf: np.ndarray,
                               p_edges: np.ndarray,
@@ -80,6 +102,7 @@ def derive_sf_coefficients(arrays: dict[str, np.ndarray],
 def build_metadata(args: argparse.Namespace,
                    arrays: dict[str, np.ndarray],
                    cfg: SamplingFractionConfig,
+                   requested_momentum_range: tuple[float, float],
                    sector_independent: bool) -> dict[str, object]:
     sector = arrays["sf_sector"].astype(int)
     sector_counts = {
@@ -97,6 +120,7 @@ def build_metadata(args: argparse.Namespace,
         "sectorIndependentFit": bool(sector_independent),
         "fitConfig": {
             "momentumRange": list(cfg.momentum_range),
+            "requestedMomentumRange": list(requested_momentum_range),
             "momentumBins": cfg.momentum_bins,
             "polyDegree": cfg.poly_degree,
             "minBinEntries": cfg.min_entries,
@@ -211,16 +235,29 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    requested_momentum_range = (args.p_min, args.p_max)
+    arrays = electron_arrays(args.input_file, args.tree, args.max_rows)
+    momentum_range = effective_momentum_range(arrays["sf_p"], requested_momentum_range)
     cfg = SamplingFractionConfig(
-        momentum_range=(args.p_min, args.p_max),
+        momentum_range=momentum_range,
         momentum_bins=args.p_bins,
         poly_degree=args.poly_degree,
         min_entries=args.min_bin_entries,
     )
-    arrays = electron_arrays(args.input_file, args.tree, args.max_rows)
+    if momentum_range != requested_momentum_range:
+        print(
+            f"Clamped requested momentum range {requested_momentum_range} "
+            f"to sample range {momentum_range}"
+        )
     coeffs = derive_sf_coefficients(arrays, cfg, sector_independent=args.gemc)
     output = {
-        "_metadata": build_metadata(args, arrays, cfg, sector_independent=args.gemc),
+        "_metadata": build_metadata(
+            args,
+            arrays,
+            cfg,
+            requested_momentum_range,
+            sector_independent=args.gemc,
+        ),
         **coeffs,
     }
 
