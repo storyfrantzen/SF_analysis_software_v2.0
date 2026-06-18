@@ -23,7 +23,17 @@ class MomentumForm(str, Enum):
 
     @property
     def n_parameters(self) -> int:
-        return 3 if self in (MomentumForm.INV_P2, MomentumForm.POLY_P2) else 2
+        return len(self.momentum_powers)
+
+    @property
+    def momentum_powers(self) -> tuple[int, ...]:
+        if self == MomentumForm.INV_P2:
+            return (0, -1, -2)
+        if self == MomentumForm.INV_P:
+            return (0, -1)
+        if self == MomentumForm.POLY_P2:
+            return (0, 1, 2)
+        return (0, 1)
 
     def design_matrix(self, p: np.ndarray) -> np.ndarray:
         if self == MomentumForm.INV_P2:

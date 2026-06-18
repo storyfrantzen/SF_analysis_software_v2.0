@@ -83,13 +83,18 @@ def evaluate_correction(term: dict[str, object],
                         p: np.ndarray,
                         theta: np.ndarray) -> np.ndarray:
     """Evaluate one exported correction term using the C++ correction convention."""
-    form = MomentumForm(str(term["form"]))
+    if "momentumPowers" in term:
+        momentum_powers = tuple(int(power) for power in term["momentumPowers"])
+    else:
+        # Accept correction files generated before the numeric-basis schema.
+        momentum_powers = MomentumForm(str(term["form"])).momentum_powers
     coeffs = term["coeffs"]
     theta_parameters = np.column_stack([
         np.polynomial.polynomial.polyval(theta, coeffs[str(i)])
-        for i in range(form.n_parameters)
+        for i in range(len(momentum_powers))
     ])
-    return np.sum(form.design_matrix(p) * theta_parameters, axis=1)
+    momentum_terms = np.column_stack([np.power(p, power) for power in momentum_powers])
+    return np.sum(momentum_terms * theta_parameters, axis=1)
 
 
 def filtered_arrays(input_file: Path,
@@ -155,7 +160,7 @@ def fit_detector(arrays: dict[str, np.ndarray],
             coeffs[str(i)] = json_ready(weighted_polyfit_ascending(theta_array, y, order, yerr))
 
         key = f"p_{residual_name}_{detector_name}"
-        output[key] = {"form": form.value, "coeffs": coeffs}
+        output[key] = {"momentumPowers": list(form.momentum_powers), "coeffs": coeffs}
 
     return output
 

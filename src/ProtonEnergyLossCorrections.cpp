@@ -27,12 +27,12 @@ ProtonEnergyLossCorrections::ProtonEnergyLossCorrections(const nlohmann::json& c
     enabled_ = fd_.enabled() || cd_.enabled();
 }
 
-ProtonEnergyLossCorrections::Form
-ProtonEnergyLossCorrections::parseForm(const std::string& form) {
-    if (form == "[0] + [1]/p + [2]/(p^2)") return Form::InvP2;
-    if (form == "[0] + [1]/p") return Form::InvP;
-    if (form == "[0] + [1]*p + [2]*p^2") return Form::PolyP2;
-    if (form == "[0] + [1]*p") return Form::PolyP;
+std::vector<int>
+ProtonEnergyLossCorrections::parseLegacyForm(const std::string& form) {
+    if (form == "[0] + [1]/p + [2]/(p^2)") return {0, -1, -2};
+    if (form == "[0] + [1]/p") return {0, -1};
+    if (form == "[0] + [1]*p + [2]*p^2") return {0, 1, 2};
+    if (form == "[0] + [1]*p") return {0, 1};
     throw std::runtime_error("Unsupported correction form: " + form);
 }
 
@@ -43,11 +43,17 @@ ProtonEnergyLossCorrections::parseTerm(const nlohmann::json& corrections,
     if (!corrections.contains(key)) return term;
 
     const auto& entry = corrections.at(key);
-    term.form = parseForm(entry.at("form").get<std::string>());
+    if (entry.contains("momentumPowers")) {
+        term.momentumPowers = entry.at("momentumPowers").get<std::vector<int>>();
+    } else {
+        term.momentumPowers = parseLegacyForm(entry.at("form").get<std::string>());
+    }
 
     const auto& coeffs = entry.at("coeffs");
-    for (auto it = coeffs.begin(); it != coeffs.end(); ++it) {
-        term.thetaCoeffs.push_back(it.value().get<std::vector<double>>());
+    for (std::size_t i = 0; i < term.momentumPowers.size(); ++i) {
+        term.thetaCoeffs.push_back(
+            coeffs.at(std::to_string(i)).get<std::vector<double>>()
+        );
     }
     return term;
 }
@@ -78,21 +84,11 @@ double ProtonEnergyLossCorrections::evaluateTerm(const CorrectionTerm& term,
                                                  double thetaDeg) {
     if (!term.enabled()) return 0.0;
     const std::vector<double> c = coefficientsAtTheta(term, thetaDeg);
-
-    switch (term.form) {
-        case Form::InvP2:
-            return c[0] + c[1] / p + c[2] / (p * p);
-        case Form::InvP:
-            return c[0] + c[1] / p;
-        case Form::PolyP2:
-            return c[0] + c[1] * p + c[2] * p * p;
-        case Form::PolyP:
-            return c[0] + c[1] * p;
-        case Form::None:
-            return 0.0;
+    double value = 0.0;
+    for (std::size_t i = 0; i < c.size(); ++i) {
+        value += c[i] * std::pow(p, term.momentumPowers[i]);
     }
-
-    return 0.0;
+    return value;
 }
 
 const ProtonEnergyLossCorrections::DetectorCorrectionSet*

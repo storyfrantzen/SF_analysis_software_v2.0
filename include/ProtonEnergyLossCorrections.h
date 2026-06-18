@@ -24,19 +24,13 @@ public:
     CorrectedKinematics correct(double p, double thetaRad, double phiRad, int detector) const;
 
 private:
-    enum class Form {
-        None,
-        InvP,
-        InvP2,
-        PolyP,
-        PolyP2
-    };
-
     struct CorrectionTerm {
-        Form form = Form::None;
+        std::vector<int> momentumPowers;
         std::vector<std::vector<double>> thetaCoeffs;
 
-        bool enabled() const { return form != Form::None && !thetaCoeffs.empty(); }
+        bool enabled() const {
+            return !momentumPowers.empty() && momentumPowers.size() == thetaCoeffs.size();
+        }
     };
 
     struct DetectorCorrectionSet {
@@ -53,7 +47,7 @@ private:
     DetectorCorrectionSet fd_;
     DetectorCorrectionSet cd_;
 
-    static Form parseForm(const std::string& form);
+    static std::vector<int> parseLegacyForm(const std::string& form);
     static CorrectionTerm parseTerm(const nlohmann::json& corrections,
                                     const std::string& key);
     static double evalThetaPolynomial(const std::vector<double>& coeffs,
