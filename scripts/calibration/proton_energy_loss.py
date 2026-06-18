@@ -13,6 +13,7 @@ from .fit_utils import (
     fit_linear_form,
     fixed_edges,
     json_ready,
+    MomentumForm,
     weighted_polyfit_ascending,
 )
 from .plot_utils import save_plot
@@ -26,7 +27,7 @@ class DetectorFitConfig:
     momentum_range: tuple[float, float]
     theta_bins: int
     momentum_bins: int
-    residual_forms: dict[str, str]
+    residual_forms: dict[str, MomentumForm]
     theta_poly_orders: dict[str, int]
     residual_ranges: dict[str, tuple[float, float]]
 
@@ -39,9 +40,9 @@ DEFAULT_CONFIGS = {
         theta_bins=24,
         momentum_bins=28,
         residual_forms={
-            "delta_p": "[0] + [1]/p + [2]/(p^2)",
-            "delta_theta": "[0] + [1]/p",
-            "delta_phi": "[0] + [1]/p + [2]/(p^2)",
+            "delta_p": MomentumForm.INV_P2,
+            "delta_theta": MomentumForm.INV_P,
+            "delta_phi": MomentumForm.INV_P2,
         },
         theta_poly_orders={"delta_p": 1, "delta_theta": 3, "delta_phi": 4},
         residual_ranges={
@@ -57,9 +58,9 @@ DEFAULT_CONFIGS = {
         theta_bins=10,
         momentum_bins=22,
         residual_forms={
-            "delta_p": "[0] + [1]*p + [2]*p^2",
-            "delta_theta": "[0] + [1]/p",
-            "delta_phi": "[0] + [1]/p + [2]/(p^2)",
+            "delta_p": MomentumForm.POLY_P2,
+            "delta_theta": MomentumForm.INV_P,
+            "delta_phi": MomentumForm.INV_P2,
         },
         theta_poly_orders={"delta_p": 2, "delta_theta": 2, "delta_phi": 2},
         residual_ranges={
@@ -76,6 +77,19 @@ RESIDUAL_COLUMNS = {
     "delta_theta": "delta_theta_fit",
     "delta_phi": "delta_phi_fit",
 }
+
+
+def evaluate_correction(term: dict[str, object],
+                        p: np.ndarray,
+                        theta: np.ndarray) -> np.ndarray:
+    """Evaluate one exported correction term using the C++ correction convention."""
+    form = MomentumForm(str(term["form"]))
+    coeffs = term["coeffs"]
+    theta_parameters = np.column_stack([
+        np.polynomial.polynomial.polyval(theta, coeffs[str(i)])
+        for i in range(form.n_parameters)
+    ])
+    return np.sum(form.design_matrix(p) * theta_parameters, axis=1)
 
 
 def filtered_arrays(input_file: Path,
@@ -114,7 +128,7 @@ def fit_detector(arrays: dict[str, np.ndarray],
     output: dict[str, dict[str, object]] = {}
     for residual_name, residual_column in RESIDUAL_COLUMNS.items():
         form = cfg.residual_forms[residual_name]
-        n_params = form.count("[")
+        n_params = form.n_parameters
         param_values = [[] for _ in range(n_params)]
         param_errors = [[] for _ in range(n_params)]
         theta_centers = []
@@ -141,7 +155,7 @@ def fit_detector(arrays: dict[str, np.ndarray],
             coeffs[str(i)] = json_ready(weighted_polyfit_ascending(theta_array, y, order, yerr))
 
         key = f"p_{residual_name}_{detector_name}"
-        output[key] = {"form": form, "coeffs": coeffs}
+        output[key] = {"form": form.value, "coeffs": coeffs}
 
     return output
 
@@ -149,6 +163,8 @@ def fit_detector(arrays: dict[str, np.ndarray],
 def maybe_plot(arrays: dict[str, np.ndarray],
                detector_name: str,
                cfg: DetectorFitConfig,
+               corrections: dict[str, dict[str, object]],
+               adaptive_theta: bool,
                output_dir: Path,
                dataset_tag: str = "",
                beam_energy: float | None = None) -> None:
@@ -172,6 +188,55 @@ def maybe_plot(arrays: dict[str, np.ndarray],
         beam_energy,
     )
     plt.close(fig)
+
+    theta_edges = (
+        adaptive_edges(theta, cfg.theta_bins, cfg.theta_range)
+        if adaptive_theta
+        else fixed_edges(cfg.theta_bins, cfg.theta_range)
+    )
+    for residual_name, residual_column in RESIDUAL_COLUMNS.items():
+        term = corrections[f"p_{residual_name}_{detector_name}"]
+        applied_correction = evaluate_correction(term, p, theta)
+        before = arrays[residual_column]
+        after = before - applied_correction
+
+        n_bins = len(theta_edges) - 1
+        n_cols = min(5, n_bins)
+        n_rows = int(np.ceil(n_bins / n_cols))
+        fig, axes = plt.subplots(
+            n_rows,
+            n_cols,
+            figsize=(3.4 * n_cols, 2.8 * n_rows),
+            sharex=True,
+            sharey=True,
+            squeeze=False,
+        )
+        residual_lo, residual_hi = cfg.residual_ranges[residual_name]
+        histogram_edges = np.linspace(residual_lo, residual_hi, 61)
+        for i, (theta_lo, theta_hi) in enumerate(zip(theta_edges[:-1], theta_edges[1:])):
+            ax = axes.flat[i]
+            upper = theta <= theta_hi if i == n_bins - 1 else theta < theta_hi
+            mask = (theta >= theta_lo) & upper
+            ax.hist(before[mask], bins=histogram_edges, histtype="step", label="before", color="0.35")
+            ax.hist(after[mask], bins=histogram_edges, histtype="step", label="after", color="tab:blue")
+            ax.axvline(0.0, color="black", linewidth=0.7, alpha=0.6)
+            ax.set_title(f"{theta_lo:.1f}–{theta_hi:.1f}°", fontsize=9)
+            ax.tick_params(labelsize=8)
+        for ax in axes.flat[n_bins:]:
+            ax.set_visible(False)
+        for ax in axes[-1, :]:
+            ax.set_xlabel(residual_name)
+        for ax in axes[:, 0]:
+            ax.set_ylabel("entries")
+        axes.flat[0].legend(fontsize=8)
+        save_plot(
+            fig,
+            output_dir / f"{detector_name}_{residual_name}_before_after_by_theta.png",
+            f"{detector_name} {residual_name}: before/after correction by theta bin",
+            dataset_tag,
+            beam_energy,
+        )
+        plt.close(fig)
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
     for ax, (name, col) in zip(axes, RESIDUAL_COLUMNS.items()):
@@ -215,20 +280,21 @@ def main() -> None:
     for detector_name in detectors:
         cfg = DEFAULT_CONFIGS[detector_name]
         arrays = filtered_arrays(args.input_file, args.tree, cfg, args.max_rows)
-        combined.update(
-            fit_detector(
-                arrays,
-                detector_name,
-                cfg,
-                adaptive_theta=not args.fixed_theta_bins,
-                min_entries=args.min_bin_entries,
-            )
+        detector_corrections = fit_detector(
+            arrays,
+            detector_name,
+            cfg,
+            adaptive_theta=not args.fixed_theta_bins,
+            min_entries=args.min_bin_entries,
         )
+        combined.update(detector_corrections)
         if args.plot_dir:
             maybe_plot(
                 arrays,
                 detector_name,
                 cfg,
+                detector_corrections,
+                not args.fixed_theta_bins,
                 args.plot_dir,
                 args.dataset_tag,
                 args.beam_energy,

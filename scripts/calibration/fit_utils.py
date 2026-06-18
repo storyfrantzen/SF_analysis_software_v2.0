@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Iterable
 
 import numpy as np
@@ -12,6 +13,26 @@ class BinnedProfile:
     means: np.ndarray
     errors: np.ndarray
     counts: np.ndarray
+
+
+class MomentumForm(str, Enum):
+    INV_P2 = "[0] + [1]/p + [2]/(p^2)"
+    INV_P = "[0] + [1]/p"
+    POLY_P2 = "[0] + [1]*p + [2]*p^2"
+    POLY_P = "[0] + [1]*p"
+
+    @property
+    def n_parameters(self) -> int:
+        return 3 if self in (MomentumForm.INV_P2, MomentumForm.POLY_P2) else 2
+
+    def design_matrix(self, p: np.ndarray) -> np.ndarray:
+        if self == MomentumForm.INV_P2:
+            return np.column_stack([np.ones_like(p), 1.0 / p, 1.0 / (p * p)])
+        if self == MomentumForm.INV_P:
+            return np.column_stack([np.ones_like(p), 1.0 / p])
+        if self == MomentumForm.POLY_P2:
+            return np.column_stack([np.ones_like(p), p, p * p])
+        return np.column_stack([np.ones_like(p), p])
 
 
 def finite_mask(*arrays: np.ndarray) -> np.ndarray:
@@ -89,21 +110,13 @@ def weighted_polyfit_descending(x: np.ndarray,
     return [float(v) for v in np.polyfit(x[mask], y[mask], degree, w=weights)]
 
 
-def design_matrix(p: np.ndarray, form: str) -> np.ndarray:
-    if form == "[0] + [1]/p + [2]/(p^2)":
-        return np.column_stack([np.ones_like(p), 1.0 / p, 1.0 / (p * p)])
-    if form == "[0] + [1]/p":
-        return np.column_stack([np.ones_like(p), 1.0 / p])
-    if form == "[0] + [1]*p + [2]*p^2":
-        return np.column_stack([np.ones_like(p), p, p * p])
-    if form == "[0] + [1]*p":
-        return np.column_stack([np.ones_like(p), p])
-    raise ValueError(f"Unsupported correction form: {form}")
+def design_matrix(p: np.ndarray, form: MomentumForm | str) -> np.ndarray:
+    return MomentumForm(form).design_matrix(p)
 
 
 def fit_linear_form(p: np.ndarray,
                     y: np.ndarray,
-                    form: str,
+                    form: MomentumForm | str,
                     yerr: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
     mask = finite_mask(p, y) & (p != 0)
     if yerr is not None:
