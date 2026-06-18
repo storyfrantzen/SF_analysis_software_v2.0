@@ -119,7 +119,7 @@ Correction parameters can be derived from matched REC/GEMC ROOT rows with:
 ```bash
 python3 scripts/derive_proton_energy_loss.py matched.root \
   --detector both \
-  --output configs/processing/protonEnergyLoss_params.json \
+  --output parameters/proton_energy_loss/protonEnergyLoss_params.json \
   --plot-dir calibration_plots/proton_eloss \
   --dataset-tag 6.535RGK_GEMC1 \
   --beam-energy 6.535
@@ -136,7 +136,7 @@ For a first inclusive-electron SIDIS test, run:
 ./build/hipo2root configs/processing/6.535_sidis_electrons.json /path/to/hipo/files
 ./build/apply_cuts configs/post/electron_sf.json 6.535_sidis_electrons.root
 python3 scripts/derive_sampling_fraction.py electron_sf_candidates.root \
-  --output configs/post/SF_sigma_cut_params_6.535RGKSKIM1.json \
+  --output parameters/sampling_fraction/SF_sigma_cut_params_6.535RGKSKIM1.json \
   --plot-dir calibration_plots/sampling_fraction \
   --dataset-tag 6.535RGKSKIM1 \
   --beam-energy 6.535 \
@@ -153,7 +153,7 @@ For the 6.535 GeV RGK test sample, use:
 
 ```bash
 python3 scripts/derive_sampling_fraction.py electron_sf_candidates.root \
-  --output configs/post/SF_sigma_cut_params_6.535RGKSKIM1.json \
+  --output parameters/sampling_fraction/SF_sigma_cut_params_6.535RGKSKIM1.json \
   --plot-dir calibration_plots/sampling_fraction \
   --dataset-tag 6.535RGKSKIM1 \
   --beam-energy 6.535 \

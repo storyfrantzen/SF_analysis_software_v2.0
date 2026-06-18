@@ -267,7 +267,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("input_file", type=Path)
     parser.add_argument("--tree", default="Events")
     parser.add_argument("--detector", choices=["FD", "CD", "both"], default="both")
-    parser.add_argument("--output", type=Path, default=Path("protonEnergyLoss_params.json"))
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("parameters/proton_energy_loss/protonEnergyLoss_params.json"),
+    )
     parser.add_argument("--plot-dir", type=Path)
     parser.add_argument("--max-rows", type=int)
     parser.add_argument("--fixed-theta-bins", action="store_true")
