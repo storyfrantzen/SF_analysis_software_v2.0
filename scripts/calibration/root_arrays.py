@@ -1,14 +1,44 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 
+def project_dictionary_candidates() -> list[Path]:
+    project_root = Path(__file__).resolve().parents[2]
+    candidates: list[Path] = []
+    override = os.environ.get("ROOTBRANCHES_DICT")
+    if override:
+        candidates.append(Path(override).expanduser())
+
+    build_dirs = [project_root / "build", project_root / "work-build"]
+    build_dirs.extend(sorted(project_root.glob("cmake-build-*")))
+    candidates.extend(build_dir / "libROOTBranchesDict.so" for build_dir in build_dirs)
+    candidates.extend(build_dir / "libROOTBranchesDict.dylib" for build_dir in build_dirs)
+    return candidates
+
+
+def load_project_dictionary(ROOT: Any) -> Path | None:
+    if ROOT.TClass.GetClass("RecBranches"):
+        return None
+
+    for candidate in project_dictionary_candidates():
+        if not candidate.is_file():
+            continue
+        status = int(ROOT.gSystem.Load(str(candidate.resolve())))
+        if status < 0:
+            raise RuntimeError(f"ROOT could not load project dictionary: {candidate}")
+        return candidate
+    return None
+
+
 def import_root() -> Any:
     import ROOT  # type: ignore
 
+    load_project_dictionary(ROOT)
     return ROOT
 
 

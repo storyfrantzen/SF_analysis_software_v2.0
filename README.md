@@ -5,7 +5,7 @@ This project converts CLAS12 hipo files into ROOT TTrees for downstream analysis
 ## Current executable
 
 ```bash
-hipo2root <config.json> <hipo_directory> [max_files]
+hipo2root <config.json> <hipo_directory> [max_files] [progress_events]
 apply_cuts <post_config.json> <input.root> [progress_rows]
 ```
 
@@ -28,6 +28,9 @@ The converter currently supports:
 - loose DIS skim cuts
 - reconstructed-particle branches
 - optional MC truth branches
+
+`hipo2root` reports progress every 1,000,000 input events by default. Pass a
+fourth argument to change that interval, or `0` to disable progress output.
 
 By default, `finalState` rejects reconstructed particles whose PIDs are not listed in the config. Set `inclusive` to `true` for inclusive final-state skims.
 

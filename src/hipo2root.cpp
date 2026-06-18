@@ -3,7 +3,9 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <iomanip>
 #include <memory>
 #include <sstream>
 
@@ -22,11 +24,37 @@
 
 using namespace clas12;
 namespace fs = std::filesystem;
+using Clock = std::chrono::steady_clock;
 
 struct MatchResult {
     int genIdx = -1;
     double angleDeg = NAN;
 };
+
+void printProgress(std::size_t currentFile,
+                   std::size_t totalFiles,
+                   long long nTotal,
+                   long long nWritten,
+                   long long nOutputRows,
+                   long long nQAFail,
+                   long long nFSFail,
+                   long long nSkimFail,
+                   long long nMatched,
+                   bool showMatches,
+                   const Clock::time_point& startTime) {
+    const double elapsed = std::chrono::duration<double>(Clock::now() - startTime).count();
+    const double eventRate = elapsed > 0.0 ? static_cast<double>(nTotal) / elapsed : 0.0;
+
+    std::cout << std::fixed << std::setprecision(1)
+              << "[PROGRESS] files " << currentFile << "/" << totalFiles
+              << "  events " << nTotal
+              << "  accepted " << nWritten
+              << "  rows " << nOutputRows
+              << "  rejected(qa/fs/skim) " << nQAFail << "/" << nFSFail << "/" << nSkimFail;
+    if (showMatches) std::cout << "  matched " << nMatched;
+    std::cout << "  rate " << eventRate << " events/s"
+              << "  elapsed " << elapsed << " s\n";
+}
 
 // ─── Final state filter ───────────────────────────────────────────────────────
 
@@ -125,7 +153,8 @@ void fillRecBranch(RecBranches& recBranches,
 int main(int argc, char** argv) {
 
     if (argc < 3) {
-        std::cerr << "Usage: hipo2root <config.json> <hipo_directory> [max_files]\n";
+        std::cerr << "Usage: hipo2root <config.json> <hipo_directory> "
+                  << "[max_files] [progress_events]\n";
         return 1;
     }
 
@@ -133,6 +162,11 @@ int main(int argc, char** argv) {
     if (argc >= 4) {
         maxFiles = std::stoi(argv[3]);
         if (maxFiles <= 0) maxFiles = -1;
+    }
+    long long progressEvery = 1000000;
+    if (argc >= 5) {
+        progressEvery = std::stoll(argv[4]);
+        if (progressEvery < 0) progressEvery = 0;
     }
 
     Config cfg(argv[1]);
@@ -171,6 +205,9 @@ int main(int argc, char** argv) {
               << "[INFO] Fill MC     : " << (cfg.fillMC ? "yes" : "no") << "\n"
               << "[INFO] Match MC    : " << (cfg.matchMC ? "yes" : "no") << "\n"
               << "[INFO] QADB        : " << (qa->enabled() ? "enabled" : "disabled") << "\n"
+              << "[INFO] Progress    : "
+              << (progressEvery > 0 ? std::to_string(progressEvery) + " events" : "disabled")
+              << "\n"
               << "[INFO] Corrections : "
               << (corrections.enabled() ? "enabled" : "disabled") << "\n";
 
@@ -213,22 +250,54 @@ int main(int argc, char** argv) {
 
     // ── Event loop ────────────────────────────────────────────────────────────
     long long nTotal = 0, nQAFail = 0, nFSFail = 0, nSkimFail = 0, nWritten = 0;
+    long long nOutputRows = 0;
     long long nMatched = 0, nUnmatchedRec = 0, nUnmatchedGen = 0;
+    long long lastProgressEvent = 0;
+    const Clock::time_point startTime = Clock::now();
 
-    for (const auto& hipoPath : hipoFiles) {
+    for (std::size_t fileIndex = 0; fileIndex < hipoFiles.size(); ++fileIndex) {
+        const auto& hipoPath = hipoFiles[fileIndex];
         std::cout << "[INFO] Processing: " << hipoPath << "\n";
 
         clas12::clas12reader c12(hipoPath);
+
+        const auto maybePrintProgress = [&]() {
+            if (progressEvery <= 0 || nTotal - lastProgressEvent < progressEvery) return;
+            printProgress(fileIndex + 1,
+                          hipoFiles.size(),
+                          nTotal,
+                          nWritten,
+                          nOutputRows,
+                          nQAFail,
+                          nFSFail,
+                          nSkimFail,
+                          nMatched,
+                          cfg.fillMC && cfg.matchMC,
+                          startTime);
+            lastProgressEvent = nTotal;
+        };
 
         while (c12.next()) {
             ++nTotal;
 
             const int runNum = c12.runconfig()->getRun();
             const int eventNum = c12.runconfig()->getEvent();
-            if (!qa->pass(runNum, eventNum)) { ++nQAFail; continue; }
+            if (!qa->pass(runNum, eventNum)) {
+                ++nQAFail;
+                maybePrintProgress();
+                continue;
+            }
 
-            if (!passesFinalState(cfg, c12)) { ++nFSFail;   continue; }
-            if (!passesDISSkim(cfg, c12))     { ++nSkimFail; continue; }
+            if (!passesFinalState(cfg, c12)) {
+                ++nFSFail;
+                maybePrintProgress();
+                continue;
+            }
+            if (!passesDISSkim(cfg, c12)) {
+                ++nSkimFail;
+                maybePrintProgress();
+                continue;
+            }
 
             evBranches.fill(c12);
             int rn = evBranches.runNum;
@@ -257,6 +326,7 @@ int main(int argc, char** argv) {
                 }
 
                 tree->Fill();
+                ++nOutputRows;
             }
 
             if (cfg.fillMC && mc && (!cfg.matchMC || cfg.saveUnmatchedMC)) {
@@ -265,22 +335,42 @@ int main(int argc, char** argv) {
                     recBranches.reset();
                     genBranches.fill(mc, rn, en, i);
                     tree->Fill();
+                    ++nOutputRows;
                     ++nUnmatchedGen;
                 }
             }
 
             ++nWritten;
+            maybePrintProgress();
         }
+    }
+
+    if (progressEvery > 0 && nTotal != lastProgressEvent) {
+        printProgress(hipoFiles.size(),
+                      hipoFiles.size(),
+                      nTotal,
+                      nWritten,
+                      nOutputRows,
+                      nQAFail,
+                      nFSFail,
+                      nSkimFail,
+                      nMatched,
+                      cfg.fillMC && cfg.matchMC,
+                      startTime);
     }
 
     // ── Summary ───────────────────────────────────────────────────────────────
     double accumulatedCharge = qa->accumulatedCharge();
+    const double elapsed = std::chrono::duration<double>(Clock::now() - startTime).count();
     std::cout << "\n[DONE]\n"
               << "  Total events      : " << nTotal    << "\n"
               << "  Failed QADB       : " << nQAFail   << "\n"
               << "  Failed final state: " << nFSFail   << "\n"
               << "  Failed skim       : " << nSkimFail << "\n"
-              << "  Written           : " << nWritten  << "\n";
+              << "  Written events    : " << nWritten  << "\n"
+              << "  Output rows       : " << nOutputRows << "\n"
+              << "  Elapsed time      : " << std::fixed << std::setprecision(1)
+              << elapsed << " s\n";
     if (qa->enabled()) {
         std::cout << "  Accumulated charge: " << accumulatedCharge << " nC\n";
     }
@@ -307,6 +397,7 @@ int main(int argc, char** argv) {
     summary.Branch("FailedFinalState", &nFSFail, "FailedFinalState/L");
     summary.Branch("FailedSkim", &nSkimFail, "FailedSkim/L");
     summary.Branch("WrittenEvents", &nWritten, "WrittenEvents/L");
+    summary.Branch("OutputRows", &nOutputRows, "OutputRows/L");
     summary.Fill();
 
     TParameter<double> chargeMetadata("AccumulatedCharge", accumulatedCharge);

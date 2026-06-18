@@ -149,6 +149,10 @@ The energy-specific processing configs keep events with at least one reconstruct
 
 `apply_cuts` prints progress every 1,000,000 input rows by default. Pass a third argument to change that interval, or `0` to disable progress messages.
 
+`hipo2root` likewise prints progress every 1,000,000 input events. Its optional
+arguments are `[max_files] [progress_events]`; use `0` for `progress_events` to
+disable its progress messages.
+
 For the 6.535 GeV RGK test sample, use:
 
 ```bash
