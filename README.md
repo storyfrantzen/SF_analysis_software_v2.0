@@ -21,6 +21,32 @@ For matched REC/GEN rows used by calibration and acceptance studies:
 ./build/hipo2root configs/processing/eppi0_matched.json /path/to/hipo/files
 ```
 
+For the 6.535 GeV AAORAD OSG `epπ0` comparison, the simulation processing
+config uses the common reconstructed DIS region (`Q2 >= 1 GeV2`, `W >= 2 GeV`,
+`y <= 0.8`), stores MC truth, and performs same-PID angular REC/GEN matching.
+One shared post-processing config selects the best reconstructed `epγγ`
+candidate for every generator configuration. Run the five GEMC samples with:
+
+```bash
+./scripts/run_aao_osg_comparison.csh
+```
+
+To process an existing 6.535 GeV RGK data sample with QADB and overlay it using
+the identical reconstructed selection, pass its HIPO directory:
+
+```bash
+./scripts/run_aao_osg_comparison.csh /path/to/rgk/data/hipos
+```
+
+The driver processes OSG IDs 11221 through 11225, writes one ROOT pair per
+configuration under `data/aao_osg_comparison/`, and creates normalized overlays,
+a yield/efficiency summary, and (when data are supplied) Jensen-Shannon and
+total-variation shape metrics in `data/aao_osg_comparison/plots/`. Incomplete
+OSG batches are processed with a warning and their true event counts are read
+from the ROOT processing summaries. The post-selection omits the data-derived
+sampling-fraction sigma band so a GEMC/data disagreement in that response is not
+silently cut away.
+
 The converter currently supports:
 
 - optional QADB filtering and accumulated-charge bookkeeping for data

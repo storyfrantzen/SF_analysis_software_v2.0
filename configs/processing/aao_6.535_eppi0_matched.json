@@ -1,0 +1,28 @@
+{
+    "outputFile": "aao_6.535_eppi0_matched.root",
+    "treeName": "Events",
+
+    "beamEnergy": 6.535,
+
+    "qadb": {
+        "enabled": false
+    },
+
+    "finalState": [
+        { "pid": 11, "count": 1, "mode": "atleast" },
+        { "pid": 2212, "count": 1, "mode": "atleast" },
+        { "pid": 22, "count": 2, "mode": "atleast" }
+    ],
+
+    "inclusive": true,
+
+    "enableSkim": true,
+    "Q2_min": 1.0,
+    "W_min": 2.0,
+    "y_max": 0.8,
+
+    "fillMC": true,
+    "matchMC": true,
+    "saveUnmatchedMC": true,
+    "matchMaxAngleDeg": 3.0
+}

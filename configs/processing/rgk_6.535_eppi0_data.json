@@ -1,0 +1,34 @@
+{
+    "outputFile": "rgk_6.535_eppi0_data.root",
+    "treeName": "Events",
+
+    "beamEnergy": 6.535,
+
+    "qadb": {
+        "enabled": true,
+        "database": "latest",
+        "rejectDefects": [
+            "MarginalOutlier",
+            "TerminalOutlier",
+            "TotalOutlier",
+            "SectorLoss",
+            "LowLiveTime"
+        ],
+        "allowMiscRuns": []
+    },
+
+    "finalState": [
+        { "pid": 11, "count": 1, "mode": "atleast" },
+        { "pid": 2212, "count": 1, "mode": "atleast" },
+        { "pid": 22, "count": 2, "mode": "atleast" }
+    ],
+
+    "inclusive": true,
+
+    "enableSkim": true,
+    "Q2_min": 1.0,
+    "W_min": 2.0,
+    "y_max": 0.8,
+
+    "fillMC": false
+}
