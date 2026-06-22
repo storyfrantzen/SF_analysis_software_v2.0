@@ -31,10 +31,14 @@ testable.
    all cuts.
 4. `virtual_photon_epsilon` uses the global beam energy while its callers pass
    an energy argument elsewhere.
-5. Data and GEMC exclusivity windows are derived separately.  That is useful as
-   a diagnostic, but applying different numerical definitions to the data yield
-   and MC efficiency changes the measured observable.  The production default
-   should derive nominal windows once and apply the same windows to both.
+5. Data and GEMC exclusivity windows are intentionally derived separately in
+   the legacy analysis because GEMC distributions are typically narrower than
+   data. Equal `n`-sigma windows are meant to provide comparable
+   resolution-relative signal containment, not identical numerical boundaries.
+   This is a defensible nominal choice. The retained fractions should be
+   recorded because non-Gaussian tails and sequential-cut correlations can make
+   nominally equal `n`-sigma windows retain different signal fractions. Common
+   numerical windows should be treated as a systematic cross-check.
 6. The overflow/feed-in treatment uses one global fraction and shape.  It must
    be validated with closure and systematic variations; it is not equivalent
    to modeling all out-of-range truth dimensions.
@@ -61,12 +65,20 @@ testable.
 2. Build one compact event-level analysis sample containing GEN coordinates,
    optional REC coordinates, selection flags, topology, weight, and provenance.
 3. Read that sample once per dataset and cache the NumPy representation.
-4. Derive/apply exclusivity masks through grouped flat-bin keys.
+4. Derive data and GEMC exclusivity masks through grouped flat-bin keys, keeping
+   separate nominal `n`-sigma tables and retained-fraction diagnostics. Also run
+   a common-window variation as a systematic cross-check.
 5. Build the sparse response and all metadata in one stage.
 6. Unfold with a deterministic bootstrap and run closure before data results.
 7. Normalize cross sections with vectorized, configuration-driven functions.
 8. Plot only from self-contained result artifacts.
 
-The remaining integration task is an event-level ROOT adapter.  It must recreate
-the legacy radiative/non-radiative GEN candidate logic while guaranteeing one
-output event for every generated input event.
+`analysis/build_event_sample.py` now provides the event-level ROOT adapter and
+recreates the legacy radiative/non-radiative GEN candidate logic while retaining
+generated events without a selected REC candidate.
+
+The current adapter still requires a potentially large particle-level matched
+ROOT intermediate containing unmatched GEN rows. Production should place that
+file on scratch storage and compact it in chunks. The preferred follow-up is a
+converter-level `GeneratedEvents` tree with one row per event; this would retain
+an unbiased denominator without materializing all unmatched GEN particles.

@@ -63,9 +63,13 @@ REC tree onto every GEN event in an unrestricted matched tree.
 converter's accumulated charge into the pipeline.
 
 `derive_exclusivity.py` preserves the legacy sequential variable order and
-global/per-bin modes. Production use should derive one nominal cut table and
-reuse it for both data and GEMC via `--reuse-cuts --apply-to`; deriving separate
-windows remains useful only as a detector-model diagnostic.
+global/per-bin modes. The nominal legacy-faithful procedure is to derive
+separate `n`-sigma windows for data and GEMC. GEMC exclusivity peaks are often
+narrower than data, so equal numerical boundaries would not represent equal
+resolution-relative signal regions. Save both cut tables and their retained
+fractions. Applying one common numerical table to both samples remains useful
+as a systematic cross-check, especially for non-Gaussian tails and correlated
+sequential cuts.
 
 The harmonic stage retains the legacy weighted fit
 `A + B cos(phi) + C cos(2 phi)` and stores coefficients, full covariance,
@@ -85,3 +89,43 @@ uncertainties are propagated into the self-contained unfolding result.
   side effects;
 - expensive ROOT reads are intended to happen once when producing the event
   sample, rather than once per analysis stage.
+
+## Managing the unrestricted MC intermediate
+
+The current converter represents MC truth as particle-level rows. An unbiased
+acceptance denominator therefore requires an unrestricted matched conversion
+with unmatched GEN rows retained. That ROOT file can be much larger than the
+compact event-level NPZ ultimately used by this analysis.
+
+Treat the unrestricted matched ROOT file as a temporary scratch product:
+
+- write it under JLab `/volatile` or another scratch filesystem, not inside the
+  Git working tree;
+- process manageable production chunks rather than combining every HIPO file
+  into one monolithic ROOT file;
+- immediately run `build_event_sample.py` for each chunk;
+- retain the compact NPZ chunks and provenance metadata;
+- verify generated-event counts and checksums before removing scratch ROOT
+  files;
+- concatenate compact event samples only after conversion.
+
+Compact MC chunks can be combined with:
+
+```bash
+python3 analysis/concatenate_event_samples.py results/chunks/*.npz \
+  --output results/mc_events.npz
+```
+
+Duplicate `(run,event)` keys are rejected by default, protecting against
+accidentally processing the same HIPO chunk twice.
+
+Setting `saveUnmatchedMC` to false is **not** an unbiased workaround with the
+current schema: generated events without a reconstructed match would disappear
+from the denominator.
+
+The preferred converter enhancement is a separate compact `GeneratedEvents`
+tree with one row per generated event containing only `(run, event, Q2, xB,
+-t, phi, radiative, weight)`. Once that exists, unmatched GEN particle rows can
+be disabled for production acceptance work. The reconstructed particle/candidate
+output can then be skimmed independently without losing the generated
+denominator.
