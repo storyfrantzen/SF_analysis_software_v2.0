@@ -19,7 +19,7 @@ See `docs/jlab-module-setup.csh` for the JLab environment setup.
 ## Current executable
 
 ```bash
-hipo2root <config.json> <hipo_directory> [max_files] [progress_events]
+hipo2root <config.json> <hipo_file_or_directory> [max_files] [progress_events]
 apply_cuts <post_config.json> <input.root> [progress_rows]
 ```
 

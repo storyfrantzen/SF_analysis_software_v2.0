@@ -166,7 +166,7 @@ void fillRecBranch(RecBranches& recBranches,
 int main(int argc, char** argv) {
 
     if (argc < 3) {
-        std::cerr << "Usage: hipo2root <config.json> <hipo_directory> "
+        std::cerr << "Usage: hipo2root <config.json> <hipo_file_or_directory> "
                   << "[max_files] [progress_events]\n";
         return 1;
     }
@@ -199,18 +199,29 @@ int main(int argc, char** argv) {
         std::cerr << "[ERROR] " << error.what() << "\n";
         return 1;
     }
-    const std::string hipoDir = argv[2];
+    const fs::path hipoInput = argv[2];
 
     // ── Collect .hipo files ───────────────────────────────────────────────────
     std::vector<std::string> hipoFiles;
-    for (const auto& entry : fs::recursive_directory_iterator(hipoDir)) {
-        if (!entry.is_regular_file()) continue;
-        if (entry.path().extension() == ".hipo") {
-            hipoFiles.push_back(entry.path().string());
+    if (fs::is_regular_file(hipoInput)) {
+        if (hipoInput.extension() != ".hipo") {
+            std::cerr << "[ERROR] Input file is not a .hipo file: " << hipoInput << "\n";
+            return 1;
         }
+        hipoFiles.push_back(hipoInput.string());
+    } else if (fs::is_directory(hipoInput)) {
+        for (const auto& entry : fs::recursive_directory_iterator(hipoInput)) {
+            if (!entry.is_regular_file()) continue;
+            if (entry.path().extension() == ".hipo") {
+                hipoFiles.push_back(entry.path().string());
+            }
+        }
+    } else {
+        std::cerr << "[ERROR] HIPO input does not exist: " << hipoInput << "\n";
+        return 1;
     }
     if (hipoFiles.empty()) {
-        std::cerr << "[ERROR] No .hipo files found in " << hipoDir << "\n";
+        std::cerr << "[ERROR] No .hipo files found in " << hipoInput << "\n";
         return 1;
     }
     std::sort(hipoFiles.begin(), hipoFiles.end());
