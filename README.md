@@ -1,6 +1,20 @@
 # SF analysis software v2.0
 
-This project converts CLAS12 hipo files into ROOT TTrees for downstream analysis.
+This project converts CLAS12 HIPO files into ROOT TTrees, builds configurable
+exclusive `epπ0` candidates, and provides a NumPy/SciPy response, unfolding,
+cross-section, and harmonic-analysis pipeline.
+
+## Build
+
+The C++ executables require ROOT and CLAS12ROOT. QADB support is enabled when
+`QADB.h` is available during CMake configuration.
+
+```bash
+cmake -S . -B build
+cmake --build build -j
+```
+
+See `docs/jlab-module-setup.csh` for the JLab environment setup.
 
 ## Current executable
 
@@ -21,6 +35,21 @@ For matched REC/GEN rows used by calibration and acceptance studies:
 ./build/hipo2root configs/processing/eppi0_matched.json /path/to/hipo/files
 ```
 
+For storage-efficient acceptance production:
+
+```bash
+./build/hipo2root configs/processing/6.535_eppi0_acceptance_matched.json /path/to/hipo/files
+```
+
+This writes a lightweight `GeneratedEvents` tree before reconstructed topology
+or DIS filtering. The particle-level `Events` tree may therefore be REC-skimmed
+with `saveUnmatchedMC` disabled without biasing the generated denominator.
+
+`GeneratedEvents` has one row per input MC event. It stores event identity,
+generator-topology validity, a radiative flag, weight, and generated `Q2`, `nu`,
+`xB`, `y`, `W`, `minusT`, and `trentoPhi`. Invalid generator topologies remain
+present with `topologyValid=false`, allowing exact input-event accounting.
+
 The converter currently supports:
 
 - optional QADB filtering and accumulated-charge bookkeeping for data
@@ -28,6 +57,7 @@ The converter currently supports:
 - loose DIS skim cuts
 - reconstructed-particle branches
 - optional MC truth branches
+- compact generated-event acceptance trees filled before REC filtering
 
 `hipo2root` reports progress every 1,000,000 input events by default. Pass a
 fourth argument to change that interval, or `0` to disable progress output.
@@ -35,6 +65,26 @@ fourth argument to change that interval, or `0` to disable progress output.
 By default, `finalState` rejects reconstructed particles whose PIDs are not listed in the config. Set `inclusive` to `true` for inclusive final-state skims.
 
 `apply_cuts` performs ROOT post-processing. The initial module builds one EPPI0 candidate per event and applies configurable fiducial, sampling-fraction, topology, and loose exclusivity cuts. Post-processing configs live in `configs/post/`, for example `configs/post/eppi0.json`.
+
+## Acceptance and cross-section analysis
+
+The maintained replacement for the legacy `analysis_v2.0` scripts is under
+`analysis/`. Its numerical stages require Python, NumPy, and SciPy; the two ROOT
+export adapters additionally require PyROOT and the project ROOT dictionary.
+
+The compact MC flow is:
+
+1. Convert MC with `6.535_eppi0_acceptance_matched.json`.
+2. Run `apply_cuts` to create one selected REC candidate per accepted event.
+3. Run `analysis/build_event_sample.py` to left-join selected REC candidates
+   onto every valid generated event.
+4. Export selected data with `analysis/export_selected_data.py`.
+5. Derive separate resolution-relative exclusivity windows for data and GEMC.
+6. Build the sparse response, unfold data, normalize the cross section, and fit
+   the `A + B cos(phi) + C cos(2 phi)` harmonics.
+
+See `analysis/README.md` for commands, artifact schemas, storage guidance, and
+the legacy-file fallback.
 
 ## Cut strategy
 
@@ -47,6 +97,7 @@ See `docs/analysis_pipeline.md` for the recommended modular layout.
 - `src/` - converter source files
 - `include/` - project headers and ROOT dictionary LinkDef
 - `scripts/` - calibration and analysis helper scripts
+- `analysis/` - event-sample adapters and the maintained EPPI0 numerical pipeline
 - `vendor/` - vendored header-only dependencies
 - `configs/processing/` - hipo-to-ROOT conversion configs
 - `configs/post/` - ROOT post-processing configs

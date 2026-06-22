@@ -21,6 +21,11 @@ struct QADBConfig {
     std::vector<int> allowMiscRuns;
 };
 
+struct GeneratedEventTreeConfig {
+    bool enabled = false;
+    std::string treeName = "GeneratedEvents";
+};
+
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 struct Config {
@@ -47,6 +52,7 @@ struct Config {
     bool matchMC = false;
     bool saveUnmatchedMC = true;
     double matchMaxAngleDeg = 3.0;
+    GeneratedEventTreeConfig generatedEventTree;
 
     // ── Data quality ──────────────────────────
     QADBConfig qadb;
@@ -81,6 +87,18 @@ struct Config {
         matchMC = j.value("matchMC", matchMC);
         saveUnmatchedMC = j.value("saveUnmatchedMC", saveUnmatchedMC);
         matchMaxAngleDeg = j.value("matchMaxAngleDeg", matchMaxAngleDeg);
+
+        if (j.contains("generatedEventTree")) {
+            const auto& generated = j["generatedEventTree"];
+            if (!generated.is_object()) {
+                throw std::runtime_error("generatedEventTree must be a JSON object");
+            }
+            generatedEventTree.enabled = generated.value("enabled", generatedEventTree.enabled);
+            generatedEventTree.treeName = generated.value("treeName", generatedEventTree.treeName);
+            if (generatedEventTree.treeName.empty()) {
+                throw std::runtime_error("generatedEventTree.treeName must not be empty");
+            }
+        }
 
         if (j.contains("qadb")) {
             const auto& qa = j["qadb"];

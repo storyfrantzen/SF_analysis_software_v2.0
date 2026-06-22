@@ -194,6 +194,40 @@ The dataset tag and beam energy are also printed visibly on every generated plot
 
 With matching enabled, each reconstructed particle row is paired with the closest unused generator particle of the same PID within `matchMaxAngleDeg`. Matched rows carry both `rec` and `gen` branches, with `rec.matchedGenIdx` and `rec.matchAngleDeg` recording the match. Reconstructed rows without a match have `matchedGenIdx == -999` and a reset `gen` branch. If `saveUnmatchedMC` is true, unmatched generator particles are also written as GEN-only rows with a reset `rec` branch. This layout supports both calibration scripts, which select matched rows, and acceptance studies, which can count unmatched generator rows.
 
+### Compact generated-event acceptance tree
+
+Particle-level unmatched GEN rows are not required for production acceptance
+studies when `generatedEventTree` is enabled:
+
+```json
+{
+  "generatedEventTree": {
+    "enabled": true,
+    "treeName": "GeneratedEvents"
+  },
+  "fillMC": true,
+  "matchMC": true,
+  "saveUnmatchedMC": false
+}
+```
+
+`hipo2root` fills `GeneratedEvents` immediately after reading each MC event and
+before QADB, reconstructed final-state, or reconstructed DIS decisions. It has
+one scalar row per input event with:
+
+- `runNum`, `eventNum`, `topologyValid`, and `radiative`;
+- `weight` (currently one until generator weights are connected);
+- generated `Q2`, `nu`, `xB`, `y`, `W`, `minusT`, and `trentoPhi`.
+
+Radiative topology is `e p pi0 gamma`; non-radiative topology is `e p gamma
+gamma`. Invalid generator topologies remain represented with
+`topologyValid=false` and reset kinematics, making event accounting explicit.
+
+After this row is saved, the normal `finalState` and DIS skim apply only to the
+particle-level `Events` tree. This permits a compact REC numerator without
+removing generated events from the denominator. Use
+`configs/processing/6.535_eppi0_acceptance_matched.json` as the reference.
+
 Channel-specific derived quantities should be isolated behind small channel logic functions. The eppi0 derived variables and loose exclusivity checks now live behind the eppi0 logic path, which is enabled when the configured roles include `electron`, `proton`, and two `gamma` particles. Future channels should follow that pattern: keep role selection and primitive cuts generic, then add a narrow function for channel-specific kinematics and output branches.
 
 Shared derived-kinematics formulas live in `Kinematics`. Use that module for four-vector construction, DIS variables, missing systems, angle/delta-phi helpers, and Trento phi instead of redefining those formulas inside executables or channel logic.

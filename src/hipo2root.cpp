@@ -17,6 +17,7 @@
 #include "clas12reader.h"
 
 #include "Config.h"
+#include "GeneratedEvent.h"
 #include "ProtonEnergyLossCorrections.h"
 #include "QualityAssurance.h"
 #include "Kinematics.h"
@@ -170,6 +171,14 @@ int main(int argc, char** argv) {
     }
 
     Config cfg(argv[1]);
+    if (cfg.generatedEventTree.enabled && !cfg.fillMC) {
+        std::cerr << "[ERROR] generatedEventTree requires fillMC=true\n";
+        return 1;
+    }
+    if (cfg.generatedEventTree.enabled && cfg.generatedEventTree.treeName == cfg.treeName) {
+        std::cerr << "[ERROR] generatedEventTree.treeName must differ from treeName\n";
+        return 1;
+    }
     const ProtonEnergyLossCorrections corrections(cfg.kinematicCorrections);
     std::unique_ptr<QualityAssurance> qa;
     try {
@@ -204,6 +213,9 @@ int main(int argc, char** argv) {
               << "[INFO] Beam energy : " << cfg.beamEnergy << " GeV\n"
               << "[INFO] Fill MC     : " << (cfg.fillMC ? "yes" : "no") << "\n"
               << "[INFO] Match MC    : " << (cfg.matchMC ? "yes" : "no") << "\n"
+              << "[INFO] GEN events  : "
+              << (cfg.generatedEventTree.enabled ? cfg.generatedEventTree.treeName : "disabled")
+              << "\n"
               << "[INFO] QADB        : " << (qa->enabled() ? "enabled" : "disabled") << "\n"
               << "[INFO] Progress    : "
               << (progressEvery > 0 ? std::to_string(progressEvery) + " events" : "disabled")
@@ -239,6 +251,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     TTree* tree = new TTree(cfg.treeName.c_str(), cfg.treeName.c_str());
+    TTree* generatedTree = nullptr;
+    GeneratedEventBranches generatedEvent;
+    if (cfg.generatedEventTree.enabled) {
+        generatedTree = new TTree(cfg.generatedEventTree.treeName.c_str(),
+                                  cfg.generatedEventTree.treeName.c_str());
+        generatedEvent.registerBranches(*generatedTree);
+    }
 
     EventBranches evBranches;
     RecBranches   recBranches;
@@ -252,6 +271,7 @@ int main(int argc, char** argv) {
     long long nTotal = 0, nQAFail = 0, nFSFail = 0, nSkimFail = 0, nWritten = 0;
     long long nOutputRows = 0;
     long long nMatched = 0, nUnmatchedRec = 0, nUnmatchedGen = 0;
+    long long nGeneratedEvents = 0, nGeneratedTopologyValid = 0;
     long long lastProgressEvent = 0;
     const Clock::time_point startTime = Clock::now();
 
@@ -282,6 +302,17 @@ int main(int argc, char** argv) {
 
             const int runNum = c12.runconfig()->getRun();
             const int eventNum = c12.runconfig()->getEvent();
+            auto* mc = cfg.fillMC ? c12.mcparts() : nullptr;
+
+            // Preserve the generated denominator before any reconstructed QA,
+            // final-state, or DIS decision is made.
+            if (generatedTree) {
+                generatedEvent.fill(mc, runNum, eventNum, cfg.beamEnergy);
+                generatedTree->Fill();
+                ++nGeneratedEvents;
+                if (generatedEvent.topologyValid) ++nGeneratedTopologyValid;
+            }
+
             if (!qa->pass(runNum, eventNum)) {
                 ++nQAFail;
                 maybePrintProgress();
@@ -304,7 +335,6 @@ int main(int argc, char** argv) {
             int en = evBranches.eventNum;
 
             const auto& particles = c12.getDetParticles();
-            auto* mc = cfg.fillMC ? c12.mcparts() : nullptr;
             std::vector<bool> usedGen(mc ? mc->getRows() : 0, false);
 
             for (int i = 0; i < static_cast<int>(particles.size()); ++i) {
@@ -369,6 +399,8 @@ int main(int argc, char** argv) {
               << "  Failed skim       : " << nSkimFail << "\n"
               << "  Written events    : " << nWritten  << "\n"
               << "  Output rows       : " << nOutputRows << "\n"
+              << "  Generated events  : " << nGeneratedEvents << "\n"
+              << "  Valid GEN topology: " << nGeneratedTopologyValid << "\n"
               << "  Elapsed time      : " << std::fixed << std::setprecision(1)
               << elapsed << " s\n";
     if (qa->enabled()) {
@@ -398,6 +430,9 @@ int main(int argc, char** argv) {
     summary.Branch("FailedSkim", &nSkimFail, "FailedSkim/L");
     summary.Branch("WrittenEvents", &nWritten, "WrittenEvents/L");
     summary.Branch("OutputRows", &nOutputRows, "OutputRows/L");
+    summary.Branch("GeneratedEventRows", &nGeneratedEvents, "GeneratedEventRows/L");
+    summary.Branch("GeneratedTopologyValid", &nGeneratedTopologyValid,
+                   "GeneratedTopologyValid/L");
     summary.Fill();
 
     TParameter<double> chargeMetadata("AccumulatedCharge", accumulatedCharge);

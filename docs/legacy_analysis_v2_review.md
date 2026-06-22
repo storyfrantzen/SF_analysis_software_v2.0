@@ -77,8 +77,9 @@ testable.
 recreates the legacy radiative/non-radiative GEN candidate logic while retaining
 generated events without a selected REC candidate.
 
-The current adapter still requires a potentially large particle-level matched
-ROOT intermediate containing unmatched GEN rows. Production should place that
-file on scratch storage and compact it in chunks. The preferred follow-up is a
-converter-level `GeneratedEvents` tree with one row per event; this would retain
-an unbiased denominator without materializing all unmatched GEN particles.
+The converter now provides a compact `GeneratedEvents` tree with one scalar row
+per input MC event, filled before reconstructed filtering. Production can set
+`saveUnmatchedMC=false`, retain an unbiased denominator, and REC-skim the
+particle-level tree independently. The adapter still supports older matched
+files; those legacy files require unmatched particle-level GEN rows and should
+be compacted from scratch storage in chunks.

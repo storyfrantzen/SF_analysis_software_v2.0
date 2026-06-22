@@ -20,6 +20,7 @@ class GeneratedSample:
     minus_t: Array
     trento_phi: Array
     radiative: Array
+    weight: Array
 
 
 def build_generated_sample(
@@ -79,6 +80,38 @@ def build_generated_sample(
         minus_t=minus_t[topology],
         trento_phi=trento[topology],
         radiative=radiative[topology],
+        weight=np.ones(np.count_nonzero(topology), dtype=float),
+    )
+
+
+def generated_sample_from_tree(
+    run: Array,
+    event: Array,
+    topology_valid: Array,
+    q2: Array,
+    xb: Array,
+    minus_t: Array,
+    trento_phi: Array,
+    radiative: Array,
+    weight: Array,
+) -> GeneratedSample:
+    """Build the analysis view from the compact converter tree."""
+    arrays = [np.asarray(item) for item in (
+        run, event, topology_valid, q2, xb, minus_t, trento_phi, radiative, weight
+    )]
+    if len({array.shape for array in arrays}) != 1:
+        raise ValueError("GeneratedEvents branches must have equal shapes")
+    valid = np.asarray(topology_valid, dtype=bool)
+    valid &= np.isfinite(q2) & np.isfinite(xb) & np.isfinite(minus_t) & np.isfinite(trento_phi)
+    return GeneratedSample(
+        run=np.asarray(run, dtype=np.int64)[valid],
+        event=np.asarray(event, dtype=np.int64)[valid],
+        q2=np.asarray(q2, dtype=float)[valid],
+        xb=np.asarray(xb, dtype=float)[valid],
+        minus_t=np.asarray(minus_t, dtype=float)[valid],
+        trento_phi=np.asarray(trento_phi, dtype=float)[valid],
+        radiative=np.asarray(radiative, dtype=bool)[valid],
+        weight=np.asarray(weight, dtype=float)[valid],
     )
 
 
@@ -110,6 +143,7 @@ def join_reconstructed(
         "gen_minus_t": generated.minus_t,
         "gen_trento_phi": generated.trento_phi,
         "gen_radiative": generated.radiative,
+        "gen_weight": generated.weight,
         "rec_selected": matched,
     }
     for name, raw in rec_columns.items():

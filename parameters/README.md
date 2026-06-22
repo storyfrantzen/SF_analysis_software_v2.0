@@ -8,3 +8,7 @@ configuration:
 
 Paths in processing and post-processing configs are resolved relative to the config
 file that references them.
+
+Physics-analysis settings such as beam energy, target properties, bin edges,
+minimum acceptance, and branching ratios are not calibration coefficients.
+They live under `analysis/configs/` instead.

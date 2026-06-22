@@ -17,9 +17,13 @@ with no accepted reconstructed candidate.  Each row needs:
 - the reconstructed proton topology;
 - the generated-event weight, defaulting to one.
 
-Do not apply reconstructed DIS or final-state cuts before creating this sample.
-Those cuts define the reconstructed numerator.  Generated phase-space cuts
-define the denominator independently.
+Reconstructed DIS and final-state cuts may be applied to the particle-level
+`Events` tree only after the converter has filled `GeneratedEvents`. They define
+the reconstructed numerator and do not alter the generated denominator.
+Generated phase-space cuts are applied later to the compact truth coordinates.
+For legacy files without `GeneratedEvents`, do not apply reconstructed event
+filters during conversion because the unmatched particle rows are then the only
+source of the generated denominator.
 
 Radiative generator events are interpreted as `e p pi0 gamma`; non-radiative
 events are interpreted as `e p gamma gamma`.  Extra reconstructed photons are
@@ -33,6 +37,16 @@ mass.
 - `eppi0.unfolding`: iterative Bayesian unfolding and reproducible bootstrap;
 - `eppi0.cross_section`: luminosity, virtual-photon flux, physical bin volume,
   and reduced cross sections.
+- `eppi0.exclusivity`: topology-aware sequential data/GEMC windows;
+- `eppi0.event_sample`: radiative/non-radiative GEN construction and REC joins;
+- `eppi0.harmonics`: weighted `A + B cos(phi) + C cos(2 phi)` fits.
+
+## Dependencies
+
+- Python 3.10 or newer;
+- NumPy and SciPy for the numerical pipeline;
+- PyROOT for `build_event_sample.py` and `export_selected_data.py`;
+- the project ROOT dictionary when object branches are not already discoverable.
 
 Run the dependency-light tests from the repository root:
 
@@ -40,7 +54,7 @@ Run the dependency-light tests from the repository root:
 python3 -m unittest discover -s analysis/tests -v
 ```
 
-The three numerical stages are exposed through one command:
+The four numerical stages are exposed through one command:
 
 ```bash
 python3 analysis/run_analysis.py response mc_events.npz \
@@ -58,9 +72,19 @@ python3 analysis/run_analysis.py fit-harmonics results/cross_section.npz \
 ```
 
 `build_event_sample.py` creates the MC event sample by left-joining the selected
-REC tree onto every GEN event in an unrestricted matched tree.
+REC tree onto the compact `GeneratedEvents` tree. It auto-detects that tree and
+retains backward compatibility with older particle-level matched files.
 `export_selected_data.py` creates the compact data artifact and carries the
 converter's accumulated charge into the pipeline.
+
+The compact tree path does not require `--beam-energy`, because generated
+kinematics were calculated by the converter. For a legacy particle-level input,
+the adapter requires `--beam-energy` to reconstruct those quantities:
+
+```bash
+python3 analysis/build_event_sample.py \
+  6.535_eppi0_acceptance_matched.root selected_mc.root mc_events.npz
+```
 
 `derive_exclusivity.py` preserves the legacy sequential variable order and
 global/per-bin modes. The nominal legacy-faithful procedure is to derive
@@ -70,6 +94,35 @@ resolution-relative signal regions. Save both cut tables and their retained
 fractions. Applying one common numerical table to both samples remains useful
 as a systematic cross-check, especially for non-Gaussian tails and correlated
 sequential cuts.
+
+Derive nominal data and GEMC windows independently:
+
+```bash
+python3 analysis/derive_exclusivity.py data_events.npz \
+  --config analysis/configs/rgk_6.535.json \
+  --cuts results/data_exclusivity.npz --mask results/data_exclusivity.npy
+
+python3 analysis/derive_exclusivity.py mc_events.npz \
+  --config analysis/configs/rgk_6.535.json \
+  --cuts results/gemc_exclusivity.npz --mask results/gemc_exclusivity.npy
+```
+
+Pass the GEMC mask to `response --selection-mask` and the data mask to
+`unfold --selection-mask`. Use `--global-cuts` for one set of windows per proton
+topology when individual kinematic bins lack sufficient statistics.
+
+## Compact `GeneratedEvents` schema
+
+The converter writes one row for every input MC event:
+
+- `runNum`, `eventNum`;
+- `topologyValid`, `radiative`;
+- `weight` (currently `1.0` until generator weights are connected);
+- `Q2`, `nu`, `xB`, `y`, `W`, `minusT`, `trentoPhi`.
+
+`build_event_sample.py` retains only `topologyValid` rows in the physics sample,
+while the converter `Summary` tree records both total generated rows and valid
+generated topologies for bookkeeping.
 
 The harmonic stage retains the legacy weighted fit
 `A + B cos(phi) + C cos(2 phi)` and stores coefficients, full covariance,
@@ -90,14 +143,16 @@ uncertainties are propagated into the self-contained unfolding result.
 - expensive ROOT reads are intended to happen once when producing the event
   sample, rather than once per analysis stage.
 
-## Managing the unrestricted MC intermediate
+## Managing MC intermediate size
 
-The current converter represents MC truth as particle-level rows. An unbiased
-acceptance denominator therefore requires an unrestricted matched conversion
-with unmatched GEN rows retained. That ROOT file can be much larger than the
-compact event-level NPZ ultimately used by this analysis.
+The preferred converter configuration enables `GeneratedEvents`, applies REC
+topology/DIS skims only to `Events`, and sets `saveUnmatchedMC` to false. This
+retains the generated denominator in one lightweight scalar row per event. See
+`configs/processing/6.535_eppi0_acceptance_matched.json`.
 
-Treat the unrestricted matched ROOT file as a temporary scratch product:
+For older files without `GeneratedEvents`, an unbiased denominator still
+requires an unrestricted matched conversion with unmatched particle-level GEN
+rows. Treat that legacy intermediate as a temporary scratch product:
 
 - write it under JLab `/volatile` or another scratch filesystem, not inside the
   Git working tree;
@@ -119,13 +174,6 @@ python3 analysis/concatenate_event_samples.py results/chunks/*.npz \
 Duplicate `(run,event)` keys are rejected by default, protecting against
 accidentally processing the same HIPO chunk twice.
 
-Setting `saveUnmatchedMC` to false is **not** an unbiased workaround with the
-current schema: generated events without a reconstructed match would disappear
-from the denominator.
-
-The preferred converter enhancement is a separate compact `GeneratedEvents`
-tree with one row per generated event containing only `(run, event, Q2, xB,
--t, phi, radiative, weight)`. Once that exists, unmatched GEN particle rows can
-be disabled for production acceptance work. The reconstructed particle/candidate
-output can then be skimmed independently without losing the generated
-denominator.
+Setting `saveUnmatchedMC` to false is safe for acceptance only when
+`GeneratedEvents` is enabled. Without that tree, generated events lacking a
+reconstructed match disappear from the denominator.

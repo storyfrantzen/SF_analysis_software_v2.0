@@ -12,7 +12,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from eppi0.binning import AnalysisBinning, legacy_binning
 from eppi0.cross_section import integrated_luminosity_fb, virtual_photon_flux
-from eppi0.event_sample import build_generated_sample, join_reconstructed
+from eppi0.event_sample import (
+    build_generated_sample,
+    generated_sample_from_tree,
+    join_reconstructed,
+)
 from eppi0.exclusivity import apply_cuts, derive_cuts
 from eppi0.harmonics import fit_phi
 from eppi0.response import build_response
@@ -62,6 +66,21 @@ class ResponseTests(unittest.TestCase):
 
 
 class EventSampleTests(unittest.TestCase):
+    def test_compact_generated_tree_filters_invalid_topology(self) -> None:
+        sample = generated_sample_from_tree(
+            np.array([11, 11]),
+            np.array([10, 11]),
+            np.array([True, False]),
+            np.array([1.5, np.nan]),
+            np.array([0.2, np.nan]),
+            np.array([0.3, np.nan]),
+            np.array([0.4, np.nan]),
+            np.array([True, False]),
+            np.array([2.0, 1.0]),
+        )
+        np.testing.assert_array_equal(sample.event, [10])
+        np.testing.assert_allclose(sample.weight, [2.0])
+
     def test_radiative_and_nonradiative_events_are_both_preserved(self) -> None:
         # Event 10: e p gamma gamma. Event 11: e p pi0 gamma_rad.
         run = np.full(8, 11)
@@ -93,6 +112,7 @@ class EventSampleTests(unittest.TestCase):
         )
         np.testing.assert_array_equal(joined["rec_selected"], [True, False])
         self.assertTrue(np.isnan(joined["rec_Q2"][1]))
+        np.testing.assert_allclose(joined["gen_weight"], [1.0, 1.0])
 
 
 class ExclusivityTests(unittest.TestCase):

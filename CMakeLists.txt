@@ -37,6 +37,7 @@ link_directories(
 )
 
 set(HIPO2ROOT_SOURCES
+  ${PROJECT_SOURCE_DIR}/src/GeneratedEvent.cpp
   ${PROJECT_SOURCE_DIR}/src/ProtonEnergyLossCorrections.cpp
   ${PROJECT_SOURCE_DIR}/src/QualityAssurance.cpp
   ${PROJECT_SOURCE_DIR}/src/Kinematics.cpp

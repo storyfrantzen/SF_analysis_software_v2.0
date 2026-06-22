@@ -12,7 +12,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from eppi0.event_sample import build_generated_sample, join_reconstructed
+from eppi0.event_sample import (
+    build_generated_sample,
+    generated_sample_from_tree,
+    join_reconstructed,
+)
 
 
 GEN_COLUMNS = [
@@ -22,6 +26,18 @@ GEN_COLUMNS = [
     "gen.p",
     "gen.theta",
     "gen.phi",
+]
+
+GENERATED_EVENT_COLUMNS = [
+    "runNum",
+    "eventNum",
+    "topologyValid",
+    "Q2",
+    "xB",
+    "minusT",
+    "trentoPhi",
+    "radiative",
+    "weight",
 ]
 
 REC_COLUMNS = [
@@ -45,12 +61,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Join all generated EPPI0 events to selected reconstructed candidates."
     )
-    parser.add_argument("matched_root", type=Path, help="Unskimmed matched converter ROOT file")
+    parser.add_argument("matched_root", type=Path, help="Converter ROOT file")
     parser.add_argument("selected_root", type=Path, help="Output from apply_cuts")
     parser.add_argument("output", type=Path, help="Compact event-level .npz output")
-    parser.add_argument("--beam-energy", type=float, required=True)
+    parser.add_argument("--beam-energy", type=float,
+                        help="Required only for legacy particle-level GEN input")
     parser.add_argument("--dictionary", type=Path, help="Optional ROOT dictionary shared library")
     parser.add_argument("--tree", default="Events")
+    parser.add_argument("--generated-tree", default="GeneratedEvents")
     return parser.parse_args()
 
 
@@ -64,16 +82,41 @@ def main() -> int:
         if status < 0:
             raise RuntimeError(f"Could not load ROOT dictionary: {args.dictionary}")
 
-    gen = ROOT.RDataFrame(args.tree, str(args.matched_root.resolve())).AsNumpy(GEN_COLUMNS)
-    generated = build_generated_sample(
-        gen["event.runNum"],
-        gen["event.eventNum"],
-        gen["gen.pid"],
-        gen["gen.p"],
-        gen["gen.theta"],
-        gen["gen.phi"],
-        args.beam_energy,
-    )
+    matched_path = str(args.matched_root.resolve())
+    input_file = ROOT.TFile.Open(matched_path, "READ")
+    if not input_file or input_file.IsZombie():
+        raise RuntimeError(f"Could not open converter ROOT file: {matched_path}")
+    has_generated_tree = bool(input_file.Get(args.generated_tree))
+    input_file.Close()
+
+    if has_generated_tree:
+        gen = ROOT.RDataFrame(args.generated_tree, matched_path).AsNumpy(GENERATED_EVENT_COLUMNS)
+        generated = generated_sample_from_tree(
+            gen["runNum"],
+            gen["eventNum"],
+            gen["topologyValid"],
+            gen["Q2"],
+            gen["xB"],
+            gen["minusT"],
+            gen["trentoPhi"],
+            gen["radiative"],
+            gen["weight"],
+        )
+        generated_source = args.generated_tree
+    else:
+        if args.beam_energy is None:
+            raise ValueError("--beam-energy is required when GeneratedEvents is absent")
+        gen = ROOT.RDataFrame(args.tree, matched_path).AsNumpy(GEN_COLUMNS)
+        generated = build_generated_sample(
+            gen["event.runNum"],
+            gen["event.eventNum"],
+            gen["gen.pid"],
+            gen["gen.p"],
+            gen["gen.theta"],
+            gen["gen.phi"],
+            args.beam_energy,
+        )
+        generated_source = f"{args.tree}.gen (legacy)"
 
     rec = ROOT.RDataFrame(args.tree, str(args.selected_root.resolve())).AsNumpy(REC_COLUMNS)
     rec_values = {
@@ -94,6 +137,7 @@ def main() -> int:
     )
     metadata = {
         "beam_energy": args.beam_energy,
+        "generated_source": generated_source,
         "matched_root": str(args.matched_root.resolve()),
         "selected_root": str(args.selected_root.resolve()),
         "generated_events": int(generated.run.size),
