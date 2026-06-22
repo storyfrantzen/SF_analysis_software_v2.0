@@ -215,9 +215,17 @@ studies when `generatedEventTree` is enabled:
 before QADB, reconstructed final-state, or reconstructed DIS decisions. It has
 one scalar row per input event with:
 
-- `runNum`, `eventNum`, `topologyValid`, and `radiative`;
+- `sourceFileId` and zero-based `sourceEventIndex`;
+- original `runNum`, `eventNum`, `topologyValid`, and `radiative`;
 - `weight` (currently one until generator weights are connected);
 - generated `Q2`, `nu`, `xB`, `y`, `W`, `minusT`, and `trentoPhi`.
+
+`sourceFileId` is a deterministic hash of the input HIPO basename. The
+companion `SourceFiles` tree stores the ID-to-basename mapping. This source-aware
+identity is propagated to selected REC candidates and is the acceptance join
+key. It is necessary because GEMC files use run 11 and may each restart
+`eventNum` at one; `(runNum,eventNum)` is therefore diagnostic metadata, not a
+cross-file primary key.
 
 Radiative topology is `e p pi0 gamma`; non-radiative topology is `e p gamma
 gamma`. Invalid generator topologies remain represented with

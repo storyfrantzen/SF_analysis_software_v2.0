@@ -1,5 +1,7 @@
 #pragma once
+#include <cstdint>
 #include <cmath>
+#include <limits>
 #include <string>
 #include "TObject.h"
 
@@ -14,6 +16,8 @@ namespace clas12 {
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 int getDetector(int status);  // FT=0, FD=1, CD=2
+inline constexpr std::uint64_t INVALID_SOURCE_ID =
+    std::numeric_limits<std::uint64_t>::max();
 
 template <typename T>
 inline double safeGet(T expr) {
@@ -25,17 +29,20 @@ inline double safeGet(T expr) {
 // One row per event.
 
 struct EventBranches : public TObject {
+    std::uint64_t sourceFileId = INVALID_SOURCE_ID;
+    std::uint64_t sourceEventIndex = INVALID_SOURCE_ID;
     int    runNum   = -999;
     int    eventNum = -999;
     int    helicity = -999;
     double charge   = NAN;
 
     void reset();
+    void setSource(std::uint64_t fileId, std::uint64_t eventIndex);
 
     #ifndef __CLING__
     void fill(clas12::clas12reader& c12);
     #endif
-    ClassDef(EventBranches, 1);
+    ClassDef(EventBranches, 2);
 };
 
 // ─── RecBranches ─────────────────────────────────────────────────────────────────

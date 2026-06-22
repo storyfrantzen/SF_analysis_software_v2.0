@@ -9,10 +9,13 @@ Array = np.ndarray
 ELECTRON_MASS = 0.00051099895
 PROTON_MASS = 0.9382720813
 PI0_MASS = 0.1349768
+INVALID_SOURCE_ID = np.iinfo(np.uint64).max
 
 
 @dataclass(frozen=True)
 class GeneratedSample:
+    source_file_id: Array
+    source_event_index: Array
     run: Array
     event: Array
     q2: Array
@@ -73,6 +76,8 @@ def build_generated_sample(
     trento = _trento_phi(electron_vector, proton_vector, beam_energy)
 
     return GeneratedSample(
+        source_file_id=np.full(np.count_nonzero(topology), INVALID_SOURCE_ID, dtype=np.uint64),
+        source_event_index=np.full(np.count_nonzero(topology), INVALID_SOURCE_ID, dtype=np.uint64),
         run=unique_keys["run"][topology],
         event=unique_keys["event"][topology],
         q2=q2[topology],
@@ -85,6 +90,8 @@ def build_generated_sample(
 
 
 def generated_sample_from_tree(
+    source_file_id: Array,
+    source_event_index: Array,
     run: Array,
     event: Array,
     topology_valid: Array,
@@ -97,13 +104,16 @@ def generated_sample_from_tree(
 ) -> GeneratedSample:
     """Build the analysis view from the compact converter tree."""
     arrays = [np.asarray(item) for item in (
-        run, event, topology_valid, q2, xb, minus_t, trento_phi, radiative, weight
+        source_file_id, source_event_index, run, event, topology_valid,
+        q2, xb, minus_t, trento_phi, radiative, weight
     )]
     if len({array.shape for array in arrays}) != 1:
         raise ValueError("GeneratedEvents branches must have equal shapes")
     valid = np.asarray(topology_valid, dtype=bool)
     valid &= np.isfinite(q2) & np.isfinite(xb) & np.isfinite(minus_t) & np.isfinite(trento_phi)
     return GeneratedSample(
+        source_file_id=np.asarray(source_file_id, dtype=np.uint64)[valid],
+        source_event_index=np.asarray(source_event_index, dtype=np.uint64)[valid],
         run=np.asarray(run, dtype=np.int64)[valid],
         event=np.asarray(event, dtype=np.int64)[valid],
         q2=np.asarray(q2, dtype=float)[valid],
@@ -120,22 +130,41 @@ def join_reconstructed(
     rec_run: Array,
     rec_event: Array,
     rec_columns: dict[str, Array],
+    rec_source_file_id: Array | None = None,
+    rec_source_event_index: Array | None = None,
 ) -> dict[str, Array]:
     """Left-join selected REC candidates onto all generated events."""
     rec_run = np.asarray(rec_run, dtype=np.int64)
     rec_event = np.asarray(rec_event, dtype=np.int64)
-    rec_keys = _keys(rec_run, rec_event)
+    source_aware = (
+        rec_source_file_id is not None
+        and rec_source_event_index is not None
+        and np.all(generated.source_file_id != INVALID_SOURCE_ID)
+        and np.all(np.asarray(rec_source_file_id, dtype=np.uint64) != INVALID_SOURCE_ID)
+        and np.all(np.asarray(rec_source_event_index, dtype=np.uint64) != INVALID_SOURCE_ID)
+    )
+    if source_aware:
+        rec_keys = _source_keys(rec_source_file_id, rec_source_event_index)
+        gen_keys = _source_keys(generated.source_file_id, generated.source_event_index)
+        key_description = "(sourceFileId,sourceEventIndex)"
+    else:
+        rec_keys = _keys(rec_run, rec_event)
+        gen_keys = _keys(generated.run, generated.event)
+        key_description = "(runNum,eventNum)"
+    if np.unique(gen_keys).size != gen_keys.size:
+        raise ValueError(f"generated sample contains duplicate {key_description} keys")
     if np.unique(rec_keys).size != rec_keys.size:
-        raise ValueError("selected REC sample must contain at most one candidate per event")
-    order = np.argsort(rec_keys, order=("run", "event"))
+        raise ValueError(f"selected REC sample contains duplicate {key_description} keys")
+    order = np.argsort(rec_keys, order=rec_keys.dtype.names)
     sorted_keys = rec_keys[order]
-    gen_keys = _keys(generated.run, generated.event)
     positions = np.searchsorted(sorted_keys, gen_keys)
     bounded = positions < sorted_keys.size
     matched = np.zeros(gen_keys.size, dtype=bool)
     matched[bounded] = sorted_keys[positions[bounded]] == gen_keys[bounded]
 
     output: dict[str, Array] = {
+        "source_file_id": generated.source_file_id,
+        "source_event_index": generated.source_event_index,
         "run": generated.run,
         "event": generated.event,
         "gen_Q2": generated.q2,
@@ -162,6 +191,16 @@ def _keys(run: Array, event: Array) -> Array:
     keys = np.empty(np.asarray(run).size, dtype=[("run", "<i8"), ("event", "<i8")])
     keys["run"] = run
     keys["event"] = event
+    return keys
+
+
+def _source_keys(file_id: Array, event_index: Array) -> Array:
+    keys = np.empty(
+        np.asarray(file_id).size,
+        dtype=[("source_file_id", "<u8"), ("source_event_index", "<u8")],
+    )
+    keys["source_file_id"] = np.asarray(file_id, dtype=np.uint64)
+    keys["source_event_index"] = np.asarray(event_index, dtype=np.uint64)
     return keys
 
 

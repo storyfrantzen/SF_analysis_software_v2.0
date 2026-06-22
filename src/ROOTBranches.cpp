@@ -19,10 +19,17 @@ int getDetector(int status) {
 // ─── EventBranches ───────────────────────────────────────────────────────────────
 
 void EventBranches::reset() {
+    sourceFileId = INVALID_SOURCE_ID;
+    sourceEventIndex = INVALID_SOURCE_ID;
     runNum = -999;
     eventNum = -999;
     helicity = -999;
     charge = NAN;
+}
+
+void EventBranches::setSource(std::uint64_t fileId, std::uint64_t eventIndex) {
+    sourceFileId = fileId;
+    sourceEventIndex = eventIndex;
 }
 
 #ifndef POST_PROCESSING_ONLY

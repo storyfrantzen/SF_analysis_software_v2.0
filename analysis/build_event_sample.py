@@ -28,6 +28,8 @@ GEN_COLUMNS = [
     "gen.phi",
 ]
 
+GENERATED_SOURCE_COLUMNS = ["sourceFileId", "sourceEventIndex"]
+
 GENERATED_EVENT_COLUMNS = [
     "runNum",
     "eventNum",
@@ -55,6 +57,8 @@ REC_COLUMNS = [
     "E_miss",
     "pT_miss",
 ]
+
+REC_SOURCE_COLUMNS = ["sourceFileId", "sourceEventIndex"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -86,12 +90,26 @@ def main() -> int:
     input_file = ROOT.TFile.Open(matched_path, "READ")
     if not input_file or input_file.IsZombie():
         raise RuntimeError(f"Could not open converter ROOT file: {matched_path}")
-    has_generated_tree = bool(input_file.Get(args.generated_tree))
+    generated_tree = input_file.Get(args.generated_tree)
+    has_generated_tree = bool(generated_tree)
+    has_generated_source_key = has_generated_tree and all(
+        generated_tree.GetBranch(name) for name in GENERATED_SOURCE_COLUMNS
+    )
     input_file.Close()
 
     if has_generated_tree:
-        gen = ROOT.RDataFrame(args.generated_tree, matched_path).AsNumpy(GENERATED_EVENT_COLUMNS)
+        requested_gen_columns = GENERATED_EVENT_COLUMNS + (
+            GENERATED_SOURCE_COLUMNS if has_generated_source_key else []
+        )
+        gen = ROOT.RDataFrame(args.generated_tree, matched_path).AsNumpy(requested_gen_columns)
+        generated_rows = np.asarray(gen["runNum"]).size
         generated = generated_sample_from_tree(
+            gen["sourceFileId"] if has_generated_source_key else np.full(
+                generated_rows, np.iinfo(np.uint64).max, dtype=np.uint64
+            ),
+            gen["sourceEventIndex"] if has_generated_source_key else np.full(
+                generated_rows, np.iinfo(np.uint64).max, dtype=np.uint64
+            ),
             gen["runNum"],
             gen["eventNum"],
             gen["topologyValid"],
@@ -118,7 +136,17 @@ def main() -> int:
         )
         generated_source = f"{args.tree}.gen (legacy)"
 
-    rec = ROOT.RDataFrame(args.tree, str(args.selected_root.resolve())).AsNumpy(REC_COLUMNS)
+    selected_path = str(args.selected_root.resolve())
+    selected_file = ROOT.TFile.Open(selected_path, "READ")
+    if not selected_file or selected_file.IsZombie():
+        raise RuntimeError(f"Could not open selected ROOT file: {selected_path}")
+    selected_tree = selected_file.Get(args.tree)
+    if not selected_tree:
+        raise RuntimeError(f"Could not find tree {args.tree} in {selected_path}")
+    has_source_key = all(selected_tree.GetBranch(name) for name in REC_SOURCE_COLUMNS)
+    selected_file.Close()
+    requested_rec_columns = REC_COLUMNS + (REC_SOURCE_COLUMNS if has_source_key else [])
+    rec = ROOT.RDataFrame(args.tree, selected_path).AsNumpy(requested_rec_columns)
     rec_values = {
         "rec_Q2": rec["Q2"],
         "rec_xB": rec["xB"],
@@ -133,7 +161,12 @@ def main() -> int:
         "rec_pT_miss": rec["pT_miss"],
     }
     sample = join_reconstructed(
-        generated, rec["runNum"], rec["eventNum"], rec_values
+        generated,
+        rec["runNum"],
+        rec["eventNum"],
+        rec_values,
+        rec_source_file_id=rec["sourceFileId"] if has_source_key else None,
+        rec_source_event_index=rec["sourceEventIndex"] if has_source_key else None,
     )
     metadata = {
         "beam_energy": args.beam_energy,
@@ -142,7 +175,7 @@ def main() -> int:
         "selected_root": str(args.selected_root.resolve()),
         "generated_events": int(generated.run.size),
         "selected_reconstructed_events": int(sample["rec_selected"].sum()),
-        "schema_version": 1,
+        "schema_version": 2,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(args.output, **sample, metadata_json=json.dumps(metadata, sort_keys=True))

@@ -68,6 +68,8 @@ class ResponseTests(unittest.TestCase):
 class EventSampleTests(unittest.TestCase):
     def test_compact_generated_tree_filters_invalid_topology(self) -> None:
         sample = generated_sample_from_tree(
+            np.array([1001, 1002], dtype=np.uint64),
+            np.array([0, 0], dtype=np.uint64),
             np.array([11, 11]),
             np.array([10, 11]),
             np.array([True, False]),
@@ -80,6 +82,31 @@ class EventSampleTests(unittest.TestCase):
         )
         np.testing.assert_array_equal(sample.event, [10])
         np.testing.assert_allclose(sample.weight, [2.0])
+
+    def test_source_key_disambiguates_repeated_mc_event_numbers(self) -> None:
+        generated = generated_sample_from_tree(
+            np.array([1001, 1002], dtype=np.uint64),
+            np.array([0, 0], dtype=np.uint64),
+            np.array([11, 11]),
+            np.array([1, 1]),
+            np.array([True, True]),
+            np.array([1.5, 1.6]),
+            np.array([0.2, 0.21]),
+            np.array([0.3, 0.31]),
+            np.array([0.4, 0.41]),
+            np.array([True, True]),
+            np.array([1.0, 1.0]),
+        )
+        joined = join_reconstructed(
+            generated,
+            np.array([11, 11]),
+            np.array([1, 1]),
+            {"rec_Q2": np.array([1.51, 1.61])},
+            rec_source_file_id=np.array([1001, 1002], dtype=np.uint64),
+            rec_source_event_index=np.array([0, 0], dtype=np.uint64),
+        )
+        np.testing.assert_allclose(joined["rec_Q2"], [1.51, 1.61])
+        np.testing.assert_array_equal(joined["rec_selected"], [True, True])
 
     def test_radiative_and_nonradiative_events_are_both_preserved(self) -> None:
         # Event 10: e p gamma gamma. Event 11: e p pi0 gamma_rad.

@@ -4,10 +4,12 @@
 #include <vector>
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cmath>
 #include <iomanip>
 #include <memory>
 #include <sstream>
+#include <unordered_map>
 
 #include "TFile.h"
 #include "TParameter.h"
@@ -31,6 +33,16 @@ struct MatchResult {
     int genIdx = -1;
     double angleDeg = NAN;
 };
+
+std::uint64_t stableSourceFileId(const std::string& fileName) {
+    // Stable FNV-1a hash; unlike std::hash this is reproducible across systems.
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (const unsigned char character : fileName) {
+        hash ^= character;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
 
 void printProgress(std::size_t currentFile,
                    std::size_t totalFiles,
@@ -258,6 +270,14 @@ int main(int argc, char** argv) {
                                   cfg.generatedEventTree.treeName.c_str());
         generatedEvent.registerBranches(*generatedTree);
     }
+    TTree* sourceFilesTree = nullptr;
+    std::uint64_t catalogSourceFileId = INVALID_SOURCE_ID;
+    std::string catalogSourceFileName;
+    if (cfg.generatedEventTree.enabled) {
+        sourceFilesTree = new TTree("SourceFiles", "SourceFiles");
+        sourceFilesTree->Branch("sourceFileId", &catalogSourceFileId, "sourceFileId/l");
+        sourceFilesTree->Branch("sourceFileName", &catalogSourceFileName);
+    }
 
     EventBranches evBranches;
     RecBranches   recBranches;
@@ -274,12 +294,31 @@ int main(int argc, char** argv) {
     long long nGeneratedEvents = 0, nGeneratedTopologyValid = 0;
     long long lastProgressEvent = 0;
     const Clock::time_point startTime = Clock::now();
+    std::unordered_map<std::uint64_t, std::string> sourceFileCatalog;
 
     for (std::size_t fileIndex = 0; fileIndex < hipoFiles.size(); ++fileIndex) {
         const auto& hipoPath = hipoFiles[fileIndex];
         std::cout << "[INFO] Processing: " << hipoPath << "\n";
 
+        const std::string sourceFileName = fs::path(hipoPath).filename().string();
+        const std::uint64_t sourceFileId = stableSourceFileId(sourceFileName);
+        const auto catalogEntry = sourceFileCatalog.find(sourceFileId);
+        if (catalogEntry != sourceFileCatalog.end() && catalogEntry->second != sourceFileName) {
+            std::cerr << "[ERROR] Source-file hash collision between "
+                      << catalogEntry->second << " and " << sourceFileName << "\n";
+            return 1;
+        }
+        if (catalogEntry == sourceFileCatalog.end()) {
+            sourceFileCatalog[sourceFileId] = sourceFileName;
+            if (sourceFilesTree) {
+                catalogSourceFileId = sourceFileId;
+                catalogSourceFileName = sourceFileName;
+                sourceFilesTree->Fill();
+            }
+        }
+
         clas12::clas12reader c12(hipoPath);
+        std::uint64_t sourceEventIndex = 0;
 
         const auto maybePrintProgress = [&]() {
             if (progressEvery <= 0 || nTotal - lastProgressEvent < progressEvery) return;
@@ -299,6 +338,7 @@ int main(int argc, char** argv) {
 
         while (c12.next()) {
             ++nTotal;
+            const std::uint64_t currentSourceEventIndex = sourceEventIndex++;
 
             const int runNum = c12.runconfig()->getRun();
             const int eventNum = c12.runconfig()->getEvent();
@@ -307,7 +347,9 @@ int main(int argc, char** argv) {
             // Preserve the generated denominator before any reconstructed QA,
             // final-state, or DIS decision is made.
             if (generatedTree) {
-                generatedEvent.fill(mc, runNum, eventNum, cfg.beamEnergy);
+                generatedEvent.fill(mc, runNum, eventNum,
+                                    sourceFileId, currentSourceEventIndex,
+                                    cfg.beamEnergy);
                 generatedTree->Fill();
                 ++nGeneratedEvents;
                 if (generatedEvent.topologyValid) ++nGeneratedTopologyValid;
@@ -331,6 +373,7 @@ int main(int argc, char** argv) {
             }
 
             evBranches.fill(c12);
+            evBranches.setSource(sourceFileId, currentSourceEventIndex);
             int rn = evBranches.runNum;
             int en = evBranches.eventNum;
 

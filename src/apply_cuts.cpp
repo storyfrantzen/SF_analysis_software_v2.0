@@ -105,6 +105,8 @@ void printProgress(Long64_t currentRow,
 }
 
 struct CandidateOutput {
+    std::uint64_t sourceFileId = INVALID_SOURCE_ID;
+    std::uint64_t sourceEventIndex = INVALID_SOURCE_ID;
     int runNum = -999;
     int eventNum = -999;
     int helicity = -999;
@@ -168,6 +170,8 @@ struct CandidateOutput {
     void reset() { *this = CandidateOutput{}; }
 
     void registerGenericBranches(TTree& tree) {
+        tree.Branch("sourceFileId", &sourceFileId, "sourceFileId/l");
+        tree.Branch("sourceEventIndex", &sourceEventIndex, "sourceEventIndex/l");
         tree.Branch("runNum", &runNum, "runNum/I");
         tree.Branch("eventNum", &eventNum, "eventNum/I");
         tree.Branch("helicity", &helicity, "helicity/I");
@@ -350,6 +354,8 @@ void fillGenericCandidate(const EventRows& rows,
                           const PostCutConfig& cfg,
                           CandidateOutput& out) {
     out.reset();
+    out.sourceFileId = rows.event.sourceFileId;
+    out.sourceEventIndex = rows.event.sourceEventIndex;
     out.runNum = rows.event.runNum;
     out.eventNum = rows.event.eventNum;
     out.helicity = rows.event.helicity;
@@ -627,9 +633,14 @@ int main(int argc, char** argv) {
 
         if (!event || !rec || rec->pid == -999) continue;
 
+        const bool sourceAware = event->sourceFileId != INVALID_SOURCE_ID &&
+                                 rows.event.sourceFileId != INVALID_SOURCE_ID;
         const bool newEvent = haveRows &&
-                              (event->runNum != rows.event.runNum ||
-                               event->eventNum != rows.event.eventNum);
+            (sourceAware
+                ? (event->sourceFileId != rows.event.sourceFileId ||
+                   event->sourceEventIndex != rows.event.sourceEventIndex)
+                : (event->runNum != rows.event.runNum ||
+                   event->eventNum != rows.event.eventNum));
         if (newEvent) {
             flushEvent();
             rows.clear();

@@ -10,6 +10,8 @@
 #include "Kinematics.h"
 
 void GeneratedEventBranches::reset() {
+    sourceFileId = INVALID_SOURCE_ID;
+    sourceEventIndex = INVALID_SOURCE_ID;
     runNum = -999;
     eventNum = -999;
     topologyValid = false;
@@ -19,6 +21,8 @@ void GeneratedEventBranches::reset() {
 }
 
 void GeneratedEventBranches::registerBranches(TTree& tree) {
+    tree.Branch("sourceFileId", &sourceFileId, "sourceFileId/l");
+    tree.Branch("sourceEventIndex", &sourceEventIndex, "sourceEventIndex/l");
     tree.Branch("runNum", &runNum, "runNum/I");
     tree.Branch("eventNum", &eventNum, "eventNum/I");
     tree.Branch("topologyValid", &topologyValid, "topologyValid/O");
@@ -36,8 +40,12 @@ void GeneratedEventBranches::registerBranches(TTree& tree) {
 void GeneratedEventBranches::fill(clas12::mcparticle* particles,
                                   int runNumber,
                                   int eventNumber,
+                                  std::uint64_t fileId,
+                                  std::uint64_t eventIndex,
                                   double beamEnergy) {
     reset();
+    sourceFileId = fileId;
+    sourceEventIndex = eventIndex;
     runNum = runNumber;
     eventNum = eventNumber;
     if (!particles) return;

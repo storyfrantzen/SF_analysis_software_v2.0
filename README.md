@@ -45,10 +45,16 @@ This writes a lightweight `GeneratedEvents` tree before reconstructed topology
 or DIS filtering. The particle-level `Events` tree may therefore be REC-skimmed
 with `saveUnmatchedMC` disabled without biasing the generated denominator.
 
-`GeneratedEvents` has one row per input MC event. It stores event identity,
+`GeneratedEvents` has one row per input MC event. It stores the source-aware
+identity `(sourceFileId, sourceEventIndex)`, the original `(runNum, eventNum)`,
 generator-topology validity, a radiative flag, weight, and generated `Q2`, `nu`,
 `xB`, `y`, `W`, `minusT`, and `trentoPhi`. Invalid generator topologies remain
-present with `topologyValid=false`, allowing exact input-event accounting.
+present with `topologyValid=false`, allowing exact input-event accounting. A
+`SourceFiles` tree maps each deterministic `sourceFileId` to its HIPO basename.
+
+GEMC production files commonly restart `eventNum` at one and use `runNum == 11`,
+so `(runNum, eventNum)` is not a valid cross-file identity. The analysis join
+uses the source-aware key instead.
 
 The converter currently supports:
 

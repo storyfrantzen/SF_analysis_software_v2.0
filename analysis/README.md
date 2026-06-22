@@ -11,6 +11,7 @@ An acceptance sample must contain one row per generated event, including events
 with no accepted reconstructed candidate.  Each row needs:
 
 - generated `Q2`, `xB`, `-t`, and Trento phi;
+- a source-aware event key identifying the HIPO file and ordinal event within it;
 - reconstructed values for the same coordinates, or `NaN` when no candidate is
   reconstructed;
 - a reconstructed-selection flag;
@@ -72,8 +73,10 @@ python3 analysis/run_analysis.py fit-harmonics results/cross_section.npz \
 ```
 
 `build_event_sample.py` creates the MC event sample by left-joining the selected
-REC tree onto the compact `GeneratedEvents` tree. It auto-detects that tree and
-retains backward compatibility with older particle-level matched files.
+REC tree onto the compact `GeneratedEvents` tree. New files join on
+`(sourceFileId, sourceEventIndex)`, because GEMC files can all have run 11 and
+restart their event numbers. It auto-detects the compact tree and retains
+backward compatibility with older particle-level matched files.
 `export_selected_data.py` creates the compact data artifact and carries the
 converter's accumulated charge into the pipeline.
 
@@ -115,14 +118,26 @@ topology when individual kinematic bins lack sufficient statistics.
 
 The converter writes one row for every input MC event:
 
-- `runNum`, `eventNum`;
+- `sourceFileId`, a deterministic hash of the input HIPO basename;
+- `sourceEventIndex`, the zero-based input-event ordinal within that file;
+- the original `runNum`, `eventNum` for diagnostics;
 - `topologyValid`, `radiative`;
 - `weight` (currently `1.0` until generator weights are connected);
 - `Q2`, `nu`, `xB`, `y`, `W`, `minusT`, `trentoPhi`.
 
 `build_event_sample.py` retains only `topologyValid` rows in the physics sample,
 while the converter `Summary` tree records both total generated rows and valid
-generated topologies for bookkeeping.
+generated topologies for bookkeeping. The companion `SourceFiles` tree records
+the mapping from `sourceFileId` to HIPO basename.
+
+Check both identities after converting more than one input file:
+
+```bash
+python3 analysis/check_event_keys.py 6.535_eppi0_acceptance_matched.root
+```
+
+Repeated `(runNum,eventNum)` keys are expected for the tested GEMC production;
+duplicated source-event keys are an error.
 
 The harmonic stage retains the legacy weighted fit
 `A + B cos(phi) + C cos(2 phi)` and stores coefficients, full covariance,
@@ -171,8 +186,11 @@ python3 analysis/concatenate_event_samples.py results/chunks/*.npz \
   --output results/mc_events.npz
 ```
 
-Duplicate `(run,event)` keys are rejected by default, protecting against
-accidentally processing the same HIPO chunk twice.
+Duplicate `(source_file_id,source_event_index)` keys are rejected by default,
+protecting against accidentally processing the same HIPO file twice. Legacy
+samples without source identity fall back to `(run,event)` and therefore cannot
+safely combine files whose GEMC event numbers restart. Reconvert those files
+with the current converter before multi-file acceptance production.
 
 Setting `saveUnmatchedMC` to false is safe for acceptance only when
 `GeneratedEvents` is enabled. Without that tree, generated events lacking a

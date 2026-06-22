@@ -1,6 +1,9 @@
 #pragma once
 
+#include <cstdint>
 #include <cmath>
+
+#include "ROOTBranches.h"
 
 class TTree;
 
@@ -9,6 +12,8 @@ class mcparticle;
 }
 
 struct GeneratedEventBranches {
+    std::uint64_t sourceFileId = INVALID_SOURCE_ID;
+    std::uint64_t sourceEventIndex = INVALID_SOURCE_ID;
     int runNum = -999;
     int eventNum = -999;
     bool topologyValid = false;
@@ -28,5 +33,7 @@ struct GeneratedEventBranches {
     void fill(clas12::mcparticle* particles,
               int runNumber,
               int eventNumber,
+              std::uint64_t fileId,
+              std::uint64_t eventIndex,
               double beamEnergy);
 };

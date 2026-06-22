@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--allow-duplicate-events",
         action="store_true",
-        help="Permit repeated (run,event) keys; rejected by default.",
+        help="Permit repeated source-event keys; rejected by default.",
     )
     return parser.parse_args()
 
@@ -40,16 +40,26 @@ def main() -> int:
 
     combined = {name: np.concatenate([chunk[name] for chunk in chunks]) for name in fields}
     if not args.allow_duplicate_events:
-        keys = np.empty(
-            combined["run"].size, dtype=[("run", "<i8"), ("event", "<i8")]
-        )
-        keys["run"] = combined["run"]
-        keys["event"] = combined["event"]
+        if "source_file_id" in combined and "source_event_index" in combined:
+            keys = np.empty(
+                combined["run"].size,
+                dtype=[("source_file_id", "<u8"), ("source_event_index", "<u8")],
+            )
+            keys["source_file_id"] = combined["source_file_id"]
+            keys["source_event_index"] = combined["source_event_index"]
+            key_name = "(source_file_id,source_event_index)"
+        else:
+            keys = np.empty(
+                combined["run"].size, dtype=[("run", "<i8"), ("event", "<i8")]
+            )
+            keys["run"] = combined["run"]
+            keys["event"] = combined["event"]
+            key_name = "legacy (run,event)"
         if np.unique(keys).size != keys.size:
-            raise ValueError("duplicate (run,event) keys found across event-sample chunks")
+            raise ValueError(f"duplicate {key_name} keys found across event-sample chunks")
 
     metadata = {
-        "schema_version": 1,
+        "schema_version": 2,
         "input_samples": [str(path.resolve()) for path in args.inputs],
         "chunks": len(chunks),
         "events": int(combined["run"].size),
