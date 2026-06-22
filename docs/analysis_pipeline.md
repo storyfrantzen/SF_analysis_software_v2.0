@@ -134,6 +134,12 @@ python3 scripts/derive_proton_energy_loss.py matched.root \
 The script fits residual profiles in theta and momentum bins, then writes the JSON format consumed by `hipo2root`.
 When supplied, the dataset tag and beam energy are printed visibly on every plot and embedded in the PNG metadata.
 
+The FD/CD detector, momentum, theta, and REC–GEN matching requirements form one
+common proton sample. Each residual window is then applied only to the quantity
+being fitted: the `delta_p` window does not condition the `delta_theta` or
+`delta_phi` samples, and vice versa. These windows are calibration outlier
+ranges; they never reject events when the resulting corrections are applied.
+
 ## Sampling-Fraction Parameters
 
 For a first inclusive-electron SIDIS test, run:

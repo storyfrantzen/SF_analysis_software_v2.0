@@ -101,19 +101,26 @@ def filtered_arrays(input_file: Path,
                     tree: str,
                     cfg: DetectorFitConfig,
                     max_rows: int | None) -> dict[str, np.ndarray]:
+    """Load the common matched-proton sample without residual-specific cuts."""
     df = define_common_proton_residuals(load_dataframe(input_file, tree))
     df = df.Filter(f"rec.det == {cfg.detector}")
     df = df.Filter(f"theta_deg >= {cfg.theta_range[0]} && theta_deg <= {cfg.theta_range[1]}")
     df = df.Filter(f"rec.p >= {cfg.momentum_range[0]} && rec.p <= {cfg.momentum_range[1]}")
-    for name, (lo, hi) in cfg.residual_ranges.items():
-        col = RESIDUAL_COLUMNS[name]
-        df = df.Filter(f"{col} >= {lo} && {col} <= {hi}")
 
     return arrays_from_dataframe(
         df,
         ["rec.p", "theta_deg", "delta_p_fit", "delta_theta_fit", "delta_phi_fit"],
         max_rows=max_rows,
     )
+
+
+def residual_range_mask(arrays: dict[str, np.ndarray],
+                        residual_name: str,
+                        cfg: DetectorFitConfig) -> np.ndarray:
+    """Select outliers only for the residual currently being fitted."""
+    residual = np.asarray(arrays[RESIDUAL_COLUMNS[residual_name]], dtype=float)
+    lo, hi = cfg.residual_ranges[residual_name]
+    return np.isfinite(residual) & (residual >= lo) & (residual <= hi)
 
 
 def fit_detector(arrays: dict[str, np.ndarray],
@@ -132,16 +139,25 @@ def fit_detector(arrays: dict[str, np.ndarray],
 
     output: dict[str, dict[str, object]] = {}
     for residual_name, residual_column in RESIDUAL_COLUMNS.items():
+        range_mask = residual_range_mask(arrays, residual_name, cfg)
+        fit_p = p[range_mask]
+        fit_theta = theta[range_mask]
+        residual = arrays[residual_column][range_mask]
+        print(
+            f"{detector_name} {residual_name}: retained "
+            f"{range_mask.sum()}/{range_mask.size} rows in its residual range"
+        )
         form = cfg.residual_forms[residual_name]
         n_params = form.n_parameters
         param_values = [[] for _ in range(n_params)]
         param_errors = [[] for _ in range(n_params)]
         theta_centers = []
 
-        residual = arrays[residual_column]
         for theta_lo, theta_hi in zip(theta_edges[:-1], theta_edges[1:]):
-            theta_mask = (theta >= theta_lo) & (theta < theta_hi)
-            profile = binned_profile(p[theta_mask], residual[theta_mask], p_edges, min_entries)
+            theta_mask = (fit_theta >= theta_lo) & (fit_theta < theta_hi)
+            profile = binned_profile(
+                fit_p[theta_mask], residual[theta_mask], p_edges, min_entries
+            )
             beta, beta_err = fit_linear_form(profile.centers, profile.means, form, profile.errors)
             if not np.all(np.isfinite(beta)):
                 continue
