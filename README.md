@@ -29,6 +29,16 @@ Processing configs live in `configs/processing/`, so a typical local run looks l
 ./build/hipo2root configs/processing/eppi0.json /path/to/hipo/files
 ```
 
+Production configurations are organized by run group and energy. The complete
+RGA 10.604 GeV EPPI0 data/nonradiative-MC set lives under
+`configs/{processing,post}/rga/10.604/`, with its numerical analysis settings at
+`analysis/configs/rga/10.604.json`. See `configs/README.md` for the layout.
+
+The RGA EPPI0 configuration accepts FD or CD protons, applies the calibrated
+FD/CD proton energy-loss corrections during conversion, and applies the RGA
+DC, FT, ECAL, and CVT fiducial definitions plus the torus +1 electron
+sampling-fraction cuts during candidate selection.
+
 For matched REC/GEN rows used by calibration and acceptance studies:
 
 ```bash

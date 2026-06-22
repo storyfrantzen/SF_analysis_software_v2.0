@@ -104,6 +104,12 @@ Particle-level cuts are now configured as primitive operations inside channel ro
 
 Detector acceptance is configured at the particle-role level with `detectors`, for example `"detectors": [0, 1]` for FT or FD electrons and `"detectors": [2]` for CD protons. Leaving `detectors` empty or omitted accepts any detector.
 
+For FD particles, fiducial tags are dispatched by detector responsibility:
+electrons receive DC and ECAL cuts, protons receive DC cuts, and photons receive
+ECAL cuts. This allows one RGA post-processing configuration to enable
+`DCEdges_RGA`, `FT_RGA`, `ECAL_RGA`, and `CVT_RGA` without requiring nonexistent
+DC information from photons or calorimeter information from protons.
+
 This keeps a cut like `removeCVTPhi(min, max)` reusable across channels and systematic variations. The current primitive vocabulary includes `minP`, `maxP`, `pRange`, `betaRange`, `minCalEnergy`, `firstPidInstance`, `rejectDetector` for backward compatibility, `rejectSameSectorAsRole`, `vertexDiff`, `removeCVTPhi`, `fiducial`, `minPcalEnergy`, `samplingFractionDiagonal`, and `samplingFractionSigma`. The combined `samplingFraction` operation remains available for older configs.
 
 The `apply_cuts` workflow reads `channel.particles` in order and recursively builds valid candidate combinations. This makes the topology generic enough for channels beyond eppi0. Every channel gets the generic selected-particle branches such as `selectedRoles`, `selectedIdx`, `selectedPid`, and `selectedP`, plus electron-derived DIS branches `Q2`, `nu`, and `xB` when the `electron` role is selected. Use `firstPidInstance` on that role when it must be the trigger/scattered electron, meaning the first particle with that PID in the reconstructed bank.

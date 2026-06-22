@@ -435,8 +435,15 @@ CutDecision Cuts::evaluateFiducial(const RecBranches& p) const {
     if (p.det == 0) {
         decision.require(passesFT(p), "fiducial.ft");
     } else if (p.det == 1) {
-        decision.require(passesDC(p), "fiducial.dc_edges");
-        decision.require(passesECAL(p), "fiducial.ecal");
+        // FD electrons use tracking and calorimetry, protons use tracking,
+        // and photons use calorimetry. Requiring both systems for every PID
+        // rejects valid proton and photon candidates.
+        if (p.pid == 11 || p.pid == 2212) {
+            decision.require(passesDC(p), "fiducial.dc_edges");
+        }
+        if (p.pid == 11 || p.pid == 22) {
+            decision.require(passesECAL(p), "fiducial.ecal");
+        }
     } else if (p.det == 2) {
         decision.require(passesCVT(p), "fiducial.cvt");
     }

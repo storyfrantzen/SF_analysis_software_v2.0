@@ -55,6 +55,10 @@ Run the dependency-light tests from the repository root:
 python3 -m unittest discover -s analysis/tests -v
 ```
 
+For the RGA 10.604 GeV workflow, use
+`analysis/configs/rga/10.604.json` together with the matching processing and
+post-processing files under `configs/*/rga/10.604/`.
+
 The four numerical stages are exposed through one command:
 
 ```bash
