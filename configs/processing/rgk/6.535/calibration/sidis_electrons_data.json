@@ -1,8 +1,8 @@
 {
-    "outputFile": "10.604_sidis_electrons.root",
+    "outputFile": "6.535_rgk_sidis_electrons.root",
     "treeName": "Events",
 
-    "beamEnergy": 10.604,
+    "beamEnergy": 6.535,
 
     "qadb": {
         "enabled": true,

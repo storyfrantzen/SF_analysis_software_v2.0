@@ -9,6 +9,10 @@ configs/post/<run-group>/<energy>/
 analysis/configs/<run-group>/<energy>.json
 ```
 
+Calibration-only workflows live one level deeper in a `calibration/`
+subdirectory. No uncategorized executable configs are kept at the roots of
+`processing/`, `post/`, or `analysis/configs/`.
+
 Processing configurations control HIPO input reduction, QADB, reconstructed
 skims, MC matching, generated-event storage, and kinematic corrections. Post
 configurations define candidate construction and tuneable detector/physics
@@ -25,8 +29,18 @@ The complete RGA 10.604 GeV EPPI0 pair is:
 
 Both post-processing files deliberately carry the same particle and detector
 selection. They differ only in output name so data and MC cannot overwrite one
-another. The flat files directly under `processing/` and `post/` remain as
-generic examples and backward-compatible calibration configurations.
+another.
+
+The active RGK 6.535 GeV files are:
+
+- `processing/rgk/6.535/eppi0_mc_acceptance.json`;
+- `processing/rgk/6.535/calibration/sidis_electrons_data.json`;
+- `post/rgk/6.535/calibration/electron_sf_candidates.json`;
+- `post/rgk/6.535/calibration/electron_sf_selected.json`;
+- `../analysis/configs/rgk/6.535.json`.
+
+RGA calibration inputs are under `processing/rga/10.604/calibration/` and
+`post/rga/10.604/calibration/`.
 
 Calibration coefficients live under `parameters/`, not in this directory.
 Relative paths in a configuration are resolved from the directory containing

@@ -139,9 +139,13 @@ When supplied, the dataset tag and beam energy are printed visibly on every plot
 For a first inclusive-electron SIDIS test, run:
 
 ```bash
-./build/hipo2root configs/processing/6.535_sidis_electrons.json /path/to/hipo/files
-./build/apply_cuts configs/post/electron_sf.json 6.535_sidis_electrons.root
-python3 scripts/derive_sampling_fraction.py electron_sf_candidates.root \
+./build/hipo2root \
+  configs/processing/rgk/6.535/calibration/sidis_electrons_data.json \
+  /path/to/hipo/files
+./build/apply_cuts \
+  configs/post/rgk/6.535/calibration/electron_sf_candidates.json \
+  6.535_rgk_sidis_electrons.root
+python3 scripts/derive_sampling_fraction.py 6.535_rgk_electron_sf_candidates.root \
   --output parameters/sampling_fraction/SF_sigma_cut_params_6.535RGKSKIM1.json \
   --plot-dir calibration_plots/sampling_fraction \
   --dataset-tag 6.535RGKSKIM1 \
@@ -151,7 +155,7 @@ python3 scripts/derive_sampling_fraction.py electron_sf_candidates.root \
   --torus 1
 ```
 
-The energy-specific processing configs keep events with at least one reconstructed electron, apply QADB filtering, and use loose DIS cuts. Use `10.604_sidis_electrons.json` for the corresponding RGA energy. The `electron_sf.json` post-processing config targets RGK outbending data, selects one FD electron per event, applies common DC-edge and RGK ECAL fiducial cuts, and writes explicit selected-electron branches such as `electronP`, `electronSector`, and `electronEPCAL`. It deliberately applies no sampling-fraction cuts. The derivation script then applies the minimum-PCAL and diagonal preselection before fitting the sigma band.
+The energy-specific processing configs keep events with at least one reconstructed electron, apply QADB filtering, and use loose DIS cuts. The corresponding RGA calibration config is `configs/processing/rga/10.604/calibration/sidis_electrons_data.json`. The candidate post-processing configs select one FD electron, apply the appropriate DC-edge and run-group ECAL fiducials, and write explicit selected-electron branches such as `electronP`, `electronSector`, and `electronEPCAL`. They deliberately apply no sampling-fraction cuts. The derivation script then applies the minimum-PCAL and diagonal preselection before fitting the sigma band.
 
 `apply_cuts` prints progress every 1,000,000 input rows by default. Pass a third argument to change that interval, or `0` to disable progress messages.
 
@@ -177,7 +181,9 @@ The defaults reproduce the established preselection: `E_PCAL > 0.07 GeV`, follow
 Use `--gemc` when one sector-independent MC fit should be copied to all six sectors. The output JSON contains `sector_1` through `sector_6`, each with `mu_coeffs` and `sigma_coeffs`. After deriving the file, apply all three independent SF cuts with:
 
 ```bash
-./build/apply_cuts configs/post/electron_sf_apply.json 6.535_sidis_electrons.root
+./build/apply_cuts \
+  configs/post/rgk/6.535/calibration/electron_sf_selected.json \
+  6.535_rgk_sidis_electrons.root
 ```
 
 The application config resolves `sigma.paramsFile` relative to its own directory. Its electron cut list exposes `minPcalEnergy`, `samplingFractionDiagonal`, and `samplingFractionSigma` separately, so any component can be omitted for a systematic check.
@@ -240,7 +246,7 @@ gamma`. Invalid generator topologies remain represented with
 After this row is saved, the normal `finalState` and DIS skim apply only to the
 particle-level `Events` tree. This permits a compact REC numerator without
 removing generated events from the denominator. Use
-`configs/processing/6.535_eppi0_acceptance_matched.json` as the reference.
+`configs/processing/rgk/6.535/eppi0_mc_acceptance.json` as the reference.
 
 Channel-specific derived quantities should be isolated behind small channel logic functions. The eppi0 derived variables and loose exclusivity checks now live behind the eppi0 logic path, which is enabled when the configured roles include `electron`, `proton`, and two `gamma` particles. Future channels should follow that pattern: keep role selection and primitive cuts generic, then add a narrow function for channel-specific kinematics and output branches.
 

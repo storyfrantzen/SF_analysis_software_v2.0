@@ -1,5 +1,5 @@
 {
-    "outputFile": "electron_sf_selected.root",
+    "outputFile": "6.535_rgk_electron_sf_selected.root",
     "inputTree": "Events",
     "outputTree": "Events",
     "beamEnergy": 6.535,
@@ -7,7 +7,7 @@
     "saveFailedCandidates": false,
 
     "fiducialCuts": [
-        "DCEdges",
+        "DCEdges_RGA",
         "ECAL_RGK"
     ],
 
@@ -21,7 +21,7 @@
         },
         "sigma": {
             "numSigma": 3.5,
-            "paramsFile": "../../parameters/sampling_fraction/SF_sigma_cut_params_6.535RGKSKIM1.json"
+            "paramsFile": "../../../../../parameters/sampling_fraction/SF_sigma_cut_params_6.535RGKSKIM1.json"
         }
     },
 

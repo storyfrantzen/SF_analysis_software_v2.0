@@ -23,10 +23,11 @@ hipo2root <config.json> <hipo_directory> [max_files] [progress_events]
 apply_cuts <post_config.json> <input.root> [progress_rows]
 ```
 
-Processing configs live in `configs/processing/`, so a typical local run looks like:
+Processing configs live in `configs/processing/<run-group>/<energy>/`, so an
+RGA data run looks like:
 
 ```bash
-./build/hipo2root configs/processing/eppi0.json /path/to/hipo/files
+./build/hipo2root configs/processing/rga/10.604/eppi0_data.json /path/to/hipo/files
 ```
 
 Production configurations are organized by run group and energy. The complete
@@ -39,16 +40,18 @@ FD/CD proton energy-loss corrections during conversion, and applies the RGA
 DC, FT, ECAL, and CVT fiducial definitions plus the torus +1 electron
 sampling-fraction cuts during candidate selection.
 
-For matched REC/GEN rows used by calibration and acceptance studies:
+For matched REC/GEN proton rows used to derive the RGA energy-loss correction:
 
 ```bash
-./build/hipo2root configs/processing/eppi0_matched.json /path/to/hipo/files
+./build/hipo2root \
+  configs/processing/rga/10.604/calibration/proton_energy_loss_mc.json \
+  /path/to/hipo/files
 ```
 
 For storage-efficient acceptance production:
 
 ```bash
-./build/hipo2root configs/processing/6.535_eppi0_acceptance_matched.json /path/to/hipo/files
+./build/hipo2root configs/processing/rgk/6.535/eppi0_mc_acceptance.json /path/to/hipo/files
 ```
 
 This writes a lightweight `GeneratedEvents` tree before reconstructed topology
@@ -80,7 +83,7 @@ fourth argument to change that interval, or `0` to disable progress output.
 
 By default, `finalState` rejects reconstructed particles whose PIDs are not listed in the config. Set `inclusive` to `true` for inclusive final-state skims.
 
-`apply_cuts` performs ROOT post-processing. The initial module builds one EPPI0 candidate per event and applies configurable fiducial, sampling-fraction, topology, and loose exclusivity cuts. Post-processing configs live in `configs/post/`, for example `configs/post/eppi0.json`.
+`apply_cuts` performs ROOT post-processing. The initial module builds one EPPI0 candidate per event and applies configurable fiducial, sampling-fraction, topology, and loose exclusivity cuts. Post-processing configs are grouped by run group and energy, for example `configs/post/rga/10.604/eppi0_data.json`.
 
 ## Acceptance and cross-section analysis
 
@@ -90,7 +93,7 @@ export adapters additionally require PyROOT and the project ROOT dictionary.
 
 The compact MC flow is:
 
-1. Convert MC with `6.535_eppi0_acceptance_matched.json`.
+1. Convert MC with the energy-matched `eppi0_mc*.json` processing config.
 2. Run `apply_cuts` to create one selected REC candidate per accepted event.
 3. Run `analysis/build_event_sample.py` to left-join selected REC candidates
    onto every valid generated event.

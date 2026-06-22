@@ -1,5 +1,5 @@
 {
-    "outputFile": "6.535_eppi0_acceptance_matched.root",
+    "outputFile": "6.535_rgk_eppi0_mc_acceptance.root",
     "treeName": "Events",
 
     "beamEnergy": 6.535,

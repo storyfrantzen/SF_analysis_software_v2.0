@@ -1,4 +1,5 @@
 {
+  "run_group": "RGK",
   "beam_energy": 6.535,
   "target_mass": 0.9382720813,
   "target_length_cm": 5.0,

@@ -1,5 +1,5 @@
 {
-    "outputFile": "10.604_proton_energy_loss_matched.root",
+    "outputFile": "10.604_rga_proton_energy_loss_mc.root",
     "treeName": "Events",
 
     "beamEnergy": 10.604,

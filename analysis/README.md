@@ -63,14 +63,14 @@ The four numerical stages are exposed through one command:
 
 ```bash
 python3 analysis/run_analysis.py response mc_events.npz \
-  --config analysis/configs/rgk_6.535.json --output-dir results/response
+  --config analysis/configs/rgk/6.535.json --output-dir results/response
 
 python3 analysis/run_analysis.py unfold data_events.npz \
   results/response/response_matrix.npz results/response/response_meta.npz \
-  --config analysis/configs/rgk_6.535.json --output results/unfolding.npz
+  --config analysis/configs/rgk/6.535.json --output results/unfolding.npz
 
 python3 analysis/run_analysis.py cross-section results/unfolding.npz \
-  --config analysis/configs/rgk_6.535.json --output results/cross_section.npz
+  --config analysis/configs/rgk/6.535.json --output results/cross_section.npz
 
 python3 analysis/run_analysis.py fit-harmonics results/cross_section.npz \
   --output results/harmonics.npz
@@ -90,7 +90,7 @@ the adapter requires `--beam-energy` to reconstruct those quantities:
 
 ```bash
 python3 analysis/build_event_sample.py \
-  6.535_eppi0_acceptance_matched.root selected_mc.root mc_events.npz
+  6.535_rgk_eppi0_mc_acceptance.root selected_mc.root mc_events.npz
 ```
 
 `derive_exclusivity.py` preserves the legacy sequential variable order and
@@ -106,11 +106,11 @@ Derive nominal data and GEMC windows independently:
 
 ```bash
 python3 analysis/derive_exclusivity.py data_events.npz \
-  --config analysis/configs/rgk_6.535.json \
+  --config analysis/configs/rgk/6.535.json \
   --cuts results/data_exclusivity.npz --mask results/data_exclusivity.npy
 
 python3 analysis/derive_exclusivity.py mc_events.npz \
-  --config analysis/configs/rgk_6.535.json \
+  --config analysis/configs/rgk/6.535.json \
   --cuts results/gemc_exclusivity.npz --mask results/gemc_exclusivity.npy
 ```
 
@@ -137,7 +137,7 @@ the mapping from `sourceFileId` to HIPO basename.
 Check both identities after converting more than one input file:
 
 ```bash
-python3 analysis/check_event_keys.py 6.535_eppi0_acceptance_matched.root
+python3 analysis/check_event_keys.py 6.535_rgk_eppi0_mc_acceptance.root
 ```
 
 Repeated `(runNum,eventNum)` keys are expected for the tested GEMC production;
@@ -167,7 +167,7 @@ uncertainties are propagated into the self-contained unfolding result.
 The preferred converter configuration enables `GeneratedEvents`, applies REC
 topology/DIS skims only to `Events`, and sets `saveUnmatchedMC` to false. This
 retains the generated denominator in one lightweight scalar row per event. See
-`configs/processing/6.535_eppi0_acceptance_matched.json`.
+`configs/processing/rgk/6.535/eppi0_mc_acceptance.json`.
 
 For older files without `GeneratedEvents`, an unbiased denominator still
 requires an unrestricted matched conversion with unmatched particle-level GEN
