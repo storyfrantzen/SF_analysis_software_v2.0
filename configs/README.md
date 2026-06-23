@@ -35,7 +35,10 @@ The active RGK 6.535 GeV files are:
 
 - `processing/rgk/6.535/eppi0_mc_acceptance.json`;
 - `processing/rgk/6.535/calibration/sidis_electrons_data.json`;
+- `processing/rgk/6.535/calibration/sidis_electrons_mc.json`;
+- `processing/rgk/6.535/calibration/proton_energy_loss_mc.json`;
 - `post/rgk/6.535/calibration/electron_sf_candidates.json`;
+- `post/rgk/6.535/calibration/electron_sf_candidates_mc.json`;
 - `post/rgk/6.535/calibration/electron_sf_selected.json`;
 - `../analysis/configs/rgk/6.535.json`.
 
@@ -124,3 +127,46 @@ python3 scripts/derive_sampling_fraction.py \
 The two output JSON files and plot directories are intentionally separate.
 Compare the fitted mean and sigma curves and the retained fractions before
 choosing which parameters belong in a physics-selection configuration.
+
+## RGK 6.535 GeV GEMC calibration inputs
+
+The RGK 6.535 GeV data-side sampling-fraction parameters already have a
+calibration workflow. If a matching nonradiative `clasdis_pass2` GEMC sample is
+produced locally, use the GEMC calibration configs to derive diagnostic GEMC
+sampling-fraction parameters and proton energy-loss corrections.
+
+For GEMC sampling fraction:
+
+```bash
+./build/hipo2root \
+  configs/processing/rgk/6.535/calibration/sidis_electrons_mc.json \
+  /path/to/reconstructed/6.535/clasdis_pass2.hipo \
+  1 100000
+
+./build/apply_cuts \
+  configs/post/rgk/6.535/calibration/electron_sf_candidates_mc.json \
+  6.535_rgk_gemc_sidis_electrons.root
+
+python3 scripts/derive_sampling_fraction.py \
+  6.535_rgk_gemc_electron_sf_candidates.root --gemc \
+  --output parameters/sampling_fraction/SF_sigma_cut_params_6.535RGK_clasdisGEMC.json \
+  --plot-dir calibration_plots/sampling_fraction/rgk_6.535_gemc \
+  --dataset-tag 6.535RGK_clasdisGEMC \
+  --beam-energy 6.535 --run-group RGK --skim clasdis_pass2 --torus 1
+```
+
+For proton energy loss:
+
+```bash
+./build/hipo2root \
+  configs/processing/rgk/6.535/calibration/proton_energy_loss_mc.json \
+  /path/to/reconstructed/6.535/clasdis_pass2.hipo \
+  1 100000
+
+python3 scripts/derive_proton_energy_loss.py \
+  6.535_rgk_proton_energy_loss_mc.root \
+  --output parameters/proton_energy_loss/6.535RGK_clasdisP2.json \
+  --plot-dir calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2 \
+  --dataset-tag 6.535RGK_clasdisP2 \
+  --beam-energy 6.535
+```

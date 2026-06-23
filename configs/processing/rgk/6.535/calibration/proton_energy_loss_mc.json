@@ -1,0 +1,23 @@
+{
+    "outputFile": "6.535_rgk_proton_energy_loss_mc.root",
+    "treeName": "Events",
+
+    "beamEnergy": 6.535,
+
+    "qadb": {
+        "enabled": false
+    },
+
+    "finalState": [
+        { "pid": 2212, "count": 1, "mode": "atleast" }
+    ],
+
+    "inclusive": true,
+
+    "enableSkim": false,
+
+    "fillMC": true,
+    "matchMC": true,
+    "saveUnmatchedMC": false,
+    "matchMaxAngleDeg": 3.0
+}

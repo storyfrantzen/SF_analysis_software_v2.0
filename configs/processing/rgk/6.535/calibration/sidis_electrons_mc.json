@@ -1,0 +1,22 @@
+{
+    "outputFile": "6.535_rgk_gemc_sidis_electrons.root",
+    "treeName": "Events",
+
+    "beamEnergy": 6.535,
+
+    "qadb": {
+        "enabled": false
+    },
+
+    "finalState": [
+        { "pid": 11, "count": 1, "mode": "atleast" }
+    ],
+    "inclusive": true,
+
+    "enableSkim": true,
+    "Q2_min": 1.0,
+    "W_min": 2.0,
+    "y_max": 0.8,
+
+    "fillMC": false
+}
