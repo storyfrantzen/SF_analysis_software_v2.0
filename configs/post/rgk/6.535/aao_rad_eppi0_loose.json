@@ -1,0 +1,72 @@
+{
+    "outputFile": "6.535_rgk_aao_rad_eppi0_loose_selected.root",
+    "inputTree": "Events",
+    "outputTree": "Events",
+    "beamEnergy": 6.535,
+    "torus": 1,
+    "saveFailedCandidates": false,
+
+    "fiducialCuts": [
+        "DCEdges_RGA",
+        "ECAL_RGK",
+        "CVT_RGA"
+    ],
+
+    "channel": {
+        "name": "eppi0",
+        "particles": [
+            {
+                "role": "electron",
+                "pid": 11,
+                "count": 1,
+                "detectors": [1],
+                "cuts": [
+                    { "name": "electron.trigger", "op": "firstPidInstance" },
+                    { "name": "electron.min_p", "op": "minP", "min": 1.0 },
+                    { "name": "electron.fiducial", "op": "fiducial" }
+                ]
+            },
+            {
+                "role": "proton",
+                "pid": 2212,
+                "count": 1,
+                "detectors": [1, 2],
+                "cuts": [
+                    { "name": "proton.min_p", "op": "minP", "min": 0.3 },
+                    { "name": "proton.vertex", "op": "vertexDiff", "refRole": "electron", "max": 20.0 },
+                    { "name": "proton.fiducial", "op": "fiducial" },
+                    { "name": "proton.cvt_phi_25_40", "op": "removeCVTPhi", "min": 25.0, "max": 40.0 },
+                    { "name": "proton.cvt_phi_143_158", "op": "removeCVTPhi", "min": 143.0, "max": 158.0 },
+                    { "name": "proton.cvt_phi_265_280", "op": "removeCVTPhi", "min": 265.0, "max": 280.0 }
+                ]
+            },
+            {
+                "role": "gamma",
+                "pid": 22,
+                "count": 2,
+                "detectors": [0, 1],
+                "cuts": [
+                    { "name": "gamma.min_p", "op": "minP", "min": 0.005 },
+                    { "name": "gamma.beta", "op": "betaRange", "min": 0.9, "max": 1.1 },
+                    { "name": "gamma.fiducial", "op": "fiducial" }
+                ]
+            }
+        ],
+        "composites": [
+            {
+                "role": "pi0",
+                "type": "pairMass",
+                "daughters": ["gamma", "gamma"],
+                "mass": 0.1349768,
+                "window": 0.15
+            }
+        ]
+    },
+
+    "exclusivity": {
+        "maxAbsMissingEnergy": 2.0,
+        "minElectronPhotonAngleDeg": 4.0,
+        "minPhotonPhotonAngleDeg": 1.0,
+        "maxPi0ConeAngleDeg": 4.0
+    }
+}

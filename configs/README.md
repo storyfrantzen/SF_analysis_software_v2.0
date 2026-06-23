@@ -33,6 +33,9 @@ another.
 
 The active RGK 6.535 GeV files are:
 
+- `processing/rgk/6.535/aao_rad_q2_0.7_ep_1.00.json`;
+- `processing/rgk/6.535/aao_rad_q2_0.9_ep_1.15.json`;
+- `post/rgk/6.535/aao_rad_eppi0_loose.json`;
 - `processing/rgk/6.535/eppi0_mc_acceptance.json`;
 - `processing/rgk/6.535/calibration/sidis_electrons_data.json`;
 - `processing/rgk/6.535/calibration/sidis_electrons_mc.json`;
@@ -127,6 +130,71 @@ python3 scripts/derive_sampling_fraction.py \
 The two output JSON files and plot directories are intentionally separate.
 Compare the fitted mean and sigma curves and the retained fractions before
 choosing which parameters belong in a physics-selection configuration.
+
+## RGK 6.535 GeV aaoRad reconstructed-distribution comparison
+
+The aaoRad comparison configs are intended for quick shape checks across the
+new `/volatile/clas12/osg/storyf/11221`, `11222`, `11223`, `11224`, `11225`,
+and `11238` productions. The two processing configs match the generated
+phase-space families in the filenames: `Q2 >= 0.7, electron p >= 1.00` for
+`11221` through `11223`, and `Q2 >= 0.9, electron p >= 1.15` for `11224`,
+`11225`, and `11238`. The post config applies a loose EPPI0 topology selection
+with RGK ECAL fiducials and a very low reconstructed photon momentum threshold
+so the comparison is sensitive to the generated `EG` threshold scan.
+
+Example smoke-test commands on ifarm:
+
+```bash
+for run in 11221 11222 11223; do
+  ./build/hipo2root configs/processing/rgk/6.535/aao_rad_q2_0.7_ep_1.00.json \
+    /volatile/clas12/osg/storyf/${run} 5 100000
+  mv 6.535_rgk_aao_rad_q2_0.7_ep_1.00.root aao_rad_${run}.root
+  ./build/apply_cuts configs/post/rgk/6.535/aao_rad_eppi0_loose.json \
+    aao_rad_${run}.root 100000
+  mv 6.535_rgk_aao_rad_eppi0_loose_selected.root aao_rad_${run}_selected.root
+done
+
+python3 analysis/compare_root_distributions.py --density \
+  --sample EG0.005=aao_rad_11221_selected.root \
+  --sample EG0.010=aao_rad_11222_selected.root \
+  --sample EG0.015=aao_rad_11223_selected.root \
+  --output-dir results/aao_rad/q2_0.7_ep_1.00
+```
+
+Repeat with the tighter generated phase-space family:
+
+```bash
+for run in 11224 11225 11238; do
+  ./build/hipo2root configs/processing/rgk/6.535/aao_rad_q2_0.9_ep_1.15.json \
+    /volatile/clas12/osg/storyf/${run} 5 100000
+  mv 6.535_rgk_aao_rad_q2_0.9_ep_1.15.root aao_rad_${run}.root
+  ./build/apply_cuts configs/post/rgk/6.535/aao_rad_eppi0_loose.json \
+    aao_rad_${run}.root 100000
+  mv 6.535_rgk_aao_rad_eppi0_loose_selected.root aao_rad_${run}_selected.root
+done
+
+python3 analysis/compare_root_distributions.py --density \
+  --sample EG0.005=aao_rad_11224_selected.root \
+  --sample EG0.010=aao_rad_11225_selected.root \
+  --sample EG0.015=aao_rad_11238_selected.root \
+  --output-dir results/aao_rad/q2_0.9_ep_1.15
+```
+
+To compare converter-level particle distributions before EPPI0 candidate selection, pass
+converter ROOT files to `analysis/compare_root_distributions.py`, choose
+particle branches such as `p theta phi`, filter by PID, and load the ROOT
+dictionary if object branches are not already discoverable:
+
+```bash
+python3 analysis/compare_root_distributions.py --density \
+  --tree Events --columns p theta phi \
+  --dictionary build/libROOTBranchesDict.dylib \
+  --where 'rec.pid == 22' \
+  --sample EG0.005=aao_rad_11221.root \
+  --sample EG0.010=aao_rad_11222.root \
+  --sample EG0.015=aao_rad_11223.root \
+  --output-dir results/aao_rad/photons_q2_0.7_ep_1.00
+```
 
 ## RGK 6.535 GeV GEMC calibration inputs
 
