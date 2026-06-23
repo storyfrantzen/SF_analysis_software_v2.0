@@ -40,6 +40,7 @@ struct Config {
     // ── Final state filter ────────────────────
     std::vector<FinalState> finalState;
     bool inclusive = false;
+    std::vector<int> outputPids;
 
     // ── DIS skim ──────────────────────────────
     bool   enableSkim = true;
@@ -112,6 +113,7 @@ struct Config {
         }
 
         inclusive = j.value("inclusive", inclusive);
+        outputPids = j.value("outputPids", outputPids);
 
         if (j.contains("kinematicCorrections")) {
             const auto& corrections = j["kinematicCorrections"];

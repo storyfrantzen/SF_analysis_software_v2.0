@@ -93,6 +93,11 @@ bool passesFinalState(const Config& cfg, clas12::clas12reader& c12) {
     return true;
 }
 
+bool shouldWritePid(const Config& cfg, int pid) {
+    if (cfg.outputPids.empty()) return true;
+    return std::find(cfg.outputPids.begin(), cfg.outputPids.end(), pid) != cfg.outputPids.end();
+}
+
 // ─── DIS skim ────────────────────────────────────────────────────────────────
 
 bool passesDISSkim(const Config& cfg, clas12::clas12reader& c12) {
@@ -266,6 +271,11 @@ int main(int argc, char** argv) {
                   << ", W >= "  << cfg.W_min
                   << ", y <= " << cfg.y_max << "\n";
     }
+    if (!cfg.outputPids.empty()) {
+        std::cout << "[INFO] Output PID filter:";
+        for (const int pid : cfg.outputPids) std::cout << " " << pid;
+        std::cout << "\n";
+    }
 
     // ── Output ROOT file + tree ───────────────────────────────────────────────
     TFile* outFile = TFile::Open(cfg.outputFile.c_str(), "RECREATE");
@@ -301,6 +311,7 @@ int main(int argc, char** argv) {
     // ── Event loop ────────────────────────────────────────────────────────────
     long long nTotal = 0, nQAFail = 0, nFSFail = 0, nSkimFail = 0, nWritten = 0;
     long long nOutputRows = 0;
+    long long nSkippedOutputPid = 0;
     long long nMatched = 0, nUnmatchedRec = 0, nUnmatchedGen = 0;
     long long nGeneratedEvents = 0, nGeneratedTopologyValid = 0;
     long long lastProgressEvent = 0;
@@ -393,6 +404,10 @@ int main(int argc, char** argv) {
 
             for (int i = 0; i < static_cast<int>(particles.size()); ++i) {
                 auto* particle = particles[i];
+                if (!shouldWritePid(cfg, particle->getPid())) {
+                    ++nSkippedOutputPid;
+                    continue;
+                }
 
                 fillRecBranch(recBranches, particle, rn, en, i, corrections);
                 if (cfg.fillMC) genBranches.reset();
@@ -416,6 +431,10 @@ int main(int argc, char** argv) {
             if (cfg.fillMC && mc && (!cfg.matchMC || cfg.saveUnmatchedMC)) {
                 for (int i = 0; i < mc->getRows(); ++i) {
                     if (cfg.matchMC && usedGen[i]) continue;
+                    if (!shouldWritePid(cfg, mc->getPid(i))) {
+                        ++nSkippedOutputPid;
+                        continue;
+                    }
                     recBranches.reset();
                     genBranches.fill(mc, rn, en, i);
                     tree->Fill();
@@ -453,6 +472,7 @@ int main(int argc, char** argv) {
               << "  Failed skim       : " << nSkimFail << "\n"
               << "  Written events    : " << nWritten  << "\n"
               << "  Output rows       : " << nOutputRows << "\n"
+              << "  PID-filtered rows : " << nSkippedOutputPid << "\n"
               << "  Generated events  : " << nGeneratedEvents << "\n"
               << "  Valid GEN topology: " << nGeneratedTopologyValid << "\n"
               << "  Elapsed time      : " << std::fixed << std::setprecision(1)
@@ -484,6 +504,7 @@ int main(int argc, char** argv) {
     summary.Branch("FailedSkim", &nSkimFail, "FailedSkim/L");
     summary.Branch("WrittenEvents", &nWritten, "WrittenEvents/L");
     summary.Branch("OutputRows", &nOutputRows, "OutputRows/L");
+    summary.Branch("PidFilteredRows", &nSkippedOutputPid, "PidFilteredRows/L");
     summary.Branch("GeneratedEventRows", &nGeneratedEvents, "GeneratedEventRows/L");
     summary.Branch("GeneratedTopologyValid", &nGeneratedTopologyValid,
                    "GeneratedTopologyValid/L");

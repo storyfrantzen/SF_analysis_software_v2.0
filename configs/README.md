@@ -14,10 +14,10 @@ subdirectory. No uncategorized executable configs are kept at the roots of
 `processing/`, `post/`, or `analysis/configs/`.
 
 Processing configurations control HIPO input reduction, QADB, reconstructed
-skims, MC matching, generated-event storage, and kinematic corrections. Post
-configurations define candidate construction and tuneable detector/physics
-cuts. Analysis configurations contain binning, target, and normalization
-settings.
+skims, MC matching, generated-event storage, row-level PID storage filters, and
+kinematic corrections. Post configurations define candidate construction and
+tuneable detector/physics cuts. Analysis configurations contain binning,
+target, and normalization settings.
 
 The complete RGA 10.604 GeV EPPI0 pair is:
 
@@ -170,3 +170,9 @@ python3 scripts/derive_proton_energy_loss.py \
   --dataset-tag 6.535RGK_clasdisP2 \
   --beam-energy 6.535
 ```
+
+The proton energy-loss processing configs use `outputPids: [2212]`. The
+`finalState` requirement is still event-level, so events are kept when they
+contain at least one reconstructed proton, but the output ROOT tree stores only
+proton rows. This keeps the matched REC/GEN proton calibration sample broad
+without writing every other reconstructed particle in those events.

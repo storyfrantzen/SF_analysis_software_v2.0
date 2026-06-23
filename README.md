@@ -82,6 +82,10 @@ The converter currently supports:
 fourth argument to change that interval, or `0` to disable progress output.
 
 By default, `finalState` rejects reconstructed particles whose PIDs are not listed in the config. Set `inclusive` to `true` for inclusive final-state skims.
+Use `outputPids` when the event selection should remain broad but only selected
+particle rows should be written. For example, proton energy-loss calibration
+configs require events with at least one reconstructed proton and set
+`outputPids: [2212]` so the ROOT tree stores only proton rows.
 
 `apply_cuts` performs ROOT post-processing. The initial module builds one EPPI0 candidate per event and applies configurable fiducial, sampling-fraction, topology, and loose exclusivity cuts. Post-processing configs are grouped by run group and energy, for example `configs/post/rga/10.604/eppi0_data.json`.
 

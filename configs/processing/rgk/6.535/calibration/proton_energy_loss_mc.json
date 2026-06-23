@@ -13,6 +13,7 @@
     ],
 
     "inclusive": true,
+    "outputPids": [2212],
 
     "enableSkim": false,
 
