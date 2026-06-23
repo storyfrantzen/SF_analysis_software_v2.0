@@ -8,7 +8,7 @@
         "enabled": false
     },
 
-    "kinematicCorrections": "../../../../parameters/proton_energy_loss/10.604RGA_FA18_t1_clasdisP2.json",
+    "kinematicCorrections": "../../../../parameters/proton_energy_loss/10.604RGA_FA18_t1_clasdisP2_rederived.json",
 
     "generatedEventTree": {
         "enabled": true,

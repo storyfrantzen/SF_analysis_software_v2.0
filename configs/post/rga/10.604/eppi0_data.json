@@ -23,7 +23,7 @@
         },
         "sigma": {
             "numSigma": 3.5,
-            "paramsFile": "../../../../parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_t+1_nSIDIS.json"
+            "paramsFile": "../../../../parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_t+1_nSIDIS_5files.json"
         }
     },
 
