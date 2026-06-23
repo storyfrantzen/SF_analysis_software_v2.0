@@ -48,6 +48,12 @@ For matched REC/GEN proton rows used to derive the RGA energy-loss correction:
   /path/to/hipo/files
 ```
 
+The proton energy-loss derivation fits each residual after trimming outliers
+with sample-derived central quantile ranges by default. Use
+`--residual-trim-quantile 0.01` to keep the central 98% of each residual
+distribution, or `--residual-range-mode fixed` to reproduce the historical
+hard-window behavior.
+
 For storage-efficient acceptance production:
 
 ```bash

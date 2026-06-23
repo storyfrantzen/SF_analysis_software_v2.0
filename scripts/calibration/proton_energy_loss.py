@@ -79,6 +79,9 @@ RESIDUAL_COLUMNS = {
 }
 
 
+ResidualRangeMode = str
+
+
 def evaluate_correction(term: dict[str, object],
                         p: np.ndarray,
                         theta: np.ndarray) -> np.ndarray:
@@ -114,12 +117,48 @@ def filtered_arrays(input_file: Path,
     )
 
 
+def fixed_residual_range(residual_name: str,
+                         cfg: DetectorFitConfig) -> tuple[float, float]:
+    return cfg.residual_ranges[residual_name]
+
+
+def quantile_residual_range(arrays: dict[str, np.ndarray],
+                            residual_name: str,
+                            trim_quantile: float) -> tuple[float, float]:
+    if not (0.0 <= trim_quantile < 0.5):
+        raise ValueError("trim_quantile must be in the interval [0, 0.5)")
+
+    residual = np.asarray(arrays[RESIDUAL_COLUMNS[residual_name]], dtype=float)
+    finite = residual[np.isfinite(residual)]
+    if finite.size == 0:
+        raise ValueError(f"No finite values available for {residual_name}")
+
+    lo, hi = np.quantile(finite, [trim_quantile, 1.0 - trim_quantile])
+    return float(lo), float(hi)
+
+
+def resolve_residual_range(arrays: dict[str, np.ndarray],
+                           residual_name: str,
+                           cfg: DetectorFitConfig,
+                           range_mode: ResidualRangeMode,
+                           trim_quantile: float) -> tuple[float, float]:
+    if range_mode == "fixed":
+        return fixed_residual_range(residual_name, cfg)
+    if range_mode == "quantile":
+        return quantile_residual_range(arrays, residual_name, trim_quantile)
+    raise ValueError(f"Unsupported residual range mode: {range_mode}")
+
+
 def residual_range_mask(arrays: dict[str, np.ndarray],
                         residual_name: str,
-                        cfg: DetectorFitConfig) -> np.ndarray:
+                        residual_range: tuple[float, float]) -> np.ndarray:
     """Select outliers only for the residual currently being fitted."""
     residual = np.asarray(arrays[RESIDUAL_COLUMNS[residual_name]], dtype=float)
-    lo, hi = cfg.residual_ranges[residual_name]
+    lo, hi = residual_range
+    if hi < lo:
+        raise ValueError(f"Invalid residual range for {residual_name}: {residual_range}")
+    if hi == lo:
+        return np.isfinite(residual) & (residual == lo)
     return np.isfinite(residual) & (residual >= lo) & (residual <= hi)
 
 
@@ -127,7 +166,9 @@ def fit_detector(arrays: dict[str, np.ndarray],
                  detector_name: str,
                  cfg: DetectorFitConfig,
                  adaptive_theta: bool,
-                 min_entries: int) -> dict[str, dict[str, object]]:
+                 min_entries: int,
+                 residual_range_mode: ResidualRangeMode,
+                 residual_trim_quantile: float) -> dict[str, dict[str, object]]:
     p = arrays["rec.p"]
     theta = arrays["theta_deg"]
     theta_edges = (
@@ -139,12 +180,16 @@ def fit_detector(arrays: dict[str, np.ndarray],
 
     output: dict[str, dict[str, object]] = {}
     for residual_name, residual_column in RESIDUAL_COLUMNS.items():
-        range_mask = residual_range_mask(arrays, residual_name, cfg)
+        residual_range = resolve_residual_range(
+            arrays, residual_name, cfg, residual_range_mode, residual_trim_quantile
+        )
+        range_mask = residual_range_mask(arrays, residual_name, residual_range)
         fit_p = p[range_mask]
         fit_theta = theta[range_mask]
         residual = arrays[residual_column][range_mask]
         print(
-            f"{detector_name} {residual_name}: retained "
+            f"{detector_name} {residual_name}: {residual_range_mode} range "
+            f"[{residual_range[0]:.6g}, {residual_range[1]:.6g}], retained "
             f"{range_mask.sum()}/{range_mask.size} rows in its residual range"
         )
         form = cfg.residual_forms[residual_name]
@@ -188,7 +233,9 @@ def maybe_plot(arrays: dict[str, np.ndarray],
                adaptive_theta: bool,
                output_dir: Path,
                dataset_tag: str = "",
-               beam_energy: float | None = None) -> None:
+               beam_energy: float | None = None,
+               residual_range_mode: ResidualRangeMode = "quantile",
+               residual_trim_quantile: float = 0.01) -> None:
     import matplotlib.pyplot as plt
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -232,7 +279,12 @@ def maybe_plot(arrays: dict[str, np.ndarray],
             sharey=True,
             squeeze=False,
         )
-        residual_lo, residual_hi = cfg.residual_ranges[residual_name]
+        residual_lo, residual_hi = resolve_residual_range(
+            arrays, residual_name, cfg, residual_range_mode, residual_trim_quantile
+        )
+        if residual_hi == residual_lo:
+            residual_lo -= 0.5
+            residual_hi += 0.5
         histogram_edges = np.linspace(residual_lo, residual_hi, 61)
         for i, (theta_lo, theta_hi) in enumerate(zip(theta_edges[:-1], theta_edges[1:])):
             ax = axes.flat[i]
@@ -292,6 +344,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-rows", type=int)
     parser.add_argument("--fixed-theta-bins", action="store_true")
     parser.add_argument("--min-bin-entries", type=int, default=20)
+    parser.add_argument(
+        "--residual-range-mode",
+        choices=["quantile", "fixed"],
+        default="quantile",
+        help=(
+            "How to choose residual inlier ranges for each fit. The default "
+            "keeps the central quantile interval from the sample; fixed uses "
+            "the historical hard-coded ranges."
+        ),
+    )
+    parser.add_argument(
+        "--residual-trim-quantile",
+        type=float,
+        default=0.01,
+        help="For quantile mode, trim this fraction from each residual tail.",
+    )
     parser.add_argument("--dataset-tag", default="", help="Short label shown on generated plots.")
     parser.add_argument("--beam-energy", type=float, help="Beam energy in GeV shown on generated plots.")
     return parser.parse_args()
@@ -311,6 +379,8 @@ def main() -> None:
             cfg,
             adaptive_theta=not args.fixed_theta_bins,
             min_entries=args.min_bin_entries,
+            residual_range_mode=args.residual_range_mode,
+            residual_trim_quantile=args.residual_trim_quantile,
         )
         combined.update(detector_corrections)
         if args.plot_dir:
@@ -323,6 +393,8 @@ def main() -> None:
                 args.plot_dir,
                 args.dataset_tag,
                 args.beam_energy,
+                args.residual_range_mode,
+                args.residual_trim_quantile,
             )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

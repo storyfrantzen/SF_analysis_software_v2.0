@@ -135,10 +135,15 @@ The script fits residual profiles in theta and momentum bins, then writes the JS
 When supplied, the dataset tag and beam energy are printed visibly on every plot and embedded in the PNG metadata.
 
 The FD/CD detector, momentum, theta, and REC–GEN matching requirements form one
-common proton sample. Each residual window is then applied only to the quantity
-being fitted: the `delta_p` window does not condition the `delta_theta` or
-`delta_phi` samples, and vice versa. These windows are calibration outlier
-ranges; they never reject events when the resulting corrections are applied.
+common proton sample. By default, each residual fit uses a sample-derived
+central quantile interval, controlled by `--residual-trim-quantile`; the
+default value `0.01` trims the lowest 1% and highest 1% of that residual. The
+range is computed independently for `delta_p`, `delta_theta`, and `delta_phi`,
+so a `delta_phi` outlier does not remove the same proton from the `delta_p`
+fit. Use `--residual-range-mode fixed` only when reproducing the historical
+hard-coded residual windows is important. These windows are calibration
+outlier ranges; they never reject events when the resulting corrections are
+applied.
 
 ## Sampling-Fraction Parameters
 
