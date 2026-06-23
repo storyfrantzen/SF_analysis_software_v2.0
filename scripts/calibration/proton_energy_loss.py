@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +23,7 @@ from .root_arrays import arrays_from_dataframe, define_common_proton_residuals, 
 @dataclass(frozen=True)
 class DetectorFitConfig:
     detector: int
+    theta_caps: tuple[float, float]
     theta_range: tuple[float, float]
     momentum_range: tuple[float, float]
     theta_bins: int
@@ -35,6 +36,7 @@ class DetectorFitConfig:
 DEFAULT_CONFIGS = {
     "FD": DetectorFitConfig(
         detector=1,
+        theta_caps=(15.0, 40.0),
         theta_range=(15.0, 40.0),
         momentum_range=(0.55, 5.0),
         theta_bins=24,
@@ -53,6 +55,7 @@ DEFAULT_CONFIGS = {
     ),
     "CD": DetectorFitConfig(
         detector=2,
+        theta_caps=(40.0, 125.0),
         theta_range=(40.0, 58.0),
         momentum_range=(0.3, 2.4),
         theta_bins=10,
@@ -80,6 +83,7 @@ RESIDUAL_COLUMNS = {
 
 
 ResidualRangeMode = str
+ThetaRangeMode = str
 
 
 def evaluate_correction(term: dict[str, object],
@@ -107,7 +111,7 @@ def filtered_arrays(input_file: Path,
     """Load the common matched-proton sample without residual-specific cuts."""
     df = define_common_proton_residuals(load_dataframe(input_file, tree))
     df = df.Filter(f"rec.det == {cfg.detector}")
-    df = df.Filter(f"theta_deg >= {cfg.theta_range[0]} && theta_deg <= {cfg.theta_range[1]}")
+    df = df.Filter(f"theta_deg >= {cfg.theta_caps[0]} && theta_deg <= {cfg.theta_caps[1]}")
     df = df.Filter(f"rec.p >= {cfg.momentum_range[0]} && rec.p <= {cfg.momentum_range[1]}")
 
     return arrays_from_dataframe(
@@ -115,6 +119,50 @@ def filtered_arrays(input_file: Path,
         ["rec.p", "theta_deg", "delta_p_fit", "delta_theta_fit", "delta_phi_fit"],
         max_rows=max_rows,
     )
+
+
+def with_theta_caps(cfg: DetectorFitConfig,
+                    theta_caps: tuple[float, float] | None) -> DetectorFitConfig:
+    if theta_caps is None:
+        return cfg
+    lo, hi = theta_caps
+    if hi <= lo:
+        raise ValueError(f"Invalid theta caps: {theta_caps}")
+    return replace(cfg, theta_caps=(float(lo), float(hi)))
+
+
+def fixed_theta_range(cfg: DetectorFitConfig) -> tuple[float, float]:
+    return cfg.theta_range
+
+
+def quantile_theta_range(arrays: dict[str, np.ndarray],
+                         trim_quantile: float) -> tuple[float, float]:
+    if not (0.0 <= trim_quantile < 0.5):
+        raise ValueError("trim_quantile must be in the interval [0, 0.5)")
+
+    theta = np.asarray(arrays["theta_deg"], dtype=float)
+    finite = theta[np.isfinite(theta)]
+    if finite.size == 0:
+        raise ValueError("No finite theta values available")
+
+    lo, hi = np.quantile(finite, [trim_quantile, 1.0 - trim_quantile])
+    if hi <= lo:
+        lo = float(np.min(finite))
+        hi = float(np.max(finite))
+    if hi <= lo:
+        raise ValueError("Cannot derive a non-empty theta range from the sample")
+    return float(lo), float(hi)
+
+
+def resolve_theta_range(arrays: dict[str, np.ndarray],
+                        cfg: DetectorFitConfig,
+                        range_mode: ThetaRangeMode,
+                        trim_quantile: float) -> tuple[float, float]:
+    if range_mode == "fixed":
+        return fixed_theta_range(cfg)
+    if range_mode == "quantile":
+        return quantile_theta_range(arrays, trim_quantile)
+    raise ValueError(f"Unsupported theta range mode: {range_mode}")
 
 
 def fixed_residual_range(residual_name: str,
@@ -168,13 +216,25 @@ def fit_detector(arrays: dict[str, np.ndarray],
                  adaptive_theta: bool,
                  min_entries: int,
                  residual_range_mode: ResidualRangeMode,
-                 residual_trim_quantile: float) -> dict[str, dict[str, object]]:
+                 residual_trim_quantile: float,
+                 theta_range_mode: ThetaRangeMode,
+                 theta_trim_quantile: float) -> dict[str, dict[str, object]]:
     p = arrays["rec.p"]
     theta = arrays["theta_deg"]
+    theta_range = resolve_theta_range(arrays, cfg, theta_range_mode, theta_trim_quantile)
+    theta_mask = (
+        np.isfinite(theta) & (theta >= theta_range[0]) & (theta <= theta_range[1])
+    )
+    print(
+        f"{detector_name} theta fit range: {theta_range_mode} range "
+        f"[{theta_range[0]:.6g}, {theta_range[1]:.6g}] "
+        f"within caps [{cfg.theta_caps[0]:.6g}, {cfg.theta_caps[1]:.6g}], "
+        f"retained {theta_mask.sum()}/{theta_mask.size} rows"
+    )
     theta_edges = (
-        adaptive_edges(theta, cfg.theta_bins, cfg.theta_range)
+        adaptive_edges(theta, cfg.theta_bins, theta_range)
         if adaptive_theta
-        else fixed_edges(cfg.theta_bins, cfg.theta_range)
+        else fixed_edges(cfg.theta_bins, theta_range)
     )
     p_edges = fixed_edges(cfg.momentum_bins, cfg.momentum_range)
 
@@ -235,12 +295,15 @@ def maybe_plot(arrays: dict[str, np.ndarray],
                dataset_tag: str = "",
                beam_energy: float | None = None,
                residual_range_mode: ResidualRangeMode = "quantile",
-               residual_trim_quantile: float = 0.01) -> None:
+               residual_trim_quantile: float = 0.01,
+               theta_range_mode: ThetaRangeMode = "quantile",
+               theta_trim_quantile: float = 0.001) -> None:
     import matplotlib.pyplot as plt
 
     output_dir.mkdir(parents=True, exist_ok=True)
     p = arrays["rec.p"]
     theta = arrays["theta_deg"]
+    theta_range = resolve_theta_range(arrays, cfg, theta_range_mode, theta_trim_quantile)
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
     for ax, (name, col) in zip(axes, RESIDUAL_COLUMNS.items()):
         hist = ax.hist2d(p, arrays[col], bins=80, cmap="magma", cmin=1)
@@ -258,9 +321,9 @@ def maybe_plot(arrays: dict[str, np.ndarray],
     plt.close(fig)
 
     theta_edges = (
-        adaptive_edges(theta, cfg.theta_bins, cfg.theta_range)
+        adaptive_edges(theta, cfg.theta_bins, theta_range)
         if adaptive_theta
-        else fixed_edges(cfg.theta_bins, cfg.theta_range)
+        else fixed_edges(cfg.theta_bins, theta_range)
     )
     for residual_name, residual_column in RESIDUAL_COLUMNS.items():
         term = corrections[f"p_{residual_name}_{detector_name}"]
@@ -345,6 +408,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fixed-theta-bins", action="store_true")
     parser.add_argument("--min-bin-entries", type=int, default=20)
     parser.add_argument(
+        "--theta-range-mode",
+        choices=["quantile", "fixed"],
+        default="quantile",
+        help=(
+            "How to choose the detector theta fit domain. The default derives "
+            "a central quantile range from the sample after detector caps and "
+            "momentum cuts; fixed uses the historical detector theta_range."
+        ),
+    )
+    parser.add_argument(
+        "--theta-trim-quantile",
+        type=float,
+        default=0.001,
+        help="For quantile theta mode, trim this fraction from each theta tail.",
+    )
+    parser.add_argument(
+        "--fd-theta-caps",
+        nargs=2,
+        type=float,
+        metavar=("MIN", "MAX"),
+        help="Physical FD theta caps applied before deriving the fit range.",
+    )
+    parser.add_argument(
+        "--cd-theta-caps",
+        nargs=2,
+        type=float,
+        metavar=("MIN", "MAX"),
+        help="Physical CD theta caps applied before deriving the fit range.",
+    )
+    parser.add_argument(
         "--residual-range-mode",
         choices=["quantile", "fixed"],
         default="quantile",
@@ -372,6 +465,8 @@ def main() -> None:
     combined: dict[str, dict[str, object]] = {}
     for detector_name in detectors:
         cfg = DEFAULT_CONFIGS[detector_name]
+        theta_caps = args.fd_theta_caps if detector_name == "FD" else args.cd_theta_caps
+        cfg = with_theta_caps(cfg, tuple(theta_caps) if theta_caps is not None else None)
         arrays = filtered_arrays(args.input_file, args.tree, cfg, args.max_rows)
         detector_corrections = fit_detector(
             arrays,
@@ -381,6 +476,8 @@ def main() -> None:
             min_entries=args.min_bin_entries,
             residual_range_mode=args.residual_range_mode,
             residual_trim_quantile=args.residual_trim_quantile,
+            theta_range_mode=args.theta_range_mode,
+            theta_trim_quantile=args.theta_trim_quantile,
         )
         combined.update(detector_corrections)
         if args.plot_dir:
@@ -395,6 +492,8 @@ def main() -> None:
                 args.beam_energy,
                 args.residual_range_mode,
                 args.residual_trim_quantile,
+                args.theta_range_mode,
+                args.theta_trim_quantile,
             )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

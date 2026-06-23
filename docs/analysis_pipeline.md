@@ -135,15 +135,23 @@ The script fits residual profiles in theta and momentum bins, then writes the JS
 When supplied, the dataset tag and beam energy are printed visibly on every plot and embedded in the PNG metadata.
 
 The FD/CD detector, momentum, theta, and REC–GEN matching requirements form one
-common proton sample. By default, each residual fit uses a sample-derived
-central quantile interval, controlled by `--residual-trim-quantile`; the
-default value `0.01` trims the lowest 1% and highest 1% of that residual. The
-range is computed independently for `delta_p`, `delta_theta`, and `delta_phi`,
-so a `delta_phi` outlier does not remove the same proton from the `delta_p`
-fit. Use `--residual-range-mode fixed` only when reproducing the historical
-hard-coded residual windows is important. These windows are calibration
-outlier ranges; they never reject events when the resulting corrections are
-applied.
+common proton sample. By default, the theta fit domain is derived from the
+sample after broad detector caps and momentum cuts. `--theta-trim-quantile
+0.001` trims the lowest and highest 0.1% of reconstructed proton theta before
+setting the first and last theta-bin edges, so a tiny edge population does not
+define the correction range. The historical fixed ranges are still available
+with `--theta-range-mode fixed`; in particular this preserves the old CD
+40–58° range for reproducibility. The default CD cap is broader, 40–125°, so
+the default final CD bin edge is not hard-coded to 58°.
+
+Each residual fit also uses a sample-derived central quantile interval,
+controlled by `--residual-trim-quantile`; the default value `0.01` trims the
+lowest 1% and highest 1% of that residual. The range is computed independently
+for `delta_p`, `delta_theta`, and `delta_phi`, so a `delta_phi` outlier does
+not remove the same proton from the `delta_p` fit. Use
+`--residual-range-mode fixed` only when reproducing the historical hard-coded
+residual windows is important. These windows are calibration outlier ranges;
+they never reject events when the resulting corrections are applied.
 
 ## Sampling-Fraction Parameters
 

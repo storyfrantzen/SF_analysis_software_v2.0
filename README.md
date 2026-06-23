@@ -54,6 +54,11 @@ with sample-derived central quantile ranges by default. Use
 distribution, or `--residual-range-mode fixed` to reproduce the historical
 hard-window behavior.
 
+The theta fit domain is also sample-derived by default. The script first
+applies broad detector caps, then uses `--theta-trim-quantile 0.001` to avoid
+letting tiny edge populations define the first and last theta bins. Use
+`--theta-range-mode fixed` to reproduce the historical FD/CD theta ranges.
+
 For storage-efficient acceptance production:
 
 ```bash
