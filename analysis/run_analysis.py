@@ -78,6 +78,11 @@ def parser() -> argparse.ArgumentParser:
     harmonics.add_argument("cross_section", type=Path)
     harmonics.add_argument("--output", type=Path, required=True)
 
+    harmonic_plots = commands.add_parser("harmonic-plots", help="Plot harmonic-fit diagnostics")
+    harmonic_plots.add_argument("harmonics", type=Path)
+    harmonic_plots.add_argument("--output-dir", type=Path, required=True)
+    harmonic_plots.add_argument("--min-points", type=int, default=4)
+
     acceptance = commands.add_parser("acceptance-plots", help="Plot acceptance diagnostics from response metadata")
     acceptance.add_argument("response_meta", type=Path)
     acceptance.add_argument("--output-dir", type=Path, required=True)
@@ -378,6 +383,53 @@ def command_harmonics(args: argparse.Namespace) -> None:
     print(f"Wrote {args.output}")
 
 
+def command_harmonic_plots(args: argparse.Namespace) -> None:
+    harmonics = np.load(args.harmonics, allow_pickle=False)
+    parameters = np.asarray(harmonics["parameters"], dtype=float)
+    covariance = np.asarray(harmonics["covariance"], dtype=float)
+    chi2_ndf = np.asarray(harmonics["chi2_ndf"], dtype=float)
+    points = np.asarray(harmonics["points"], dtype=int)
+    q2_edges = np.asarray(harmonics["q2_edges"], dtype=float)
+    xb_edges = np.asarray(harmonics["xb_edges"], dtype=float)
+    t_edges = np.asarray(harmonics["t_edges"], dtype=float)
+    if "coefficient_names" in harmonics.files:
+        names = tuple(str(item) for item in harmonics["coefficient_names"])
+    else:
+        names = ("A", "B", "C")
+    if parameters.ndim != 4 or parameters.shape[-1] != 3:
+        raise ValueError("harmonic parameters must have shape (Q2, xB, t, 3)")
+    expected_shape = (q2_edges.size - 1, xb_edges.size - 1, t_edges.size - 1)
+    if parameters.shape[:-1] != expected_shape:
+        raise ValueError("harmonic arrays do not match bin-edge dimensions")
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    fit_mask = np.isfinite(chi2_ndf) & (points >= args.min_points)
+    _plot_harmonic_overview_maps(
+        fit_mask,
+        chi2_ndf,
+        points,
+        q2_edges,
+        xb_edges,
+        args.output_dir,
+    )
+    pages = _plot_harmonic_coefficients_vs_t(
+        parameters,
+        covariance,
+        chi2_ndf,
+        points,
+        fit_mask,
+        q2_edges,
+        xb_edges,
+        t_edges,
+        names,
+        args.output_dir / "harmonic_coefficients_vs_t.pdf",
+        args.output_dir / "harmonic_coefficients_summary.csv",
+    )
+    print(f"Successful fits: {int(fit_mask.sum())}")
+    print(f"Coefficient pages: {pages}")
+    print(f"Wrote harmonic plots under {args.output_dir}")
+
+
 def command_acceptance_plots(args: argparse.Namespace) -> None:
     import matplotlib.pyplot as plt
 
@@ -592,6 +644,176 @@ def _plot_pass_fraction_map(
     plt.close(fig)
 
 
+def _plot_harmonic_overview_maps(
+    fit_mask: np.ndarray,
+    chi2_ndf: np.ndarray,
+    points: np.ndarray,
+    q2_edges: np.ndarray,
+    xb_edges: np.ndarray,
+    output_dir: Path,
+) -> None:
+    fit_counts = fit_mask.sum(axis=2)
+    with np.errstate(invalid="ignore"):
+        chi2_median = np.nanmedian(np.where(fit_mask, chi2_ndf, np.nan), axis=2)
+        points_median = np.nanmedian(np.where(fit_mask, points, np.nan), axis=2)
+    _plot_heatmap(
+        fit_counts,
+        "Q2",
+        "xB",
+        _edge_labels(q2_edges),
+        _edge_labels(xb_edges),
+        "Successful harmonic fits per (Q2, xB)",
+        "fit count over -t bins",
+        output_dir / "harmonic_fit_count_q2_xb.png",
+        vmin=0.0,
+        vmax=float(fit_mask.shape[2]),
+    )
+    _plot_heatmap(
+        chi2_median,
+        "Q2",
+        "xB",
+        _edge_labels(q2_edges),
+        _edge_labels(xb_edges),
+        "Median harmonic fit chi2/ndf per (Q2, xB)",
+        "median chi2/ndf",
+        output_dir / "harmonic_chi2_median_q2_xb.png",
+    )
+    _plot_heatmap(
+        points_median,
+        "Q2",
+        "xB",
+        _edge_labels(q2_edges),
+        _edge_labels(xb_edges),
+        "Median phi points used per harmonic fit",
+        "median points",
+        output_dir / "harmonic_points_median_q2_xb.png",
+        vmin=0.0,
+    )
+
+
+def _plot_harmonic_coefficients_vs_t(
+    parameters: np.ndarray,
+    covariance: np.ndarray,
+    chi2_ndf: np.ndarray,
+    points: np.ndarray,
+    fit_mask: np.ndarray,
+    q2_edges: np.ndarray,
+    xb_edges: np.ndarray,
+    t_edges: np.ndarray,
+    names: tuple[str, ...],
+    pdf_path: Path,
+    csv_path: Path,
+) -> int:
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    t_centers = 0.5 * (t_edges[:-1] + t_edges[1:])
+    errors = np.sqrt(np.where(covariance >= 0.0, covariance, np.nan))
+    coeff_errors = np.stack([errors[..., i, i] for i in range(3)], axis=-1)
+    pages = 0
+    csv_lines = [
+        "iq2,q2_low,q2_high,ixb,xb_low,xb_high,it,t_low,t_high,"
+        "points,chi2_ndf,A,A_err,B,B_err,C,C_err,B_over_A,C_over_A"
+    ]
+
+    with PdfPages(pdf_path) as pdf:
+        for iq2 in range(parameters.shape[0]):
+            for ixb in range(parameters.shape[1]):
+                mask = fit_mask[iq2, ixb, :]
+                if not np.any(mask):
+                    continue
+                fig, axes = plt.subplots(3, 1, figsize=(8, 9), sharex=True)
+                for coeff_index, ax in enumerate(axes):
+                    y = parameters[iq2, ixb, :, coeff_index]
+                    yerr = coeff_errors[iq2, ixb, :, coeff_index]
+                    ax.errorbar(
+                        t_centers[mask],
+                        y[mask],
+                        yerr=yerr[mask],
+                        fmt="o",
+                        capsize=2,
+                        linewidth=1.0,
+                        markersize=4,
+                    )
+                    ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.5)
+                    ax.set_ylabel(names[coeff_index] if coeff_index < len(names) else f"p{coeff_index}")
+                    ax.grid(True, alpha=0.25)
+                axes[-1].set_xlabel("-t bin center [GeV^2]")
+                fig.suptitle(
+                    "Harmonic coefficients vs -t\n"
+                    f"Q2 {q2_edges[iq2]:g}-{q2_edges[iq2 + 1]:g}, "
+                    f"xB {xb_edges[ixb]:g}-{xb_edges[ixb + 1]:g}"
+                )
+                fig.tight_layout(rect=(0, 0, 1, 0.95))
+                pdf.savefig(fig)
+                plt.close(fig)
+                pages += 1
+
+                for it in np.flatnonzero(mask):
+                    a, b, c = parameters[iq2, ixb, it, :]
+                    ea, eb, ec = coeff_errors[iq2, ixb, it, :]
+                    b_over_a = b / a if np.isfinite(a) and a != 0.0 else np.nan
+                    c_over_a = c / a if np.isfinite(a) and a != 0.0 else np.nan
+                    csv_lines.append(
+                        ",".join(
+                            str(item)
+                            for item in (
+                                iq2,
+                                q2_edges[iq2],
+                                q2_edges[iq2 + 1],
+                                ixb,
+                                xb_edges[ixb],
+                                xb_edges[ixb + 1],
+                                it,
+                                t_edges[it],
+                                t_edges[it + 1],
+                                int(points[iq2, ixb, it]),
+                                float(chi2_ndf[iq2, ixb, it]),
+                                float(a),
+                                float(ea),
+                                float(b),
+                                float(eb),
+                                float(c),
+                                float(ec),
+                                float(b_over_a),
+                                float(c_over_a),
+                            )
+                        )
+                    )
+
+    csv_path.write_text("\n".join(csv_lines) + "\n", encoding="utf-8")
+    return pages
+
+
+def _plot_heatmap(
+    values: np.ndarray,
+    y_name: str,
+    x_name: str,
+    y_labels: list[str],
+    x_labels: list[str],
+    title: str,
+    colorbar_label: str,
+    output: Path,
+    vmin: float | None = None,
+    vmax: float | None = None,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(max(7, 0.65 * len(x_labels)), max(5, 0.45 * len(y_labels))))
+    image = ax.imshow(values, origin="lower", aspect="auto", cmap="viridis", vmin=vmin, vmax=vmax)
+    ax.set_xticks(np.arange(len(x_labels)))
+    ax.set_xticklabels(x_labels, rotation=35, ha="right")
+    ax.set_yticks(np.arange(len(y_labels)))
+    ax.set_yticklabels(y_labels)
+    ax.set_xlabel(x_name)
+    ax.set_ylabel(y_name)
+    ax.set_title(title)
+    fig.colorbar(image, ax=ax, label=colorbar_label)
+    fig.tight_layout()
+    fig.savefig(output, dpi=200)
+    plt.close(fig)
+
+
 def _plot_acceptance_vs_phi(
     efficiency: np.ndarray,
     truth: np.ndarray,
@@ -707,6 +929,8 @@ def main() -> int:
         command_cross_section(args)
     elif args.command == "fit-harmonics":
         command_harmonics(args)
+    elif args.command == "harmonic-plots":
+        command_harmonic_plots(args)
     elif args.command == "acceptance-plots":
         command_acceptance_plots(args)
     return 0
