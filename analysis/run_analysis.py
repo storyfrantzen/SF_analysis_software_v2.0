@@ -83,6 +83,12 @@ def parser() -> argparse.ArgumentParser:
     harmonic_plots.add_argument("--output-dir", type=Path, required=True)
     harmonic_plots.add_argument("--min-points", type=int, default=4)
 
+    xsec_plots = commands.add_parser("cross-section-plots", help="Plot reduced cross section vs phi with harmonic fits")
+    xsec_plots.add_argument("cross_section", type=Path)
+    xsec_plots.add_argument("harmonics", type=Path)
+    xsec_plots.add_argument("--output-dir", type=Path, required=True)
+    xsec_plots.add_argument("--min-points", type=int, default=4)
+
     acceptance = commands.add_parser("acceptance-plots", help="Plot acceptance diagnostics from response metadata")
     acceptance.add_argument("response_meta", type=Path)
     acceptance.add_argument("--output-dir", type=Path, required=True)
@@ -428,6 +434,45 @@ def command_harmonic_plots(args: argparse.Namespace) -> None:
     print(f"Successful fits: {int(fit_mask.sum())}")
     print(f"Coefficient pages: {pages}")
     print(f"Wrote harmonic plots under {args.output_dir}")
+
+
+def command_cross_section_plots(args: argparse.Namespace) -> None:
+    cross_section = np.load(args.cross_section, allow_pickle=False)
+    harmonics = np.load(args.harmonics, allow_pickle=False)
+    values = np.asarray(cross_section["reduced_cross_section"], dtype=float)
+    uncertainties = np.asarray(cross_section["uncertainty"], dtype=float)
+    phi_edges = np.asarray(cross_section["phi_edges"], dtype=float)
+    parameters = np.asarray(harmonics["parameters"], dtype=float)
+    chi2_ndf = np.asarray(harmonics["chi2_ndf"], dtype=float)
+    points = np.asarray(harmonics["points"], dtype=int)
+    q2_edges = np.asarray(harmonics["q2_edges"], dtype=float)
+    xb_edges = np.asarray(harmonics["xb_edges"], dtype=float)
+    t_edges = np.asarray(harmonics["t_edges"], dtype=float)
+
+    if values.shape != uncertainties.shape or values.ndim != 4:
+        raise ValueError("cross-section values and uncertainties must be equal 4D arrays")
+    if values.shape[:-1] != parameters.shape[:-1] or parameters.shape[-1] != 3:
+        raise ValueError("cross-section and harmonic-fit dimensions do not match")
+    if phi_edges.size != values.shape[-1] + 1:
+        raise ValueError("phi edges do not match cross-section bins")
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    pages = _plot_cross_section_vs_phi(
+        values,
+        uncertainties,
+        phi_edges,
+        parameters,
+        chi2_ndf,
+        points,
+        q2_edges,
+        xb_edges,
+        t_edges,
+        args.min_points,
+        args.output_dir / "reduced_cross_section_vs_phi_with_fits.pdf",
+        args.output_dir / "reduced_cross_section_vs_phi_summary.csv",
+    )
+    print(f"Cross-section phi pages: {pages}")
+    print(f"Wrote cross-section plots under {args.output_dir}")
 
 
 def command_acceptance_plots(args: argparse.Namespace) -> None:
@@ -785,6 +830,107 @@ def _plot_harmonic_coefficients_vs_t(
     return pages
 
 
+def _plot_cross_section_vs_phi(
+    values: np.ndarray,
+    uncertainties: np.ndarray,
+    phi_edges: np.ndarray,
+    parameters: np.ndarray,
+    chi2_ndf: np.ndarray,
+    points: np.ndarray,
+    q2_edges: np.ndarray,
+    xb_edges: np.ndarray,
+    t_edges: np.ndarray,
+    min_points: int,
+    pdf_path: Path,
+    csv_path: Path,
+) -> int:
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    phi_centers = 0.5 * (phi_edges[:-1] + phi_edges[1:])
+    phi_curve = np.linspace(float(phi_edges[0]), float(phi_edges[-1]), 361)
+    radians = np.deg2rad(phi_curve)
+    pages = 0
+    csv_lines = [
+        "iq2,q2_low,q2_high,ixb,xb_low,xb_high,it,t_low,t_high,"
+        "points,chi2_ndf,A,B,C,finite_phi_bins,min_cross_section,max_cross_section"
+    ]
+
+    with PdfPages(pdf_path) as pdf:
+        for iq2 in range(values.shape[0]):
+            for ixb in range(values.shape[1]):
+                for it in range(values.shape[2]):
+                    y = values[iq2, ixb, it, :]
+                    yerr = uncertainties[iq2, ixb, it, :]
+                    p = parameters[iq2, ixb, it, :]
+                    valid = np.isfinite(y) & np.isfinite(yerr) & (yerr > 0.0)
+                    fit_valid = (
+                        np.all(np.isfinite(p))
+                        and np.isfinite(chi2_ndf[iq2, ixb, it])
+                        and points[iq2, ixb, it] >= min_points
+                    )
+                    if not fit_valid:
+                        continue
+                    fit_curve = p[0] + p[1] * np.cos(radians) + p[2] * np.cos(2.0 * radians)
+                    csv_lines.append(
+                        ",".join(
+                            str(item)
+                            for item in (
+                                iq2,
+                                q2_edges[iq2],
+                                q2_edges[iq2 + 1],
+                                ixb,
+                                xb_edges[ixb],
+                                xb_edges[ixb + 1],
+                                it,
+                                t_edges[it],
+                                t_edges[it + 1],
+                                int(points[iq2, ixb, it]),
+                                float(chi2_ndf[iq2, ixb, it]),
+                                float(p[0]),
+                                float(p[1]),
+                                float(p[2]),
+                                int(valid.sum()),
+                                float(np.nanmin(y[valid])) if np.any(valid) else np.nan,
+                                float(np.nanmax(y[valid])) if np.any(valid) else np.nan,
+                            )
+                        )
+                    )
+
+                    fig, ax = plt.subplots(figsize=(8, 5))
+                    ax.errorbar(
+                        phi_centers[valid],
+                        y[valid],
+                        yerr=yerr[valid],
+                        fmt="o",
+                        capsize=2,
+                        markersize=4,
+                        linewidth=1.0,
+                        label="reduced cross section",
+                    )
+                    ax.plot(phi_curve, fit_curve, color="#d95f02", linewidth=1.7,
+                            label="A + B cos(phi) + C cos(2phi)")
+                    ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
+                    ax.set_xlabel("phi [deg]")
+                    ax.set_ylabel("Reduced cross section")
+                    ax.set_title(
+                        "Reduced cross section vs phi\n"
+                        f"Q2 {q2_edges[iq2]:g}-{q2_edges[iq2 + 1]:g}, "
+                        f"xB {xb_edges[ixb]:g}-{xb_edges[ixb + 1]:g}, "
+                        f"-t {t_edges[it]:g}-{t_edges[it + 1]:g}\n"
+                        f"chi2/ndf={chi2_ndf[iq2, ixb, it]:.3g}, points={points[iq2, ixb, it]}"
+                    )
+                    ax.grid(True, alpha=0.25)
+                    ax.legend(loc="best", fontsize="small")
+                    fig.tight_layout()
+                    pdf.savefig(fig)
+                    plt.close(fig)
+                    pages += 1
+
+    csv_path.write_text("\n".join(csv_lines) + "\n", encoding="utf-8")
+    return pages
+
+
 def _plot_heatmap(
     values: np.ndarray,
     y_name: str,
@@ -931,6 +1077,8 @@ def main() -> int:
         command_harmonics(args)
     elif args.command == "harmonic-plots":
         command_harmonic_plots(args)
+    elif args.command == "cross-section-plots":
+        command_cross_section_plots(args)
     elif args.command == "acceptance-plots":
         command_acceptance_plots(args)
     return 0
