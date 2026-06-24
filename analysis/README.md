@@ -131,6 +131,20 @@ Pass the GEMC mask to `response --selection-mask` and the data mask to
 `unfold --selection-mask`. Use `--global-cuts` for one set of windows per proton
 topology when individual kinematic bins lack sufficient statistics.
 
+For large GEMC production, derive the GEMC exclusivity mask directly from the
+selected-candidate ROOT file instead of reading the dense generated-event NPZ:
+
+```bash
+python3 analysis/derive_exclusivity.py selected_mc.root \
+  --format selected-root --dictionary build/libROOTBranchesDict.so \
+  --config analysis/configs/rgk/6.535.json \
+  --cuts results/gemc_exclusivity.npz --mask results/gemc_selected_exclusivity.npy
+```
+
+The selected-root mask has one row per selected ROOT candidate, so use it with
+`response-root --selection-mask`. The dense NPZ mask has one row per generated
+event and remains the format expected by `response --selection-mask`.
+
 ## Compact `GeneratedEvents` schema
 
 The converter writes one row for every input MC event:
