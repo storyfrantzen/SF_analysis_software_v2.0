@@ -19,7 +19,7 @@ from eppi0.event_sample import (
 )
 from eppi0.exclusivity import apply_cuts, derive_cuts
 from eppi0.harmonics import fit_phi
-from eppi0.response import build_response
+from eppi0.response import build_response, build_response_from_counts
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
 
 
@@ -63,6 +63,26 @@ class ResponseTests(unittest.TestCase):
         np.testing.assert_allclose(result.efficiency, [0.5, 1.0])
         self.assertAlmostEqual(result.feed_in_fraction, 0.25)
         np.testing.assert_allclose(result.feed_in_shape, [0.0, 1.0])
+
+    def test_count_response_matches_dense_response(self) -> None:
+        truth = np.array([0, 0, 1, 1, -1])
+        rec = np.array([0, -1, 1, 0, 1])
+        selected = np.array([True, False, True, True, True])
+        dense = build_response(truth, rec, selected, number_of_bins=2)
+        counted = build_response_from_counts(
+            truth_total=np.array([2, 2]),
+            reconstructed_total=np.array([2, 2]),
+            migration_rows=np.array([0, 1, 0]),
+            migration_cols=np.array([0, 1, 1]),
+            migration_weights=np.ones(3),
+            feed_counts=np.array([0, 1]),
+        )
+        np.testing.assert_allclose(counted.truth_total, dense.truth_total)
+        np.testing.assert_allclose(counted.reconstructed_total, dense.reconstructed_total)
+        np.testing.assert_allclose(counted.core.toarray(), dense.core.toarray())
+        np.testing.assert_allclose(counted.efficiency, dense.efficiency)
+        self.assertAlmostEqual(counted.feed_in_fraction, dense.feed_in_fraction)
+        np.testing.assert_allclose(counted.feed_in_shape, dense.feed_in_shape)
 
 
 class EventSampleTests(unittest.TestCase):

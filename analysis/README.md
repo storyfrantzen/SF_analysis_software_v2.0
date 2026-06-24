@@ -76,11 +76,24 @@ python3 analysis/run_analysis.py fit-harmonics results/cross_section.npz \
   --output results/harmonics.npz
 ```
 
-`build_event_sample.py` creates the MC event sample by left-joining the selected
-REC tree onto the compact `GeneratedEvents` tree. New files join on
-`(sourceFileId, sourceEventIndex)`, because GEMC files can all have run 11 and
-restart their event numbers. It auto-detects the compact tree and retains
-backward compatibility with older particle-level matched files.
+For production MC response building, avoid serializing one dense row per
+generated event. Build the sparse response directly from the converter and
+selected ROOT files:
+
+```bash
+python3 analysis/run_analysis.py response-root \
+  6.535_rgk_eppi0_mc_acceptance.root selected_mc.root \
+  --config analysis/configs/rgk/6.535.json --output-dir results/response \
+  --dictionary build/libROOTBranchesDict.dylib
+```
+
+This command histograms the `GeneratedEvents` denominator in chunks, joins only
+selected REC candidates by `(sourceFileId, sourceEventIndex)`, and writes the
+same `response_matrix.npz` and `response_meta.npz` consumed by `unfold`.
+`build_event_sample.py` remains useful for compact debug samples and for
+backward compatibility with older particle-level matched files. New files join
+on `(sourceFileId, sourceEventIndex)`, because GEMC files can all have run 11
+and restart their event numbers.
 `export_selected_data.py` creates the compact data artifact and carries the
 converter's accumulated charge into the pipeline.
 
@@ -159,8 +172,8 @@ uncertainties are propagated into the self-contained unfolding result.
 - bootstrap results can be reproduced with an explicit random seed;
 - output paths and binning are configuration, not hard-coded working-directory
   side effects;
-- expensive ROOT reads are intended to happen once when producing the event
-  sample, rather than once per analysis stage.
+- production response building avoids dense generated-event intermediates and
+  writes the response artifacts directly.
 
 ## Managing MC intermediate size
 
@@ -177,8 +190,9 @@ rows. Treat that legacy intermediate as a temporary scratch product:
   Git working tree;
 - process manageable production chunks rather than combining every HIPO file
   into one monolithic ROOT file;
-- immediately run `build_event_sample.py` for each chunk;
-- retain the compact NPZ chunks and provenance metadata;
+- immediately run `response-root` for each chunk or preserve only compact debug
+  NPZ chunks when event-level audits are needed;
+- retain response artifacts, compact debug NPZ chunks, and provenance metadata;
 - verify generated-event counts and checksums before removing scratch ROOT
   files;
 - concatenate compact event samples only after conversion.

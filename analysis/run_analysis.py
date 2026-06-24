@@ -21,6 +21,7 @@ from eppi0.cross_section import (
     reduced_cross_section,
 )
 from eppi0.response import build_response
+from eppi0.root_response import build_response_from_root
 from eppi0.harmonics import fit_grid
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes, subtract_feed_in
 
@@ -34,6 +35,25 @@ def parser() -> argparse.ArgumentParser:
     response.add_argument("--config", type=Path, required=True)
     response.add_argument("--output-dir", type=Path, required=True)
     response.add_argument("--selection-mask", type=Path)
+
+    response_root = commands.add_parser(
+        "response-root",
+        help="Build a sparse response directly from converter and selected ROOT files",
+    )
+    response_root.add_argument("converter_root", type=Path)
+    response_root.add_argument("selected_root", type=Path)
+    response_root.add_argument("--config", type=Path, required=True)
+    response_root.add_argument("--output-dir", type=Path, required=True)
+    response_root.add_argument("--dictionary", type=Path)
+    response_root.add_argument("--tree", default="Events")
+    response_root.add_argument("--generated-tree", default="GeneratedEvents")
+    response_root.add_argument("--chunk-size", type=int, default=1_000_000)
+    response_root.add_argument("--progress-chunks", type=int, default=10)
+    response_root.add_argument(
+        "--selection-mask",
+        type=Path,
+        help="Optional boolean mask with one row per selected ROOT candidate",
+    )
 
     unfold = commands.add_parser("unfold", help="Unfold a compact selected-data sample")
     unfold.add_argument("data", type=Path)
@@ -57,6 +77,11 @@ def parser() -> argparse.ArgumentParser:
     harmonics = commands.add_parser("fit-harmonics", help="Fit A + B cos(phi) + C cos(2 phi)")
     harmonics.add_argument("cross_section", type=Path)
     harmonics.add_argument("--output", type=Path, required=True)
+
+    acceptance = commands.add_parser("acceptance-plots", help="Plot acceptance diagnostics from response metadata")
+    acceptance.add_argument("response_meta", type=Path)
+    acceptance.add_argument("--output-dir", type=Path, required=True)
+    acceptance.add_argument("--minimum-acceptance", type=float, default=0.005)
     return root
 
 
@@ -97,6 +122,54 @@ def command_response(args: argparse.Namespace) -> None:
         t_edges=binning.t_edges,
         phi_edges=binning.phi_edges,
     )
+    print(f"Truth events in range: {response.truth_total.sum():.0f}")
+    print(f"Selected REC events in range: {response.reconstructed_total.sum():.0f}")
+    print(f"Feed-in fraction: {response.feed_in_fraction:.6f}")
+    print(f"Wrote {matrix_path}")
+    print(f"Wrote {metadata_path}")
+
+
+def command_response_root(args: argparse.Namespace) -> None:
+    binning = from_config(args.config)
+    mask = None
+    if args.selection_mask:
+        mask = np.asarray(np.load(args.selection_mask), dtype=bool)
+    summary = build_response_from_root(
+        args.converter_root,
+        args.selected_root,
+        binning,
+        dictionary=args.dictionary,
+        tree=args.tree,
+        generated_tree=args.generated_tree,
+        chunk_size=args.chunk_size,
+        selection_mask=mask,
+        progress_chunks=args.progress_chunks,
+    )
+    response = summary.response
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    matrix_path = args.output_dir / "response_matrix.npz"
+    metadata_path = args.output_dir / "response_meta.npz"
+    save_npz(matrix_path, response.core)
+    np.savez_compressed(
+        metadata_path,
+        truth_total=response.truth_total,
+        reconstructed_total=response.reconstructed_total,
+        efficiency=response.efficiency,
+        feed_in_fraction=response.feed_in_fraction,
+        feed_in_shape=response.feed_in_shape,
+        response_variance_sum=response.response_variance_sum,
+        q2_edges=binning.q2_edges,
+        xb_edges=binning.xb_edges,
+        t_edges=binning.t_edges,
+        phi_edges=binning.phi_edges,
+        generated_rows=summary.generated_rows,
+        selected_rows=summary.selected_rows,
+        matched_selected_rows=summary.matched_selected_rows,
+    )
+    print(f"Generated rows scanned: {summary.generated_rows}")
+    print(f"Selected rows read: {summary.selected_rows}")
+    print(f"Matched selected rows: {summary.matched_selected_rows}")
     print(f"Truth events in range: {response.truth_total.sum():.0f}")
     print(f"Selected REC events in range: {response.reconstructed_total.sum():.0f}")
     print(f"Feed-in fraction: {response.feed_in_fraction:.6f}")
@@ -299,6 +372,97 @@ def command_harmonics(args: argparse.Namespace) -> None:
     print(f"Wrote {args.output}")
 
 
+def command_acceptance_plots(args: argparse.Namespace) -> None:
+    import matplotlib.pyplot as plt
+
+    metadata = np.load(args.response_meta, allow_pickle=False)
+    efficiency = np.asarray(metadata["efficiency"], dtype=float)
+    truth = np.asarray(metadata["truth_total"], dtype=float)
+    q2_edges = np.asarray(metadata["q2_edges"], dtype=float)
+    xb_edges = np.asarray(metadata["xb_edges"], dtype=float)
+    t_edges = np.asarray(metadata["t_edges"], dtype=float)
+    phi_edges = np.asarray(metadata["phi_edges"], dtype=float)
+    shape = (
+        q2_edges.size - 1,
+        xb_edges.size - 1,
+        t_edges.size - 1,
+        phi_edges.size - 1,
+    )
+    if efficiency.size != int(np.prod(shape)) or truth.size != efficiency.size:
+        raise ValueError("response metadata arrays do not match bin-edge dimensions")
+
+    eff4 = _unflatten_response(efficiency, shape)
+    truth4 = _unflatten_response(truth, shape)
+    populated = truth4 > 0
+    zero = populated & (eff4 == 0)
+    low = populated & (eff4 > 0) & (eff4 < args.minimum_acceptance)
+    passing = populated & (eff4 >= args.minimum_acceptance)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    populated_eff = eff4[populated]
+    positive_eff = populated_eff[populated_eff > 0]
+    _plot_acceptance_histograms(
+        populated_eff,
+        positive_eff,
+        args.minimum_acceptance,
+        args.output_dir,
+    )
+    _plot_acceptance_projection(
+        "Q2",
+        _edge_labels(q2_edges),
+        zero.sum(axis=(1, 2, 3)),
+        low.sum(axis=(1, 2, 3)),
+        passing.sum(axis=(1, 2, 3)),
+        args.output_dir / "acceptance_projection_q2.png",
+    )
+    _plot_acceptance_projection(
+        "xB",
+        _edge_labels(xb_edges),
+        zero.sum(axis=(0, 2, 3)),
+        low.sum(axis=(0, 2, 3)),
+        passing.sum(axis=(0, 2, 3)),
+        args.output_dir / "acceptance_projection_xb.png",
+    )
+    _plot_acceptance_projection(
+        "-t",
+        _edge_labels(t_edges),
+        zero.sum(axis=(0, 1, 3)),
+        low.sum(axis=(0, 1, 3)),
+        passing.sum(axis=(0, 1, 3)),
+        args.output_dir / "acceptance_projection_t.png",
+    )
+    _plot_pass_fraction_map(
+        "Q2",
+        "xB",
+        _edge_labels(q2_edges),
+        _edge_labels(xb_edges),
+        _pass_fraction(populated, passing, axes=(2, 3)),
+        args.output_dir / "acceptance_pass_fraction_q2_xb.png",
+    )
+    _plot_pass_fraction_map(
+        "Q2",
+        "-t",
+        _edge_labels(q2_edges),
+        _edge_labels(t_edges),
+        _pass_fraction(populated, passing, axes=(1, 3)),
+        args.output_dir / "acceptance_pass_fraction_q2_t.png",
+    )
+    _plot_pass_fraction_map(
+        "xB",
+        "-t",
+        _edge_labels(xb_edges),
+        _edge_labels(t_edges),
+        _pass_fraction(populated, passing, axes=(0, 3)),
+        args.output_dir / "acceptance_pass_fraction_xb_t.png",
+    )
+
+    print(f"Truth-populated bins: {int(populated.sum())}")
+    print(f"Zero-acceptance bins: {int(zero.sum())}")
+    print(f"Positive sub-threshold bins: {int(low.sum())}")
+    print(f"Passing bins: {int(passing.sum())}")
+    print(f"Wrote acceptance plots under {args.output_dir}")
+
+
 def _load_mask(path: Path, expected: int) -> np.ndarray:
     mask = np.asarray(np.load(path), dtype=bool)
     if mask.shape != (expected,):
@@ -306,16 +470,123 @@ def _load_mask(path: Path, expected: int) -> np.ndarray:
     return mask
 
 
+def _unflatten_response(values: np.ndarray, shape: tuple[int, int, int, int]) -> np.ndarray:
+    nq2, nxb, nt, nphi = shape
+    return values.reshape(nxb, nq2, nphi, nt).transpose(1, 0, 3, 2)
+
+
+def _edge_labels(edges: np.ndarray) -> list[str]:
+    return [f"{lo:g}-{hi:g}" for lo, hi in zip(edges[:-1], edges[1:])]
+
+
+def _pass_fraction(populated: np.ndarray, passing: np.ndarray, axes: tuple[int, ...]) -> np.ndarray:
+    total = populated.sum(axis=axes)
+    good = passing.sum(axis=axes)
+    return np.divide(good, total, out=np.full(total.shape, np.nan), where=total > 0)
+
+
+def _plot_acceptance_histograms(
+    populated_eff: np.ndarray,
+    positive_eff: np.ndarray,
+    minimum_acceptance: float,
+    output_dir: Path,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.hist(populated_eff, bins=100, histtype="step", linewidth=1.5)
+    ax.axvline(minimum_acceptance, color="red", linestyle="--",
+               label=f"minimum_acceptance = {minimum_acceptance:g}")
+    ax.set_xlabel("Acceptance / efficiency")
+    ax.set_ylabel("Number of 4D bins")
+    ax.set_title("Acceptance over truth-populated 4D bins")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_dir / "acceptance_hist.png", dpi=200)
+    plt.close(fig)
+
+    if positive_eff.size == 0:
+        return
+    fig, ax = plt.subplots(figsize=(8, 5))
+    bins = np.logspace(np.log10(positive_eff.min()), np.log10(positive_eff.max()), 100)
+    ax.hist(positive_eff, bins=bins, histtype="step", linewidth=1.5)
+    ax.axvline(minimum_acceptance, color="red", linestyle="--",
+               label=f"minimum_acceptance = {minimum_acceptance:g}")
+    ax.set_xscale("log")
+    ax.set_xlabel("Acceptance / efficiency")
+    ax.set_ylabel("Number of 4D bins")
+    ax.set_title("Acceptance over positive-acceptance 4D bins")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_dir / "acceptance_hist_log.png", dpi=200)
+    plt.close(fig)
+
+
+def _plot_acceptance_projection(
+    axis_name: str,
+    labels: list[str],
+    zero: np.ndarray,
+    low: np.ndarray,
+    passing: np.ndarray,
+    output: Path,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    x = np.arange(len(labels))
+    fig, ax = plt.subplots(figsize=(max(8, 0.7 * len(labels)), 5))
+    ax.bar(x, zero, label="zero", color="#9aa0a6")
+    ax.bar(x, low, bottom=zero, label="positive < threshold", color="#d95f02")
+    ax.bar(x, passing, bottom=zero + low, label=">= threshold", color="#1b9e77")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=35, ha="right")
+    ax.set_xlabel(axis_name)
+    ax.set_ylabel("Number of truth-populated 4D bins")
+    ax.set_title(f"Acceptance categories projected onto {axis_name}")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output, dpi=200)
+    plt.close(fig)
+
+
+def _plot_pass_fraction_map(
+    y_name: str,
+    x_name: str,
+    y_labels: list[str],
+    x_labels: list[str],
+    values: np.ndarray,
+    output: Path,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(max(7, 0.65 * len(x_labels)), max(5, 0.45 * len(y_labels))))
+    image = ax.imshow(values, origin="lower", aspect="auto", vmin=0.0, vmax=1.0, cmap="viridis")
+    ax.set_xticks(np.arange(len(x_labels)))
+    ax.set_xticklabels(x_labels, rotation=35, ha="right")
+    ax.set_yticks(np.arange(len(y_labels)))
+    ax.set_yticklabels(y_labels)
+    ax.set_xlabel(x_name)
+    ax.set_ylabel(y_name)
+    ax.set_title("Fraction of truth-populated 4D bins above acceptance threshold")
+    fig.colorbar(image, ax=ax, label="Passing fraction")
+    fig.tight_layout()
+    fig.savefig(output, dpi=200)
+    plt.close(fig)
+
+
 def main() -> int:
     args = parser().parse_args()
     if args.command == "response":
         command_response(args)
+    elif args.command == "response-root":
+        command_response_root(args)
     elif args.command == "unfold":
         command_unfold(args)
     elif args.command == "cross-section":
         command_cross_section(args)
     elif args.command == "fit-harmonics":
         command_harmonics(args)
+    elif args.command == "acceptance-plots":
+        command_acceptance_plots(args)
     return 0
 
 

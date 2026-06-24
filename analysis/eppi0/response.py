@@ -99,6 +99,59 @@ def build_response(
     )
 
 
+def build_response_from_counts(
+    truth_total: Array,
+    reconstructed_total: Array,
+    migration_rows: Array,
+    migration_cols: Array,
+    migration_weights: Array,
+    feed_counts: Array,
+) -> ResponseResult:
+    """Build the response from pre-accumulated histogram and migration counts."""
+    truth_total = np.asarray(truth_total, dtype=float)
+    reconstructed_total = np.asarray(reconstructed_total, dtype=float)
+    feed_counts = np.asarray(feed_counts, dtype=float)
+    if truth_total.ndim != 1:
+        raise ValueError("truth_total must be one-dimensional")
+    number_of_bins = truth_total.size
+    if reconstructed_total.shape != truth_total.shape or feed_counts.shape != truth_total.shape:
+        raise ValueError("histogram shapes must match")
+
+    migration_rows = np.asarray(migration_rows, dtype=np.int64)
+    migration_cols = np.asarray(migration_cols, dtype=np.int64)
+    migration_weights = np.asarray(migration_weights, dtype=float)
+    if not (migration_rows.shape == migration_cols.shape == migration_weights.shape):
+        raise ValueError("migration arrays must have equal shapes")
+
+    counts = csr_matrix(
+        (migration_weights, (migration_rows, migration_cols)),
+        shape=(number_of_bins, number_of_bins),
+        dtype=float,
+    )
+    inverse_truth = np.divide(
+        1.0, truth_total, out=np.zeros_like(truth_total), where=truth_total > 0
+    )
+    core = counts.dot(diags(inverse_truth, format="csr")).tocsr()
+    efficiency = np.asarray(core.sum(axis=0)).ravel()
+
+    feed_sum = float(feed_counts.sum())
+    feed_shape = feed_counts / feed_sum if feed_sum > 0 else np.zeros(number_of_bins)
+    rec_sum = float(reconstructed_total.sum())
+    feed_fraction = feed_sum / rec_sum if rec_sum > 0 else 0.0
+    matrix = hstack([core, csr_matrix(feed_shape[:, None])], format="csr")
+    variance_sum = _multinomial_variance_sum(core.tocsc(), truth_total)
+    return ResponseResult(
+        matrix=matrix,
+        core=core,
+        truth_total=truth_total,
+        reconstructed_total=reconstructed_total,
+        efficiency=efficiency,
+        feed_in_fraction=feed_fraction,
+        feed_in_shape=feed_shape,
+        response_variance_sum=variance_sum,
+    )
+
+
 def _multinomial_variance_sum(core: csc_matrix, truth_total: Array) -> Array:
     variance = np.zeros_like(truth_total, dtype=float)
     for column in np.flatnonzero(truth_total > 0):
