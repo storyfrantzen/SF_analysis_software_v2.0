@@ -96,6 +96,12 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Append a stitched Q2-by-xB quilt of A, B, and C vs -t to the coefficient PDF",
     )
+    harmonic_plots.add_argument(
+        "--quilt-scale-percentile",
+        type=float,
+        default=98.0,
+        help="Robust absolute-value percentile used for the stitched quilt y scale",
+    )
 
     xsec_plots = commands.add_parser("cross-section-plots", help="Plot reduced cross section vs phi with harmonic fits")
     xsec_plots.add_argument("cross_section", type=Path)
@@ -446,9 +452,12 @@ def command_harmonic_plots(args: argparse.Namespace) -> None:
         args.output_dir / "harmonic_coefficients_vs_t.pdf",
         args.output_dir / "harmonic_coefficients_summary.csv",
         include_quilt=args.quilt,
+        quilt_scale_percentile=args.quilt_scale_percentile,
     )
     print(f"Successful fits: {int(fit_mask.sum())}")
     print(f"Coefficient pages: {pages}")
+    if args.quilt:
+        print("Coefficient PDF includes one stitched quilt page")
     print(f"Wrote harmonic plots under {args.output_dir}")
 
 
@@ -716,9 +725,12 @@ def _plot_harmonic_overview_maps(
     output_dir: Path,
 ) -> None:
     fit_counts = fit_mask.sum(axis=2)
-    with np.errstate(invalid="ignore"):
-        chi2_median = np.nanmedian(np.where(fit_mask, chi2_ndf, np.nan), axis=2)
-        points_median = np.nanmedian(np.where(fit_mask, points, np.nan), axis=2)
+    chi2_median = np.full(fit_counts.shape, np.nan, dtype=float)
+    points_median = np.full(fit_counts.shape, np.nan, dtype=float)
+    for iq2, ixb in zip(*np.nonzero(fit_counts)):
+        mask = fit_mask[iq2, ixb, :]
+        chi2_median[iq2, ixb] = np.nanmedian(chi2_ndf[iq2, ixb, mask])
+        points_median[iq2, ixb] = np.nanmedian(points[iq2, ixb, mask])
     _plot_heatmap(
         fit_counts,
         "Q2",
@@ -767,6 +779,7 @@ def _plot_harmonic_coefficients_vs_t(
     pdf_path: Path,
     csv_path: Path,
     include_quilt: bool = False,
+    quilt_scale_percentile: float = 98.0,
 ) -> int:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
@@ -793,6 +806,7 @@ def _plot_harmonic_coefficients_vs_t(
                 t_edges,
                 names,
                 colors,
+                quilt_scale_percentile,
             )
         for iq2 in range(parameters.shape[0]):
             for ixb in range(parameters.shape[1]):
@@ -875,27 +889,34 @@ def _plot_harmonic_coefficient_quilt_vs_t(
     t_edges: np.ndarray,
     names: tuple[str, ...],
     colors: tuple[str, str, str],
+    scale_percentile: float,
 ) -> int:
     import matplotlib.pyplot as plt
 
     nq2, nxb, nt = parameters.shape[:3]
     if not np.any(fit_mask):
         return 0
+    if not 0.0 < scale_percentile <= 100.0:
+        raise ValueError("--quilt-scale-percentile must be in the range (0, 100]")
 
     t_centers = 0.5 * (t_edges[:-1] + t_edges[1:])
     q2_labels = _edge_labels(q2_edges)
     xb_labels = _edge_labels(xb_edges)
-    visible_values = []
+    visible_abs = []
     for coeff_index in range(3):
         values = np.where(fit_mask, parameters[..., coeff_index], np.nan)
         errors = np.where(fit_mask, coeff_errors[..., coeff_index], np.nan)
-        visible_values.extend((values - errors, values + errors))
-    finite_values = np.concatenate([item[np.isfinite(item)].ravel() for item in visible_values])
-    if finite_values.size:
-        low = float(np.nanmin(finite_values))
-        high = float(np.nanmax(finite_values))
-        padding = 0.08 * max(high - low, abs(high), abs(low), 1.0)
-        ylim = (low - padding, high + padding)
+        for item in (values - errors, values, values + errors):
+            finite = np.abs(item[np.isfinite(item)])
+            if finite.size:
+                visible_abs.append(finite.ravel())
+    finite_abs = np.concatenate(visible_abs) if visible_abs else np.asarray([], dtype=float)
+    if finite_abs.size:
+        limit = float(np.nanpercentile(finite_abs, scale_percentile))
+        if not np.isfinite(limit) or limit <= 0.0:
+            limit = float(np.nanmax(finite_abs))
+        limit = 1.08 * max(limit, 1.0e-12)
+        ylim = (-limit, limit)
     else:
         ylim = (-1.0, 1.0)
 
@@ -910,25 +931,25 @@ def _plot_harmonic_coefficient_quilt_vs_t(
     for iq2 in range(nq2):
         for ixb in range(nxb):
             ax = axes[nq2 - 1 - iq2, ixb]
+            mask = fit_mask[iq2, ixb, :]
+            if not np.any(mask):
+                ax.set_axis_off()
+                continue
             ax.axhline(0.0, color="black", linewidth=0.45, alpha=0.35)
             ax.set_xlim(float(t_edges[0]), float(t_edges[-1]))
             ax.set_ylim(*ylim)
             ax.grid(True, alpha=0.16, linewidth=0.45)
-            mask = fit_mask[iq2, ixb, :]
-            if np.any(mask):
-                for coeff_index in range(3):
-                    ax.errorbar(
-                        t_centers[mask],
-                        parameters[iq2, ixb, mask, coeff_index],
-                        yerr=coeff_errors[iq2, ixb, mask, coeff_index],
-                        fmt="o-",
-                        capsize=1.0,
-                        linewidth=0.75,
-                        markersize=2.4,
-                        color=colors[coeff_index],
-                    )
-            else:
-                ax.set_facecolor("#f2f2f2")
+            for coeff_index in range(3):
+                ax.errorbar(
+                    t_centers[mask],
+                    parameters[iq2, ixb, mask, coeff_index],
+                    yerr=coeff_errors[iq2, ixb, mask, coeff_index],
+                    fmt="o-",
+                    capsize=1.0,
+                    linewidth=0.75,
+                    markersize=2.4,
+                    color=colors[coeff_index],
+                )
             ax.tick_params(axis="both", labelsize=6, length=2)
             if iq2 == 0:
                 ax.set_xlabel("-t [GeV^2]", fontsize=7)
@@ -952,7 +973,7 @@ def _plot_harmonic_coefficient_quilt_vs_t(
     fig.legend(handles=handles, loc="upper center", ncol=3, fontsize="small")
     fig.suptitle(
         "Harmonic coefficients vs -t quilt\n"
-        "Q2 increases bottom to top; xB increases left to right",
+        f"Q2 increases bottom to top; xB increases left to right; y scale uses p{scale_percentile:g}",
         y=0.985,
     )
     fig.supylabel("Harmonic coefficient [nb/(GeV^2 rad)]")
