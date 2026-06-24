@@ -20,6 +20,9 @@ find_path(QADB_INCLUDE_DIR QADB.h
 # Include directories
 include_directories(
   ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_SOURCE_DIR}/include/core
+  ${PROJECT_SOURCE_DIR}/include/conversion
+  ${PROJECT_SOURCE_DIR}/include/post
   ${PROJECT_SOURCE_DIR}/vendor
   ${CLAS12ROOT}/hipo4
   ${CLAS12ROOT}/Clas12Banks
@@ -37,32 +40,35 @@ link_directories(
 )
 
 set(HIPO2ROOT_SOURCES
-  ${PROJECT_SOURCE_DIR}/src/GeneratedEvent.cpp
-  ${PROJECT_SOURCE_DIR}/src/ProtonEnergyLossCorrections.cpp
-  ${PROJECT_SOURCE_DIR}/src/QualityAssurance.cpp
-  ${PROJECT_SOURCE_DIR}/src/Kinematics.cpp
-  ${PROJECT_SOURCE_DIR}/src/ROOTBranches.cpp
+  ${PROJECT_SOURCE_DIR}/src/conversion/GeneratedEvent.cpp
+  ${PROJECT_SOURCE_DIR}/src/conversion/ProtonEnergyLossCorrections.cpp
+  ${PROJECT_SOURCE_DIR}/src/conversion/QualityAssurance.cpp
+  ${PROJECT_SOURCE_DIR}/src/core/Kinematics.cpp
+  ${PROJECT_SOURCE_DIR}/src/core/ROOTBranches.cpp
 )
 
 set(POST_PROCESSING_SOURCES
-  ${PROJECT_SOURCE_DIR}/src/Kinematics.cpp
-  ${PROJECT_SOURCE_DIR}/src/Cuts.cpp
-  ${PROJECT_SOURCE_DIR}/src/ROOTBranches.cpp
+  ${PROJECT_SOURCE_DIR}/src/core/Kinematics.cpp
+  ${PROJECT_SOURCE_DIR}/src/post/Cuts.cpp
+  ${PROJECT_SOURCE_DIR}/src/core/ROOTBranches.cpp
 )
 
 # Generate and compile the ROOT dictionary exactly once.
-set(ROOTBRANCHES_HEADERS ${PROJECT_SOURCE_DIR}/include/ROOTBranches.h)
+set(ROOTBRANCHES_HEADERS ${PROJECT_SOURCE_DIR}/include/core/ROOTBranches.h)
 ROOT_GENERATE_DICTIONARY(
   G__ROOTBranchesDict
   ${ROOTBRANCHES_HEADERS}
-  LINKDEF ${PROJECT_SOURCE_DIR}/include/ROOTBranchesLinkDef.h
+  LINKDEF ${PROJECT_SOURCE_DIR}/include/core/ROOTBranchesLinkDef.h
 )
 add_library(
   ROOTBranchesDictObjects OBJECT
   ${CMAKE_CURRENT_BINARY_DIR}/G__ROOTBranchesDict.cxx
 )
 set_target_properties(ROOTBranchesDictObjects PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_include_directories(ROOTBranchesDictObjects PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(
+  ROOTBranchesDictObjects PRIVATE
+  ${PROJECT_SOURCE_DIR}/include/core
+)
 
 # --- Library ---
 add_library(
@@ -80,7 +86,7 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libROOTBranchesDict_rdict.pcm DESTINAT
 # --- Executable 1: hipo2root ---
 add_executable(
   hipo2root
-  ${PROJECT_SOURCE_DIR}/src/hipo2root.cpp
+  ${PROJECT_SOURCE_DIR}/src/apps/hipo2root.cpp
   ${HIPO2ROOT_SOURCES}
   $<TARGET_OBJECTS:ROOTBranchesDictObjects>
 )
@@ -101,16 +107,16 @@ else()
   message(STATUS "QADB support disabled (QADB.h not found)")
 endif()
 
-# --- Executable 2: apply post-processing cuts ---
+# --- Executable 2: ROOT post-processing ---
 add_executable(
-  apply_cuts
-  ${PROJECT_SOURCE_DIR}/src/apply_cuts.cpp
+  post_process
+  ${PROJECT_SOURCE_DIR}/src/apps/post_process.cpp
   ${POST_PROCESSING_SOURCES}
   $<TARGET_OBJECTS:ROOTBranchesDictObjects>
 )
-target_compile_definitions(apply_cuts PRIVATE POST_PROCESSING_ONLY)
+target_compile_definitions(post_process PRIVATE POST_PROCESSING_ONLY)
 target_link_libraries(
-  apply_cuts
+  post_process
   ${ROOT_LIBRARIES}
   EG
   pthread

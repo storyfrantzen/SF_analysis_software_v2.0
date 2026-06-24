@@ -73,12 +73,12 @@ Exclusivity cuts should normally be post-processing cuts because their exact win
 
 ## Code Organization Direction
 
-The current converter keeps its small hipo-level preselection helpers inside `src/hipo2root.cpp`. Future post-processing cuts should use a separate ROOT-level module, reserving the generic `Cuts` name for that purpose, for example:
+The converter keeps its small hipo-level preselection helpers inside `src/apps/hipo2root.cpp`, with conversion support code under `src/conversion/`. ROOT-level post-processing keeps the generic `Cuts` module separate from the executable entry point, for example:
 
 ```text
-include/Cuts.h
-src/Cuts.cpp
-src/apply_cuts.cpp
+include/post/Cuts.h
+src/post/Cuts.cpp
+src/apps/post_process.cpp
 configs/post/*.json
 ```
 
@@ -87,7 +87,7 @@ That keeps the hipo reader stage independent from the analysis selection stage w
 Configuration files are grouped by stage under `configs/`:
 
 - `configs/processing/` for `hipo2root` conversion configs
-- `configs/post/` for `apply_cuts` post-processing configs
+- `configs/post/` for `post_process` post-processing configs
 
 ## Post-Processing Cut Pattern
 
@@ -112,7 +112,7 @@ DC information from photons or calorimeter information from protons.
 
 This keeps a cut like `removeCVTPhi(min, max)` reusable across channels and systematic variations. The current primitive vocabulary includes `minP`, `maxP`, `pRange`, `betaRange`, `minCalEnergy`, `firstPidInstance`, `rejectDetector` for backward compatibility, `rejectSameSectorAsRole`, `vertexDiff`, `removeCVTPhi`, `fiducial`, `minPcalEnergy`, `samplingFractionDiagonal`, and `samplingFractionSigma`. The combined `samplingFraction` operation remains available for older configs.
 
-The `apply_cuts` workflow reads `channel.particles` in order and recursively builds valid candidate combinations. This makes the topology generic enough for channels beyond eppi0. Every channel gets the generic selected-particle branches such as `selectedRoles`, `selectedIdx`, `selectedPid`, and `selectedP`, plus electron-derived DIS branches `Q2`, `nu`, and `xB` when the `electron` role is selected. Use `firstPidInstance` on that role when it must be the trigger/scattered electron, meaning the first particle with that PID in the reconstructed bank.
+The `post_process` workflow reads `channel.particles` in order and recursively builds valid candidate combinations. This makes the topology generic enough for channels beyond eppi0. Every channel gets the generic selected-particle branches such as `selectedRoles`, `selectedIdx`, `selectedPid`, and `selectedP`, plus electron-derived DIS branches `Q2`, `nu`, and `xB` when the `electron` role is selected. Use `firstPidInstance` on that role when it must be the trigger/scattered electron, meaning the first particle with that PID in the reconstructed bank.
 
 ## Proton Kinematic Corrections
 
@@ -161,7 +161,7 @@ For a first inclusive-electron SIDIS test, run:
 ./build/hipo2root \
   configs/processing/rgk/6.535/calibration/sidis_electrons_data.json \
   /path/to/hipo/files
-./build/apply_cuts \
+./build/post_process \
   configs/post/rgk/6.535/calibration/electron_sf_candidates.json \
   6.535_rgk_sidis_electrons.root
 python3 scripts/derive_sampling_fraction.py 6.535_rgk_electron_sf_candidates.root \
@@ -176,7 +176,7 @@ python3 scripts/derive_sampling_fraction.py 6.535_rgk_electron_sf_candidates.roo
 
 The energy-specific processing configs keep events with at least one reconstructed electron, apply QADB filtering, and use loose DIS cuts. The corresponding RGA calibration config is `configs/processing/rga/10.604/calibration/sidis_electrons_data.json`. The candidate post-processing configs select one FD electron, apply the appropriate DC-edge and run-group ECAL fiducials, and write explicit selected-electron branches such as `electronP`, `electronSector`, and `electronEPCAL`. They deliberately apply no sampling-fraction cuts. The derivation script then applies the minimum-PCAL and diagonal preselection before fitting the sigma band.
 
-`apply_cuts` prints progress every 1,000,000 input rows by default. Pass a third argument to change that interval, or `0` to disable progress messages.
+`post_process` prints progress every 1,000,000 input rows by default. Pass a third argument to change that interval, or `0` to disable progress messages.
 
 `hipo2root` likewise prints progress every 1,000,000 input events. Its optional
 arguments are `[max_files] [progress_events]`; use `0` for `progress_events` to
@@ -200,14 +200,14 @@ The defaults reproduce the established preselection: `E_PCAL > 0.07 GeV`, follow
 Use `--gemc` when one sector-independent MC fit should be copied to all six sectors. The output JSON contains `sector_1` through `sector_6`, each with `mu_coeffs` and `sigma_coeffs`. After deriving the file, apply all three independent SF cuts with:
 
 ```bash
-./build/apply_cuts \
+./build/post_process \
   configs/post/rgk/6.535/calibration/electron_sf_selected.json \
   6.535_rgk_sidis_electrons.root
 ```
 
 The application config resolves `sigma.paramsFile` relative to its own directory. Its electron cut list exposes `minPcalEnergy`, `samplingFractionDiagonal`, and `samplingFractionSigma` separately, so any component can be omitted for a systematic check.
 
-The output JSON also includes a `_metadata` block with the dataset tag, input file, selected electron count, per-sector counts, fit settings, and timestamp. `apply_cuts` ignores `_metadata` and reads only the sector coefficient blocks, so the same file can serve as both machine-readable parameters and a provenance record.
+The output JSON also includes a `_metadata` block with the dataset tag, input file, selected electron count, per-sector counts, fit settings, and timestamp. `post_process` ignores `_metadata` and reads only the sector coefficient blocks, so the same file can serve as both machine-readable parameters and a provenance record.
 The dataset tag and beam energy are also printed visibly on every generated plot and embedded in its PNG metadata.
 
 ## REC/GEN Matching

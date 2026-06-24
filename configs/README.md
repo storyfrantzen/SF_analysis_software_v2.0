@@ -6,12 +6,12 @@ energy:
 ```text
 configs/processing/<run-group>/<energy>/
 configs/post/<run-group>/<energy>/
-analysis/configs/<run-group>/<energy>.json
+configs/analysis/<run-group>/<energy>.json
 ```
 
 Calibration-only workflows live one level deeper in a `calibration/`
 subdirectory. No uncategorized executable configs are kept at the roots of
-`processing/`, `post/`, or `analysis/configs/`.
+`processing/`, `post/`, or `analysis/`.
 
 Processing configurations control HIPO input reduction, QADB, reconstructed
 skims, MC matching, generated-event storage, row-level PID storage filters, and
@@ -25,7 +25,7 @@ The complete RGA 10.604 GeV EPPI0 pair is:
 - `processing/rga/10.604/eppi0_mc_nonradiative.json`;
 - `post/rga/10.604/eppi0_data.json`;
 - `post/rga/10.604/eppi0_mc_nonradiative.json`;
-- `../analysis/configs/rga/10.604.json`.
+- `analysis/rga/10.604.json`.
 
 Both post-processing files deliberately carry the same particle and detector
 selection. They differ only in output name so data and MC cannot overwrite one
@@ -43,7 +43,7 @@ The active RGK 6.535 GeV files are:
 - `post/rgk/6.535/calibration/electron_sf_candidates.json`;
 - `post/rgk/6.535/calibration/electron_sf_candidates_mc.json`;
 - `post/rgk/6.535/calibration/electron_sf_selected.json`;
-- `../analysis/configs/rgk/6.535.json`.
+- `analysis/rgk/6.535.json`.
 
 RGA calibration inputs are under `processing/rga/10.604/calibration/` and
 `post/rga/10.604/calibration/`.
@@ -67,10 +67,10 @@ From the repository root:
 ./build/hipo2root configs/processing/rga/10.604/eppi0_mc_nonradiative.json \
   /path/to/rga/nonradiative/gemc
 
-./build/apply_cuts configs/post/rga/10.604/eppi0_data.json \
+./build/post_process configs/post/rga/10.604/eppi0_data.json \
   10.604_rga_eppi0_data.root
 
-./build/apply_cuts configs/post/rga/10.604/eppi0_mc_nonradiative.json \
+./build/post_process configs/post/rga/10.604/eppi0_mc_nonradiative.json \
   10.604_rga_eppi0_mc_nonradiative.root
 ```
 
@@ -94,7 +94,7 @@ First process five lexicographically sorted Fall 2018 torus +1 data files:
   /cache/clas12/rg-a/production/recon/fall2018/torus+1/pass2/train/nSidis/ \
   5 100000
 
-./build/apply_cuts \
+./build/post_process \
   configs/post/rga/10.604/calibration/electron_sf_candidates.json \
   10.604_rga_sidis_electrons.root
 
@@ -115,7 +115,7 @@ fit copied to all six sectors:
   /cache/clas12/rg-a/production/montecarlo/clasdis_pass2/fa18_out/clasdis_rga_fa18_out_50nA_10604MeV-0000.hipo \
   1 100000
 
-./build/apply_cuts \
+./build/post_process \
   configs/post/rga/10.604/calibration/electron_sf_candidates_mc.json \
   10.604_rga_gemc_sidis_electrons.root
 
@@ -149,7 +149,7 @@ for run in 11221 11222 11223; do
   ./build/hipo2root configs/processing/rgk/6.535/aao_rad_q2_0.7_ep_1.00.json \
     /volatile/clas12/osg/storyf/${run} 5 100000
   mv 6.535_rgk_aao_rad_q2_0.7_ep_1.00.root aao_rad_${run}.root
-  ./build/apply_cuts configs/post/rgk/6.535/aao_rad_eppi0_loose.json \
+  ./build/post_process configs/post/rgk/6.535/aao_rad_eppi0_loose.json \
     aao_rad_${run}.root 100000
   mv 6.535_rgk_aao_rad_eppi0_loose_selected.root aao_rad_${run}_selected.root
 done
@@ -168,7 +168,7 @@ for run in 11224 11225 11238; do
   ./build/hipo2root configs/processing/rgk/6.535/aao_rad_q2_0.9_ep_1.15.json \
     /volatile/clas12/osg/storyf/${run} 5 100000
   mv 6.535_rgk_aao_rad_q2_0.9_ep_1.15.root aao_rad_${run}.root
-  ./build/apply_cuts configs/post/rgk/6.535/aao_rad_eppi0_loose.json \
+  ./build/post_process configs/post/rgk/6.535/aao_rad_eppi0_loose.json \
     aao_rad_${run}.root 100000
   mv 6.535_rgk_aao_rad_eppi0_loose_selected.root aao_rad_${run}_selected.root
 done
@@ -211,7 +211,7 @@ For GEMC sampling fraction:
   /path/to/reconstructed/6.535/clasdis_pass2.hipo \
   1 100000
 
-./build/apply_cuts \
+./build/post_process \
   configs/post/rgk/6.535/calibration/electron_sf_candidates_mc.json \
   6.535_rgk_gemc_sidis_electrons.root
 

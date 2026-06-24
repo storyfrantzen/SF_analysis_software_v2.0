@@ -66,7 +66,7 @@ def parse_args() -> argparse.Namespace:
         description="Join all generated EPPI0 events to selected reconstructed candidates."
     )
     parser.add_argument("matched_root", type=Path, help="Converter ROOT file")
-    parser.add_argument("selected_root", type=Path, help="Output from apply_cuts")
+    parser.add_argument("selected_root", type=Path, help="Output from post_process")
     parser.add_argument("output", type=Path, help="Compact event-level .npz output")
     parser.add_argument("--beam-energy", type=float,
                         help="Required only for legacy particle-level GEN input")

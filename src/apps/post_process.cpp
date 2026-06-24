@@ -554,7 +554,7 @@ bool processEvent(const EventRows& rows,
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::cerr << "Usage: apply_cuts <post_config.json> <input.root> [progress_rows]\n";
+        std::cerr << "Usage: post_process <post_config.json> <input.root> [progress_rows]\n";
         return 1;
     }
 

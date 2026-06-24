@@ -20,7 +20,7 @@ See `docs/jlab-module-setup.csh` for the JLab environment setup.
 
 ```bash
 hipo2root <config.json> <hipo_file_or_directory> [max_files] [progress_events]
-apply_cuts <post_config.json> <input.root> [progress_rows]
+post_process <post_config.json> <input.root> [progress_rows]
 ```
 
 Processing configs live in `configs/processing/<run-group>/<energy>/`, so an
@@ -33,7 +33,7 @@ RGA data run looks like:
 Production configurations are organized by run group and energy. The complete
 RGA 10.604 GeV EPPI0 data/nonradiative-MC set lives under
 `configs/{processing,post}/rga/10.604/`, with its numerical analysis settings at
-`analysis/configs/rga/10.604.json`. See `configs/README.md` for the layout.
+`configs/analysis/rga/10.604.json`. See `configs/README.md` for the layout.
 
 The RGA EPPI0 configuration accepts FD or CD protons, applies the calibrated
 FD/CD proton energy-loss corrections during conversion, and applies the RGA
@@ -98,7 +98,7 @@ particle rows should be written. For example, proton energy-loss calibration
 configs require events with at least one reconstructed proton and set
 `outputPids: [2212]` so the ROOT tree stores only proton rows.
 
-`apply_cuts` performs ROOT post-processing. The initial module builds one EPPI0 candidate per event and applies configurable fiducial, sampling-fraction, topology, and loose exclusivity cuts. Post-processing configs are grouped by run group and energy, for example `configs/post/rga/10.604/eppi0_data.json`.
+`post_process` performs ROOT post-processing. The initial module builds one EPPI0 candidate per event and applies configurable fiducial, sampling-fraction, topology, and loose exclusivity cuts. Post-processing configs are grouped by run group and energy, for example `configs/post/rga/10.604/eppi0_data.json`.
 
 ## Acceptance and cross-section analysis
 
@@ -109,7 +109,7 @@ export adapters additionally require PyROOT and the project ROOT dictionary.
 The compact MC flow is:
 
 1. Convert MC with the energy-matched `eppi0_mc*.json` processing config.
-2. Run `apply_cuts` to create one selected REC candidate per accepted event.
+2. Run `post_process` to create one selected REC candidate per accepted event.
 3. Run `analysis/build_event_sample.py` to left-join selected REC candidates
    onto every valid generated event.
 4. Export selected data with `analysis/export_selected_data.py`.
@@ -128,13 +128,16 @@ See `docs/analysis_pipeline.md` for the recommended modular layout.
 
 ## Repository layout
 
-- `src/` - converter source files
-- `include/` - project headers and ROOT dictionary LinkDef
+- `src/apps/` - executable entry points
+- `src/core/`, `include/core/` - shared ROOT branch schema and kinematics helpers
+- `src/conversion/`, `include/conversion/` - HIPO-to-ROOT conversion support
+- `src/post/`, `include/post/` - ROOT post-processing cuts and candidate selection
 - `scripts/` - calibration and analysis helper scripts
 - `analysis/` - event-sample adapters and the maintained EPPI0 numerical pipeline
 - `vendor/` - vendored header-only dependencies
 - `configs/processing/` - hipo-to-ROOT conversion configs
 - `configs/post/` - ROOT post-processing configs
+- `configs/analysis/` - numerical analysis configs
 - `docs/` - design notes and setup references
 - `data/` - local input/output data products, ignored by git
 - `build/`, `work-build/`, `cmake-build-*` - local CMake build trees, ignored by git

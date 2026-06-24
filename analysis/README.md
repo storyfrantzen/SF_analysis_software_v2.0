@@ -56,21 +56,21 @@ python3 -m unittest discover -s analysis/tests -v
 ```
 
 For the RGA 10.604 GeV workflow, use
-`analysis/configs/rga/10.604.json` together with the matching processing and
+`configs/analysis/rga/10.604.json` together with the matching processing and
 post-processing files under `configs/*/rga/10.604/`.
 
 The four numerical stages are exposed through one command:
 
 ```bash
 python3 analysis/run_analysis.py response mc_events.npz \
-  --config analysis/configs/rgk/6.535.json --output-dir results/response
+  --config configs/analysis/rgk/6.535.json --output-dir results/response
 
 python3 analysis/run_analysis.py unfold data_events.npz \
   results/response/response_matrix.npz results/response/response_meta.npz \
-  --config analysis/configs/rgk/6.535.json --output results/unfolding.npz
+  --config configs/analysis/rgk/6.535.json --output results/unfolding.npz
 
 python3 analysis/run_analysis.py cross-section results/unfolding.npz \
-  --config analysis/configs/rgk/6.535.json --output results/cross_section.npz
+  --config configs/analysis/rgk/6.535.json --output results/cross_section.npz
 
 python3 analysis/run_analysis.py fit-harmonics results/cross_section.npz \
   --output results/harmonics.npz
@@ -83,7 +83,7 @@ selected ROOT files:
 ```bash
 python3 analysis/run_analysis.py response-root \
   6.535_rgk_eppi0_mc_acceptance.root selected_mc.root \
-  --config analysis/configs/rgk/6.535.json --output-dir results/response \
+  --config configs/analysis/rgk/6.535.json --output-dir results/response \
   --dictionary build/libROOTBranchesDict.dylib
 ```
 
@@ -119,11 +119,11 @@ Derive nominal data and GEMC windows independently:
 
 ```bash
 python3 analysis/derive_exclusivity.py data_events.npz \
-  --config analysis/configs/rgk/6.535.json \
+  --config configs/analysis/rgk/6.535.json \
   --cuts results/data_exclusivity.npz --mask results/data_exclusivity.npy
 
 python3 analysis/derive_exclusivity.py mc_events.npz \
-  --config analysis/configs/rgk/6.535.json \
+  --config configs/analysis/rgk/6.535.json \
   --cuts results/gemc_exclusivity.npz --mask results/gemc_exclusivity.npy
 ```
 
@@ -137,7 +137,7 @@ selected-candidate ROOT file instead of reading the dense generated-event NPZ:
 ```bash
 python3 analysis/derive_exclusivity.py selected_mc.root \
   --format selected-root --dictionary build/libROOTBranchesDict.so \
-  --config analysis/configs/rgk/6.535.json \
+  --config configs/analysis/rgk/6.535.json \
   --cuts results/gemc_exclusivity.npz --mask results/gemc_selected_exclusivity.npy
 ```
 
