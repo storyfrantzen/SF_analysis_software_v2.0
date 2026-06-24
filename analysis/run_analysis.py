@@ -367,7 +367,7 @@ def command_cross_section(args: argparse.Namespace) -> None:
         flux_q2_mean=q2_means,
         flux_xb_mean=xb_means,
         bin_volume=binning.unflatten(volumes),
-        reduced_cross_section_units="nb/(GeV^4 rad)",
+        reduced_cross_section_units="nb/(GeV^2 rad)",
         luminosity_fb=luminosity,
         global_normalization=args.global_normalization,
         q2_edges=binning.q2_edges,
@@ -451,7 +451,7 @@ def command_cross_section_plots(args: argparse.Namespace) -> None:
     harmonics = np.load(args.harmonics, allow_pickle=False)
     values = np.asarray(cross_section["reduced_cross_section"], dtype=float)
     uncertainties = np.asarray(cross_section["uncertainty"], dtype=float)
-    units = _npz_string(cross_section, "reduced_cross_section_units", "nb/(GeV^4 rad)")
+    units = _npz_string(cross_section, "reduced_cross_section_units", "nb/(GeV^2 rad)")
     phi_edges = np.asarray(cross_section["phi_edges"], dtype=float)
     parameters = np.asarray(harmonics["parameters"], dtype=float)
     chi2_ndf = np.asarray(harmonics["chi2_ndf"], dtype=float)
@@ -921,8 +921,16 @@ def _plot_cross_section_vs_phi(
                         linewidth=1.0,
                         label="reduced cross section",
                     )
-                    ax.plot(phi_curve, fit_curve, color="#d95f02", linewidth=1.7,
-                            label="A + B cos(phi) + C cos(2phi)")
+                    ax.plot(
+                        phi_curve,
+                        fit_curve,
+                        color="#d95f02",
+                        linewidth=1.7,
+                        label=(
+                            "fit: A + B cos(phi) + C cos(2phi)\n"
+                            f"A={p[0]:.4g}, B={p[1]:.4g}, C={p[2]:.4g}"
+                        ),
+                    )
                     ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
                     ax.set_xlabel("phi [deg]")
                     ax.set_ylabel(f"Reduced cross section [{units}]")
