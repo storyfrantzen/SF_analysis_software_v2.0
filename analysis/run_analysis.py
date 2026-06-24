@@ -94,7 +94,7 @@ def parser() -> argparse.ArgumentParser:
     harmonic_plots.add_argument(
         "--quilt",
         action="store_true",
-        help="Also write constant--t quilt pages with Q2 rows, xB columns, and harmonic components vs phi",
+        help="Append a stitched Q2-by-xB quilt of A, B, and C vs -t to the coefficient PDF",
     )
 
     xsec_plots = commands.add_parser("cross-section-plots", help="Plot reduced cross section vs phi with harmonic fits")
@@ -445,22 +445,10 @@ def command_harmonic_plots(args: argparse.Namespace) -> None:
         names,
         args.output_dir / "harmonic_coefficients_vs_t.pdf",
         args.output_dir / "harmonic_coefficients_summary.csv",
+        include_quilt=args.quilt,
     )
-    quilt_pages = 0
-    if args.quilt:
-        quilt_pages = _plot_harmonic_quilt(
-            parameters,
-            fit_mask,
-            q2_edges,
-            xb_edges,
-            t_edges,
-            names,
-            args.output_dir / "harmonic_quilt_by_t.pdf",
-        )
     print(f"Successful fits: {int(fit_mask.sum())}")
     print(f"Coefficient pages: {pages}")
-    if args.quilt:
-        print(f"Quilt pages: {quilt_pages}")
     print(f"Wrote harmonic plots under {args.output_dir}")
 
 
@@ -778,6 +766,7 @@ def _plot_harmonic_coefficients_vs_t(
     names: tuple[str, ...],
     pdf_path: Path,
     csv_path: Path,
+    include_quilt: bool = False,
 ) -> int:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
@@ -793,6 +782,18 @@ def _plot_harmonic_coefficients_vs_t(
     ]
 
     with PdfPages(pdf_path) as pdf:
+        if include_quilt:
+            pages += _plot_harmonic_coefficient_quilt_vs_t(
+                pdf,
+                parameters,
+                coeff_errors,
+                fit_mask,
+                q2_edges,
+                xb_edges,
+                t_edges,
+                names,
+                colors,
+            )
         for iq2 in range(parameters.shape[0]):
             for ixb in range(parameters.shape[1]):
                 mask = fit_mask[iq2, ixb, :]
@@ -864,106 +865,101 @@ def _plot_harmonic_coefficients_vs_t(
     return pages
 
 
-def _plot_harmonic_quilt(
+def _plot_harmonic_coefficient_quilt_vs_t(
+    pdf,
     parameters: np.ndarray,
+    coeff_errors: np.ndarray,
     fit_mask: np.ndarray,
     q2_edges: np.ndarray,
     xb_edges: np.ndarray,
     t_edges: np.ndarray,
     names: tuple[str, ...],
-    pdf_path: Path,
+    colors: tuple[str, str, str],
 ) -> int:
     import matplotlib.pyplot as plt
-    from matplotlib.backends.backend_pdf import PdfPages
 
-    colors = ("#1b9e77", "#d95f02", "#7570b3")
-    phi = np.linspace(0.0, 360.0, 181)
-    radians = np.deg2rad(phi)
-    pages = 0
     nq2, nxb, nt = parameters.shape[:3]
+    if not np.any(fit_mask):
+        return 0
+
+    t_centers = 0.5 * (t_edges[:-1] + t_edges[1:])
     q2_labels = _edge_labels(q2_edges)
     xb_labels = _edge_labels(xb_edges)
+    visible_values = []
+    for coeff_index in range(3):
+        values = np.where(fit_mask, parameters[..., coeff_index], np.nan)
+        errors = np.where(fit_mask, coeff_errors[..., coeff_index], np.nan)
+        visible_values.extend((values - errors, values + errors))
+    finite_values = np.concatenate([item[np.isfinite(item)].ravel() for item in visible_values])
+    if finite_values.size:
+        low = float(np.nanmin(finite_values))
+        high = float(np.nanmax(finite_values))
+        padding = 0.08 * max(high - low, abs(high), abs(low), 1.0)
+        ylim = (low - padding, high + padding)
+    else:
+        ylim = (-1.0, 1.0)
 
-    with PdfPages(pdf_path) as pdf:
-        for it in range(nt):
-            if not np.any(fit_mask[:, :, it]):
-                continue
-            fig, axes = plt.subplots(
-                nq2,
-                nxb,
-                figsize=(max(9.0, 1.75 * nxb), max(7.0, 1.35 * nq2)),
-                sharex=True,
-                sharey=True,
-                squeeze=False,
-            )
-            component_max = 0.0
-            for iq2 in range(nq2):
-                for ixb in range(nxb):
-                    if not fit_mask[iq2, ixb, it]:
-                        continue
-                    a, b, c = parameters[iq2, ixb, it, :]
-                    curves = np.vstack(
-                        [
-                            np.full_like(phi, a),
-                            b * np.cos(radians),
-                            c * np.cos(2.0 * radians),
-                            a + b * np.cos(radians) + c * np.cos(2.0 * radians),
-                        ]
+    fig, axes = plt.subplots(
+        nq2,
+        nxb,
+        figsize=(max(9.0, 1.65 * nxb), max(7.0, 1.2 * nq2)),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
+    for iq2 in range(nq2):
+        for ixb in range(nxb):
+            ax = axes[nq2 - 1 - iq2, ixb]
+            ax.axhline(0.0, color="black", linewidth=0.45, alpha=0.35)
+            ax.set_xlim(float(t_edges[0]), float(t_edges[-1]))
+            ax.set_ylim(*ylim)
+            ax.grid(True, alpha=0.16, linewidth=0.45)
+            mask = fit_mask[iq2, ixb, :]
+            if np.any(mask):
+                for coeff_index in range(3):
+                    ax.errorbar(
+                        t_centers[mask],
+                        parameters[iq2, ixb, mask, coeff_index],
+                        yerr=coeff_errors[iq2, ixb, mask, coeff_index],
+                        fmt="o-",
+                        capsize=1.0,
+                        linewidth=0.75,
+                        markersize=2.4,
+                        color=colors[coeff_index],
                     )
-                    finite = np.isfinite(curves)
-                    if np.any(finite):
-                        component_max = max(component_max, float(np.nanmax(np.abs(curves[finite]))))
+            else:
+                ax.set_facecolor("#f2f2f2")
+            ax.tick_params(axis="both", labelsize=6, length=2)
+            if iq2 == 0:
+                ax.set_xlabel("-t [GeV^2]", fontsize=7)
+            if ixb == 0:
+                ax.set_ylabel(f"Q2 {q2_labels[iq2]}", fontsize=7)
+            if iq2 == nq2 - 1:
+                ax.set_title(f"xB {xb_labels[ixb]}", fontsize=7)
 
-            ylim = component_max * 1.08 if component_max > 0.0 else 1.0
-            for iq2 in range(nq2):
-                for ixb in range(nxb):
-                    ax = axes[nq2 - 1 - iq2, ixb]
-                    ax.axhline(0.0, color="black", linewidth=0.5, alpha=0.35)
-                    ax.set_xlim(0.0, 360.0)
-                    ax.set_ylim(-ylim, ylim)
-                    ax.grid(True, alpha=0.18, linewidth=0.5)
-                    if fit_mask[iq2, ixb, it]:
-                        a, b, c = parameters[iq2, ixb, it, :]
-                        ax.plot(phi, np.full_like(phi, a), color=colors[0], linewidth=1.0)
-                        ax.plot(phi, b * np.cos(radians), color=colors[1], linewidth=1.0)
-                        ax.plot(phi, c * np.cos(2.0 * radians), color=colors[2], linewidth=1.0)
-                        ax.plot(
-                            phi,
-                            a + b * np.cos(radians) + c * np.cos(2.0 * radians),
-                            color="#333333",
-                            linewidth=0.9,
-                            alpha=0.7,
-                            linestyle="--",
-                        )
-                    else:
-                        ax.set_facecolor("#f2f2f2")
-                    if iq2 == 0:
-                        ax.set_xlabel("phi [deg]")
-                    if ixb == 0:
-                        ax.set_ylabel(f"Q2 {q2_labels[iq2]}")
-                    if iq2 == nq2 - 1:
-                        ax.set_title(f"xB {xb_labels[ixb]}", fontsize="small")
-
-            handles = [
-                plt.Line2D([0], [0], color=colors[0], linewidth=1.4, label=names[0] if len(names) > 0 else "A"),
-                plt.Line2D([0], [0], color=colors[1], linewidth=1.4, label=f"{names[1] if len(names) > 1 else 'B'} cos(phi)"),
-                plt.Line2D([0], [0], color=colors[2], linewidth=1.4, label=f"{names[2] if len(names) > 2 else 'C'} cos(2phi)"),
-                plt.Line2D([0], [0], color="#333333", linewidth=1.2, linestyle="--", label="sum"),
-            ]
-            fig.legend(handles=handles, loc="upper center", ncol=4, fontsize="small")
-            fig.suptitle(
-                "Harmonic component quilt at fixed -t\n"
-                f"-t {t_edges[it]:g}-{t_edges[it + 1]:g} GeV^2",
-                y=0.985,
-            )
-            fig.supxlabel("xB increases left to right")
-            fig.supylabel("Q2 increases bottom to top; component value [nb/(GeV^2 rad)]")
-            fig.tight_layout(rect=(0.02, 0.03, 0.995, 0.94))
-            pdf.savefig(fig)
-            plt.close(fig)
-            pages += 1
-
-    return pages
+    handles = [
+        plt.Line2D(
+            [0],
+            [0],
+            color=colors[index],
+            marker="o",
+            linewidth=1.2,
+            markersize=3,
+            label=names[index] if index < len(names) else f"p{index}",
+        )
+        for index in range(3)
+    ]
+    fig.legend(handles=handles, loc="upper center", ncol=3, fontsize="small")
+    fig.suptitle(
+        "Harmonic coefficients vs -t quilt\n"
+        "Q2 increases bottom to top; xB increases left to right",
+        y=0.985,
+    )
+    fig.supylabel("Harmonic coefficient [nb/(GeV^2 rad)]")
+    fig.tight_layout(rect=(0.02, 0.03, 0.995, 0.94))
+    pdf.savefig(fig)
+    plt.close(fig)
+    return 1
 
 
 def _plot_cross_section_vs_phi(
