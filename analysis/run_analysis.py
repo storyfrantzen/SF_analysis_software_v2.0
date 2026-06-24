@@ -82,6 +82,12 @@ def parser() -> argparse.ArgumentParser:
     acceptance.add_argument("response_meta", type=Path)
     acceptance.add_argument("--output-dir", type=Path, required=True)
     acceptance.add_argument("--minimum-acceptance", type=float, default=0.005)
+    acceptance.add_argument(
+        "--phi-min-passing-bins",
+        type=int,
+        default=1,
+        help="Minimum number of above-threshold phi bins required to include a 3D bin in the phi PDF",
+    )
     return root
 
 
@@ -455,11 +461,24 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
         _pass_fraction(populated, passing, axes=(0, 3)),
         args.output_dir / "acceptance_pass_fraction_xb_t.png",
     )
+    phi_pages = _plot_acceptance_vs_phi(
+        eff4,
+        truth4,
+        q2_edges,
+        xb_edges,
+        t_edges,
+        phi_edges,
+        args.minimum_acceptance,
+        args.phi_min_passing_bins,
+        args.output_dir / "acceptance_vs_phi_by_3d_bin.pdf",
+        args.output_dir / "acceptance_vs_phi_by_3d_bin.csv",
+    )
 
     print(f"Truth-populated bins: {int(populated.sum())}")
     print(f"Zero-acceptance bins: {int(zero.sum())}")
     print(f"Positive sub-threshold bins: {int(low.sum())}")
     print(f"Passing bins: {int(passing.sum())}")
+    print(f"3D phi pages: {phi_pages}")
     print(f"Wrote acceptance plots under {args.output_dir}")
 
 
@@ -571,6 +590,109 @@ def _plot_pass_fraction_map(
     fig.tight_layout()
     fig.savefig(output, dpi=200)
     plt.close(fig)
+
+
+def _plot_acceptance_vs_phi(
+    efficiency: np.ndarray,
+    truth: np.ndarray,
+    q2_edges: np.ndarray,
+    xb_edges: np.ndarray,
+    t_edges: np.ndarray,
+    phi_edges: np.ndarray,
+    minimum_acceptance: float,
+    min_passing_bins: int,
+    pdf_path: Path,
+    csv_path: Path,
+) -> int:
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    phi_centers = 0.5 * (phi_edges[:-1] + phi_edges[1:])
+    pages = 0
+    csv_lines = [
+        "iq2,q2_low,q2_high,ixb,xb_low,xb_high,it,t_low,t_high,"
+        "truth_phi_bins,passing_phi_bins,zero_phi_bins,low_phi_bins,"
+        "truth_sum,rec_sum,mean_positive_acceptance,max_acceptance"
+    ]
+
+    with PdfPages(pdf_path) as pdf:
+        for iq2 in range(efficiency.shape[0]):
+            for ixb in range(efficiency.shape[1]):
+                for it in range(efficiency.shape[2]):
+                    eff_phi = efficiency[iq2, ixb, it, :]
+                    truth_phi = truth[iq2, ixb, it, :]
+                    populated = truth_phi > 0
+                    passing = populated & (eff_phi >= minimum_acceptance)
+                    if np.count_nonzero(passing) < min_passing_bins:
+                        continue
+
+                    zero = populated & (eff_phi == 0)
+                    low = populated & (eff_phi > 0) & (eff_phi < minimum_acceptance)
+                    positive = populated & (eff_phi > 0)
+                    rec_phi = eff_phi * truth_phi
+
+                    csv_lines.append(
+                        ",".join(
+                            str(item)
+                            for item in (
+                                iq2,
+                                q2_edges[iq2],
+                                q2_edges[iq2 + 1],
+                                ixb,
+                                xb_edges[ixb],
+                                xb_edges[ixb + 1],
+                                it,
+                                t_edges[it],
+                                t_edges[it + 1],
+                                int(populated.sum()),
+                                int(passing.sum()),
+                                int(zero.sum()),
+                                int(low.sum()),
+                                float(truth_phi[populated].sum()),
+                                float(rec_phi[populated].sum()),
+                                float(np.nanmean(eff_phi[positive])) if np.any(positive) else np.nan,
+                                float(np.nanmax(eff_phi[populated])) if np.any(populated) else np.nan,
+                            )
+                        )
+                    )
+
+                    fig, ax = plt.subplots(figsize=(8, 5))
+                    if np.any(zero):
+                        ax.scatter(phi_centers[zero], eff_phi[zero], color="#9aa0a6",
+                                   label="zero", zorder=3)
+                    if np.any(low):
+                        ax.scatter(phi_centers[low], eff_phi[low], color="#d95f02",
+                                   label="positive < threshold", zorder=4)
+                    ax.scatter(phi_centers[passing], eff_phi[passing], color="#1b9e77",
+                               label=">= threshold", zorder=5)
+                    ax.plot(phi_centers[populated], eff_phi[populated],
+                            color="#4c78a8", linewidth=1.0, alpha=0.7)
+                    ax.axhline(
+                        minimum_acceptance,
+                        color="red",
+                        linestyle="--",
+                        linewidth=1.2,
+                        label=f"threshold = {minimum_acceptance:g}",
+                    )
+                    ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
+                    ax.set_ylim(bottom=0.0)
+                    ax.set_xlabel("phi bin center [deg]")
+                    ax.set_ylabel("Acceptance / efficiency")
+                    ax.set_title(
+                        "Acceptance vs phi\n"
+                        f"Q2 {q2_edges[iq2]:g}-{q2_edges[iq2 + 1]:g}, "
+                        f"xB {xb_edges[ixb]:g}-{xb_edges[ixb + 1]:g}, "
+                        f"-t {t_edges[it]:g}-{t_edges[it + 1]:g}"
+                    )
+                    ax.grid(True, alpha=0.25)
+                    ax.legend(loc="best", fontsize="small")
+                    fig.tight_layout()
+                    pdf.savefig(fig)
+                    plt.close(fig)
+                    pages += 1
+
+    csv_path.write_text("\n".join(csv_lines) + "\n", encoding="utf-8")
+    return pages
 
 
 def main() -> int:
