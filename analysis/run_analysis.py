@@ -26,6 +26,15 @@ from eppi0.harmonics import fit_grid
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes, subtract_feed_in
 
 
+def _npz_string(data, key: str, default: str) -> str:
+    if key not in data.files:
+        return default
+    value = np.asarray(data[key])
+    if value.shape == ():
+        return str(value.item())
+    return str(value)
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description="Efficient EPPI0 response, unfolding, and cross-section pipeline")
     commands = root.add_subparsers(dest="command", required=True)
@@ -358,6 +367,7 @@ def command_cross_section(args: argparse.Namespace) -> None:
         flux_q2_mean=q2_means,
         flux_xb_mean=xb_means,
         bin_volume=binning.unflatten(volumes),
+        reduced_cross_section_units="nb/(GeV^4 rad)",
         luminosity_fb=luminosity,
         global_normalization=args.global_normalization,
         q2_edges=binning.q2_edges,
@@ -441,6 +451,7 @@ def command_cross_section_plots(args: argparse.Namespace) -> None:
     harmonics = np.load(args.harmonics, allow_pickle=False)
     values = np.asarray(cross_section["reduced_cross_section"], dtype=float)
     uncertainties = np.asarray(cross_section["uncertainty"], dtype=float)
+    units = _npz_string(cross_section, "reduced_cross_section_units", "nb/(GeV^4 rad)")
     phi_edges = np.asarray(cross_section["phi_edges"], dtype=float)
     parameters = np.asarray(harmonics["parameters"], dtype=float)
     chi2_ndf = np.asarray(harmonics["chi2_ndf"], dtype=float)
@@ -460,6 +471,7 @@ def command_cross_section_plots(args: argparse.Namespace) -> None:
     pages = _plot_cross_section_vs_phi(
         values,
         uncertainties,
+        units,
         phi_edges,
         parameters,
         chi2_ndf,
@@ -833,6 +845,7 @@ def _plot_harmonic_coefficients_vs_t(
 def _plot_cross_section_vs_phi(
     values: np.ndarray,
     uncertainties: np.ndarray,
+    units: str,
     phi_edges: np.ndarray,
     parameters: np.ndarray,
     chi2_ndf: np.ndarray,
@@ -912,7 +925,7 @@ def _plot_cross_section_vs_phi(
                             label="A + B cos(phi) + C cos(2phi)")
                     ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
                     ax.set_xlabel("phi [deg]")
-                    ax.set_ylabel("Reduced cross section")
+                    ax.set_ylabel(f"Reduced cross section [{units}]")
                     ax.set_title(
                         "Reduced cross section vs phi\n"
                         f"Q2 {q2_edges[iq2]:g}-{q2_edges[iq2 + 1]:g}, "
