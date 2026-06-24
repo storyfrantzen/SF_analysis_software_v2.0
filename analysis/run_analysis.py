@@ -91,6 +91,11 @@ def parser() -> argparse.ArgumentParser:
     harmonic_plots.add_argument("harmonics", type=Path)
     harmonic_plots.add_argument("--output-dir", type=Path, required=True)
     harmonic_plots.add_argument("--min-points", type=int, default=4)
+    harmonic_plots.add_argument(
+        "--quilt",
+        action="store_true",
+        help="Also write constant--t quilt pages with Q2 rows, xB columns, and harmonic components vs phi",
+    )
 
     xsec_plots = commands.add_parser("cross-section-plots", help="Plot reduced cross section vs phi with harmonic fits")
     xsec_plots.add_argument("cross_section", type=Path)
@@ -441,8 +446,21 @@ def command_harmonic_plots(args: argparse.Namespace) -> None:
         args.output_dir / "harmonic_coefficients_vs_t.pdf",
         args.output_dir / "harmonic_coefficients_summary.csv",
     )
+    quilt_pages = 0
+    if args.quilt:
+        quilt_pages = _plot_harmonic_quilt(
+            parameters,
+            fit_mask,
+            q2_edges,
+            xb_edges,
+            t_edges,
+            names,
+            args.output_dir / "harmonic_quilt_by_t.pdf",
+        )
     print(f"Successful fits: {int(fit_mask.sum())}")
     print(f"Coefficient pages: {pages}")
+    if args.quilt:
+        print(f"Quilt pages: {quilt_pages}")
     print(f"Wrote harmonic plots under {args.output_dir}")
 
 
@@ -764,6 +782,7 @@ def _plot_harmonic_coefficients_vs_t(
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
 
+    colors = ("#1b9e77", "#d95f02", "#7570b3")
     t_centers = 0.5 * (t_edges[:-1] + t_edges[1:])
     errors = np.sqrt(np.where(covariance >= 0.0, covariance, np.nan))
     coeff_errors = np.stack([errors[..., i, i] for i in range(3)], axis=-1)
@@ -779,8 +798,8 @@ def _plot_harmonic_coefficients_vs_t(
                 mask = fit_mask[iq2, ixb, :]
                 if not np.any(mask):
                     continue
-                fig, axes = plt.subplots(3, 1, figsize=(8, 9), sharex=True)
-                for coeff_index, ax in enumerate(axes):
+                fig, ax = plt.subplots(figsize=(8, 5))
+                for coeff_index in range(3):
                     y = parameters[iq2, ixb, :, coeff_index]
                     yerr = coeff_errors[iq2, ixb, :, coeff_index]
                     ax.errorbar(
@@ -791,17 +810,20 @@ def _plot_harmonic_coefficients_vs_t(
                         capsize=2,
                         linewidth=1.0,
                         markersize=4,
+                        color=colors[coeff_index],
+                        label=names[coeff_index] if coeff_index < len(names) else f"p{coeff_index}",
                     )
-                    ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.5)
-                    ax.set_ylabel(names[coeff_index] if coeff_index < len(names) else f"p{coeff_index}")
-                    ax.grid(True, alpha=0.25)
-                axes[-1].set_xlabel("-t bin center [GeV^2]")
-                fig.suptitle(
+                ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.5)
+                ax.set_xlabel("-t bin center [GeV^2]")
+                ax.set_ylabel("Harmonic coefficient [nb/(GeV^2 rad)]")
+                ax.set_title(
                     "Harmonic coefficients vs -t\n"
                     f"Q2 {q2_edges[iq2]:g}-{q2_edges[iq2 + 1]:g}, "
                     f"xB {xb_edges[ixb]:g}-{xb_edges[ixb + 1]:g}"
                 )
-                fig.tight_layout(rect=(0, 0, 1, 0.95))
+                ax.grid(True, alpha=0.25)
+                ax.legend(loc="best", fontsize="small")
+                fig.tight_layout()
                 pdf.savefig(fig)
                 plt.close(fig)
                 pages += 1
@@ -839,6 +861,108 @@ def _plot_harmonic_coefficients_vs_t(
                     )
 
     csv_path.write_text("\n".join(csv_lines) + "\n", encoding="utf-8")
+    return pages
+
+
+def _plot_harmonic_quilt(
+    parameters: np.ndarray,
+    fit_mask: np.ndarray,
+    q2_edges: np.ndarray,
+    xb_edges: np.ndarray,
+    t_edges: np.ndarray,
+    names: tuple[str, ...],
+    pdf_path: Path,
+) -> int:
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    colors = ("#1b9e77", "#d95f02", "#7570b3")
+    phi = np.linspace(0.0, 360.0, 181)
+    radians = np.deg2rad(phi)
+    pages = 0
+    nq2, nxb, nt = parameters.shape[:3]
+    q2_labels = _edge_labels(q2_edges)
+    xb_labels = _edge_labels(xb_edges)
+
+    with PdfPages(pdf_path) as pdf:
+        for it in range(nt):
+            if not np.any(fit_mask[:, :, it]):
+                continue
+            fig, axes = plt.subplots(
+                nq2,
+                nxb,
+                figsize=(max(9.0, 1.75 * nxb), max(7.0, 1.35 * nq2)),
+                sharex=True,
+                sharey=True,
+                squeeze=False,
+            )
+            component_max = 0.0
+            for iq2 in range(nq2):
+                for ixb in range(nxb):
+                    if not fit_mask[iq2, ixb, it]:
+                        continue
+                    a, b, c = parameters[iq2, ixb, it, :]
+                    curves = np.vstack(
+                        [
+                            np.full_like(phi, a),
+                            b * np.cos(radians),
+                            c * np.cos(2.0 * radians),
+                            a + b * np.cos(radians) + c * np.cos(2.0 * radians),
+                        ]
+                    )
+                    finite = np.isfinite(curves)
+                    if np.any(finite):
+                        component_max = max(component_max, float(np.nanmax(np.abs(curves[finite]))))
+
+            ylim = component_max * 1.08 if component_max > 0.0 else 1.0
+            for iq2 in range(nq2):
+                for ixb in range(nxb):
+                    ax = axes[nq2 - 1 - iq2, ixb]
+                    ax.axhline(0.0, color="black", linewidth=0.5, alpha=0.35)
+                    ax.set_xlim(0.0, 360.0)
+                    ax.set_ylim(-ylim, ylim)
+                    ax.grid(True, alpha=0.18, linewidth=0.5)
+                    if fit_mask[iq2, ixb, it]:
+                        a, b, c = parameters[iq2, ixb, it, :]
+                        ax.plot(phi, np.full_like(phi, a), color=colors[0], linewidth=1.0)
+                        ax.plot(phi, b * np.cos(radians), color=colors[1], linewidth=1.0)
+                        ax.plot(phi, c * np.cos(2.0 * radians), color=colors[2], linewidth=1.0)
+                        ax.plot(
+                            phi,
+                            a + b * np.cos(radians) + c * np.cos(2.0 * radians),
+                            color="#333333",
+                            linewidth=0.9,
+                            alpha=0.7,
+                            linestyle="--",
+                        )
+                    else:
+                        ax.set_facecolor("#f2f2f2")
+                    if iq2 == 0:
+                        ax.set_xlabel("phi [deg]")
+                    if ixb == 0:
+                        ax.set_ylabel(f"Q2 {q2_labels[iq2]}")
+                    if iq2 == nq2 - 1:
+                        ax.set_title(f"xB {xb_labels[ixb]}", fontsize="small")
+
+            handles = [
+                plt.Line2D([0], [0], color=colors[0], linewidth=1.4, label=names[0] if len(names) > 0 else "A"),
+                plt.Line2D([0], [0], color=colors[1], linewidth=1.4, label=f"{names[1] if len(names) > 1 else 'B'} cos(phi)"),
+                plt.Line2D([0], [0], color=colors[2], linewidth=1.4, label=f"{names[2] if len(names) > 2 else 'C'} cos(2phi)"),
+                plt.Line2D([0], [0], color="#333333", linewidth=1.2, linestyle="--", label="sum"),
+            ]
+            fig.legend(handles=handles, loc="upper center", ncol=4, fontsize="small")
+            fig.suptitle(
+                "Harmonic component quilt at fixed -t\n"
+                f"-t {t_edges[it]:g}-{t_edges[it + 1]:g} GeV^2",
+                y=0.985,
+            )
+            fig.supxlabel("xB increases left to right")
+            fig.supylabel("Q2 increases bottom to top; component value [nb/(GeV^2 rad)]")
+            fig.tight_layout(rect=(0.02, 0.03, 0.995, 0.94))
+            pdf.savefig(fig)
+            plt.close(fig)
+            pages += 1
+
     return pages
 
 
