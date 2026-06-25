@@ -13,7 +13,7 @@ from scipy.sparse import load_npz, save_npz
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from eppi0.binning import AnalysisBinning, from_config
+from eppi0.binning import from_config
 from eppi0.cross_section import (
     Target,
     integrated_luminosity_fb,
