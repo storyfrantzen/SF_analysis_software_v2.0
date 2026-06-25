@@ -36,6 +36,7 @@ The active RGK 6.535 GeV files are:
 
 - `processing/rgk/6.535/aao_rad_q2_0.7_ep_1.00.json`;
 - `processing/rgk/6.535/aao_rad_q2_0.9_ep_1.15.json`;
+- `post/rgk/6.535/eppi0_base.json`;
 - `post/rgk/6.535/aao_rad_eppi0_loose.json`;
 - `processing/rgk/6.535/eppi0_mc_acceptance.json`;
 - `processing/rgk/6.535/calibration/sidis_electrons_data.json`;
@@ -146,13 +147,17 @@ choosing which parameters belong in a physics-selection configuration.
 
 ## RGK 6.535 GeV aaoRad reconstructed-distribution comparison
 
+The RGK EPPI0 base config mirrors the RGA EPPI0 topology with RGK-specific
+detector acceptance: no detector 0 FT candidates, RGK ECAL fiducials, RGK ECAL
+edge cuts, and the same FD/CD proton treatment.
+
 The aaoRad comparison configs are intended for quick shape checks across the
 new `/volatile/clas12/osg/storyf/11221`, `11222`, `11223`, `11224`, `11225`,
 and `11238` productions. The two processing configs match the generated
 phase-space families in the filenames: `Q2 >= 0.7, electron p >= 1.00` for
 `11221` through `11223`, and `Q2 >= 0.9, electron p >= 1.15` for `11224`,
-`11225`, and `11238`. The post config applies a loose EPPI0 topology selection
-with RGK ECAL fiducials and a very low reconstructed photon momentum threshold
+`11225`, and `11238`. The post config extends the RGK EPPI0 base but keeps a
+loose photon selection with a very low reconstructed photon momentum threshold,
 so the comparison is sensitive to the generated `EG` threshold scan.
 
 Example smoke-test commands on ifarm:

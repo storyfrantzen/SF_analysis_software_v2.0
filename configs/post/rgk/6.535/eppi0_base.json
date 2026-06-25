@@ -1,6 +1,30 @@
 {
-    "extends": "eppi0_base.json",
-    "outputFile": "6.535_rgk_aao_rad_eppi0_loose_selected.root",
+    "inputTree": "Events",
+    "outputTree": "Events",
+    "beamEnergy": 6.535,
+    "torus": 1,
+    "saveFailedCandidates": false,
+
+    "fiducialCuts": [
+        "DCEdges_RGA",
+        "ECAL_RGK",
+        "ECALEdges_RGK",
+        "CVT_RGA"
+    ],
+
+    "samplingFraction": {
+        "minPcalEnergy": 0.07,
+        "diagonal": {
+            "yScale": 1.0,
+            "xScale": 1.0,
+            "threshold": 0.2,
+            "momentumThreshold": 4.5
+        },
+        "sigma": {
+            "numSigma": 3.5
+        }
+    },
+
     "channel": {
         "name": "eppi0",
         "particles": [
@@ -12,7 +36,10 @@
                 "cuts": [
                     { "name": "electron.trigger", "op": "firstPidInstance" },
                     { "name": "electron.min_p", "op": "minP", "min": 1.0 },
-                    { "name": "electron.fiducial", "op": "fiducial" }
+                    { "name": "electron.fiducial", "op": "fiducial" },
+                    { "name": "electron.min_pcal", "op": "minPcalEnergy" },
+                    { "name": "electron.sf_diagonal", "op": "samplingFractionDiagonal" },
+                    { "name": "electron.sf_sigma", "op": "samplingFractionSigma" }
                 ]
             },
             {
@@ -35,8 +62,10 @@
                 "count": 2,
                 "detectors": [1],
                 "cuts": [
-                    { "name": "gamma.min_p", "op": "minP", "min": 0.005 },
+                    { "name": "gamma.min_p", "op": "minP", "min": 0.4 },
                     { "name": "gamma.beta", "op": "betaRange", "min": 0.9, "max": 1.1 },
+                    { "name": "gamma.cal_energy", "op": "minCalEnergy", "min": 0.15 },
+                    { "name": "gamma.not_electron_sector", "op": "rejectSameSectorAsRole", "refRole": "electron" },
                     { "name": "gamma.fiducial", "op": "fiducial" }
                 ]
             }
@@ -50,5 +79,12 @@
                 "window": 0.15
             }
         ]
+    },
+
+    "exclusivity": {
+        "maxAbsMissingEnergy": 2.0,
+        "minElectronPhotonAngleDeg": 4.0,
+        "minPhotonPhotonAngleDeg": 1.0,
+        "maxPi0ConeAngleDeg": 4.0
     }
 }
