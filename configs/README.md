@@ -27,9 +27,10 @@ The complete RGA 10.604 GeV EPPI0 pair is:
 - `post/rga/10.604/eppi0_mc_nonradiative.json`;
 - `analysis/rga/10.604.json`.
 
-Both post-processing files deliberately carry the same particle and detector
-selection. They differ only in output name so data and MC cannot overwrite one
-another.
+Both post-processing files extend `post/rga/10.604/eppi0_base.json` so the
+shared particle, detector, fiducial, and loose-exclusivity selections live in
+one place. The data and MC child configs override only the output name and the
+sampling-fraction parameter file.
 
 The active RGK 6.535 GeV files are:
 
@@ -55,6 +56,18 @@ overwriting one another or the established full-statistics parameter file.
 Calibration coefficients live under `parameters/`, not in this directory.
 Relative paths in a configuration are resolved from the directory containing
 that configuration.
+
+## Post-Config Inheritance
+
+Post-processing configs may define an `extends` key that points to another JSON
+file, resolved relative to the child config. The loader expands the parent
+before parsing the normal post-processing fields. Object values merge
+recursively, while arrays and scalar values replace the parent value.
+
+Use this for data/MC pairs that intentionally share a topology and detector
+selection. For example, `configs/post/rga/10.604/eppi0_data.json` extends the
+RGA EPPI0 base config and overrides only `outputFile` plus
+`samplingFraction.sigma.paramsFile`.
 
 ## RGA 10.604 GeV EPPI0 smoke test
 

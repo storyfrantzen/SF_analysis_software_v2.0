@@ -104,6 +104,54 @@ ChannelSpec parseChannelSpec(const json& j) {
     return channel;
 }
 
+void mergeConfig(json& base, const json& override) {
+    for (const auto& item : override.items()) {
+        if (item.key() == "extends") continue;
+
+        auto existing = base.find(item.key());
+        if (existing != base.end() && existing->is_object() && item.value().is_object()) {
+            mergeConfig(*existing, item.value());
+        } else {
+            base[item.key()] = item.value();
+        }
+    }
+}
+
+json loadConfigJson(const std::filesystem::path& filename,
+                    std::vector<std::filesystem::path>& includeStack) {
+    const auto normalized = std::filesystem::absolute(filename).lexically_normal();
+    for (const auto& active : includeStack) {
+        if (active == normalized) {
+            throw std::runtime_error("Cycle detected while resolving config extends: " +
+                                     normalized.string());
+        }
+    }
+
+    std::ifstream f(normalized);
+    if (!f.is_open()) {
+        throw std::runtime_error("Cannot open post-processing config file: " + normalized.string());
+    }
+
+    json current;
+    f >> current;
+
+    if (!current.contains("extends")) return current;
+    if (!current["extends"].is_string()) {
+        throw std::runtime_error("Config extends must be a string path in: " + normalized.string());
+    }
+
+    std::filesystem::path parentPath = current["extends"].get<std::string>();
+    if (parentPath.is_relative()) {
+        parentPath = normalized.parent_path() / parentPath;
+    }
+
+    includeStack.push_back(normalized);
+    json merged = loadConfigJson(parentPath, includeStack);
+    includeStack.pop_back();
+    mergeConfig(merged, current);
+    return merged;
+}
+
 ChannelSpec legacyEppi0Channel(const json& eppi0) {
     const double electronMinP = eppi0.value("electronMinP", 1.0);
     const double protonMinP = eppi0.value("protonMinP", 0.3);
@@ -210,13 +258,8 @@ std::string CutDecision::failedCsv() const {
 }
 
 PostCutConfig PostCutConfig::fromFile(const std::string& filename) {
-    std::ifstream f(filename);
-    if (!f.is_open()) {
-        throw std::runtime_error("Cannot open post-processing config file: " + filename);
-    }
-
-    json j;
-    f >> j;
+    std::vector<std::filesystem::path> includeStack;
+    json j = loadConfigJson(filename, includeStack);
 
     PostCutConfig cfg;
     cfg.outputFile = j.value("outputFile", cfg.outputFile);

@@ -1,92 +1,9 @@
 {
+    "extends": "eppi0_base.json",
     "outputFile": "10.604_rga_eppi0_mc_nonradiative_selected.root",
-    "inputTree": "Events",
-    "outputTree": "Events",
-    "beamEnergy": 10.604,
-    "torus": 1,
-    "saveFailedCandidates": false,
-
-    "fiducialCuts": [
-        "DCEdges_RGA",
-        "FT_RGA",
-        "ECAL_RGA",
-        "CVT_RGA"
-    ],
-
     "samplingFraction": {
-        "minPcalEnergy": 0.07,
-        "diagonal": {
-            "yScale": 1.0,
-            "xScale": 1.0,
-            "threshold": 0.2,
-            "momentumThreshold": 4.5
-        },
         "sigma": {
-            "numSigma": 3.5,
             "paramsFile": "../../../../parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_t+1_clasdisGEMC.json"
         }
-    },
-
-    "channel": {
-        "name": "eppi0",
-        "particles": [
-            {
-                "role": "electron",
-                "pid": 11,
-                "count": 1,
-                "detectors": [0, 1],
-                "cuts": [
-                    { "name": "electron.trigger", "op": "firstPidInstance" },
-                    { "name": "electron.min_p", "op": "minP", "min": 1.0 },
-                    { "name": "electron.fiducial", "op": "fiducial" },
-                    { "name": "electron.min_pcal", "op": "minPcalEnergy" },
-                    { "name": "electron.sf_diagonal", "op": "samplingFractionDiagonal" },
-                    { "name": "electron.sf_sigma", "op": "samplingFractionSigma" }
-                ]
-            },
-            {
-                "role": "proton",
-                "pid": 2212,
-                "count": 1,
-                "detectors": [1, 2],
-                "cuts": [
-                    { "name": "proton.min_p", "op": "minP", "min": 0.3 },
-                    { "name": "proton.vertex", "op": "vertexDiff", "refRole": "electron", "max": 20.0 },
-                    { "name": "proton.fiducial", "op": "fiducial" },
-                    { "name": "proton.cvt_phi_25_40", "op": "removeCVTPhi", "min": 25.0, "max": 40.0 },
-                    { "name": "proton.cvt_phi_143_158", "op": "removeCVTPhi", "min": 143.0, "max": 158.0 },
-                    { "name": "proton.cvt_phi_265_280", "op": "removeCVTPhi", "min": 265.0, "max": 280.0 }
-                ]
-            },
-            {
-                "role": "gamma",
-                "pid": 22,
-                "count": 2,
-                "detectors": [0, 1],
-                "cuts": [
-                    { "name": "gamma.min_p", "op": "minP", "min": 0.4 },
-                    { "name": "gamma.beta", "op": "betaRange", "min": 0.9, "max": 1.1 },
-                    { "name": "gamma.cal_energy", "op": "minCalEnergy", "min": 0.15 },
-                    { "name": "gamma.not_electron_sector", "op": "rejectSameSectorAsRole", "refRole": "electron" },
-                    { "name": "gamma.fiducial", "op": "fiducial" }
-                ]
-            }
-        ],
-        "composites": [
-            {
-                "role": "pi0",
-                "type": "pairMass",
-                "daughters": ["gamma", "gamma"],
-                "mass": 0.1349768,
-                "window": 0.15
-            }
-        ]
-    },
-
-    "exclusivity": {
-        "maxAbsMissingEnergy": 2.0,
-        "minElectronPhotonAngleDeg": 4.0,
-        "minPhotonPhotonAngleDeg": 1.0,
-        "maxPi0ConeAngleDeg": 4.0
     }
 }

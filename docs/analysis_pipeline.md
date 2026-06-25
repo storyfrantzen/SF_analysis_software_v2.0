@@ -114,6 +114,12 @@ This keeps a cut like `removeCVTPhi(min, max)` reusable across channels and syst
 
 The `post_process` workflow reads `channel.particles` in order and recursively builds valid candidate combinations. This makes the topology generic enough for channels beyond eppi0. Every channel gets the generic selected-particle branches such as `selectedRoles`, `selectedIdx`, `selectedPid`, and `selectedP`, plus electron-derived DIS branches `Q2`, `nu`, and `xB` when the `electron` role is selected. Use `firstPidInstance` on that role when it must be the trigger/scattered electron, meaning the first particle with that PID in the reconstructed bank.
 
+Post configs may share repeated topology definitions with an `extends` key. The
+parent path is resolved relative to the child config. Object values merge
+recursively, while arrays and scalars replace the parent, so child configs can
+override names, output paths, or parameter files without duplicating the full
+`channel` block.
+
 ## Proton Kinematic Corrections
 
 `hipo2root` accepts optional proton correction coefficients through `kinematicCorrections` in the conversion config. The field can be either an inline JSON object or a path to a JSON coefficient file, resolved relative to the config file when the path is relative. `ProtonEnergyLossCorrections` translates the legacy `protonEnergyLoss_params_*.json` format into typed FD/CD correction terms with keys such as `p_delta_p_FD`, `p_delta_theta_CD`, and `p_delta_phi_CD`.
