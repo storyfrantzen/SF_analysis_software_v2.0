@@ -12,6 +12,7 @@ from scipy.sparse import csr_matrix
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from eppi0.binning import AnalysisBinning, legacy_binning
+from eppi0.bin_centering import compute_bin_centering, physical_mask
 from eppi0.cross_section import integrated_luminosity_fb, virtual_photon_flux
 from eppi0.event_sample import (
     build_generated_sample,
@@ -258,6 +259,25 @@ class NormalizationTests(unittest.TestCase):
         self.assertGreater(integrated_luminosity_fb(1.0e-3), 0.0)
         flux = virtual_photon_flux(np.array([2.0]), np.array([0.3]), 6.535)
         self.assertGreater(flux[0], 0.0)
+
+
+class BinCenteringTests(unittest.TestCase):
+    def test_physical_mask_uses_signed_t_internally(self) -> None:
+        self.assertTrue(physical_mask(np.array([0.3]), np.array([1.5]), np.array([-0.2]), 6.535)[0])
+        self.assertFalse(physical_mask(np.array([0.3]), np.array([1.5]), np.array([0.2]), 6.535)[0])
+
+    def test_flat_d4sigma_gives_unit_bin_centering(self) -> None:
+        bins = AnalysisBinning([1.2, 1.4], [0.25, 0.35], [0.15, 0.25], [0.0, 180.0, 360.0])
+
+        def flat_d4sigma(points: np.ndarray) -> np.ndarray:
+            flux = virtual_photon_flux(points[:, 1], points[:, 0], 6.535)
+            return np.divide(1.0, flux, out=np.full(points.shape[0], np.nan), where=flux > 0.0)
+
+        result = compute_bin_centering(bins, 6.535, flat_d4sigma, samples_per_dimension=2)
+        self.assertEqual(result.c_bc.shape, bins.shape)
+        self.assertTrue(np.all(result.reliable))
+        np.testing.assert_allclose(result.c_bc, 1.0, rtol=1e-12, atol=1e-12)
+        self.assertTrue(np.all(result.n_physical > 0))
 
 
 def _lund_event(*, pi0: bool) -> str:

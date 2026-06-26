@@ -37,7 +37,9 @@ mass.
 - `eppi0.response`: sparse migration matrix, efficiency, and feed-in metadata;
 - `eppi0.unfolding`: iterative Bayesian unfolding and reproducible bootstrap;
 - `eppi0.cross_section`: luminosity, virtual-photon flux, physical bin volume,
-  and reduced cross sections.
+  and reduced cross sections;
+- `eppi0.bin_centering`: physical-bin AAO model averaging and bin-centering
+  corrections;
 - `eppi0.exclusivity`: topology-aware sequential data/GEMC windows;
 - `eppi0.event_sample`: radiative/non-radiative GEN construction and REC joins;
 - `eppi0.harmonics`: weighted `A + B cos(phi) + C cos(2 phi)` fits.
@@ -75,8 +77,13 @@ python3 analysis/run_analysis.py unfold data_events.npz \
   --config configs/analysis/rgk/6.535.json --output results/unfolding.npz \
   --radiative-correction results/C_rad.npz
 
+python3 analysis/run_analysis.py bin-centering \
+  --config configs/analysis/rgk/6.535.json --output results/C_BC.npz \
+  --exe /path/to/aao_xsec --N 4 --workers 8
+
 python3 analysis/run_analysis.py cross-section results/unfolding.npz \
-  --config configs/analysis/rgk/6.535.json --output results/cross_section.npz
+  --config configs/analysis/rgk/6.535.json --output results/cross_section.npz \
+  --bin-centering results/C_BC.npz
 
 python3 analysis/run_analysis.py fit-harmonics results/cross_section.npz \
   --output results/harmonics.npz
@@ -193,6 +200,19 @@ sample. Regenerate the diagnostic report later without rereading LUND files:
 python3 analysis/run_analysis.py radiative-correction-plots results/C_rad.npz \
   --output results/C_rad_diagnostics.pdf --csv results/C_rad_diagnostics.csv
 ```
+
+## Bin-centering correction
+
+`bin-centering` computes `C_BC = <d4sigma>_physical_bin / d4sigma(center)` with
+AAO model calls over a midpoint grid. The analysis-facing convention remains
+positive `-t`; the command converts internally to signed negative `t` only when
+calling `aao_xsec`. The reference center is the geometric centroid of the
+sampled physical midpoint cells in each bin, and the artifact stores the center
+coordinates, physical fractions, failed-call fractions, and reliability mask.
+
+Apply the artifact during normalization with `cross-section --bin-centering`.
+The reduced cross section and uncertainty are divided by `C_BC`; unreliable
+bin-centering bins are suppressed in the output.
 
 ## Legacy behavior intentionally corrected
 

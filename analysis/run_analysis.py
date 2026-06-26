@@ -14,6 +14,7 @@ from scipy.sparse import load_npz, save_npz
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from eppi0.binning import from_config
+from eppi0.bin_centering import AaoExecutableEvaluator, compute_bin_centering
 from eppi0.cross_section import (
     Target,
     integrated_luminosity_fb,
@@ -122,6 +123,32 @@ def parser() -> argparse.ArgumentParser:
     xsec.add_argument("--config", type=Path, required=True)
     xsec.add_argument("--output", type=Path, required=True)
     xsec.add_argument("--global-normalization", type=float, default=1.0)
+    xsec.add_argument(
+        "--bin-centering",
+        type=Path,
+        help="Optional NPZ from bin-centering; output cross sections are divided by C_BC",
+    )
+
+    bin_centering = commands.add_parser(
+        "bin-centering",
+        help="Compute AAO model bin-centering corrections over the analysis bins",
+    )
+    bin_centering.add_argument("--config", type=Path, required=True)
+    bin_centering.add_argument("--output", type=Path, required=True)
+    bin_centering.add_argument("--exe", type=Path, required=True, help="Path to the aao_xsec executable")
+    bin_centering.add_argument("--N", type=int, default=4, help="Midpoint samples per dimension")
+    bin_centering.add_argument("--workers", type=int, default=None)
+    bin_centering.add_argument("--chunk-size", type=int, default=64)
+    bin_centering.add_argument("--theory", type=int, default=5)
+    bin_centering.add_argument("--channel", type=int, default=1)
+    bin_centering.add_argument("--resonance", type=int, default=0)
+    bin_centering.add_argument(
+        "--max-failure-fraction",
+        type=float,
+        default=0.0,
+        help="Maximum failed/non-positive AAO fraction allowed before a bin is marked unreliable",
+    )
+    bin_centering.add_argument("--verbose-failures", action="store_true")
 
     harmonics = commands.add_parser("fit-harmonics", help="Fit A + B cos(phi) + C cos(2 phi)")
     harmonics.add_argument("cross_section", type=Path)
@@ -885,6 +912,76 @@ def _prepare_matplotlib_cache() -> None:
     os.environ.setdefault("XDG_CACHE_HOME", str(xdg_dir))
 
 
+def command_bin_centering(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    binning = from_config(args.config)
+    beam_energy = float(config["beam_energy"])
+    if not args.exe.is_file():
+        raise FileNotFoundError(f"aao_xsec executable not found: {args.exe}")
+    if args.N <= 0:
+        raise ValueError("--N must be positive")
+    if args.chunk_size <= 0:
+        raise ValueError("--chunk-size must be positive")
+
+    evaluator = AaoExecutableEvaluator(
+        exe=args.exe,
+        beam_energy=beam_energy,
+        theory=args.theory,
+        channel=args.channel,
+        resonance=args.resonance,
+        workers=args.workers,
+        chunk_size=args.chunk_size,
+        verbose_failures=args.verbose_failures,
+    )
+    with evaluator:
+        result = compute_bin_centering(
+            binning,
+            beam_energy,
+            evaluator,
+            samples_per_dimension=args.N,
+            max_failure_fraction=args.max_failure_fraction,
+        )
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        args.output,
+        C_BC=result.c_bc,
+        reliable=result.reliable,
+        average_d4sigma=result.average_d4sigma,
+        center_d4sigma=result.center_d4sigma,
+        xB_center=result.xB_center,
+        q2_center=result.q2_center,
+        minus_t_center=result.minus_t_center,
+        phi_center=result.phi_center,
+        n_physical=result.n_physical,
+        n_valid=result.n_valid,
+        n_failed=result.n_failed,
+        physical_fraction=result.physical_fraction,
+        failure_fraction=result.failure_fraction,
+        q2_edges=binning.q2_edges,
+        xb_edges=binning.xb_edges,
+        t_edges=binning.t_edges,
+        phi_edges=binning.phi_edges,
+        beam_energy=beam_energy,
+        samples_per_dimension=args.N,
+        max_failure_fraction=args.max_failure_fraction,
+        theory=args.theory,
+        channel=args.channel,
+        resonance=args.resonance,
+        convention="C_BC = <d4sigma>_physical_bin / d4sigma(physical midpoint-grid centroid)",
+        apply_as="centered_cross_section = bin_averaged_cross_section / C_BC",
+        t_convention="positive -t externally; signed t passed to aao_xsec",
+    )
+    reliable_bins = int(np.count_nonzero(result.reliable))
+    total_bins = int(result.reliable.size)
+    physical_bins = int(np.count_nonzero(result.n_physical))
+    print(f"Physical bins: {physical_bins}/{total_bins}")
+    print(f"Reliable C_BC bins: {reliable_bins}/{total_bins}")
+    if reliable_bins:
+        print(f"Mean C_BC reliable: {np.nanmean(result.c_bc[result.reliable]):.6g}")
+    print(f"Wrote {args.output}")
+
+
 def command_cross_section(args: argparse.Namespace) -> None:
     result = np.load(args.unfolding_result, allow_pickle=False)
     config = load_config(args.config)
@@ -927,11 +1024,27 @@ def command_cross_section(args: argparse.Namespace) -> None:
         branching_ratio=float(config["pi0_to_gg_branching_ratio"]),
         valid=valid,
     )
+    bin_centering_cbc = None
+    bin_centering_reliable = None
+    if args.bin_centering:
+        bin_centering = np.load(args.bin_centering, allow_pickle=False)
+        bin_centering_cbc = np.asarray(bin_centering["C_BC"], dtype=float)
+        bin_centering_reliable = np.asarray(bin_centering["reliable"], dtype=bool)
+        if bin_centering_cbc.shape != binning.shape:
+            raise ValueError(f"bin-centering C_BC has shape {bin_centering_cbc.shape}; expected {binning.shape}")
+        if bin_centering_reliable.shape != binning.shape:
+            raise ValueError(
+                f"bin-centering reliable has shape {bin_centering_reliable.shape}; expected {binning.shape}"
+            )
+        cbc_flat = binning.flatten_values(bin_centering_cbc)
+        reliable_flat = binning.flatten_values(bin_centering_reliable)
+        apply_mask = reliable_flat & np.isfinite(cbc_flat) & (cbc_flat > 0.0)
+        values = np.divide(values, cbc_flat, out=np.zeros_like(values), where=apply_mask)
+        errors = np.divide(errors, cbc_flat, out=np.zeros_like(errors), where=apply_mask)
     values /= args.global_normalization
     errors /= args.global_normalization
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        args.output,
+    payload = dict(
         reduced_cross_section=binning.unflatten(values),
         uncertainty=binning.unflatten(errors),
         flux_q2_mean=q2_means,
@@ -945,7 +1058,17 @@ def command_cross_section(args: argparse.Namespace) -> None:
         t_edges=binning.t_edges,
         phi_edges=binning.phi_edges,
     )
+    if bin_centering_cbc is not None and bin_centering_reliable is not None:
+        payload.update(
+            bin_centering_C_BC=bin_centering_cbc,
+            bin_centering_reliable=bin_centering_reliable,
+            bin_centering_path=str(args.bin_centering),
+            bin_centering_application="reduced_cross_section and uncertainty divided by C_BC",
+        )
+    np.savez_compressed(args.output, **payload)
     print(f"Integrated luminosity: {luminosity:.6g} fb^-1")
+    if args.bin_centering:
+        print(f"Applied bin-centering correction: {args.bin_centering}")
     print(f"Wrote {args.output}")
 
 
@@ -1796,6 +1919,8 @@ def main() -> int:
         command_radiative_correction(args)
     elif args.command == "radiative-correction-plots":
         command_radiative_correction_plots(args)
+    elif args.command == "bin-centering":
+        command_bin_centering(args)
     elif args.command == "cross-section":
         command_cross_section(args)
     elif args.command == "fit-harmonics":
