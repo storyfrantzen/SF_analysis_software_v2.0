@@ -59,15 +59,19 @@ For the RGA 10.604 GeV workflow, use
 `configs/analysis/rga/10.604.json` together with the matching processing and
 post-processing files under `configs/*/rga/10.604/`.
 
-The four numerical stages are exposed through one command:
+The core numerical stages are exposed through one command:
 
 ```bash
 python3 analysis/run_analysis.py response mc_events.npz \
   --config configs/analysis/rgk/6.535.json --output-dir results/response
 
+python3 analysis/run_analysis.py radiative-correction born_lund/ rad_lund/ \
+  --config configs/analysis/rgk/6.535.json --output results/C_rad.npz
+
 python3 analysis/run_analysis.py unfold data_events.npz \
   results/response/response_matrix.npz results/response/response_meta.npz \
-  --config configs/analysis/rgk/6.535.json --output results/unfolding.npz
+  --config configs/analysis/rgk/6.535.json --output results/unfolding.npz \
+  --radiative-correction results/C_rad.npz
 
 python3 analysis/run_analysis.py cross-section results/unfolding.npz \
   --config configs/analysis/rgk/6.535.json --output results/cross_section.npz
@@ -174,9 +178,12 @@ The harmonic stage retains the legacy weighted fit
 `A + B cos(phi) + C cos(2 phi)` and stores coefficients, full covariance,
 chi-square per degree of freedom, and the number of contributing phi bins.
 
-The unfolding command accepts the legacy radiative artifact through
-`--radiative-correction C_rad.npz`; reliability masks and correction
-uncertainties are propagated into the self-contained unfolding result.
+The radiative-correction command streams Born and radiative LUND files directly
+into configured analysis bins, using the same electron-proton Trento phi
+convention as the rest of this package. Its output is a native `C_rad.npz`
+artifact consumed by `unfold --radiative-correction`; reliability masks and
+correction uncertainties are propagated into the self-contained unfolding
+result.
 
 ## Legacy behavior intentionally corrected
 

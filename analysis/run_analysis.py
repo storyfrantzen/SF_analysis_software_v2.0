@@ -21,6 +21,7 @@ from eppi0.cross_section import (
     reduced_cross_section,
 )
 from eppi0.response import build_response
+from eppi0.radiative_correction import compute_radiative_correction
 from eppi0.root_response import build_response_from_root
 from eppi0.harmonics import fit_grid
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes, subtract_feed_in
@@ -76,6 +77,23 @@ def parser() -> argparse.ArgumentParser:
     unfold.add_argument("--seed", type=int, default=12345)
     unfold.add_argument("--radiative-correction", type=Path,
                         help="Legacy-compatible NPZ containing C_rad, delta_C, and reliable")
+
+    radcorr = commands.add_parser(
+        "radiative-correction",
+        help="Compute a native C_rad artifact from Born and radiative LUND samples",
+    )
+    radcorr.add_argument("born", type=Path, help="Born LUND glob or directory")
+    radcorr.add_argument("radiative", type=Path, help="Radiative LUND glob or directory")
+    radcorr.add_argument("--config", type=Path, required=True)
+    radcorr.add_argument("--output", type=Path, required=True)
+    radcorr.add_argument("--chunk-size", type=int, default=200_000)
+    radcorr.add_argument("--max-events", type=int)
+    radcorr.add_argument("--min-counts", type=int, default=5)
+    radcorr.add_argument(
+        "--normalization-ratio",
+        type=float,
+        help="Override the default N_radiative/N_born normalization ratio",
+    )
 
     xsec = commands.add_parser("cross-section", help="Normalize unfolded yields")
     xsec.add_argument("unfolding_result", type=Path)
@@ -323,6 +341,61 @@ def command_unfold(args: argparse.Namespace) -> None:
         random_seed=args.seed,
     )
     print(f"Measured in-range events: {measured.sum():.0f}")
+    print(f"Wrote {args.output}")
+
+
+def command_radiative_correction(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    binning = from_config(args.config)
+    result = compute_radiative_correction(
+        args.born,
+        args.radiative,
+        binning,
+        beam_energy=float(config["beam_energy"]),
+        chunk_size=args.chunk_size,
+        max_events=args.max_events,
+        min_counts=args.min_counts,
+        normalization_ratio=args.normalization_ratio,
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        args.output,
+        C_rad=result.c_rad,
+        delta_C=result.delta_c,
+        reliable=result.reliable,
+        H_born=binning.unflatten(result.born.counts),
+        H_rad=binning.unflatten(result.radiative.counts),
+        normalization_ratio=result.normalization_ratio,
+        min_counts=args.min_counts,
+        beam_energy=float(config["beam_energy"]),
+        q2_edges=binning.q2_edges,
+        xb_edges=binning.xb_edges,
+        t_edges=binning.t_edges,
+        phi_edges=binning.phi_edges,
+        born_files=result.born.files,
+        radiative_files=result.radiative.files,
+        born_events_seen=result.born.events_seen,
+        radiative_events_seen=result.radiative.events_seen,
+        born_topology_events=result.born.topology_events,
+        radiative_topology_events=result.radiative.topology_events,
+        born_in_range=result.born.in_range,
+        radiative_in_range=result.radiative.in_range,
+        phi_convention="electron-proton trento plane",
+    )
+    reliable_bins = int(np.count_nonzero(result.reliable))
+    total_bins = int(result.reliable.size)
+    print(
+        "Born events: "
+        f"seen={result.born.events_seen}, topology={result.born.topology_events}, "
+        f"in-range={result.born.in_range}"
+    )
+    print(
+        "Radiative events: "
+        f"seen={result.radiative.events_seen}, topology={result.radiative.topology_events}, "
+        f"in-range={result.radiative.in_range}"
+    )
+    print(f"Reliable bins: {reliable_bins}/{total_bins} with min_counts={args.min_counts}")
+    print(f"Normalization ratio: {result.normalization_ratio:.8g}")
     print(f"Wrote {args.output}")
 
 
@@ -1233,6 +1306,8 @@ def main() -> int:
         command_response_root(args)
     elif args.command == "unfold":
         command_unfold(args)
+    elif args.command == "radiative-correction":
+        command_radiative_correction(args)
     elif args.command == "cross-section":
         command_cross_section(args)
     elif args.command == "fit-harmonics":

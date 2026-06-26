@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+import tempfile
 import unittest
 
 import numpy as np
@@ -20,6 +21,7 @@ from eppi0.event_sample import (
 from eppi0.exclusivity import apply_cuts, derive_cuts
 from eppi0.harmonics import fit_phi
 from eppi0.response import build_response, build_response_from_counts
+from eppi0.radiative_correction import compute_radiative_correction, histogram_lund
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
 
 
@@ -199,11 +201,70 @@ class UnfoldingTests(unittest.TestCase):
         np.testing.assert_allclose(first[1], second[1])
 
 
+class RadiativeCorrectionTests(unittest.TestCase):
+    def test_lund_histogram_streams_into_configured_bins(self) -> None:
+        bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "born.txt"
+            path.write_text(_lund_event(pi0=False), encoding="utf-8")
+            result = histogram_lund(path, bins, beam_energy=6.535, chunk_size=1)
+        self.assertEqual(result.events_seen, 1)
+        self.assertEqual(result.topology_events, 1)
+        self.assertEqual(result.in_range, 1)
+        self.assertEqual(result.counts.sum(), 1.0)
+
+    def test_radiative_correction_keeps_native_4d_shape(self) -> None:
+        bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
+        with tempfile.TemporaryDirectory() as tmp:
+            born = Path(tmp) / "born.txt"
+            rad = Path(tmp) / "rad.txt"
+            born.write_text(_lund_event(pi0=False), encoding="utf-8")
+            rad.write_text(_lund_event(pi0=True), encoding="utf-8")
+            result = compute_radiative_correction(
+                born,
+                rad,
+                bins,
+                beam_energy=6.535,
+                min_counts=1,
+                chunk_size=1,
+            )
+        self.assertEqual(result.c_rad.shape, bins.shape)
+        self.assertEqual(result.delta_c.shape, bins.shape)
+        self.assertEqual(result.reliable.shape, bins.shape)
+        self.assertEqual(np.count_nonzero(result.reliable), 1)
+        np.testing.assert_allclose(result.c_rad[result.reliable], [1.0])
+        np.testing.assert_allclose(result.c_rad[~result.reliable], 1.0)
+
+
 class NormalizationTests(unittest.TestCase):
     def test_luminosity_and_flux_are_positive(self) -> None:
         self.assertGreater(integrated_luminosity_fb(1.0e-3), 0.0)
         flux = virtual_photon_flux(np.array([2.0]), np.array([0.3]), 6.535)
         self.assertGreater(flux[0], 0.0)
+
+
+def _lund_event(*, pi0: bool) -> str:
+    electron_p = 4.0
+    electron_theta = 0.2
+    electron = _particle_row(11, electron_p, electron_theta, 0.0, 0.00051099895)
+    proton = _particle_row(2212, 0.5, 0.6, 1.0, 0.9382720813)
+    if pi0:
+        meson = _particle_row(111, 0.8, 0.4, 2.0, 0.1349768)
+        photon = _particle_row(22, 0.1, 0.5, -1.0, 0.0)
+        particles = [electron, proton, meson, photon]
+    else:
+        photon_one = _particle_row(22, 0.45, 0.4, 2.0, 0.0)
+        photon_two = _particle_row(22, 0.35, 0.5, -1.0, 0.0)
+        particles = [electron, proton, photon_one, photon_two]
+    return "4 0 0 0 0 0 0 0 0 0\n" + "".join(particles)
+
+
+def _particle_row(pid: int, p: float, theta: float, phi: float, mass: float) -> str:
+    px = p * np.sin(theta) * np.cos(phi)
+    py = p * np.sin(theta) * np.sin(phi)
+    pz = p * np.cos(theta)
+    energy = np.sqrt(p * p + mass * mass)
+    return f"1 0 0 {pid} 0 0 {px:.12g} {py:.12g} {pz:.12g} {energy:.12g}\n"
 
 
 class HarmonicTests(unittest.TestCase):
