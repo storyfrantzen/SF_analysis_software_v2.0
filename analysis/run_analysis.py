@@ -363,8 +363,18 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         C_rad=result.c_rad,
         delta_C=result.delta_c,
         reliable=result.reliable,
+        support_overlap=result.support_overlap,
+        support_status=result.support_status,
         H_born=binning.unflatten(result.born.counts),
         H_rad=binning.unflatten(result.radiative.counts),
+        born_q2_min=result.born.q2_min,
+        born_q2_max=result.born.q2_max,
+        born_eprime_min=result.born.eprime_min,
+        born_eprime_max=result.born.eprime_max,
+        radiative_q2_min=result.radiative.q2_min,
+        radiative_q2_max=result.radiative.q2_max,
+        radiative_eprime_min=result.radiative.eprime_min,
+        radiative_eprime_max=result.radiative.eprime_max,
         normalization_ratio=result.normalization_ratio,
         min_counts=args.min_counts,
         beam_energy=float(config["beam_energy"]),
@@ -380,10 +390,21 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         radiative_topology_events=result.radiative.topology_events,
         born_in_range=result.born.in_range,
         radiative_in_range=result.radiative.in_range,
+        born_generated_q2_range=np.asarray([result.born.generated_q2_min, result.born.generated_q2_max]),
+        radiative_generated_q2_range=np.asarray([
+            result.radiative.generated_q2_min, result.radiative.generated_q2_max,
+        ]),
+        born_generated_eprime_range=np.asarray([
+            result.born.generated_eprime_min, result.born.generated_eprime_max,
+        ]),
+        radiative_generated_eprime_range=np.asarray([
+            result.radiative.generated_eprime_min, result.radiative.generated_eprime_max,
+        ]),
         phi_convention="electron-proton trento plane",
     )
     reliable_bins = int(np.count_nonzero(result.reliable))
     total_bins = int(result.reliable.size)
+    support_counts = np.bincount(result.support_status.ravel(), minlength=7)
     print(
         "Born events: "
         f"seen={result.born.events_seen}, topology={result.born.topology_events}, "
@@ -394,7 +415,25 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         f"seen={result.radiative.events_seen}, topology={result.radiative.topology_events}, "
         f"in-range={result.radiative.in_range}"
     )
+    print(
+        "Born generated ranges: "
+        f"Q2={result.born.generated_q2_min:.6g}-{result.born.generated_q2_max:.6g}, "
+        f"Eprime={result.born.generated_eprime_min:.6g}-{result.born.generated_eprime_max:.6g}"
+    )
+    print(
+        "Radiative generated ranges: "
+        f"Q2={result.radiative.generated_q2_min:.6g}-{result.radiative.generated_q2_max:.6g}, "
+        f"Eprime={result.radiative.generated_eprime_min:.6g}-{result.radiative.generated_eprime_max:.6g}"
+    )
     print(f"Reliable bins: {reliable_bins}/{total_bins} with min_counts={args.min_counts}")
+    print(
+        "Support bins: "
+        f"overlap={int(np.count_nonzero(result.support_overlap))}, "
+        f"both_empty={int(support_counts[1])}, born_only={int(support_counts[2])}, "
+        f"radiative_only={int(support_counts[3])}, "
+        f"low_born={int(support_counts[4])}, low_radiative={int(support_counts[5])}, "
+        f"low_both={int(support_counts[6])}"
+    )
     print(f"Normalization ratio: {result.normalization_ratio:.8g}")
     print(f"Wrote {args.output}")
 

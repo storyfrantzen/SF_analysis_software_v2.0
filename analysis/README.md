@@ -183,7 +183,9 @@ into configured analysis bins, using the same electron-proton Trento phi
 convention as the rest of this package. Its output is a native `C_rad.npz`
 artifact consumed by `unfold --radiative-correction`; reliability masks and
 correction uncertainties are propagated into the self-contained unfolding
-result.
+result. The artifact also stores support diagnostics: per-bin born/radiative
+counts, overlap and status masks, and generated `Q2`/`Eprime` ranges for each
+sample.
 
 ## Legacy behavior intentionally corrected
 

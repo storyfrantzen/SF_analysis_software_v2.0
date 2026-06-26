@@ -17,10 +17,18 @@ Array = np.ndarray
 @dataclass(frozen=True)
 class LundHistogramResult:
     counts: Array
+    q2_min: Array
+    q2_max: Array
+    eprime_min: Array
+    eprime_max: Array
     files: int
     events_seen: int
     topology_events: int
     in_range: int
+    generated_q2_min: float
+    generated_q2_max: float
+    generated_eprime_min: float
+    generated_eprime_max: float
 
 
 @dataclass(frozen=True)
@@ -28,6 +36,8 @@ class RadiativeCorrectionResult:
     c_rad: Array
     delta_c: Array
     reliable: Array
+    support_overlap: Array
+    support_status: Array
     born: LundHistogramResult
     radiative: LundHistogramResult
     normalization_ratio: float
@@ -85,11 +95,15 @@ def compute_radiative_correction(
 
     c_rad_safe = np.where(reliable_flat, c_rad_flat, 1.0)
     delta_safe = np.where(reliable_flat, delta_flat, 1.0)
+    support_overlap = (born_result.counts > 0.0) & (radiative_result.counts > 0.0)
+    support_status = support_status_codes(born_result.counts, radiative_result.counts, min_counts)
 
     return RadiativeCorrectionResult(
         c_rad=binning.unflatten(c_rad_safe),
         delta_c=binning.unflatten(delta_safe),
         reliable=binning.unflatten(reliable_flat),
+        support_overlap=binning.unflatten(support_overlap),
+        support_status=binning.unflatten(support_status),
         born=born_result,
         radiative=radiative_result,
         normalization_ratio=normalization_ratio,
@@ -110,24 +124,80 @@ def histogram_lund(
     if not files:
         raise FileNotFoundError(f"No LUND text files matched: {pattern_or_dir}")
     counts = np.zeros(binning.size, dtype=float)
+    q2_min = np.full(binning.size, np.inf)
+    q2_max = np.full(binning.size, -np.inf)
+    eprime_min = np.full(binning.size, np.inf)
+    eprime_max = np.full(binning.size, -np.inf)
     stats = _LundStats(files=len(files))
 
     for electron, proton in _iter_lund_chunks(files, chunk_size, max_events, stats):
         q2, xb = _dis(electron, beam_energy)
+        eprime = electron[:, 3]
+        _update_global_ranges(stats, q2, eprime)
         minus_t = _minus_t(proton)
         phi = _trento_phi(electron, proton, beam_energy)
         flat = binning.coordinates_to_flat(q2, xb, minus_t, phi)
         inside = (flat >= 0) & (flat < binning.size)
-        counts += np.bincount(flat[inside], minlength=binning.size)
+        inside_flat = flat[inside]
+        counts += np.bincount(inside_flat, minlength=binning.size)
+        if inside_flat.size:
+            np.minimum.at(q2_min, inside_flat, q2[inside])
+            np.maximum.at(q2_max, inside_flat, q2[inside])
+            np.minimum.at(eprime_min, inside_flat, eprime[inside])
+            np.maximum.at(eprime_max, inside_flat, eprime[inside])
         stats.in_range += int(np.count_nonzero(inside))
+
+    q2_min = np.where(np.isfinite(q2_min), q2_min, np.nan)
+    q2_max = np.where(np.isfinite(q2_max), q2_max, np.nan)
+    eprime_min = np.where(np.isfinite(eprime_min), eprime_min, np.nan)
+    eprime_max = np.where(np.isfinite(eprime_max), eprime_max, np.nan)
 
     return LundHistogramResult(
         counts=counts,
+        q2_min=binning.unflatten(q2_min),
+        q2_max=binning.unflatten(q2_max),
+        eprime_min=binning.unflatten(eprime_min),
+        eprime_max=binning.unflatten(eprime_max),
         files=stats.files,
         events_seen=stats.events_seen,
         topology_events=stats.topology_events,
         in_range=stats.in_range,
+        generated_q2_min=_finite_or_nan(stats.generated_q2_min),
+        generated_q2_max=_finite_or_nan(stats.generated_q2_max),
+        generated_eprime_min=_finite_or_nan(stats.generated_eprime_min),
+        generated_eprime_max=_finite_or_nan(stats.generated_eprime_max),
     )
+
+
+def support_status_codes(born_counts: Array, radiative_counts: Array, min_counts: int) -> Array:
+    """Classify per-bin correction support.
+
+    Codes:
+      0 reliable;
+      1 both samples are empty;
+      2 born only;
+      3 radiative only;
+      4 both populated but born is below min_counts;
+      5 both populated but radiative is below min_counts;
+      6 both populated but both are below min_counts.
+    """
+    born_counts = np.asarray(born_counts, dtype=float)
+    radiative_counts = np.asarray(radiative_counts, dtype=float)
+    if born_counts.shape != radiative_counts.shape:
+        raise ValueError("born and radiative count arrays must have matching shapes")
+    born_nonzero = born_counts > 0.0
+    rad_nonzero = radiative_counts > 0.0
+    born_low = born_counts < min_counts
+    rad_low = radiative_counts < min_counts
+    status = np.zeros(born_counts.shape, dtype=np.uint8)
+    status[~born_nonzero & ~rad_nonzero] = 1
+    status[born_nonzero & ~rad_nonzero] = 2
+    status[~born_nonzero & rad_nonzero] = 3
+    both = born_nonzero & rad_nonzero
+    status[both & born_low & ~rad_low] = 4
+    status[both & ~born_low & rad_low] = 5
+    status[both & born_low & rad_low] = 6
+    return status
 
 
 @dataclass
@@ -136,6 +206,10 @@ class _LundStats:
     events_seen: int = 0
     topology_events: int = 0
     in_range: int = 0
+    generated_q2_min: float = np.inf
+    generated_q2_max: float = -np.inf
+    generated_eprime_min: float = np.inf
+    generated_eprime_max: float = -np.inf
 
 
 def _iter_lund_chunks(
@@ -241,3 +315,18 @@ def _looks_text(path: Path, nbytes: int = 4096) -> bool:
     except UnicodeDecodeError:
         return False
     return True
+
+
+def _update_global_ranges(stats: _LundStats, q2: Array, eprime: Array) -> None:
+    valid_q2 = np.asarray(q2)[np.isfinite(q2)]
+    if valid_q2.size:
+        stats.generated_q2_min = min(stats.generated_q2_min, float(np.min(valid_q2)))
+        stats.generated_q2_max = max(stats.generated_q2_max, float(np.max(valid_q2)))
+    valid_eprime = np.asarray(eprime)[np.isfinite(eprime)]
+    if valid_eprime.size:
+        stats.generated_eprime_min = min(stats.generated_eprime_min, float(np.min(valid_eprime)))
+        stats.generated_eprime_max = max(stats.generated_eprime_max, float(np.max(valid_eprime)))
+
+
+def _finite_or_nan(value: float) -> float:
+    return float(value) if np.isfinite(value) else np.nan

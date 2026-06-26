@@ -21,7 +21,11 @@ from eppi0.event_sample import (
 from eppi0.exclusivity import apply_cuts, derive_cuts
 from eppi0.harmonics import fit_phi
 from eppi0.response import build_response, build_response_from_counts
-from eppi0.radiative_correction import compute_radiative_correction, histogram_lund
+from eppi0.radiative_correction import (
+    compute_radiative_correction,
+    histogram_lund,
+    support_status_codes,
+)
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
 
 
@@ -212,6 +216,8 @@ class RadiativeCorrectionTests(unittest.TestCase):
         self.assertEqual(result.topology_events, 1)
         self.assertEqual(result.in_range, 1)
         self.assertEqual(result.counts.sum(), 1.0)
+        self.assertTrue(np.isfinite(result.generated_q2_min))
+        self.assertTrue(np.isfinite(result.generated_eprime_max))
 
     def test_radiative_correction_keeps_native_4d_shape(self) -> None:
         bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
@@ -231,9 +237,20 @@ class RadiativeCorrectionTests(unittest.TestCase):
         self.assertEqual(result.c_rad.shape, bins.shape)
         self.assertEqual(result.delta_c.shape, bins.shape)
         self.assertEqual(result.reliable.shape, bins.shape)
+        self.assertEqual(result.support_overlap.shape, bins.shape)
+        self.assertEqual(result.support_status.shape, bins.shape)
         self.assertEqual(np.count_nonzero(result.reliable), 1)
+        self.assertEqual(np.count_nonzero(result.support_overlap), 1)
         np.testing.assert_allclose(result.c_rad[result.reliable], [1.0])
         np.testing.assert_allclose(result.c_rad[~result.reliable], 1.0)
+
+    def test_support_status_codes_describe_unsupported_bins(self) -> None:
+        born = np.array([10.0, 0.0, 4.0, 4.0, 6.0, 0.0, 4.0])
+        rad = np.array([10.0, 0.0, 0.0, 6.0, 4.0, 7.0, 4.0])
+        np.testing.assert_array_equal(
+            support_status_codes(born, rad, min_counts=5),
+            [0, 1, 2, 4, 5, 3, 6],
+        )
 
 
 class NormalizationTests(unittest.TestCase):
