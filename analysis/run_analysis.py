@@ -139,6 +139,27 @@ def parser() -> argparse.ArgumentParser:
     bin_centering.add_argument("--N", type=int, default=4, help="Midpoint samples per dimension")
     bin_centering.add_argument("--workers", type=int, default=None)
     bin_centering.add_argument("--chunk-size", type=int, default=64)
+    bin_centering.add_argument(
+        "--bin-start",
+        type=int,
+        default=0,
+        help="First flattened 3D (Q2,xB,-t) bin to compute, inclusive",
+    )
+    bin_centering.add_argument(
+        "--bin-stop",
+        type=int,
+        help="Flattened 3D (Q2,xB,-t) bin at which to stop, exclusive",
+    )
+    bin_centering.add_argument(
+        "--bin-chunks",
+        type=int,
+        help="Split flattened 3D bins into this many chunks for array jobs",
+    )
+    bin_centering.add_argument(
+        "--bin-chunk-index",
+        type=int,
+        help="Zero-based chunk index to compute when --bin-chunks is set",
+    )
     bin_centering.add_argument("--theory", type=int, default=5)
     bin_centering.add_argument("--channel", type=int, default=1)
     bin_centering.add_argument("--resonance", type=int, default=0)
@@ -149,6 +170,13 @@ def parser() -> argparse.ArgumentParser:
         help="Maximum failed/non-positive AAO fraction allowed before a bin is marked unreliable",
     )
     bin_centering.add_argument("--verbose-failures", action="store_true")
+
+    bin_centering_merge = commands.add_parser(
+        "bin-centering-merge",
+        help="Merge partial bin-centering NPZ artifacts from array jobs",
+    )
+    bin_centering_merge.add_argument("partials", nargs="+", type=Path)
+    bin_centering_merge.add_argument("--output", type=Path, required=True)
 
     harmonics = commands.add_parser("fit-harmonics", help="Fit A + B cos(phi) + C cos(2 phi)")
     harmonics.add_argument("cross_section", type=Path)
@@ -922,6 +950,7 @@ def command_bin_centering(args: argparse.Namespace) -> None:
         raise ValueError("--N must be positive")
     if args.chunk_size <= 0:
         raise ValueError("--chunk-size must be positive")
+    bin_start, bin_stop, total_3d_bins = _bin_centering_range(args, binning)
 
     evaluator = AaoExecutableEvaluator(
         exe=args.exe,
@@ -940,13 +969,77 @@ def command_bin_centering(args: argparse.Namespace) -> None:
             evaluator,
             samples_per_dimension=args.N,
             max_failure_fraction=args.max_failure_fraction,
+            bin_start=bin_start,
+            bin_stop=bin_stop,
         )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
+    _save_bin_centering_artifact(
         args.output,
+        binning,
+        result,
+        beam_energy=beam_energy,
+        samples_per_dimension=args.N,
+        max_failure_fraction=args.max_failure_fraction,
+        theory=args.theory,
+        channel=args.channel,
+        resonance=args.resonance,
+        bin_start=bin_start,
+        bin_stop=bin_stop,
+        total_3d_bins=total_3d_bins,
+    )
+    reliable_bins = int(np.count_nonzero(result.reliable & result.computed))
+    computed_bins = int(np.count_nonzero(result.computed))
+    physical_bins = int(np.count_nonzero(result.n_physical))
+    print(f"3D bin range: [{bin_start}, {bin_stop}) / {total_3d_bins}")
+    print(f"Computed phi bins: {computed_bins}/{result.computed.size}")
+    print(f"Physical phi bins: {physical_bins}/{result.n_physical.size}")
+    print(f"Reliable C_BC bins: {reliable_bins}/{result.reliable.size}")
+    if reliable_bins:
+        print(f"Mean C_BC reliable: {np.nanmean(result.c_bc[result.reliable & result.computed]):.6g}")
+    print(f"Wrote {args.output}")
+
+
+def _bin_centering_range(args: argparse.Namespace, binning) -> tuple[int, int, int]:
+    total_3d_bins = int(np.prod(binning.shape[:3]))
+    if (args.bin_chunks is None) != (args.bin_chunk_index is None):
+        raise ValueError("--bin-chunks and --bin-chunk-index must be used together")
+    if args.bin_chunks is not None:
+        if args.bin_chunks <= 0:
+            raise ValueError("--bin-chunks must be positive")
+        if args.bin_chunk_index < 0 or args.bin_chunk_index >= args.bin_chunks:
+            raise ValueError("--bin-chunk-index must satisfy 0 <= index < --bin-chunks")
+        if args.bin_start != 0 or args.bin_stop is not None:
+            raise ValueError("use either --bin-start/--bin-stop or --bin-chunks/--bin-chunk-index, not both")
+        edges = np.linspace(0, total_3d_bins, args.bin_chunks + 1, dtype=int)
+        return int(edges[args.bin_chunk_index]), int(edges[args.bin_chunk_index + 1]), total_3d_bins
+    bin_start = int(args.bin_start)
+    bin_stop = total_3d_bins if args.bin_stop is None else int(args.bin_stop)
+    if bin_start < 0 or bin_stop < bin_start or bin_stop > total_3d_bins:
+        raise ValueError(f"invalid 3D bin range [{bin_start}, {bin_stop}) for {total_3d_bins} bins")
+    return bin_start, bin_stop, total_3d_bins
+
+
+def _save_bin_centering_artifact(
+    path: Path,
+    binning,
+    result,
+    *,
+    beam_energy: float,
+    samples_per_dimension: int,
+    max_failure_fraction: float,
+    theory: int,
+    channel: int,
+    resonance: int,
+    bin_start: int,
+    bin_stop: int,
+    total_3d_bins: int,
+) -> None:
+    np.savez_compressed(
+        path,
         C_BC=result.c_bc,
         reliable=result.reliable,
+        computed=result.computed,
         average_d4sigma=result.average_d4sigma,
         center_d4sigma=result.center_d4sigma,
         xB_center=result.xB_center,
@@ -963,22 +1056,112 @@ def command_bin_centering(args: argparse.Namespace) -> None:
         t_edges=binning.t_edges,
         phi_edges=binning.phi_edges,
         beam_energy=beam_energy,
-        samples_per_dimension=args.N,
-        max_failure_fraction=args.max_failure_fraction,
-        theory=args.theory,
-        channel=args.channel,
-        resonance=args.resonance,
+        samples_per_dimension=samples_per_dimension,
+        max_failure_fraction=max_failure_fraction,
+        theory=theory,
+        channel=channel,
+        resonance=resonance,
+        bin_start=bin_start,
+        bin_stop=bin_stop,
+        total_3d_bins=total_3d_bins,
         convention="C_BC = <d4sigma>_physical_bin / d4sigma(physical midpoint-grid centroid)",
         apply_as="centered_cross_section = bin_averaged_cross_section / C_BC",
         t_convention="positive -t externally; signed t passed to aao_xsec",
     )
-    reliable_bins = int(np.count_nonzero(result.reliable))
-    total_bins = int(result.reliable.size)
-    physical_bins = int(np.count_nonzero(result.n_physical))
-    print(f"Physical bins: {physical_bins}/{total_bins}")
-    print(f"Reliable C_BC bins: {reliable_bins}/{total_bins}")
-    if reliable_bins:
-        print(f"Mean C_BC reliable: {np.nanmean(result.c_bc[result.reliable]):.6g}")
+
+
+def command_bin_centering_merge(args: argparse.Namespace) -> None:
+    partials = [np.load(path, allow_pickle=False) for path in args.partials]
+    if not partials:
+        raise ValueError("at least one partial artifact is required")
+    first = partials[0]
+    q2_edges = np.asarray(first["q2_edges"], dtype=float)
+    xb_edges = np.asarray(first["xb_edges"], dtype=float)
+    t_edges = np.asarray(first["t_edges"], dtype=float)
+    phi_edges = np.asarray(first["phi_edges"], dtype=float)
+    shape = (
+        q2_edges.size - 1,
+        xb_edges.size - 1,
+        t_edges.size - 1,
+        phi_edges.size - 1,
+    )
+    fields = {
+        "C_BC": np.ones(shape, dtype=float),
+        "reliable": np.zeros(shape, dtype=bool),
+        "computed": np.zeros(shape, dtype=bool),
+        "average_d4sigma": np.full(shape, np.nan, dtype=float),
+        "center_d4sigma": np.full(shape, np.nan, dtype=float),
+        "xB_center": np.full(shape, np.nan, dtype=float),
+        "q2_center": np.full(shape, np.nan, dtype=float),
+        "minus_t_center": np.full(shape, np.nan, dtype=float),
+        "phi_center": np.full(shape, np.nan, dtype=float),
+        "n_physical": np.zeros(shape, dtype=np.int64),
+        "n_valid": np.zeros(shape, dtype=np.int64),
+        "n_failed": np.zeros(shape, dtype=np.int64),
+        "physical_fraction": np.zeros(shape, dtype=float),
+        "failure_fraction": np.ones(shape, dtype=float),
+    }
+    metadata_keys = (
+        "beam_energy",
+        "samples_per_dimension",
+        "max_failure_fraction",
+        "theory",
+        "channel",
+        "resonance",
+    )
+
+    for path, partial in zip(args.partials, partials):
+        for edge_name, expected in (
+            ("q2_edges", q2_edges),
+            ("xb_edges", xb_edges),
+            ("t_edges", t_edges),
+            ("phi_edges", phi_edges),
+        ):
+            values = np.asarray(partial[edge_name], dtype=float)
+            if values.shape != expected.shape or not np.allclose(values, expected):
+                raise ValueError(f"{path} {edge_name} does not match the first partial")
+        computed = (
+            np.asarray(partial["computed"], dtype=bool)
+            if "computed" in partial.files
+            else np.ones(shape, dtype=bool)
+        )
+        if computed.shape != shape:
+            raise ValueError(f"{path} computed mask has shape {computed.shape}; expected {shape}")
+        overlap = fields["computed"] & computed
+        if np.any(overlap):
+            raise ValueError(f"{path} overlaps previously merged bin-centering bins")
+        for name, target in fields.items():
+            if name == "computed":
+                continue
+            values = np.asarray(partial[name])
+            if values.shape != shape:
+                raise ValueError(f"{path} {name} has shape {values.shape}; expected {shape}")
+            target[computed] = values[computed]
+        fields["computed"][computed] = True
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    payload = dict(fields)
+    payload.update(
+        q2_edges=q2_edges,
+        xb_edges=xb_edges,
+        t_edges=t_edges,
+        phi_edges=phi_edges,
+        bin_start=0,
+        bin_stop=shape[0] * shape[1] * shape[2],
+        total_3d_bins=shape[0] * shape[1] * shape[2],
+        convention=_npz_string(first, "convention", "C_BC = <d4sigma>_physical_bin / d4sigma(center)"),
+        apply_as=_npz_string(first, "apply_as", "centered_cross_section = bin_averaged_cross_section / C_BC"),
+        t_convention=_npz_string(first, "t_convention", "positive -t externally; signed t passed to aao_xsec"),
+    )
+    for key in metadata_keys:
+        if key in first.files:
+            payload[key] = np.asarray(first[key]).item()
+    np.savez_compressed(args.output, **payload)
+    computed_phi = int(np.count_nonzero(fields["computed"]))
+    reliable_phi = int(np.count_nonzero(fields["computed"] & fields["reliable"]))
+    print(f"Merged partial files: {len(args.partials)}")
+    print(f"Computed phi bins: {computed_phi}/{fields['computed'].size}")
+    print(f"Reliable C_BC bins: {reliable_phi}/{fields['reliable'].size}")
     print(f"Wrote {args.output}")
 
 
@@ -1921,6 +2104,8 @@ def main() -> int:
         command_radiative_correction_plots(args)
     elif args.command == "bin-centering":
         command_bin_centering(args)
+    elif args.command == "bin-centering-merge":
+        command_bin_centering_merge(args)
     elif args.command == "cross-section":
         command_cross_section(args)
     elif args.command == "fit-harmonics":

@@ -22,6 +22,7 @@ PI0_MASS_GEV = 0.1349768
 class BinCenteringResult:
     c_bc: Array
     reliable: Array
+    computed: Array
     average_d4sigma: Array
     center_d4sigma: Array
     xB_center: Array
@@ -122,6 +123,8 @@ def compute_bin_centering(
     evaluator: TheoryEvaluator,
     samples_per_dimension: int = 4,
     max_failure_fraction: float = 0.0,
+    bin_start: int = 0,
+    bin_stop: int | None = None,
 ) -> BinCenteringResult:
     """Compute C_BC = <d4sigma>_physical_bin / d4sigma(reference point)."""
     if samples_per_dimension <= 0:
@@ -130,8 +133,15 @@ def compute_bin_centering(
         raise ValueError("max_failure_fraction must be between 0 and 1")
 
     shape = binning.shape
+    total_3d_bins = int(np.prod(shape[:3]))
+    if bin_stop is None:
+        bin_stop = total_3d_bins
+    if bin_start < 0 or bin_stop < bin_start or bin_stop > total_3d_bins:
+        raise ValueError(f"invalid 3D bin range [{bin_start}, {bin_stop}) for {total_3d_bins} bins")
+
     c_bc = np.ones(shape, dtype=float)
     reliable = np.zeros(shape, dtype=bool)
+    computed = np.zeros(shape, dtype=bool)
     average = np.full(shape, np.nan, dtype=float)
     center = np.full(shape, np.nan, dtype=float)
     xb_center = np.full(shape, np.nan, dtype=float)
@@ -150,6 +160,11 @@ def compute_bin_centering(
         for ixb, (xb_lo, xb_hi) in enumerate(zip(binning.xb_edges[:-1], binning.xb_edges[1:])):
             xb_points = midpoint_grid(xb_lo, xb_hi, samples_per_dimension)
             for it, (mt_lo, mt_hi) in enumerate(zip(binning.t_edges[:-1], binning.t_edges[1:])):
+                flat_3d = np.ravel_multi_index((iq2, ixb, it), shape[:3])
+                if flat_3d < bin_start or flat_3d >= bin_stop:
+                    continue
+                computed[iq2, ixb, it, :] = True
+
                 minus_t_points = midpoint_grid(mt_lo, mt_hi, samples_per_dimension)
                 q2_mesh, xb_mesh, minus_t_mesh = np.meshgrid(
                     q2_points,
@@ -215,6 +230,7 @@ def compute_bin_centering(
     return BinCenteringResult(
         c_bc=c_bc,
         reliable=reliable,
+        computed=computed,
         average_d4sigma=average,
         center_d4sigma=center,
         xB_center=xb_center,

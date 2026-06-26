@@ -214,6 +214,29 @@ Apply the artifact during normalization with `cross-section --bin-centering`.
 The reduced cross section and uncertainty are divided by `C_BC`; unreliable
 bin-centering bins are suppressed in the output.
 
+For convergence studies or production-sized grids, split the work over
+flattened 3D `(Q2, xB, -t)` bins and merge the partial artifacts. A local chunk
+looks like:
+
+```bash
+python3 analysis/run_analysis.py bin-centering \
+  --config configs/analysis/rgk/6.535.json \
+  --output results/bc_parts/C_BC_N4_part000.npz \
+  --exe /path/to/aao_xsec --N 4 --workers 8 \
+  --bin-chunks 100 --bin-chunk-index 0
+```
+
+For Slurm, use a zero-based array such as `--array=0-99` and pass
+`${SLURM_ARRAY_TASK_ID}` as `--bin-chunk-index`. After all chunks finish:
+
+```bash
+python3 analysis/run_analysis.py bin-centering-merge \
+  results/bc_parts/C_BC_N4_part*.npz --output results/C_BC_N4.npz
+```
+
+Repeat with larger `--N` values, for example `N=2,4,6,8`, and compare the
+merged `C_BC` artifacts to assess convergence.
+
 ## Legacy behavior intentionally corrected
 
 - reconstructed failures never remove generated events from the denominator;

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import argparse
+import contextlib
+import io
 import sys
 from pathlib import Path
 import tempfile
@@ -28,6 +31,7 @@ from eppi0.radiative_correction import (
     support_status_codes,
 )
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
+from run_analysis import command_bin_centering_merge
 
 
 class BinningTests(unittest.TestCase):
@@ -276,8 +280,76 @@ class BinCenteringTests(unittest.TestCase):
         result = compute_bin_centering(bins, 6.535, flat_d4sigma, samples_per_dimension=2)
         self.assertEqual(result.c_bc.shape, bins.shape)
         self.assertTrue(np.all(result.reliable))
+        self.assertTrue(np.all(result.computed))
         np.testing.assert_allclose(result.c_bc, 1.0, rtol=1e-12, atol=1e-12)
         self.assertTrue(np.all(result.n_physical > 0))
+
+    def test_partial_bin_centering_merge_matches_full_result(self) -> None:
+        bins = AnalysisBinning([1.2, 1.3, 1.4], [0.25, 0.35], [0.15, 0.25], [0.0, 180.0])
+
+        def flat_d4sigma(points: np.ndarray) -> np.ndarray:
+            flux = virtual_photon_flux(points[:, 1], points[:, 0], 6.535)
+            return np.divide(1.0, flux, out=np.full(points.shape[0], np.nan), where=flux > 0.0)
+
+        full = compute_bin_centering(bins, 6.535, flat_d4sigma, samples_per_dimension=2)
+        first = compute_bin_centering(bins, 6.535, flat_d4sigma, samples_per_dimension=2, bin_start=0, bin_stop=1)
+        second = compute_bin_centering(bins, 6.535, flat_d4sigma, samples_per_dimension=2, bin_start=1, bin_stop=2)
+        self.assertLess(np.count_nonzero(first.computed), full.computed.size)
+        self.assertLess(np.count_nonzero(second.computed), full.computed.size)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            first_path = tmpdir / "bc_0.npz"
+            second_path = tmpdir / "bc_1.npz"
+            merged_path = tmpdir / "bc_merged.npz"
+            _write_bin_centering_test_artifact(first_path, bins, first, bin_start=0, bin_stop=1)
+            _write_bin_centering_test_artifact(second_path, bins, second, bin_start=1, bin_stop=2)
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_bin_centering_merge(argparse.Namespace(partials=[first_path, second_path], output=merged_path))
+            merged = np.load(merged_path, allow_pickle=False)
+            np.testing.assert_allclose(merged["C_BC"], full.c_bc)
+            np.testing.assert_array_equal(merged["reliable"], full.reliable)
+            np.testing.assert_array_equal(merged["computed"], full.computed)
+
+
+def _write_bin_centering_test_artifact(
+    path: Path,
+    bins: AnalysisBinning,
+    result,
+    *,
+    bin_start: int,
+    bin_stop: int,
+) -> None:
+    np.savez_compressed(
+        path,
+        C_BC=result.c_bc,
+        reliable=result.reliable,
+        computed=result.computed,
+        average_d4sigma=result.average_d4sigma,
+        center_d4sigma=result.center_d4sigma,
+        xB_center=result.xB_center,
+        q2_center=result.q2_center,
+        minus_t_center=result.minus_t_center,
+        phi_center=result.phi_center,
+        n_physical=result.n_physical,
+        n_valid=result.n_valid,
+        n_failed=result.n_failed,
+        physical_fraction=result.physical_fraction,
+        failure_fraction=result.failure_fraction,
+        q2_edges=bins.q2_edges,
+        xb_edges=bins.xb_edges,
+        t_edges=bins.t_edges,
+        phi_edges=bins.phi_edges,
+        beam_energy=6.535,
+        samples_per_dimension=2,
+        max_failure_fraction=0.0,
+        theory=5,
+        channel=1,
+        resonance=0,
+        bin_start=bin_start,
+        bin_stop=bin_stop,
+        total_3d_bins=2,
+    )
 
 
 def _lund_event(*, pi0: bool) -> str:
