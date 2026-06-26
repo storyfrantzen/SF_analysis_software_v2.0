@@ -296,7 +296,12 @@ def _iter_lund_chunks(
 def _lund_files(pattern_or_dir: str | Path) -> list[Path]:
     path = Path(pattern_or_dir)
     if path.is_dir():
-        files = sorted(item for item in path.rglob("*.txt") if item.is_file())
+        files = sorted(
+            item
+            for ext in ("*.txt", "*.lund")
+            for item in path.rglob(ext)
+            if item.is_file()
+        )
     else:
         files = sorted(Path(item) for item in glob.glob(str(pattern_or_dir)))
     return [item for item in files if item.stat().st_size > 0 and _looks_text(item)]
