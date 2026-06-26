@@ -66,7 +66,9 @@ python3 analysis/run_analysis.py response mc_events.npz \
   --config configs/analysis/rgk/6.535.json --output-dir results/response
 
 python3 analysis/run_analysis.py radiative-correction born_lund/ rad_lund/ \
-  --config configs/analysis/rgk/6.535.json --output results/C_rad.npz
+  --config configs/analysis/rgk/6.535.json --output results/C_rad.npz \
+  --diagnostic-pdf results/C_rad_diagnostics.pdf \
+  --diagnostic-csv results/C_rad_diagnostics.csv
 
 python3 analysis/run_analysis.py unfold data_events.npz \
   results/response/response_matrix.npz results/response/response_meta.npz \
@@ -185,7 +187,12 @@ artifact consumed by `unfold --radiative-correction`; reliability masks and
 correction uncertainties are propagated into the self-contained unfolding
 result. The artifact also stores support diagnostics: per-bin born/radiative
 counts, overlap and status masks, and generated `Q2`/`Eprime` ranges for each
-sample.
+sample. Regenerate the diagnostic report later without rereading LUND files:
+
+```bash
+python3 analysis/run_analysis.py radiative-correction-plots results/C_rad.npz \
+  --output results/C_rad_diagnostics.pdf --csv results/C_rad_diagnostics.csv
+```
 
 ## Legacy behavior intentionally corrected
 

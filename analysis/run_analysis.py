@@ -90,9 +90,31 @@ def parser() -> argparse.ArgumentParser:
     radcorr.add_argument("--max-events", type=int)
     radcorr.add_argument("--min-counts", type=int, default=5)
     radcorr.add_argument(
+        "--diagnostic-pdf",
+        type=Path,
+        help="Optional multi-page PDF with C_rad vs phi and support diagnostics",
+    )
+    radcorr.add_argument(
+        "--diagnostic-csv",
+        type=Path,
+        help="Optional CSV summary for the diagnostic PDF phi pages",
+    )
+    radcorr.add_argument(
         "--normalization-ratio",
         type=float,
         help="Override the default N_radiative/N_born normalization ratio",
+    )
+
+    radcorr_plots = commands.add_parser(
+        "radiative-correction-plots",
+        help="Create a diagnostic PDF from a radiative-correction NPZ",
+    )
+    radcorr_plots.add_argument("correction", type=Path)
+    radcorr_plots.add_argument("--output", type=Path, required=True)
+    radcorr_plots.add_argument(
+        "--csv",
+        type=Path,
+        help="Optional CSV summary for the per-(Q2,xB,-t) phi pages",
     )
 
     xsec = commands.add_parser("cross-section", help="Normalize unfolded yields")
@@ -402,6 +424,13 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         ]),
         phi_convention="electron-proton trento plane",
     )
+    if args.diagnostic_pdf:
+        pages = _plot_radiative_correction_diagnostics(
+            args.output,
+            args.diagnostic_pdf,
+            csv_path=args.diagnostic_csv,
+        )
+        print(f"Wrote radiative-correction diagnostic PDF with {pages} pages: {args.diagnostic_pdf}")
     reliable_bins = int(np.count_nonzero(result.reliable))
     total_bins = int(result.reliable.size)
     support_counts = np.bincount(result.support_status.ravel(), minlength=7)
@@ -436,6 +465,424 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
     )
     print(f"Normalization ratio: {result.normalization_ratio:.8g}")
     print(f"Wrote {args.output}")
+
+
+def command_radiative_correction_plots(args: argparse.Namespace) -> None:
+    pages = _plot_radiative_correction_diagnostics(args.correction, args.output, csv_path=args.csv)
+    print(f"Wrote radiative-correction diagnostic PDF with {pages} pages: {args.output}")
+
+
+def _plot_radiative_correction_diagnostics(
+    correction_path: Path,
+    pdf_path: Path,
+    csv_path: Path | None = None,
+) -> int:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    correction = np.load(correction_path, allow_pickle=False)
+    c_rad = np.asarray(correction["C_rad"], dtype=float)
+    delta_c = np.asarray(correction["delta_C"], dtype=float)
+    reliable = np.asarray(correction["reliable"], dtype=bool)
+    h_born = np.asarray(correction["H_born"], dtype=float)
+    h_rad = np.asarray(correction["H_rad"], dtype=float)
+    q2_edges = _npz_first(correction, "q2_edges", "Q2_edges")
+    xb_edges = _npz_first(correction, "xb_edges", "Xb_edges")
+    t_edges = _npz_first(correction, "t_edges")
+    phi_edges = _npz_first(correction, "phi_edges")
+    min_counts = int(np.asarray(correction["min_counts"]).item()) if "min_counts" in correction.files else 5
+    if "support_status" in correction.files:
+        support_status = np.asarray(correction["support_status"], dtype=np.uint8)
+    else:
+        support_status = _support_status_codes_for_plotting(h_born, h_rad, min_counts)
+    if "support_overlap" in correction.files:
+        support_overlap = np.asarray(correction["support_overlap"], dtype=bool)
+    else:
+        support_overlap = (h_born > 0.0) & (h_rad > 0.0)
+
+    expected_shape = (
+        q2_edges.size - 1,
+        xb_edges.size - 1,
+        t_edges.size - 1,
+        phi_edges.size - 1,
+    )
+    for name, values in (
+        ("C_rad", c_rad),
+        ("delta_C", delta_c),
+        ("reliable", reliable),
+        ("H_born", h_born),
+        ("H_rad", h_rad),
+        ("support_status", support_status),
+    ):
+        if values.shape != expected_shape:
+            raise ValueError(f"{name} has shape {values.shape}; expected {expected_shape}")
+
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    if csv_path is not None:
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    phi_centers = 0.5 * (phi_edges[:-1] + phi_edges[1:])
+    status_labels = (
+        "reliable",
+        "both empty",
+        "born only",
+        "radiative only",
+        "low born",
+        "low radiative",
+        "low both",
+    )
+    status_colors = {
+        0: "#1b9e77",
+        1: "#c7c7c7",
+        2: "#7570b3",
+        3: "#e7298a",
+        4: "#d95f02",
+        5: "#e6ab02",
+        6: "#666666",
+    }
+    csv_lines = [
+        "iq2,q2_low,q2_high,ixb,xb_low,xb_high,it,t_low,t_high,"
+        "reliable_phi_bins,overlap_phi_bins,born_sum,radiative_sum,"
+        "mean_c_rad,median_c_rad,min_c_rad,max_c_rad,mean_delta_c"
+    ]
+
+    pages = 0
+    with PdfPages(pdf_path) as pdf:
+        _plot_radcorr_summary_page(
+            pdf,
+            correction_path,
+            c_rad,
+            delta_c,
+            reliable,
+            support_overlap,
+            support_status,
+            h_born,
+            h_rad,
+            correction,
+            min_counts,
+        )
+        pages += 1
+
+        _plot_radcorr_status_page(pdf, support_status, status_labels, status_colors)
+        pages += 1
+
+        _plot_radcorr_histograms(pdf, c_rad, delta_c, reliable)
+        pages += 1
+
+        _plot_radcorr_reliable_fraction_heatmap(pdf, reliable, q2_edges, xb_edges)
+        pages += 1
+
+        for iq2 in range(c_rad.shape[0]):
+            for ixb in range(c_rad.shape[1]):
+                for it in range(c_rad.shape[2]):
+                    born_phi = h_born[iq2, ixb, it, :]
+                    rad_phi = h_rad[iq2, ixb, it, :]
+                    if not np.any((born_phi > 0.0) | (rad_phi > 0.0)):
+                        continue
+                    reliable_phi = reliable[iq2, ixb, it, :]
+                    overlap_phi = support_overlap[iq2, ixb, it, :]
+                    values = c_rad[iq2, ixb, it, :]
+                    errors = delta_c[iq2, ixb, it, :]
+                    status_phi = support_status[iq2, ixb, it, :]
+                    _plot_radcorr_phi_page(
+                        pdf,
+                        phi_centers,
+                        values,
+                        errors,
+                        reliable_phi,
+                        status_phi,
+                        born_phi,
+                        rad_phi,
+                        q2_edges,
+                        xb_edges,
+                        t_edges,
+                        iq2,
+                        ixb,
+                        it,
+                        status_labels,
+                        status_colors,
+                    )
+                    pages += 1
+                    good = reliable_phi & np.isfinite(values)
+                    csv_lines.append(
+                        ",".join(
+                            str(item)
+                            for item in (
+                                iq2,
+                                q2_edges[iq2],
+                                q2_edges[iq2 + 1],
+                                ixb,
+                                xb_edges[ixb],
+                                xb_edges[ixb + 1],
+                                it,
+                                t_edges[it],
+                                t_edges[it + 1],
+                                int(np.count_nonzero(reliable_phi)),
+                                int(np.count_nonzero(overlap_phi)),
+                                float(np.sum(born_phi)),
+                                float(np.sum(rad_phi)),
+                                float(np.nanmean(values[good])) if np.any(good) else np.nan,
+                                float(np.nanmedian(values[good])) if np.any(good) else np.nan,
+                                float(np.nanmin(values[good])) if np.any(good) else np.nan,
+                                float(np.nanmax(values[good])) if np.any(good) else np.nan,
+                                float(np.nanmean(errors[good])) if np.any(good) else np.nan,
+                            )
+                        )
+                    )
+
+    if csv_path is not None:
+        csv_path.write_text("\n".join(csv_lines) + "\n", encoding="utf-8")
+    return pages
+
+
+def _npz_first(data, *keys: str) -> np.ndarray:
+    for key in keys:
+        if key in data.files:
+            return np.asarray(data[key], dtype=float)
+    raise KeyError(f"NPZ is missing one of: {', '.join(keys)}")
+
+
+def _support_status_codes_for_plotting(
+    born_counts: np.ndarray,
+    radiative_counts: np.ndarray,
+    min_counts: int,
+) -> np.ndarray:
+    born_nonzero = born_counts > 0.0
+    rad_nonzero = radiative_counts > 0.0
+    born_low = born_counts < min_counts
+    rad_low = radiative_counts < min_counts
+    status = np.zeros(born_counts.shape, dtype=np.uint8)
+    status[~born_nonzero & ~rad_nonzero] = 1
+    status[born_nonzero & ~rad_nonzero] = 2
+    status[~born_nonzero & rad_nonzero] = 3
+    both = born_nonzero & rad_nonzero
+    status[both & born_low & ~rad_low] = 4
+    status[both & ~born_low & rad_low] = 5
+    status[both & born_low & rad_low] = 6
+    return status
+
+
+def _plot_radcorr_summary_page(
+    pdf,
+    correction_path: Path,
+    c_rad: np.ndarray,
+    delta_c: np.ndarray,
+    reliable: np.ndarray,
+    support_overlap: np.ndarray,
+    support_status: np.ndarray,
+    h_born: np.ndarray,
+    h_rad: np.ndarray,
+    correction,
+    min_counts: int,
+) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    good = reliable & np.isfinite(c_rad)
+    lines = [
+        "Radiative-correction diagnostics",
+        "",
+        f"Source: {correction_path}",
+        f"4D shape: {c_rad.shape}",
+        f"Total bins: {c_rad.size}",
+        f"Reliable phi bins: {np.count_nonzero(reliable)}",
+        f"Overlap phi bins: {np.count_nonzero(support_overlap)}",
+        f"min_counts: {min_counts}",
+        f"Born total in-range count: {np.sum(h_born):.8g}",
+        f"Radiative total in-range count: {np.sum(h_rad):.8g}",
+        f"Normalization ratio: {_optional_scalar(correction, 'normalization_ratio'):.8g}",
+        f"Mean C_rad reliable: {np.nanmean(c_rad[good]) if np.any(good) else np.nan:.8g}",
+        f"Median C_rad reliable: {np.nanmedian(c_rad[good]) if np.any(good) else np.nan:.8g}",
+        f"Mean delta_C reliable: {np.nanmean(delta_c[good]) if np.any(good) else np.nan:.8g}",
+        "",
+        _range_line(correction, "born_generated_q2_range", "Born generated Q2"),
+        _range_line(correction, "radiative_generated_q2_range", "Radiative generated Q2"),
+        _range_line(correction, "born_generated_eprime_range", "Born generated Eprime"),
+        _range_line(correction, "radiative_generated_eprime_range", "Radiative generated Eprime"),
+        "",
+        "support_status codes: 0 reliable, 1 both empty, 2 born only,",
+        "3 radiative only, 4 low born, 5 low radiative, 6 low both.",
+    ]
+    counts = np.bincount(support_status.ravel(), minlength=7)
+    lines.append("")
+    lines.append("Status counts: " + ", ".join(f"{idx}={int(count)}" for idx, count in enumerate(counts[:7])))
+    fig = plt.figure(figsize=(11, 8.5))
+    fig.text(0.06, 0.94, "\n".join(lines), va="top", ha="left", family="monospace", fontsize=11)
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _plot_radcorr_status_page(pdf, support_status, status_labels, status_colors) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    counts = np.bincount(support_status.ravel(), minlength=len(status_labels))
+    fig, ax = plt.subplots(figsize=(10, 5.5))
+    x = np.arange(len(status_labels))
+    ax.bar(x, counts, color=[status_colors[index] for index in range(len(status_labels))])
+    ax.set_xticks(x)
+    ax.set_xticklabels(status_labels, rotation=25, ha="right")
+    ax.set_ylabel("Phi bins")
+    ax.set_title("Radiative-correction support status")
+    ax.grid(True, axis="y", alpha=0.25)
+    for index, count in enumerate(counts):
+        ax.text(index, count, str(int(count)), ha="center", va="bottom", fontsize=8)
+    fig.tight_layout()
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _plot_radcorr_histograms(pdf, c_rad, delta_c, reliable) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    good = reliable & np.isfinite(c_rad) & np.isfinite(delta_c)
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.8))
+    if np.any(good):
+        axes[0].hist(c_rad[good], bins=80, histtype="stepfilled", color="#4c78a8", alpha=0.75)
+        axes[1].hist(delta_c[good], bins=80, histtype="stepfilled", color="#f58518", alpha=0.75)
+    axes[0].axvline(1.0, color="black", linestyle="--", linewidth=1.0)
+    axes[0].set_xlabel("C_rad")
+    axes[0].set_ylabel("Reliable phi bins")
+    axes[0].set_title("C_rad distribution")
+    axes[1].set_xlabel("delta_C")
+    axes[1].set_title("Correction uncertainty distribution")
+    for ax in axes:
+        ax.grid(True, alpha=0.25)
+    fig.tight_layout()
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _plot_radcorr_reliable_fraction_heatmap(pdf, reliable, q2_edges, xb_edges) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    fraction = np.mean(reliable, axis=(2, 3))
+    fig, ax = plt.subplots(figsize=(9, 6))
+    image = ax.imshow(
+        fraction,
+        origin="lower",
+        aspect="auto",
+        vmin=0.0,
+        vmax=1.0,
+        extent=[xb_edges[0], xb_edges[-1], q2_edges[0], q2_edges[-1]],
+        cmap="viridis",
+    )
+    fig.colorbar(image, ax=ax, label="Reliable fraction across -t and phi")
+    ax.set_xlabel("xB")
+    ax.set_ylabel("Q2 [GeV^2]")
+    ax.set_title("Reliable-bin coverage by Q2 and xB")
+    fig.tight_layout()
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _plot_radcorr_phi_page(
+    pdf,
+    phi_centers,
+    c_rad,
+    delta_c,
+    reliable,
+    status,
+    born_counts,
+    rad_counts,
+    q2_edges,
+    xb_edges,
+    t_edges,
+    iq2,
+    ixb,
+    it,
+    status_labels,
+    status_colors,
+) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    fig, (ax, cax) = plt.subplots(
+        2,
+        1,
+        figsize=(8.5, 7.0),
+        sharex=True,
+        gridspec_kw={"height_ratios": [2.0, 1.0]},
+    )
+    if np.any(reliable):
+        ax.errorbar(
+            phi_centers[reliable],
+            c_rad[reliable],
+            yerr=delta_c[reliable],
+            fmt="o",
+            color=status_colors[0],
+            ecolor=status_colors[0],
+            elinewidth=0.8,
+            capsize=2,
+            markersize=4,
+            label=status_labels[0],
+        )
+    for code in range(1, len(status_labels)):
+        mask = status == code
+        if np.any(mask):
+            ax.scatter(
+                phi_centers[mask],
+                c_rad[mask],
+                s=26,
+                color=status_colors[code],
+                label=status_labels[code],
+                zorder=3,
+            )
+    ax.axhline(1.0, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
+    ax.set_ylabel("C_rad")
+    ax.set_title(
+        "Radiative correction vs phi\n"
+        f"Q2 {q2_edges[iq2]:g}-{q2_edges[iq2 + 1]:g}, "
+        f"xB {xb_edges[ixb]:g}-{xb_edges[ixb + 1]:g}, "
+        f"-t {t_edges[it]:g}-{t_edges[it + 1]:g}"
+    )
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="best", fontsize="x-small", ncol=2)
+
+    cax.plot(phi_centers, born_counts, "o-", color="#4c78a8", markersize=3, linewidth=1.0, label="born")
+    cax.plot(phi_centers, rad_counts, "s-", color="#f58518", markersize=3, linewidth=1.0, label="radiative")
+    if np.nanmax(np.r_[born_counts, rad_counts]) > 0:
+        cax.set_yscale("symlog", linthresh=1.0)
+    cax.set_xlabel("phi bin center [deg]")
+    cax.set_ylabel("Generated counts")
+    cax.grid(True, alpha=0.25)
+    cax.legend(loc="best", fontsize="small")
+    cax.set_xlim(float(phi_centers[0]), float(phi_centers[-1]))
+    fig.tight_layout()
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _optional_scalar(data, key: str) -> float:
+    if key not in data.files:
+        return np.nan
+    value = np.asarray(data[key])
+    return float(value.item()) if value.shape == () else float(value.ravel()[0])
+
+
+def _range_line(data, key: str, label: str) -> str:
+    if key not in data.files:
+        return f"{label}: not stored"
+    values = np.asarray(data[key], dtype=float).ravel()
+    if values.size < 2:
+        return f"{label}: not stored"
+    return f"{label}: {values[0]:.8g} to {values[1]:.8g}"
+
+
+def _prepare_matplotlib_cache() -> None:
+    import os
+    import tempfile
+
+    cache_root = Path(tempfile.gettempdir())
+    mpl_dir = cache_root / "sf_analysis_matplotlib"
+    xdg_dir = cache_root / "sf_analysis_xdg_cache"
+    mpl_dir.mkdir(parents=True, exist_ok=True)
+    xdg_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(mpl_dir))
+    os.environ.setdefault("XDG_CACHE_HOME", str(xdg_dir))
 
 
 def command_cross_section(args: argparse.Namespace) -> None:
@@ -1347,6 +1794,8 @@ def main() -> int:
         command_unfold(args)
     elif args.command == "radiative-correction":
         command_radiative_correction(args)
+    elif args.command == "radiative-correction-plots":
+        command_radiative_correction_plots(args)
     elif args.command == "cross-section":
         command_cross_section(args)
     elif args.command == "fit-harmonics":
