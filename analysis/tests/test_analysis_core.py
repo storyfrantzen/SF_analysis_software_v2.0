@@ -26,6 +26,7 @@ from eppi0.exclusivity import apply_cuts, derive_cuts
 from eppi0.harmonics import fit_phi
 from eppi0.response import build_response, build_response_from_counts
 from eppi0.radiative_correction import (
+    _lund_files,
     compute_radiative_correction,
     histogram_lund,
     support_status_codes,
@@ -223,6 +224,18 @@ class RadiativeCorrectionTests(unittest.TestCase):
         self.assertEqual(result.counts.sum(), 1.0)
         self.assertTrue(np.isfinite(result.generated_q2_min))
         self.assertTrue(np.isfinite(result.generated_eprime_max))
+
+    def test_lund_directory_accepts_non_txt_lund_files(self) -> None:
+        bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            (tmpdir / "job.log").write_text("not a LUND file\n", encoding="utf-8")
+            path = tmpdir / "events.lund"
+            path.write_text(_lund_event(pi0=False), encoding="utf-8")
+            self.assertEqual(_lund_files(tmpdir), [path])
+            result = histogram_lund(tmpdir, bins, beam_energy=6.535, chunk_size=1)
+        self.assertEqual(result.files, 1)
+        self.assertEqual(result.topology_events, 1)
 
     def test_radiative_correction_keeps_native_4d_shape(self) -> None:
         bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])

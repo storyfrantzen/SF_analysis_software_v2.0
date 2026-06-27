@@ -122,7 +122,10 @@ def histogram_lund(
         raise ValueError("max_events must be positive when provided")
     files = _lund_files(pattern_or_dir)
     if not files:
-        raise FileNotFoundError(f"No LUND text files matched: {pattern_or_dir}")
+        raise FileNotFoundError(
+            f"No LUND-like text files matched: {pattern_or_dir}. "
+            "Directories are scanned recursively for text files with LUND event headers."
+        )
     counts = np.zeros(binning.size, dtype=float)
     q2_min = np.full(binning.size, np.inf)
     q2_max = np.full(binning.size, -np.inf)
@@ -296,15 +299,22 @@ def _iter_lund_chunks(
 def _lund_files(pattern_or_dir: str | Path) -> list[Path]:
     path = Path(pattern_or_dir)
     if path.is_dir():
-        files = sorted(
-            item
-            for ext in ("*.txt", "*.lund")
-            for item in path.rglob(ext)
-            if item.is_file()
-        )
+        candidates = sorted(item for item in path.rglob("*.txt") if item.is_file())
+        files = _filter_lund_files(candidates)
+        if files:
+            return files
+        candidates = sorted(item for item in path.rglob("*") if item.is_file())
     else:
-        files = sorted(Path(item) for item in glob.glob(str(pattern_or_dir)))
-    return [item for item in files if item.stat().st_size > 0 and _looks_text(item)]
+        candidates = sorted(Path(item) for item in glob.glob(str(pattern_or_dir)))
+    return _filter_lund_files(candidates)
+
+
+def _filter_lund_files(candidates: Iterable[Path]) -> list[Path]:
+    return [
+        item
+        for item in candidates
+        if item.stat().st_size > 0 and _looks_text(item) and _looks_lund_header(item)
+    ]
 
 
 def _looks_text(path: Path, nbytes: int = 4096) -> bool:
@@ -320,6 +330,25 @@ def _looks_text(path: Path, nbytes: int = 4096) -> bool:
     except UnicodeDecodeError:
         return False
     return True
+
+
+def _looks_lund_header(path: Path, max_lines: int = 50) -> bool:
+    try:
+        with path.open("r", errors="replace") as source:
+            for _ in range(max_lines):
+                line = source.readline()
+                if not line:
+                    return False
+                fields = line.split()
+                if not fields:
+                    continue
+                try:
+                    return int(fields[0]) > 0
+                except ValueError:
+                    continue
+    except OSError:
+        return False
+    return False
 
 
 def _update_global_ranges(stats: _LundStats, q2: Array, eprime: Array) -> None:
