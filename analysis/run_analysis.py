@@ -91,6 +91,12 @@ def parser() -> argparse.ArgumentParser:
     radcorr.add_argument("--max-events", type=int)
     radcorr.add_argument("--min-counts", type=int, default=5)
     radcorr.add_argument(
+        "--progress-chunks",
+        type=int,
+        default=10,
+        help="Print one progress line every N LUND chunks; use 0 to disable",
+    )
+    radcorr.add_argument(
         "--diagnostic-pdf",
         type=Path,
         help="Optional multi-page PDF with C_rad vs phi and support diagnostics",
@@ -139,6 +145,12 @@ def parser() -> argparse.ArgumentParser:
     bin_centering.add_argument("--N", type=int, default=4, help="Midpoint samples per dimension")
     bin_centering.add_argument("--workers", type=int, default=None)
     bin_centering.add_argument("--chunk-size", type=int, default=64)
+    bin_centering.add_argument(
+        "--progress-chunks",
+        type=int,
+        default=10,
+        help="Print one progress line every N assigned 3D bins; use 0 to disable",
+    )
     bin_centering.add_argument(
         "--bin-start",
         type=int,
@@ -433,6 +445,7 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         max_events=args.max_events,
         min_counts=args.min_counts,
         normalization_ratio=args.normalization_ratio,
+        progress_chunks=args.progress_chunks,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -971,6 +984,7 @@ def command_bin_centering(args: argparse.Namespace) -> None:
             max_failure_fraction=args.max_failure_fraction,
             bin_start=bin_start,
             bin_stop=bin_stop,
+            progress_chunks=args.progress_chunks,
         )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

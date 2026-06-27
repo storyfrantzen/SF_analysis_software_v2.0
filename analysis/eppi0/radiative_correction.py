@@ -53,6 +53,7 @@ def compute_radiative_correction(
     max_events: int | None = None,
     min_counts: int = 5,
     normalization_ratio: float | None = None,
+    progress_chunks: int = 10,
 ) -> RadiativeCorrectionResult:
     """Compute bin-by-bin radiative corrections from Born and radiative LUND samples.
 
@@ -68,6 +69,8 @@ def compute_radiative_correction(
         beam_energy=beam_energy,
         chunk_size=chunk_size,
         max_events=max_events,
+        progress_chunks=progress_chunks,
+        progress_label="Born",
     )
     radiative_result = histogram_lund(
         radiative,
@@ -75,6 +78,8 @@ def compute_radiative_correction(
         beam_energy=beam_energy,
         chunk_size=chunk_size,
         max_events=max_events,
+        progress_chunks=progress_chunks,
+        progress_label="Radiative",
     )
     if born_result.topology_events == 0:
         raise ValueError(f"Born sample has no valid generated e p pi0 events: {born}")
@@ -117,6 +122,8 @@ def histogram_lund(
     beam_energy: float,
     chunk_size: int = 200_000,
     max_events: int | None = None,
+    progress_chunks: int = 10,
+    progress_label: str = "LUND",
 ) -> LundHistogramResult:
     if max_events is not None and max_events <= 0:
         raise ValueError("max_events must be positive when provided")
@@ -133,7 +140,10 @@ def histogram_lund(
     eprime_max = np.full(binning.size, -np.inf)
     stats = _LundStats(files=len(files))
 
-    for electron, proton in _iter_lund_chunks(files, chunk_size, max_events, stats):
+    for chunk_index, (electron, proton) in enumerate(
+        _iter_lund_chunks(files, chunk_size, max_events, stats),
+        start=1,
+    ):
         q2, xb = _dis(electron, beam_energy)
         eprime = electron[:, 3]
         _update_global_ranges(stats, q2, eprime)
@@ -149,6 +159,12 @@ def histogram_lund(
             np.minimum.at(eprime_min, inside_flat, eprime[inside])
             np.maximum.at(eprime_max, inside_flat, eprime[inside])
         stats.in_range += int(np.count_nonzero(inside))
+        if progress_chunks > 0 and chunk_index % progress_chunks == 0:
+            print(
+                f"[PROGRESS] {progress_label} LUND chunks {chunk_index}: "
+                f"seen={stats.events_seen}, topology={stats.topology_events}, "
+                f"in-range={stats.in_range}"
+            )
 
     q2_min = np.where(np.isfinite(q2_min), q2_min, np.nan)
     q2_max = np.where(np.isfinite(q2_max), q2_max, np.nan)

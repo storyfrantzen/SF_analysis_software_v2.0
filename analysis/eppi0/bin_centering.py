@@ -125,6 +125,7 @@ def compute_bin_centering(
     max_failure_fraction: float = 0.0,
     bin_start: int = 0,
     bin_stop: int | None = None,
+    progress_chunks: int = 0,
 ) -> BinCenteringResult:
     """Compute C_BC = <d4sigma>_physical_bin / d4sigma(reference point)."""
     if samples_per_dimension <= 0:
@@ -155,6 +156,8 @@ def compute_bin_centering(
     failure_fraction = np.ones(shape, dtype=float)
 
     total_grid_points = samples_per_dimension**4
+    assigned_3d_bins = bin_stop - bin_start
+    processed_3d_bins = 0
     for iq2, (q2_lo, q2_hi) in enumerate(zip(binning.q2_edges[:-1], binning.q2_edges[1:])):
         q2_points = midpoint_grid(q2_lo, q2_hi, samples_per_dimension)
         for ixb, (xb_lo, xb_hi) in enumerate(zip(binning.xb_edges[:-1], binning.xb_edges[1:])):
@@ -164,6 +167,7 @@ def compute_bin_centering(
                 if flat_3d < bin_start or flat_3d >= bin_stop:
                     continue
                 computed[iq2, ixb, it, :] = True
+                processed_3d_bins += 1
 
                 minus_t_points = midpoint_grid(mt_lo, mt_hi, samples_per_dimension)
                 q2_mesh, xb_mesh, minus_t_mesh = np.meshgrid(
@@ -175,6 +179,14 @@ def compute_bin_centering(
                 signed_t_mesh = -minus_t_mesh
                 physical = physical_mask(xb_mesh, q2_mesh, signed_t_mesh, beam_energy)
                 if not np.any(physical):
+                    _report_bin_centering_progress(
+                        progress_chunks,
+                        processed_3d_bins,
+                        assigned_3d_bins,
+                        reliable,
+                        computed,
+                        n_physical,
+                    )
                     continue
 
                 q2_phys = q2_mesh[physical]
@@ -226,6 +238,14 @@ def compute_bin_centering(
                     if np.isfinite(center[index]) and center[index] > 0.0:
                         c_bc[index] = average[index] / center[index]
                         reliable[index] = np.isfinite(c_bc[index]) and c_bc[index] > 0.0 and failure_fraction[index] <= max_failure_fraction
+                _report_bin_centering_progress(
+                    progress_chunks,
+                    processed_3d_bins,
+                    assigned_3d_bins,
+                    reliable,
+                    computed,
+                    n_physical,
+                )
 
     return BinCenteringResult(
         c_bc=c_bc,
@@ -242,6 +262,26 @@ def compute_bin_centering(
         n_failed=n_failed,
         physical_fraction=physical_fraction,
         failure_fraction=failure_fraction,
+    )
+
+
+def _report_bin_centering_progress(
+    progress_chunks: int,
+    processed_3d_bins: int,
+    assigned_3d_bins: int,
+    reliable: Array,
+    computed: Array,
+    n_physical: Array,
+) -> None:
+    if progress_chunks <= 0 or processed_3d_bins % progress_chunks != 0:
+        return
+    reliable_so_far = int(np.count_nonzero(reliable & computed))
+    physical_so_far = int(np.count_nonzero(n_physical))
+    print(
+        f"[PROGRESS] bin-centering 3D bins "
+        f"{processed_3d_bins}/{assigned_3d_bins} "
+        f"({100.0 * processed_3d_bins / max(assigned_3d_bins, 1):.1f}%), "
+        f"physical phi bins={physical_so_far}, reliable phi bins={reliable_so_far}"
     )
 
 

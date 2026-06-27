@@ -69,6 +69,7 @@ python3 analysis/run_analysis.py response mc_events.npz \
 
 python3 analysis/run_analysis.py radiative-correction born_lund/ rad_lund/ \
   --config configs/analysis/rgk/6.535.json --output results/C_rad.npz \
+  --progress-chunks 10 \
   --diagnostic-pdf results/C_rad_diagnostics.pdf \
   --diagnostic-csv results/C_rad_diagnostics.csv
 
@@ -79,7 +80,7 @@ python3 analysis/run_analysis.py unfold data_events.npz \
 
 python3 analysis/run_analysis.py bin-centering \
   --config configs/analysis/rgk/6.535.json --output results/C_BC.npz \
-  --exe /path/to/aao_xsec --N 4 --workers 8
+  --exe /path/to/aao_xsec --N 4 --workers 8 --progress-chunks 10
 
 python3 analysis/run_analysis.py cross-section results/unfolding.npz \
   --config configs/analysis/rgk/6.535.json --output results/cross_section.npz \
@@ -223,7 +224,7 @@ python3 analysis/run_analysis.py bin-centering \
   --config configs/analysis/rgk/6.535.json \
   --output results/bc_parts/C_BC_N4_part000.npz \
   --exe /path/to/aao_xsec --N 4 --workers 8 \
-  --bin-chunks 100 --bin-chunk-index 0
+  --progress-chunks 10 --bin-chunks 100 --bin-chunk-index 0
 ```
 
 For Slurm, use a zero-based array such as `--array=0-99` and pass
