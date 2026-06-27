@@ -93,7 +93,7 @@ def parser() -> argparse.ArgumentParser:
     radcorr.add_argument(
         "--progress-chunks",
         type=int,
-        default=10,
+        default=1,
         help="Print one progress line every N LUND chunks; use 0 to disable",
     )
     radcorr.add_argument(

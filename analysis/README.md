@@ -69,7 +69,7 @@ python3 analysis/run_analysis.py response mc_events.npz \
 
 python3 analysis/run_analysis.py radiative-correction born_lund/ rad_lund/ \
   --config configs/analysis/rgk/6.535.json --output results/C_rad.npz \
-  --progress-chunks 10 \
+  --progress-chunks 1 \
   --diagnostic-pdf results/C_rad_diagnostics.pdf \
   --diagnostic-csv results/C_rad_diagnostics.csv
 

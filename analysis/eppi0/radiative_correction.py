@@ -53,7 +53,7 @@ def compute_radiative_correction(
     max_events: int | None = None,
     min_counts: int = 5,
     normalization_ratio: float | None = None,
-    progress_chunks: int = 10,
+    progress_chunks: int = 0,
 ) -> RadiativeCorrectionResult:
     """Compute bin-by-bin radiative corrections from Born and radiative LUND samples.
 
@@ -122,7 +122,7 @@ def histogram_lund(
     beam_energy: float,
     chunk_size: int = 200_000,
     max_events: int | None = None,
-    progress_chunks: int = 10,
+    progress_chunks: int = 0,
     progress_label: str = "LUND",
 ) -> LundHistogramResult:
     if max_events is not None and max_events <= 0:
@@ -140,8 +140,14 @@ def histogram_lund(
     eprime_max = np.full(binning.size, -np.inf)
     stats = _LundStats(files=len(files))
 
+    if progress_chunks > 0:
+        print(
+            f"[PROGRESS] {progress_label} LUND files found: {len(files)}; "
+            f"chunk_size={chunk_size}, progress_chunks={progress_chunks}"
+        )
+
     for chunk_index, (electron, proton) in enumerate(
-        _iter_lund_chunks(files, chunk_size, max_events, stats),
+        _iter_lund_chunks(files, chunk_size, max_events, stats, progress_chunks, progress_label),
         start=1,
     ):
         q2, xb = _dis(electron, beam_energy)
@@ -232,17 +238,25 @@ class _LundStats:
 
 
 def _iter_lund_chunks(
-    files: Iterable[Path],
+    files: list[Path],
     chunk_size: int,
     max_events: int | None,
     stats: _LundStats,
+    progress_chunks: int = 0,
+    progress_label: str = "LUND",
 ):
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
     electron_rows: list[tuple[float, float, float, float]] = []
     proton_rows: list[tuple[float, float, float, float]] = []
+    progress_events = chunk_size * progress_chunks if progress_chunks > 0 else 0
+    next_event_progress = progress_events
 
-    for filename in files:
+    for file_index, filename in enumerate(files, start=1):
+        if progress_chunks > 0 and (file_index == 1 or file_index % progress_chunks == 0):
+            print(
+                f"[PROGRESS] {progress_label} LUND file {file_index}/{len(files)}: {filename}"
+            )
         with filename.open("r", errors="replace") as source:
             while True:
                 header = source.readline()
@@ -257,6 +271,13 @@ def _iter_lund_chunks(
                     continue
 
                 stats.events_seen += 1
+                if progress_events > 0 and stats.events_seen >= next_event_progress:
+                    print(
+                        f"[PROGRESS] {progress_label} LUND events: "
+                        f"seen={stats.events_seen}, topology={stats.topology_events}, "
+                        f"pending-topology={len(electron_rows)}"
+                    )
+                    next_event_progress += progress_events
                 electron = None
                 proton = None
                 photon_count = 0
