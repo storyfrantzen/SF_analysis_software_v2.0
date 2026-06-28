@@ -41,6 +41,8 @@ class RadiativeCorrectionResult:
     born: LundHistogramResult
     radiative: LundHistogramResult
     normalization_ratio: float
+    born_integrated_cross_section: float | None = None
+    radiative_integrated_cross_section: float | None = None
 
 
 def compute_radiative_correction(
@@ -53,6 +55,8 @@ def compute_radiative_correction(
     max_events: int | None = None,
     min_counts: int = 5,
     normalization_ratio: float | None = None,
+    born_integrated_cross_section: float | None = None,
+    radiative_integrated_cross_section: float | None = None,
     progress_chunks: int = 0,
 ) -> RadiativeCorrectionResult:
     """Compute bin-by-bin radiative corrections from Born and radiative LUND samples.
@@ -86,7 +90,30 @@ def compute_radiative_correction(
     if radiative_result.topology_events == 0:
         raise ValueError(f"Radiative sample has no valid generated e p pi0 events: {radiative}")
 
-    if normalization_ratio is None:
+    if (born_integrated_cross_section is None) != (radiative_integrated_cross_section is None):
+        raise ValueError(
+            "born_integrated_cross_section and radiative_integrated_cross_section "
+            "must be provided together"
+        )
+    if normalization_ratio is not None and born_integrated_cross_section is not None:
+        raise ValueError(
+            "normalization_ratio cannot be combined with integrated cross sections"
+        )
+
+    if born_integrated_cross_section is not None:
+        born_integrated_cross_section = _positive_finite(
+            born_integrated_cross_section, "born_integrated_cross_section"
+        )
+        radiative_integrated_cross_section = _positive_finite(
+            radiative_integrated_cross_section, "radiative_integrated_cross_section"
+        )
+        normalization_ratio = (
+            born_integrated_cross_section
+            / radiative_integrated_cross_section
+            * radiative_result.topology_events
+            / born_result.topology_events
+        )
+    elif normalization_ratio is None:
         normalization_ratio = radiative_result.topology_events / born_result.topology_events
     normalization_ratio = float(normalization_ratio)
     if not np.isfinite(normalization_ratio) or normalization_ratio <= 0.0:
@@ -112,7 +139,18 @@ def compute_radiative_correction(
         born=born_result,
         radiative=radiative_result,
         normalization_ratio=normalization_ratio,
+        born_integrated_cross_section=born_integrated_cross_section,
+        radiative_integrated_cross_section=radiative_integrated_cross_section,
     )
+
+
+def _positive_finite(value: float | None, name: str) -> float:
+    if value is None:
+        raise ValueError(f"{name} is required")
+    value = float(value)
+    if not np.isfinite(value) or value <= 0.0:
+        raise ValueError(f"{name} must be positive and finite")
+    return value
 
 
 def histogram_lund(

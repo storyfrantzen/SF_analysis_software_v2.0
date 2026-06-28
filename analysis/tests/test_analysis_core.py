@@ -32,7 +32,7 @@ from eppi0.radiative_correction import (
     support_status_codes,
 )
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
-from run_analysis import command_bin_centering_merge
+from run_analysis import command_bin_centering_merge, _read_generator_integrated_cross_section
 
 
 class BinningTests(unittest.TestCase):
@@ -261,6 +261,43 @@ class RadiativeCorrectionTests(unittest.TestCase):
         self.assertEqual(np.count_nonzero(result.support_overlap), 1)
         np.testing.assert_allclose(result.c_rad[result.reliable], [1.0])
         np.testing.assert_allclose(result.c_rad[~result.reliable], 1.0)
+
+    def test_radiative_correction_uses_integrated_cross_sections(self) -> None:
+        bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
+        with tempfile.TemporaryDirectory() as tmp:
+            born = Path(tmp) / "born.txt"
+            rad = Path(tmp) / "rad.txt"
+            born.write_text(_lund_event(pi0=False), encoding="utf-8")
+            rad.write_text(_lund_event(pi0=True), encoding="utf-8")
+            result = compute_radiative_correction(
+                born,
+                rad,
+                bins,
+                beam_energy=6.535,
+                min_counts=1,
+                chunk_size=1,
+                born_integrated_cross_section=2.0,
+                radiative_integrated_cross_section=1.0,
+            )
+        np.testing.assert_allclose(result.c_rad[result.reliable], [2.0])
+        self.assertEqual(result.normalization_ratio, 2.0)
+
+    def test_generator_integrated_cross_section_parser_reads_norm_and_sum(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            norm = Path(tmp) / "aao_norad.norm"
+            summary = Path(tmp) / "aao_rad.sum"
+            norm.write_text("sig_sum=3.25D+00\n", encoding="utf-8")
+            summary.write_text(
+                " Integrated cross section = 1.0 2.5 micro-barns\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(_read_generator_integrated_cross_section(norm), 3.25)
+            self.assertEqual(_read_generator_integrated_cross_section(summary), 2.5)
+            nested = Path(tmp) / "norms"
+            nested.mkdir()
+            (nested / "job1.norm").write_text("sig_sum=2.0\n", encoding="utf-8")
+            (nested / "job2.norm").write_text("sig_sum=4.0\n", encoding="utf-8")
+            self.assertEqual(_read_generator_integrated_cross_section(nested), 3.0)
 
     def test_support_status_codes_describe_unsupported_bins(self) -> None:
         born = np.array([10.0, 0.0, 4.0, 4.0, 6.0, 0.0, 4.0])

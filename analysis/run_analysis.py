@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 
 import numpy as np
@@ -109,7 +110,27 @@ def parser() -> argparse.ArgumentParser:
     radcorr.add_argument(
         "--normalization-ratio",
         type=float,
-        help="Override the default N_radiative/N_born normalization ratio",
+        help="Override all automatic normalization with this global factor",
+    )
+    radcorr.add_argument(
+        "--born-integrated-cross-section",
+        type=float,
+        help="Born generator integrated cross section, usually sig_sum from aao_norad.sum/.norm",
+    )
+    radcorr.add_argument(
+        "--radiative-integrated-cross-section",
+        type=float,
+        help="Radiative generator integrated cross section, usually sig_sum from aao_rad.sum/.norm",
+    )
+    radcorr.add_argument(
+        "--born-normalization-file",
+        type=Path,
+        help="Born generator .norm or .sum file containing sig_sum",
+    )
+    radcorr.add_argument(
+        "--radiative-normalization-file",
+        type=Path,
+        help="Radiative generator .norm or .sum file containing sig_sum",
     )
 
     radcorr_plots = commands.add_parser(
@@ -436,6 +457,16 @@ def command_unfold(args: argparse.Namespace) -> None:
 def command_radiative_correction(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     binning = from_config(args.config)
+    born_integrated_cross_section = _resolve_integrated_cross_section(
+        args.born_integrated_cross_section,
+        args.born_normalization_file,
+        "born",
+    )
+    radiative_integrated_cross_section = _resolve_integrated_cross_section(
+        args.radiative_integrated_cross_section,
+        args.radiative_normalization_file,
+        "radiative",
+    )
     result = compute_radiative_correction(
         args.born,
         args.radiative,
@@ -445,6 +476,8 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         max_events=args.max_events,
         min_counts=args.min_counts,
         normalization_ratio=args.normalization_ratio,
+        born_integrated_cross_section=born_integrated_cross_section,
+        radiative_integrated_cross_section=radiative_integrated_cross_section,
         progress_chunks=args.progress_chunks,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -466,6 +499,14 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         radiative_eprime_min=result.radiative.eprime_min,
         radiative_eprime_max=result.radiative.eprime_max,
         normalization_ratio=result.normalization_ratio,
+        born_integrated_cross_section=(
+            np.nan if result.born_integrated_cross_section is None
+            else result.born_integrated_cross_section
+        ),
+        radiative_integrated_cross_section=(
+            np.nan if result.radiative_integrated_cross_section is None
+            else result.radiative_integrated_cross_section
+        ),
         min_counts=args.min_counts,
         beam_energy=float(config["beam_energy"]),
         q2_edges=binning.q2_edges,
@@ -532,7 +573,58 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         f"low_both={int(support_counts[6])}"
     )
     print(f"Normalization ratio: {result.normalization_ratio:.8g}")
+    if result.born_integrated_cross_section is not None:
+        print(
+            "Integrated cross sections: "
+            f"born={result.born_integrated_cross_section:.8g}, "
+            f"radiative={result.radiative_integrated_cross_section:.8g}"
+        )
     print(f"Wrote {args.output}")
+
+
+def _resolve_integrated_cross_section(
+    value: float | None,
+    path: Path | None,
+    label: str,
+) -> float | None:
+    if value is not None and path is not None:
+        raise ValueError(
+            f"Use either --{label}-integrated-cross-section or "
+            f"--{label}-normalization-file, not both"
+        )
+    if path is None:
+        return value
+    return _read_generator_integrated_cross_section(path)
+
+
+def _read_generator_integrated_cross_section(path: Path) -> float:
+    if path.is_dir():
+        values = [
+            _read_generator_integrated_cross_section(item)
+            for item in sorted(path.rglob("*"))
+            if item.is_file() and item.suffix.lower() in {".norm", ".sum"}
+        ]
+        if not values:
+            raise ValueError(f"No .norm or .sum files found under {path}")
+        return float(np.mean(values))
+
+    text = path.read_text(encoding="utf-8", errors="replace")
+    number = r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][-+]?\d+)?)"
+    key_match = re.search(
+        r"(?im)^\s*(?:sig_sum|integrated_cross_section_sig_sum)\s*=\s*"
+        + number + r"\s*$",
+        text,
+    )
+    if key_match:
+        return float(key_match.group(1).replace("D", "E").replace("d", "e"))
+    line_match = re.search(
+        r"(?im)^\s*Integrated\s+cross\s+section(?:\s+\([^)]*\))?\s*=\s*"
+        + number + r"\s+" + number,
+        text,
+    )
+    if line_match:
+        return float(line_match.group(2).replace("D", "E").replace("d", "e"))
+    raise ValueError(f"Could not find sig_sum integrated cross section in {path}")
 
 
 def command_radiative_correction_plots(args: argparse.Namespace) -> None:
@@ -760,6 +852,8 @@ def _plot_radcorr_summary_page(
         f"Born total in-range count: {np.sum(h_born):.8g}",
         f"Radiative total in-range count: {np.sum(h_rad):.8g}",
         f"Normalization ratio: {_optional_scalar(correction, 'normalization_ratio'):.8g}",
+        f"Born integrated cross section: {_optional_scalar(correction, 'born_integrated_cross_section'):.8g}",
+        f"Radiative integrated cross section: {_optional_scalar(correction, 'radiative_integrated_cross_section'):.8g}",
         f"Mean C_rad reliable: {np.nanmean(c_rad[good]) if np.any(good) else np.nan:.8g}",
         f"Median C_rad reliable: {np.nanmedian(c_rad[good]) if np.any(good) else np.nan:.8g}",
         f"Mean delta_C reliable: {np.nanmean(delta_c[good]) if np.any(good) else np.nan:.8g}",

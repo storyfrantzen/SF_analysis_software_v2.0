@@ -69,6 +69,8 @@ python3 analysis/run_analysis.py response mc_events.npz \
 
 python3 analysis/run_analysis.py radiative-correction born_lund/ rad_lund/ \
   --config configs/analysis/rgk/6.535.json --output results/C_rad.npz \
+  --born-normalization-file born_lund/aao_norad.norm \
+  --radiative-normalization-file rad_lund/aao_rad.norm \
   --progress-chunks 1 \
   --diagnostic-pdf results/C_rad_diagnostics.pdf \
   --diagnostic-csv results/C_rad_diagnostics.csv
@@ -193,9 +195,18 @@ into configured analysis bins, using the same electron-proton Trento phi
 convention as the rest of this package. Its output is a native `C_rad.npz`
 artifact consumed by `unfold --radiative-correction`; reliability masks and
 correction uncertainties are propagated into the self-contained unfolding
-result. The artifact also stores support diagnostics: per-bin born/radiative
-counts, overlap and status masks, and generated `Q2`/`Eprime` ranges for each
-sample. Regenerate the diagnostic report later without rereading LUND files:
+result. For AAO-generated samples, pass the generator `sig_sum` integrated cross
+sections with `--born-normalization-file` and `--radiative-normalization-file`
+when `.norm` or `.sum` sidecars are available. Each option may point to one
+sidecar or to a directory containing many job sidecars, in which case the command
+uses the mean `sig_sum` for that sample. Use
+`--born-integrated-cross-section` and `--radiative-integrated-cross-section`
+when entering the values manually. The resulting global factor is
+`(Sigma_born / Sigma_rad) * (N_rad / N_born)`, so the per-bin ratio is normalized
+as a cross-section ratio rather than a raw event-density ratio. The artifact also
+stores support diagnostics: per-bin born/radiative counts, overlap and status
+masks, generated `Q2`/`Eprime` ranges, and the integrated cross sections used for
+each sample. Regenerate the diagnostic report later without rereading LUND files:
 
 ```bash
 python3 analysis/run_analysis.py radiative-correction-plots results/C_rad.npz \
