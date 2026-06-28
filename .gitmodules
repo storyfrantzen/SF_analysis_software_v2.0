@@ -1,0 +1,3 @@
+[submodule "external/aao_print"]
+	path = external/aao_print
+	url = https://github.com/storyfrantzen/aao_print.git
