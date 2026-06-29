@@ -295,9 +295,31 @@ class RadiativeCorrectionTests(unittest.TestCase):
             self.assertEqual(_read_generator_integrated_cross_section(summary), 2.5)
             nested = Path(tmp) / "norms"
             nested.mkdir()
-            (nested / "job1.norm").write_text("sig_sum=2.0\n", encoding="utf-8")
-            (nested / "job2.norm").write_text("sig_sum=4.0\n", encoding="utf-8")
-            self.assertEqual(_read_generator_integrated_cross_section(nested), 3.0)
+            (nested / "job1.norm").write_text(
+                "sig_sum=2.0\nevents=100\n", encoding="utf-8"
+            )
+            (nested / "job2.norm").write_text(
+                "sig_sum=4.0\nevents=300\n", encoding="utf-8"
+            )
+            self.assertEqual(_read_generator_integrated_cross_section(nested), 3.5)
+
+            legacy = Path(tmp) / "legacy"
+            legacy.mkdir()
+            (legacy / "job1.sum").write_text("sig_sum=2.0\n", encoding="utf-8")
+            (legacy / "job2.sum").write_text("sig_sum=4.0\n", encoding="utf-8")
+            self.assertEqual(_read_generator_integrated_cross_section(legacy), 3.0)
+
+            (nested / "job1.sum").write_text("sig_sum=200.0\n", encoding="utf-8")
+            self.assertEqual(_read_generator_integrated_cross_section(nested), 3.5)
+
+            mixed = Path(tmp) / "mixed"
+            mixed.mkdir()
+            (mixed / "job1.norm").write_text(
+                "sig_sum=2.0\nevents=100\n", encoding="utf-8"
+            )
+            (mixed / "job2.norm").write_text("sig_sum=4.0\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Mixed weighted and unweighted"):
+                _read_generator_integrated_cross_section(mixed)
 
     def test_support_status_codes_describe_unsupported_bins(self) -> None:
         born = np.array([10.0, 0.0, 4.0, 4.0, 6.0, 0.0, 4.0])

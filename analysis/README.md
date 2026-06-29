@@ -198,8 +198,10 @@ correction uncertainties are propagated into the self-contained unfolding
 result. For AAO-generated samples, pass the generator `sig_sum` integrated cross
 sections with `--born-normalization-file` and `--radiative-normalization-file`
 when `.norm` or `.sum` sidecars are available. Each option may point to one
-sidecar or to a directory containing many job sidecars, in which case the command
-uses the mean `sig_sum` for that sample. Use
+sidecar or to a directory containing many job sidecars. Directory inputs prefer
+`.norm` files when present, use an `events`-weighted mean `sig_sum` when every
+sidecar includes event counts, and fall back to an unweighted mean for legacy
+`.sum`-only directories. Use
 `--born-integrated-cross-section` and `--radiative-integrated-cross-section`
 when entering the values manually. The resulting global factor is
 `(Sigma_born / Sigma_rad) * (N_rad / N_born)`, so the per-bin ratio is normalized

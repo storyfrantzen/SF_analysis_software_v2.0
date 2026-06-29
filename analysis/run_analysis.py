@@ -599,16 +599,43 @@ def _resolve_integrated_cross_section(
 
 def _read_generator_integrated_cross_section(path: Path) -> float:
     if path.is_dir():
-        values = [
-            _read_generator_integrated_cross_section(item)
-            for item in sorted(path.rglob("*"))
-            if item.is_file() and item.suffix.lower() in {".norm", ".sum"}
+        norm_files = [
+            item for item in sorted(path.rglob("*"))
+            if item.is_file() and item.suffix.lower() == ".norm"
         ]
-        if not values:
+        sum_files = [
+            item for item in sorted(path.rglob("*"))
+            if item.is_file() and item.suffix.lower() == ".sum"
+        ]
+        files = norm_files or sum_files
+        if not files:
             raise ValueError(f"No .norm or .sum files found under {path}")
+        records = [_read_generator_normalization_record(item) for item in files]
+        values = np.array([value for value, _weight in records], dtype=float)
+        weights = [weight for _value, weight in records]
+        have_weight = [weight is not None for weight in weights]
+        if all(have_weight):
+            return float(np.average(values, weights=np.array(weights, dtype=float)))
+        if any(have_weight):
+            raise ValueError(
+                f"Mixed weighted and unweighted normalization files under {path}; "
+                "use a directory containing only .norm files with events metadata "
+                "or only legacy .sum files"
+            )
         return float(np.mean(values))
 
+    value, _weight = _read_generator_normalization_record(path)
+    return value
+
+
+def _read_generator_normalization_record(path: Path) -> tuple[float, float | None]:
     text = path.read_text(encoding="utf-8", errors="replace")
+    value = _parse_generator_integrated_cross_section(text, path)
+    weight = _parse_generator_events(text, path)
+    return value, weight
+
+
+def _parse_generator_integrated_cross_section(text: str, path: Path) -> float:
     number = r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][-+]?\d+)?)"
     key_match = re.search(
         r"(?im)^\s*(?:sig_sum|integrated_cross_section_sig_sum)\s*=\s*"
@@ -616,15 +643,30 @@ def _read_generator_integrated_cross_section(path: Path) -> float:
         text,
     )
     if key_match:
-        return float(key_match.group(1).replace("D", "E").replace("d", "e"))
+        return _positive_finite_float(key_match.group(1), "sig_sum", path)
     line_match = re.search(
         r"(?im)^\s*Integrated\s+cross\s+section(?:\s+\([^)]*\))?\s*=\s*"
         + number + r"\s+" + number,
         text,
     )
     if line_match:
-        return float(line_match.group(2).replace("D", "E").replace("d", "e"))
+        return _positive_finite_float(line_match.group(2), "sig_sum", path)
     raise ValueError(f"Could not find sig_sum integrated cross section in {path}")
+
+
+def _parse_generator_events(text: str, path: Path) -> float | None:
+    number = r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][-+]?\d+)?)"
+    event_match = re.search(r"(?im)^\s*events\s*=\s*" + number + r"\s*$", text)
+    if event_match is None:
+        return None
+    return _positive_finite_float(event_match.group(1), "events", path)
+
+
+def _positive_finite_float(value: str, label: str, path: Path) -> float:
+    parsed = float(value.replace("D", "E").replace("d", "e"))
+    if not np.isfinite(parsed) or parsed <= 0.0:
+        raise ValueError(f"{label} in {path} must be positive and finite")
+    return parsed
 
 
 def command_radiative_correction_plots(args: argparse.Namespace) -> None:
