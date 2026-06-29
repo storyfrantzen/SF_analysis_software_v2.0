@@ -165,7 +165,7 @@ event and remains the format expected by `response --selection-mask`.
 
 The converter writes one row for every input MC event:
 
-- `sourceFileId`, a deterministic hash of the input HIPO basename;
+- `sourceFileId`, a deterministic hash of the input HIPO source name;
 - `sourceEventIndex`, the zero-based input-event ordinal within that file;
 - the original `runNum`, `eventNum` for diagnostics;
 - `topologyValid`, `radiative`;
@@ -175,7 +175,8 @@ The converter writes one row for every input MC event:
 `build_event_sample.py` retains only `topologyValid` rows in the physics sample,
 while the converter `Summary` tree records both total generated rows and valid
 generated topologies for bookkeeping. The companion `SourceFiles` tree records
-the mapping from `sourceFileId` to HIPO basename.
+the mapping from `sourceFileId` to HIPO source name, normally the basename and
+the full path only when duplicate basenames must be disambiguated.
 
 Check both identities after converting more than one input file:
 

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cctype>
 #include <cmath>
 #include <iomanip>
 #include <memory>
@@ -42,6 +43,27 @@ std::uint64_t stableSourceFileId(const std::string& fileName) {
         hash *= 1099511628211ULL;
     }
     return hash;
+}
+
+bool isIntegerArgument(const std::string& value) {
+    if (value.empty()) return false;
+    std::size_t start = 0;
+    if (value[0] == '-' || value[0] == '+') {
+        if (value.size() == 1) return false;
+        start = 1;
+    }
+    return std::all_of(value.begin() + static_cast<std::string::difference_type>(start),
+                       value.end(),
+                       [](unsigned char c) { return std::isdigit(c); });
+}
+
+bool pathExists(const std::string& value) {
+    std::error_code error;
+    return fs::exists(fs::path(value), error);
+}
+
+bool isTrailingNumericOption(const std::string& value) {
+    return isIntegerArgument(value) && !pathExists(value);
 }
 
 void printProgress(std::size_t currentFile,
@@ -171,20 +193,29 @@ void fillRecBranch(RecBranches& recBranches,
 int main(int argc, char** argv) {
 
     if (argc < 3) {
-        std::cerr << "Usage: hipo2root <config.json> <hipo_file_or_directory> "
+        std::cerr << "Usage: hipo2root <config.json> <hipo_file_or_directory>... "
                   << "[max_files] [progress_events]\n";
         return 1;
     }
 
     int maxFiles = -1; // -1 = all
-    if (argc >= 4) {
-        maxFiles = std::stoi(argv[3]);
+    long long progressEvery = 1000000;
+    int inputArgEnd = argc;
+    if (argc >= 4 && isTrailingNumericOption(argv[argc - 1])) {
+        if (argc >= 5 && isTrailingNumericOption(argv[argc - 2])) {
+            progressEvery = std::stoll(argv[argc - 1]);
+            if (progressEvery < 0) progressEvery = 0;
+            maxFiles = std::stoi(argv[argc - 2]);
+            inputArgEnd = argc - 2;
+        } else {
+            maxFiles = std::stoi(argv[argc - 1]);
+            inputArgEnd = argc - 1;
+        }
         if (maxFiles <= 0) maxFiles = -1;
     }
-    long long progressEvery = 1000000;
-    if (argc >= 5) {
-        progressEvery = std::stoll(argv[4]);
-        if (progressEvery < 0) progressEvery = 0;
+    if (inputArgEnd <= 2) {
+        std::cerr << "[ERROR] At least one HIPO input file or directory is required.\n";
+        return 1;
     }
 
     Config cfg(argv[1]);
@@ -204,34 +235,39 @@ int main(int argc, char** argv) {
         std::cerr << "[ERROR] " << error.what() << "\n";
         return 1;
     }
-    const fs::path hipoInput = argv[2];
-
     // ── Collect .hipo files ───────────────────────────────────────────────────
     std::vector<std::string> hipoFiles;
-    if (fs::is_regular_file(hipoInput)) {
-        if (hipoInput.extension() != ".hipo") {
-            std::cerr << "[ERROR] Input file is not a .hipo file: " << hipoInput << "\n";
+    for (int argIndex = 2; argIndex < inputArgEnd; ++argIndex) {
+        const fs::path hipoInput = argv[argIndex];
+        if (fs::is_regular_file(hipoInput)) {
+            if (hipoInput.extension() != ".hipo") {
+                std::cerr << "[ERROR] Input file is not a .hipo file: " << hipoInput << "\n";
+                return 1;
+            }
+            hipoFiles.push_back(hipoInput.string());
+        } else if (fs::is_directory(hipoInput)) {
+            for (const auto& entry : fs::recursive_directory_iterator(hipoInput)) {
+                if (!entry.is_regular_file()) continue;
+                if (entry.path().extension() == ".hipo") {
+                    hipoFiles.push_back(entry.path().string());
+                }
+            }
+        } else {
+            std::cerr << "[ERROR] HIPO input does not exist: " << hipoInput << "\n";
             return 1;
         }
-        hipoFiles.push_back(hipoInput.string());
-    } else if (fs::is_directory(hipoInput)) {
-        for (const auto& entry : fs::recursive_directory_iterator(hipoInput)) {
-            if (!entry.is_regular_file()) continue;
-            if (entry.path().extension() == ".hipo") {
-                hipoFiles.push_back(entry.path().string());
-            }
-        }
-    } else {
-        std::cerr << "[ERROR] HIPO input does not exist: " << hipoInput << "\n";
-        return 1;
     }
     if (hipoFiles.empty()) {
-        std::cerr << "[ERROR] No .hipo files found in " << hipoInput << "\n";
+        std::cerr << "[ERROR] No .hipo files found in the requested inputs.\n";
         return 1;
     }
     std::sort(hipoFiles.begin(), hipoFiles.end());
     if (maxFiles > 0 && static_cast<int>(hipoFiles.size()) > maxFiles) {
         hipoFiles.resize(maxFiles);
+    }
+    std::unordered_map<std::string, int> sourceBasenameCounts;
+    for (const auto& hipoPath : hipoFiles) {
+        ++sourceBasenameCounts[fs::path(hipoPath).filename().string()];
     }
     std::cout << "[INFO] Found " << hipoFiles.size() << " hipo file(s) to process.\n";
 
@@ -322,7 +358,10 @@ int main(int argc, char** argv) {
         const auto& hipoPath = hipoFiles[fileIndex];
         std::cout << "[INFO] Processing: " << hipoPath << "\n";
 
-        const std::string sourceFileName = fs::path(hipoPath).filename().string();
+        const std::string sourceBasename = fs::path(hipoPath).filename().string();
+        const std::string sourceFileName = sourceBasenameCounts[sourceBasename] > 1
+            ? fs::absolute(fs::path(hipoPath)).lexically_normal().string()
+            : sourceBasename;
         const std::uint64_t sourceFileId = stableSourceFileId(sourceFileName);
         const auto catalogEntry = sourceFileCatalog.find(sourceFileId);
         if (catalogEntry != sourceFileCatalog.end() && catalogEntry->second != sourceFileName) {

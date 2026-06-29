@@ -262,3 +262,47 @@ The proton energy-loss processing configs use `outputPids: [2212]`. The
 contain at least one reconstructed proton, but the output ROOT tree stores only
 proton rows. This keeps the matched REC/GEN proton calibration sample broad
 without writing every other reconstructed particle in those events.
+
+For the 100M inclusive GEMC sample split across
+`/volatile/clas12/osg/storyf/11262` and `/volatile/clas12/osg/storyf/11263`,
+use the same RGK 6.535 GeV calibration configs and pass both directories to
+`hipo2root` in one invocation:
+
+```bash
+./build/hipo2root \
+  configs/processing/rgk/6.535/calibration/proton_energy_loss_mc.json \
+  /volatile/clas12/osg/storyf/11262 \
+  /volatile/clas12/osg/storyf/11263
+
+./build/hipo2root \
+  configs/processing/rgk/6.535/calibration/sidis_electrons_mc.json \
+  /volatile/clas12/osg/storyf/11262 \
+  /volatile/clas12/osg/storyf/11263
+
+./build/post_process \
+  configs/post/rgk/6.535/calibration/electron_sf_candidates_mc.json \
+  6.535_rgk_gemc_sidis_electrons.root
+```
+
+Then derive the parameter files from those ROOT files:
+
+```bash
+python3 scripts/derive_proton_energy_loss.py \
+  6.535_rgk_proton_energy_loss_mc.root \
+  --detector both \
+  --output parameters/proton_energy_loss/6.535RGK_INCLUSIVE_GEMC_100M.json \
+  --plot-dir calibration_plots/proton_energy_loss/6.535RGK_INCLUSIVE_GEMC_100M \
+  --dataset-tag 6.535RGK_INCLUSIVE_GEMC_100M \
+  --beam-energy 6.535
+
+python3 scripts/derive_sampling_fraction.py \
+  6.535_rgk_gemc_electron_sf_candidates.root \
+  --gemc \
+  --output parameters/sampling_fraction/SF_sigma_cut_params_6.535RGK_INCLUSIVE_GEMC_100M.json \
+  --plot-dir calibration_plots/sampling_fraction/6.535RGK_INCLUSIVE_GEMC_100M \
+  --dataset-tag 6.535RGK_INCLUSIVE_GEMC_100M \
+  --beam-energy 6.535 \
+  --run-group RGK \
+  --skim INCLUSIVE_GEMC_100M \
+  --torus 1
+```

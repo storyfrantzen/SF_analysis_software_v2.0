@@ -19,7 +19,7 @@ See `docs/jlab-module-setup.csh` for the JLab environment setup.
 ## Current executable
 
 ```bash
-hipo2root <config.json> <hipo_file_or_directory> [max_files] [progress_events]
+hipo2root <config.json> <hipo_file_or_directory>... [max_files] [progress_events]
 post_process <post_config.json> <input.root> [progress_rows]
 ```
 
@@ -74,7 +74,9 @@ identity `(sourceFileId, sourceEventIndex)`, the original `(runNum, eventNum)`,
 generator-topology validity, a radiative flag, weight, and generated `Q2`, `nu`,
 `xB`, `y`, `W`, `minusT`, and `trentoPhi`. Invalid generator topologies remain
 present with `topologyValid=false`, allowing exact input-event accounting. A
-`SourceFiles` tree maps each deterministic `sourceFileId` to its HIPO basename.
+`SourceFiles` tree maps each deterministic `sourceFileId` to its HIPO source
+name, normally the basename and the full path only when duplicate basenames
+must be disambiguated.
 
 GEMC production files commonly restart `eventNum` at one and use `runNum == 11`,
 so `(runNum, eventNum)` is not a valid cross-file identity. The analysis join

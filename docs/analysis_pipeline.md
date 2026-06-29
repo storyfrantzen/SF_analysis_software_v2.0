@@ -184,9 +184,10 @@ The energy-specific processing configs keep events with at least one reconstruct
 
 `post_process` prints progress every 1,000,000 input rows by default. Pass a third argument to change that interval, or `0` to disable progress messages.
 
-`hipo2root` likewise prints progress every 1,000,000 input events. Its optional
-arguments are `[max_files] [progress_events]`; use `0` for `progress_events` to
-disable its progress messages.
+`hipo2root` accepts one or more input HIPO files/directories and prints progress
+every 1,000,000 input events. Its optional trailing arguments are
+`[max_files] [progress_events]`; use `0` for `progress_events` to disable its
+progress messages.
 
 For the 6.535 GeV RGK test sample, use:
 
@@ -257,12 +258,13 @@ one scalar row per input event with:
 - `weight` (currently one until generator weights are connected);
 - generated `Q2`, `nu`, `xB`, `y`, `W`, `minusT`, and `trentoPhi`.
 
-`sourceFileId` is a deterministic hash of the input HIPO basename. The
-companion `SourceFiles` tree stores the ID-to-basename mapping. This source-aware
-identity is propagated to selected REC candidates and is the acceptance join
-key. It is necessary because GEMC files use run 11 and may each restart
-`eventNum` at one; `(runNum,eventNum)` is therefore diagnostic metadata, not a
-cross-file primary key.
+`sourceFileId` is a deterministic hash of the input HIPO basename. When a
+multi-input conversion contains duplicate basenames, the converter hashes the
+full path for those duplicates instead. The companion `SourceFiles` tree stores
+the ID-to-name mapping. This source-aware identity is propagated to selected REC
+candidates and is the acceptance join key. It is necessary because GEMC files
+use run 11 and may each restart `eventNum` at one; `(runNum,eventNum)` is
+therefore diagnostic metadata, not a cross-file primary key.
 
 Radiative topology is `e p pi0 gamma`; non-radiative topology is `e p gamma
 gamma`. Invalid generator topologies remain represented with
