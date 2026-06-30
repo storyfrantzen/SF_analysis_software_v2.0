@@ -26,6 +26,11 @@ struct GeneratedEventTreeConfig {
     std::string treeName = "GeneratedEvents";
 };
 
+struct InputValidationConfig {
+    bool enabled = false;
+    bool skipMalformed = true;
+};
+
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 struct Config {
@@ -57,6 +62,9 @@ struct Config {
 
     // ── Data quality ──────────────────────────
     QADBConfig qadb;
+
+    // ── Input quality ─────────────────────────
+    InputValidationConfig inputValidation;
 
     // ── Kinematic corrections ─────────────────
     nlohmann::json kinematicCorrections;
@@ -110,6 +118,17 @@ struct Config {
             qadb.database = qa.value("database", qadb.database);
             qadb.rejectDefects = qa.value("rejectDefects", qadb.rejectDefects);
             qadb.allowMiscRuns = qa.value("allowMiscRuns", qadb.allowMiscRuns);
+        }
+
+        if (j.contains("inputValidation")) {
+            const auto& validation = j["inputValidation"];
+            if (!validation.is_object()) {
+                throw std::runtime_error("inputValidation must be a JSON object");
+            }
+            inputValidation.enabled = validation.value("enabled", inputValidation.enabled);
+            inputValidation.skipMalformed = validation.value(
+                "skipMalformed", inputValidation.skipMalformed
+            );
         }
 
         inclusive = j.value("inclusive", inclusive);

@@ -189,6 +189,22 @@ every 1,000,000 input events. Its optional trailing arguments are
 `[max_files] [progress_events]`; use `0` for `progress_events` to disable its
 progress messages.
 
+For productions where malformed or incomplete HIPO files are possible, enable
+open-only input validation in the processing config:
+
+```json
+"inputValidation": {
+  "enabled": true,
+  "skipMalformed": true
+}
+```
+
+Each input file is first opened in an isolated child process. If the HIPO reader
+aborts while reading the file index, the parent process logs the file and skips
+it instead of losing the whole conversion. This guard does not read all events;
+it is intended to catch file-level/index corruption, not event-level data
+problems.
+
 For the 6.535 GeV RGK test sample, use:
 
 ```bash

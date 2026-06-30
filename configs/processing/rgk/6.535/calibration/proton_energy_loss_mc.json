@@ -8,6 +8,11 @@
         "enabled": false
     },
 
+    "inputValidation": {
+        "enabled": true,
+        "skipMalformed": true
+    },
+
     "finalState": [
         { "pid": 2212, "count": 1, "mode": "atleast" }
     ],

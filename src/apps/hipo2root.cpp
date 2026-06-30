@@ -12,6 +12,10 @@
 #include <sstream>
 #include <unordered_map>
 
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include "TFile.h"
 #include "TParameter.h"
 #include "TTree.h"
@@ -33,6 +37,11 @@ using Clock = std::chrono::steady_clock;
 struct MatchResult {
     int genIdx = -1;
     double angleDeg = NAN;
+};
+
+struct HipoOpenCheck {
+    bool ok = true;
+    std::string detail;
 };
 
 std::uint64_t stableSourceFileId(const std::string& fileName) {
@@ -64,6 +73,44 @@ bool pathExists(const std::string& value) {
 
 bool isTrailingNumericOption(const std::string& value) {
     return isIntegerArgument(value) && !pathExists(value);
+}
+
+HipoOpenCheck checkHipoOpenInChild(const std::string& hipoPath) {
+    const pid_t pid = fork();
+    if (pid < 0) {
+        return {false, "fork failed"};
+    }
+
+    if (pid == 0) {
+        const int devNull = open("/dev/null", O_WRONLY);
+        if (devNull >= 0) {
+            dup2(devNull, STDOUT_FILENO);
+            dup2(devNull, STDERR_FILENO);
+            close(devNull);
+        }
+
+        try {
+            clas12::clas12reader c12(hipoPath);
+        } catch (...) {
+            _exit(2);
+        }
+        _exit(0);
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        return {false, "waitpid failed"};
+    }
+    if (WIFEXITED(status)) {
+        const int exitCode = WEXITSTATUS(status);
+        if (exitCode == 0) return {true, ""};
+        return {false, "open-check child exited with code " + std::to_string(exitCode)};
+    }
+    if (WIFSIGNALED(status)) {
+        return {false, "open-check child terminated by signal " +
+                       std::to_string(WTERMSIG(status))};
+    }
+    return {false, "open-check child ended in an unknown state"};
 }
 
 void printProgress(std::size_t currentFile,
@@ -281,6 +328,12 @@ int main(int argc, char** argv) {
               << (cfg.generatedEventTree.enabled ? cfg.generatedEventTree.treeName : "disabled")
               << "\n"
               << "[INFO] QADB        : " << (qa->enabled() ? "enabled" : "disabled") << "\n"
+              << "[INFO] Input check : "
+              << (cfg.inputValidation.enabled
+                      ? (cfg.inputValidation.skipMalformed ? "enabled, skip malformed"
+                                                          : "enabled, fail on malformed")
+                      : "disabled")
+              << "\n"
               << "[INFO] Progress    : "
               << (progressEvery > 0 ? std::to_string(progressEvery) + " events" : "disabled")
               << "\n"
@@ -350,6 +403,7 @@ int main(int argc, char** argv) {
     long long nSkippedOutputPid = 0;
     long long nMatched = 0, nUnmatchedRec = 0, nUnmatchedGen = 0;
     long long nGeneratedEvents = 0, nGeneratedTopologyValid = 0;
+    long long nInputFail = 0;
     long long lastProgressEvent = 0;
     const Clock::time_point startTime = Clock::now();
     std::unordered_map<std::uint64_t, std::string> sourceFileCatalog;
@@ -357,6 +411,19 @@ int main(int argc, char** argv) {
     for (std::size_t fileIndex = 0; fileIndex < hipoFiles.size(); ++fileIndex) {
         const auto& hipoPath = hipoFiles[fileIndex];
         std::cout << "[INFO] Processing: " << hipoPath << "\n";
+
+        if (cfg.inputValidation.enabled) {
+            const HipoOpenCheck check = checkHipoOpenInChild(hipoPath);
+            if (!check.ok) {
+                ++nInputFail;
+                std::cerr << "[WARN] Skipping malformed HIPO input: " << hipoPath
+                          << " (" << check.detail << ")\n";
+                if (cfg.inputValidation.skipMalformed) {
+                    continue;
+                }
+                return 1;
+            }
+        }
 
         const std::string sourceBasename = fs::path(hipoPath).filename().string();
         const std::string sourceFileName = sourceBasenameCounts[sourceBasename] > 1
@@ -512,6 +579,7 @@ int main(int argc, char** argv) {
               << "  Written events    : " << nWritten  << "\n"
               << "  Output rows       : " << nOutputRows << "\n"
               << "  PID-filtered rows : " << nSkippedOutputPid << "\n"
+              << "  Skipped input files: " << nInputFail << "\n"
               << "  Generated events  : " << nGeneratedEvents << "\n"
               << "  Valid GEN topology: " << nGeneratedTopologyValid << "\n"
               << "  Elapsed time      : " << std::fixed << std::setprecision(1)
@@ -544,6 +612,7 @@ int main(int argc, char** argv) {
     summary.Branch("WrittenEvents", &nWritten, "WrittenEvents/L");
     summary.Branch("OutputRows", &nOutputRows, "OutputRows/L");
     summary.Branch("PidFilteredRows", &nSkippedOutputPid, "PidFilteredRows/L");
+    summary.Branch("SkippedInputFiles", &nInputFail, "SkippedInputFiles/L");
     summary.Branch("GeneratedEventRows", &nGeneratedEvents, "GeneratedEventRows/L");
     summary.Branch("GeneratedTopologyValid", &nGeneratedTopologyValid,
                    "GeneratedTopologyValid/L");
