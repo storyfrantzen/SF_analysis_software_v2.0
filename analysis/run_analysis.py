@@ -137,6 +137,11 @@ def parser() -> argparse.ArgumentParser:
         type=Path,
         help="Radiative generator .norm or .sum file containing sig_sum",
     )
+    radcorr.add_argument(
+        "--max-normalization-files",
+        type=int,
+        help="Use at most this many .norm/.sum sidecars from each normalization directory",
+    )
 
     radcorr_plots = commands.add_parser(
         "radiative-correction-plots",
@@ -466,11 +471,13 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         args.born_integrated_cross_section,
         args.born_normalization_file,
         "born",
+        max_files=args.max_normalization_files,
     )
     radiative_integrated_cross_section = _resolve_integrated_cross_section(
         args.radiative_integrated_cross_section,
         args.radiative_normalization_file,
         "radiative",
+        max_files=args.max_normalization_files,
     )
     result = compute_radiative_correction(
         args.born,
@@ -516,6 +523,9 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         min_counts=args.min_counts,
         max_events=-1 if args.max_events is None else args.max_events,
         max_files=-1 if args.max_files is None else args.max_files,
+        max_normalization_files=(
+            -1 if args.max_normalization_files is None else args.max_normalization_files
+        ),
         beam_energy=float(config["beam_energy"]),
         q2_edges=binning.q2_edges,
         xb_edges=binning.xb_edges,
@@ -594,6 +604,8 @@ def _resolve_integrated_cross_section(
     value: float | None,
     path: Path | None,
     label: str,
+    *,
+    max_files: int | None = None,
 ) -> float | None:
     if value is not None and path is not None:
         raise ValueError(
@@ -602,19 +614,15 @@ def _resolve_integrated_cross_section(
         )
     if path is None:
         return value
-    return _read_generator_integrated_cross_section(path)
+    return _read_generator_integrated_cross_section(path, max_files=max_files)
 
 
-def _read_generator_integrated_cross_section(path: Path) -> float:
+def _read_generator_integrated_cross_section(path: Path, *, max_files: int | None = None) -> float:
+    if max_files is not None and max_files <= 0:
+        raise ValueError("--max-normalization-files must be positive when provided")
     if path.is_dir():
-        norm_files = [
-            item for item in sorted(path.rglob("*"))
-            if item.is_file() and item.suffix.lower() == ".norm"
-        ]
-        sum_files = [
-            item for item in sorted(path.rglob("*"))
-            if item.is_file() and item.suffix.lower() == ".sum"
-        ]
+        norm_files = _normalization_sidecar_files(path, ".norm", max_files=max_files)
+        sum_files = [] if norm_files else _normalization_sidecar_files(path, ".sum", max_files=max_files)
         files = norm_files or sum_files
         if not files:
             raise ValueError(f"No .norm or .sum files found under {path}")
@@ -634,6 +642,23 @@ def _read_generator_integrated_cross_section(path: Path) -> float:
 
     value, _weight = _read_generator_normalization_record(path)
     return value
+
+
+def _normalization_sidecar_files(path: Path, suffix: str, *, max_files: int | None) -> list[Path]:
+    pattern = f"*{suffix}"
+    if max_files is None:
+        return [
+            item for item in sorted(path.rglob(pattern))
+            if item.is_file() and item.suffix.lower() == suffix
+        ]
+
+    files: list[Path] = []
+    for item in path.rglob(pattern):
+        if item.is_file() and item.suffix.lower() == suffix:
+            files.append(item)
+            if len(files) >= max_files:
+                break
+    return files
 
 
 def _read_generator_normalization_record(path: Path) -> tuple[float, float | None]:
