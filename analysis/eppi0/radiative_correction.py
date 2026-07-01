@@ -381,38 +381,38 @@ def _iter_lund_chunks(
 def _limited_lund_files(pattern_or_dir: str | Path | Sequence[Path], max_files: int | None) -> list[Path]:
     if max_files is not None and max_files <= 0:
         raise ValueError("max_files must be positive when provided")
-    files = _lund_files(pattern_or_dir)
+    files = _lund_files(pattern_or_dir, max_files=max_files)
     if not files:
         raise FileNotFoundError(
             f"No LUND-like text files matched: {pattern_or_dir}. "
             "Directories are scanned recursively for text files with LUND event headers."
         )
-    if max_files is not None:
-        files = files[:max_files]
     return files
 
 
-def _lund_files(pattern_or_dir: str | Path | Sequence[Path]) -> list[Path]:
+def _lund_files(pattern_or_dir: str | Path | Sequence[Path], max_files: int | None = None) -> list[Path]:
     if not isinstance(pattern_or_dir, str | Path):
-        return _filter_lund_files(pattern_or_dir)
+        return _filter_lund_files(pattern_or_dir, max_files=max_files)
     path = Path(pattern_or_dir)
     if path.is_dir():
         candidates = sorted(item for item in path.rglob("*.txt") if item.is_file())
-        files = _filter_lund_files(candidates)
+        files = _filter_lund_files(candidates, max_files=max_files)
         if files:
             return files
         candidates = sorted(item for item in path.rglob("*") if item.is_file())
     else:
         candidates = sorted(Path(item) for item in glob.glob(str(pattern_or_dir)))
-    return _filter_lund_files(candidates)
+    return _filter_lund_files(candidates, max_files=max_files)
 
 
-def _filter_lund_files(candidates: Iterable[Path]) -> list[Path]:
-    return [
-        item
-        for item in candidates
-        if item.stat().st_size > 0 and _looks_text(item) and _looks_lund_header(item)
-    ]
+def _filter_lund_files(candidates: Iterable[Path], max_files: int | None = None) -> list[Path]:
+    files: list[Path] = []
+    for item in candidates:
+        if item.stat().st_size > 0 and _looks_text(item) and _looks_lund_header(item):
+            files.append(item)
+            if max_files is not None and len(files) >= max_files:
+                break
+    return files
 
 
 def _looks_text(path: Path, nbytes: int = 4096) -> bool:
