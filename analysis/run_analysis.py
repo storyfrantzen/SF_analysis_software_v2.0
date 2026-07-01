@@ -90,6 +90,11 @@ def parser() -> argparse.ArgumentParser:
     radcorr.add_argument("--output", type=Path, required=True)
     radcorr.add_argument("--chunk-size", type=int, default=200_000)
     radcorr.add_argument("--max-events", type=int)
+    radcorr.add_argument(
+        "--max-files",
+        type=int,
+        help="Use at most this many LUND files from each input for quick smoke tests",
+    )
     radcorr.add_argument("--min-counts", type=int, default=5)
     radcorr.add_argument(
         "--progress-chunks",
@@ -474,6 +479,7 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         beam_energy=float(config["beam_energy"]),
         chunk_size=args.chunk_size,
         max_events=args.max_events,
+        max_files=args.max_files,
         min_counts=args.min_counts,
         normalization_ratio=args.normalization_ratio,
         born_integrated_cross_section=born_integrated_cross_section,
@@ -508,6 +514,8 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
             else result.radiative_integrated_cross_section
         ),
         min_counts=args.min_counts,
+        max_events=-1 if args.max_events is None else args.max_events,
+        max_files=-1 if args.max_files is None else args.max_files,
         beam_energy=float(config["beam_energy"]),
         q2_edges=binning.q2_edges,
         xb_edges=binning.xb_edges,
