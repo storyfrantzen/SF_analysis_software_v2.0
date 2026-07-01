@@ -12,6 +12,7 @@ from .event_sample import _dis, _minus_t, _trento_phi
 
 
 Array = np.ndarray
+LUND_TEXT_SUFFIXES = {".lund", ".txt"}
 
 
 @dataclass(frozen=True)
@@ -397,11 +398,10 @@ def _lund_files(pattern_or_dir: str | Path | Sequence[Path], max_files: int | No
     if path.is_dir():
         if max_files is not None:
             return _filter_lund_files(path.rglob("*"), max_files=max_files)
-        candidates = sorted(item for item in path.rglob("*.txt") if item.is_file())
-        files = _filter_lund_files(candidates, max_files=max_files)
-        if files:
-            return files
-        candidates = sorted(item for item in path.rglob("*") if item.is_file())
+        candidates = sorted(
+            item for item in path.rglob("*")
+            if item.is_file() and item.suffix.lower() in LUND_TEXT_SUFFIXES
+        )
     else:
         candidates = sorted(Path(item) for item in glob.glob(str(pattern_or_dir)))
     return _filter_lund_files(candidates, max_files=max_files)
@@ -410,7 +410,13 @@ def _lund_files(pattern_or_dir: str | Path | Sequence[Path], max_files: int | No
 def _filter_lund_files(candidates: Iterable[Path], max_files: int | None = None) -> list[Path]:
     files: list[Path] = []
     for item in candidates:
-        if item.is_file() and item.stat().st_size > 0 and _looks_text(item) and _looks_lund_header(item):
+        if (
+            item.is_file()
+            and item.suffix.lower() in LUND_TEXT_SUFFIXES
+            and item.stat().st_size > 0
+            and _looks_text(item)
+            and _looks_lund_header(item)
+        ):
             files.append(item)
             if max_files is not None and len(files) >= max_files:
                 break

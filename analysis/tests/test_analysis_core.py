@@ -230,6 +230,7 @@ class RadiativeCorrectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
             (tmpdir / "job.log").write_text("not a LUND file\n", encoding="utf-8")
+            (tmpdir / "input.inp").write_text(_lund_event(pi0=False), encoding="utf-8")
             path = tmpdir / "events.lund"
             path.write_text(_lund_event(pi0=False), encoding="utf-8")
             self.assertEqual(_lund_files(tmpdir), [path])
