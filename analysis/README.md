@@ -209,7 +209,11 @@ when entering the values manually. The resulting global factor is
 as a cross-section ratio rather than a raw event-density ratio. The artifact also
 stores support diagnostics: per-bin born/radiative counts, overlap and status
 masks, generated `Q2`/`Eprime` ranges, and the integrated cross sections used for
-each sample. Regenerate the diagnostic report later without rereading LUND files:
+each sample. When sidecars are supplied, the artifact also preserves the
+normalization records used to get those cross sections: sidecar paths,
+combination method, `sig_sum`, `sig_int`, `events`, `ntries`, `nevent`,
+`mcall_max`, `sigr_max`, generator name, and units. Regenerate the diagnostic
+report later without rereading LUND files:
 
 ```bash
 python3 analysis/run_analysis.py radiative-correction-plots results/C_rad.npz \

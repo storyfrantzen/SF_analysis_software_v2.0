@@ -32,7 +32,12 @@ from eppi0.radiative_correction import (
     support_status_codes,
 )
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
-from run_analysis import command_bin_centering_merge, _read_generator_integrated_cross_section
+from run_analysis import (
+    command_bin_centering_merge,
+    _normalization_npz_fields,
+    _read_generator_integrated_cross_section,
+    _read_generator_normalization_summary,
+)
 
 
 class BinningTests(unittest.TestCase):
@@ -297,12 +302,41 @@ class RadiativeCorrectionTests(unittest.TestCase):
             nested = Path(tmp) / "norms"
             nested.mkdir()
             (nested / "job1.norm").write_text(
-                "sig_sum=2.0\nevents=100\n", encoding="utf-8"
+                "\n".join([
+                    "generator=aao_norad",
+                    "integrated_cross_section_units=micro-barns",
+                    "sig_int=1.5",
+                    "sig_sum=2.0",
+                    "events=100",
+                    "ntries=1000",
+                    "nevent=100",
+                    "mcall_max=500",
+                    "sigr_max=3.0",
+                    "",
+                ]),
+                encoding="utf-8",
             )
             (nested / "job2.norm").write_text(
                 "sig_sum=4.0\nevents=300\n", encoding="utf-8"
             )
             self.assertEqual(_read_generator_integrated_cross_section(nested), 3.5)
+            summary = _read_generator_normalization_summary(nested)
+            self.assertEqual(summary.integrated_cross_section, 3.5)
+            self.assertEqual(summary.method, "events_weighted_mean_sig_sum")
+            self.assertEqual(len(summary.records), 2)
+            self.assertEqual(summary.records[0].generator, "aao_norad")
+            self.assertEqual(summary.records[0].units, "micro-barns")
+            self.assertEqual(summary.records[0].sig_int, 1.5)
+            self.assertEqual(summary.records[0].ntries, 1000)
+            npz_fields = _normalization_npz_fields("born", summary)
+            np.testing.assert_allclose(npz_fields["born_normalization_sig_sum"], [2.0, 4.0])
+            np.testing.assert_allclose(npz_fields["born_normalization_events"], [100.0, 300.0])
+            np.testing.assert_allclose(
+                npz_fields["born_normalization_ntries"],
+                [1000.0, np.nan],
+                equal_nan=True,
+            )
+            self.assertEqual(npz_fields["born_normalization_generators"][0], "aao_norad")
 
             legacy = Path(tmp) / "legacy"
             legacy.mkdir()

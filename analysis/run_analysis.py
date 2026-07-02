@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
@@ -27,6 +28,28 @@ from eppi0.radiative_correction import compute_radiative_correction
 from eppi0.root_response import build_response_from_root
 from eppi0.harmonics import fit_grid
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes, subtract_feed_in
+
+
+@dataclass(frozen=True)
+class GeneratorNormalizationRecord:
+    path: Path
+    sig_sum: float
+    events: float | None = None
+    ntries: float | None = None
+    sig_int: float | None = None
+    nevent: float | None = None
+    mcall_max: float | None = None
+    sigr_max: float | None = None
+    generator: str = ""
+    units: str = ""
+
+
+@dataclass(frozen=True)
+class GeneratorNormalizationSummary:
+    integrated_cross_section: float | None
+    records: tuple[GeneratorNormalizationRecord, ...] = ()
+    method: str = "none"
+    source: str = "none"
 
 
 def _npz_string(data, key: str, default: str) -> str:
@@ -467,13 +490,13 @@ def command_unfold(args: argparse.Namespace) -> None:
 def command_radiative_correction(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     binning = from_config(args.config)
-    born_integrated_cross_section = _resolve_integrated_cross_section(
+    born_normalization = _resolve_normalization_summary(
         args.born_integrated_cross_section,
         args.born_normalization_file,
         "born",
         max_files=args.max_normalization_files,
     )
-    radiative_integrated_cross_section = _resolve_integrated_cross_section(
+    radiative_normalization = _resolve_normalization_summary(
         args.radiative_integrated_cross_section,
         args.radiative_normalization_file,
         "radiative",
@@ -489,8 +512,8 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         max_files=args.max_files,
         min_counts=args.min_counts,
         normalization_ratio=args.normalization_ratio,
-        born_integrated_cross_section=born_integrated_cross_section,
-        radiative_integrated_cross_section=radiative_integrated_cross_section,
+        born_integrated_cross_section=born_normalization.integrated_cross_section,
+        radiative_integrated_cross_section=radiative_normalization.integrated_cross_section,
         progress_chunks=args.progress_chunks,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -550,6 +573,8 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
             result.radiative.generated_eprime_min, result.radiative.generated_eprime_max,
         ]),
         phi_convention="electron-proton trento plane",
+        **_normalization_npz_fields("born", born_normalization),
+        **_normalization_npz_fields("radiative", radiative_normalization),
     )
     if args.diagnostic_pdf:
         pages = _plot_radiative_correction_diagnostics(
@@ -617,7 +642,42 @@ def _resolve_integrated_cross_section(
     return _read_generator_integrated_cross_section(path, max_files=max_files)
 
 
+def _resolve_normalization_summary(
+    value: float | None,
+    path: Path | None,
+    label: str,
+    *,
+    max_files: int | None = None,
+) -> GeneratorNormalizationSummary:
+    if value is not None and path is not None:
+        raise ValueError(
+            f"Use either --{label}-integrated-cross-section or "
+            f"--{label}-normalization-file, not both"
+        )
+    if path is not None:
+        return _read_generator_normalization_summary(path, max_files=max_files)
+    if value is None:
+        return GeneratorNormalizationSummary(None)
+    value = _positive_finite_float(str(value), f"{label}_integrated_cross_section", Path("<manual>"))
+    return GeneratorNormalizationSummary(
+        value,
+        method="manual",
+        source="manual",
+    )
+
+
 def _read_generator_integrated_cross_section(path: Path, *, max_files: int | None = None) -> float:
+    summary = _read_generator_normalization_summary(path, max_files=max_files)
+    if summary.integrated_cross_section is None:
+        raise ValueError(f"No integrated cross section found in {path}")
+    return summary.integrated_cross_section
+
+
+def _read_generator_normalization_summary(
+    path: Path,
+    *,
+    max_files: int | None = None,
+) -> GeneratorNormalizationSummary:
     if max_files is not None and max_files <= 0:
         raise ValueError("--max-normalization-files must be positive when provided")
     if path.is_dir():
@@ -627,21 +687,36 @@ def _read_generator_integrated_cross_section(path: Path, *, max_files: int | Non
         if not files:
             raise ValueError(f"No .norm or .sum files found under {path}")
         records = [_read_generator_normalization_record(item) for item in files]
-        values = np.array([value for value, _weight in records], dtype=float)
-        weights = [weight for _value, weight in records]
+        values = np.array([record.sig_sum for record in records], dtype=float)
+        weights = [record.events for record in records]
         have_weight = [weight is not None for weight in weights]
         if all(have_weight):
-            return float(np.average(values, weights=np.array(weights, dtype=float)))
+            return GeneratorNormalizationSummary(
+                float(np.average(values, weights=np.array(weights, dtype=float))),
+                records=tuple(records),
+                method="events_weighted_mean_sig_sum",
+                source=".norm_directory" if norm_files else ".sum_directory",
+            )
         if any(have_weight):
             raise ValueError(
                 f"Mixed weighted and unweighted normalization files under {path}; "
                 "use a directory containing only .norm files with events metadata "
                 "or only legacy .sum files"
             )
-        return float(np.mean(values))
+        return GeneratorNormalizationSummary(
+            float(np.mean(values)),
+            records=tuple(records),
+            method="unweighted_mean_sig_sum",
+            source=".norm_directory" if norm_files else ".sum_directory",
+        )
 
-    value, _weight = _read_generator_normalization_record(path)
-    return value
+    record = _read_generator_normalization_record(path)
+    return GeneratorNormalizationSummary(
+        record.sig_sum,
+        records=(record,),
+        method="single_file_sig_sum",
+        source=path.suffix.lower() or "file",
+    )
 
 
 def _normalization_sidecar_files(path: Path, suffix: str, *, max_files: int | None) -> list[Path]:
@@ -661,11 +736,21 @@ def _normalization_sidecar_files(path: Path, suffix: str, *, max_files: int | No
     return files
 
 
-def _read_generator_normalization_record(path: Path) -> tuple[float, float | None]:
+def _read_generator_normalization_record(path: Path) -> GeneratorNormalizationRecord:
     text = path.read_text(encoding="utf-8", errors="replace")
-    value = _parse_generator_integrated_cross_section(text, path)
-    weight = _parse_generator_events(text, path)
-    return value, weight
+    fields = _parse_generator_key_values(text)
+    return GeneratorNormalizationRecord(
+        path=path,
+        sig_sum=_parse_generator_integrated_cross_section(text, path),
+        events=_optional_positive_generator_float(fields, "events", path),
+        ntries=_optional_positive_generator_float(fields, "ntries", path),
+        sig_int=_optional_positive_generator_float(fields, "sig_int", path),
+        nevent=_optional_positive_generator_float(fields, "nevent", path),
+        mcall_max=_optional_positive_generator_float(fields, "mcall_max", path),
+        sigr_max=_optional_positive_generator_float(fields, "sigr_max", path),
+        generator=fields.get("generator", ""),
+        units=fields.get("integrated_cross_section_units", ""),
+    )
 
 
 def _parse_generator_integrated_cross_section(text: str, path: Path) -> float:
@@ -687,6 +772,24 @@ def _parse_generator_integrated_cross_section(text: str, path: Path) -> float:
     raise ValueError(f"Could not find sig_sum integrated cross section in {path}")
 
 
+def _parse_generator_key_values(text: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for match in re.finditer(r"(?im)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$", text):
+        fields[match.group(1).lower()] = match.group(2).strip()
+    return fields
+
+
+def _optional_positive_generator_float(
+    fields: dict[str, str],
+    key: str,
+    path: Path,
+) -> float | None:
+    value = fields.get(key)
+    if value is None:
+        return None
+    return _positive_finite_float(value, key, path)
+
+
 def _parse_generator_events(text: str, path: Path) -> float | None:
     number = r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][-+]?\d+)?)"
     event_match = re.search(r"(?im)^\s*events\s*=\s*" + number + r"\s*$", text)
@@ -700,6 +803,38 @@ def _positive_finite_float(value: str, label: str, path: Path) -> float:
     if not np.isfinite(parsed) or parsed <= 0.0:
         raise ValueError(f"{label} in {path} must be positive and finite")
     return parsed
+
+
+def _normalization_npz_fields(
+    label: str,
+    summary: GeneratorNormalizationSummary,
+) -> dict[str, np.ndarray]:
+    records = summary.records
+
+    def floats(name: str) -> np.ndarray:
+        return np.asarray(
+            [
+                getattr(record, name) if getattr(record, name) is not None else np.nan
+                for record in records
+            ],
+            dtype=float,
+        )
+
+    return {
+        f"{label}_normalization_source": np.asarray(summary.source),
+        f"{label}_normalization_method": np.asarray(summary.method),
+        f"{label}_normalization_record_count": np.asarray(len(records), dtype=np.int64),
+        f"{label}_normalization_files": np.asarray([str(record.path) for record in records]),
+        f"{label}_normalization_generators": np.asarray([record.generator for record in records]),
+        f"{label}_normalization_units": np.asarray([record.units for record in records]),
+        f"{label}_normalization_sig_sum": floats("sig_sum"),
+        f"{label}_normalization_sig_int": floats("sig_int"),
+        f"{label}_normalization_events": floats("events"),
+        f"{label}_normalization_ntries": floats("ntries"),
+        f"{label}_normalization_nevent": floats("nevent"),
+        f"{label}_normalization_mcall_max": floats("mcall_max"),
+        f"{label}_normalization_sigr_max": floats("sigr_max"),
+    }
 
 
 def command_radiative_correction_plots(args: argparse.Namespace) -> None:
