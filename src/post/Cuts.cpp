@@ -265,6 +265,7 @@ PostCutConfig PostCutConfig::fromFile(const std::string& filename) {
     cfg.outputFile = j.value("outputFile", cfg.outputFile);
     cfg.inputTree = j.value("inputTree", cfg.inputTree);
     cfg.outputTree = j.value("outputTree", cfg.outputTree);
+    cfg.outputMode = j.value("outputMode", cfg.outputMode);
     cfg.beamEnergy = j.value("beamEnergy", cfg.beamEnergy);
     cfg.torus = j.value("torus", cfg.torus);
     cfg.saveFailedCandidates = j.value("saveFailedCandidates", cfg.saveFailedCandidates);
@@ -439,6 +440,8 @@ CutDecision Cuts::evaluateParticle(const RecBranches& p,
             decision.require(isFinite(calEnergy) && isFinite(cut.min) && calEnergy >= cut.min, name);
         } else if (cut.op == "firstPidInstance") {
             decision.require(isFirstPidInstance(p, eventParticles), name);
+        } else if (cut.op == "matchedGen") {
+            decision.require(p.matchedGenIdx >= 0, name);
         } else if (cut.op == "rejectDetector") {
             decision.require(p.det != cut.detector, name);
         } else if (cut.op == "rejectSameSectorAsRole") {

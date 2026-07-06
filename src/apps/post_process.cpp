@@ -586,6 +586,7 @@ int main(int argc, char** argv) {
               << "[INFO] Input rows  : " << nEntries << "\n"
               << "[INFO] Output file : " << cfg.outputFile << "\n"
               << "[INFO] Output tree : " << cfg.outputTree << "\n"
+              << "[INFO] Output mode : " << cfg.outputMode << "\n"
               << "[INFO] Beam energy : " << cfg.beamEnergy << " GeV\n"
               << "[INFO] Torus       : " << cfg.torus << "\n"
               << "[INFO] Progress    : "
@@ -595,11 +596,97 @@ int main(int argc, char** argv) {
 
     EventBranches* event = nullptr;
     RecBranches* rec = nullptr;
+    GenBranches* gen = nullptr;
     inTree->SetBranchAddress("event", &event);
     inTree->SetBranchAddress("rec", &rec);
+    const bool hasGenBranch = inTree->GetBranch("gen") != nullptr;
+    if (hasGenBranch) inTree->SetBranchAddress("gen", &gen);
 
     TFile output(cfg.outputFile.c_str(), "RECREATE");
     TTree outTree(cfg.outputTree.c_str(), cfg.outputTree.c_str());
+
+    if (cfg.outputMode == "matchedRows") {
+        if (cfg.channel.particles.size() != 1) {
+            std::cerr << "[ERROR] outputMode=matchedRows requires exactly one particle role\n";
+            return 1;
+        }
+        if (!hasGenBranch) {
+            std::cerr << "[ERROR] outputMode=matchedRows requires an input gen branch\n";
+            return 1;
+        }
+
+        EventBranches outEvent;
+        RecBranches outRec;
+        GenBranches outGen;
+        outTree.Branch("event", &outEvent);
+        outTree.Branch("rec", &outRec);
+        outTree.Branch("gen", &outGen);
+
+        ProcessingStats stats;
+        long long nInputRows = 0;
+        long long nWritten = 0;
+        long long lastProgressRow = 0;
+        const Clock::time_point startTime = Clock::now();
+        const ParticleRoleSpec& role = cfg.channel.particles.front();
+
+        for (Long64_t i = 0; i < nEntries; ++i) {
+            inTree->GetEntry(i);
+            ++nInputRows;
+            if (progressEvery > 0 && nInputRows - lastProgressRow >= progressEvery) {
+                printProgress(nInputRows, nEntries, nInputRows, nWritten, stats, startTime);
+                lastProgressRow = nInputRows;
+            }
+
+            if (!event || !rec || !gen || rec->pid == -999) continue;
+            if (rec->pid != role.pid) continue;
+
+            const std::vector<RecBranches> eventParticles{*rec};
+            const std::map<std::string, const RecBranches*> selected;
+            const CutDecision decision = cuts.evaluateParticle(*rec, role, eventParticles, selected);
+            if (!decision.pass) {
+                stats.addFailures(decision);
+                continue;
+            }
+
+            outEvent = *event;
+            outRec = *rec;
+            outGen = *gen;
+            outTree.Fill();
+            ++nWritten;
+        }
+
+        if (progressEvery > 0 && nInputRows != lastProgressRow) {
+            printProgress(nInputRows, nEntries, nInputRows, nWritten, stats, startTime);
+        }
+
+        output.Write();
+        output.Close();
+
+        const double elapsed = std::chrono::duration<double>(Clock::now() - startTime).count();
+        const double savedFraction = 100.0 * fraction(nWritten, nInputRows);
+        std::cout << "[DONE]\n"
+                  << "  Input rows       : " << nInputRows << "\n"
+                  << "  Rows saved       : " << nWritten << "\n"
+                  << "  Selection yield  : " << std::fixed << std::setprecision(2)
+                  << savedFraction << "%\n"
+                  << "  Elapsed time     : " << std::fixed << std::setprecision(1)
+                  << elapsed << " s\n"
+                  << "  Output file      : " << cfg.outputFile << "\n";
+
+        if (!stats.cutFailures.empty()) {
+            std::cout << "  Cut rejection counts:\n";
+            for (const auto& [name, count] : stats.cutFailures) {
+                std::cout << "    " << name << ": " << count << "\n";
+            }
+        }
+        return 0;
+    }
+
+    if (cfg.outputMode != "candidates") {
+        std::cerr << "[ERROR] Unsupported outputMode: " << cfg.outputMode << "\n";
+        return 1;
+    }
+
     CandidateOutput out;
     out.registerBranches(outTree, supportsEppi0Logic(cfg));
 

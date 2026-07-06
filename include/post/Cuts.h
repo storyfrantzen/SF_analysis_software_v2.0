@@ -64,6 +64,7 @@ struct PostCutConfig {
     std::string outputFile = "post_processed.root";
     std::string inputTree = "Events";
     std::string outputTree = "Events";
+    std::string outputMode = "candidates";
 
     double beamEnergy = 10.6;
     int torus = -1;

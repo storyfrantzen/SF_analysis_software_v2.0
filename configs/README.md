@@ -44,6 +44,7 @@ The active RGK 6.535 GeV files are:
 - `processing/rgk/6.535/calibration/proton_energy_loss_mc.json`;
 - `post/rgk/6.535/calibration/electron_sf_candidates.json`;
 - `post/rgk/6.535/calibration/electron_sf_candidates_mc.json`;
+- `post/rgk/6.535/calibration/proton_energy_loss_fiducial.json`;
 - `post/rgk/6.535/calibration/electron_sf_selected.json`;
 - `analysis/rgk/6.535.json`.
 
@@ -254,6 +255,34 @@ python3 scripts/derive_proton_energy_loss.py \
   --output parameters/proton_energy_loss/6.535RGK_clasdisP2.json \
   --plot-dir calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2 \
   --dataset-tag 6.535RGK_clasdisP2 \
+  --beam-energy 6.535
+```
+
+To compare against a fiducial-volume derivation, first filter the matched
+proton rows through post-processing while preserving the `event`, `rec`, and
+`gen` branches:
+
+```bash
+./build/post_process \
+  configs/post/rgk/6.535/calibration/proton_energy_loss_fiducial.json \
+  6.535_rgk_proton_energy_loss_mc.root
+
+python3 scripts/derive_proton_energy_loss.py \
+  6.535_rgk_proton_energy_loss_mc_fiducial.root \
+  --output parameters/proton_energy_loss/6.535RGK_clasdisP2_fiducial.json \
+  --plot-dir calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2_fiducial \
+  --dataset-tag 6.535RGK_clasdisP2_fiducial \
+  --beam-energy 6.535
+
+python3 scripts/compare_proton_energy_loss.py \
+  6.535_rgk_proton_energy_loss_mc_fiducial.root \
+  parameters/proton_energy_loss/6.535RGK_clasdisP2.json \
+  parameters/proton_energy_loss/6.535RGK_clasdisP2_fiducial.json \
+  --baseline-label standard \
+  --updated-label fiducial \
+  --output calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2_compare/residual_summary.csv \
+  --plot-dir calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2_compare \
+  --dataset-tag 6.535RGK_clasdisP2_compare \
   --beam-energy 6.535
 ```
 
