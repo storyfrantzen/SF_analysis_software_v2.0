@@ -273,6 +273,11 @@ def parser() -> argparse.ArgumentParser:
     acceptance = commands.add_parser("acceptance-plots", help="Plot acceptance diagnostics from response metadata")
     acceptance.add_argument("response_meta", type=Path)
     acceptance.add_argument("--output-dir", type=Path, required=True)
+    acceptance.add_argument(
+        "--response-matrix",
+        type=Path,
+        help="Optional response_matrix.npz used to add diagonal same-bin stability diagnostics",
+    )
     acceptance.add_argument("--minimum-acceptance", type=float, default=0.005)
     acceptance.add_argument(
         "--phi-min-passing-bins",
@@ -1691,6 +1696,7 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
     metadata = np.load(args.response_meta, allow_pickle=False)
     efficiency = np.asarray(metadata["efficiency"], dtype=float)
     truth = np.asarray(metadata["truth_total"], dtype=float)
+    reconstructed = np.asarray(metadata["reconstructed_total"], dtype=float)
     q2_edges = np.asarray(metadata["q2_edges"], dtype=float)
     xb_edges = np.asarray(metadata["xb_edges"], dtype=float)
     t_edges = np.asarray(metadata["t_edges"], dtype=float)
@@ -1701,22 +1707,41 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
         t_edges.size - 1,
         phi_edges.size - 1,
     )
-    if efficiency.size != int(np.prod(shape)) or truth.size != efficiency.size:
+    if (
+        efficiency.size != int(np.prod(shape))
+        or truth.size != efficiency.size
+        or reconstructed.size != efficiency.size
+    ):
         raise ValueError("response metadata arrays do not match bin-edge dimensions")
+
+    response_matrix = args.response_matrix
+    if response_matrix is None:
+        candidate = args.response_meta.parent / "response_matrix.npz"
+        response_matrix = candidate if candidate.exists() else None
+    diagonal = _response_diagonal(response_matrix, efficiency.size) if response_matrix else None
 
     eff4 = _unflatten_response(efficiency, shape)
     truth4 = _unflatten_response(truth, shape)
+    rec4 = _unflatten_response(reconstructed, shape)
+    bin_by_bin4 = np.divide(
+        rec4,
+        truth4,
+        out=np.zeros_like(rec4),
+        where=truth4 > 0,
+    )
+    diag4 = _unflatten_response(diagonal, shape) if diagonal is not None else None
     populated = truth4 > 0
     zero = populated & (eff4 == 0)
     low = populated & (eff4 > 0) & (eff4 < args.minimum_acceptance)
     passing = populated & (eff4 >= args.minimum_acceptance)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    populated_eff = eff4[populated]
-    positive_eff = populated_eff[populated_eff > 0]
     _plot_acceptance_histograms(
-        populated_eff,
-        positive_eff,
+        {
+            "truth-bin efficiency": eff4[populated],
+            "bin-by-bin rec/gen": bin_by_bin4[populated],
+            **({"diagonal same-bin": diag4[populated]} if diag4 is not None else {}),
+        },
         args.minimum_acceptance,
         args.output_dir,
     )
@@ -1771,6 +1796,8 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
     phi_pages = _plot_acceptance_vs_phi(
         eff4,
         truth4,
+        bin_by_bin4,
+        diag4,
         q2_edges,
         xb_edges,
         t_edges,
@@ -1786,6 +1813,10 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
     print(f"Positive sub-threshold bins: {int(low.sum())}")
     print(f"Passing bins: {int(passing.sum())}")
     print(f"3D phi pages: {phi_pages}")
+    if response_matrix:
+        print(f"Diagonal stability source: {response_matrix}")
+    else:
+        print("Diagonal stability source: unavailable; pass --response-matrix to include it")
     print(f"Wrote acceptance plots under {args.output_dir}")
 
 
@@ -1801,6 +1832,15 @@ def _unflatten_response(values: np.ndarray, shape: tuple[int, int, int, int]) ->
     return values.reshape(nxb, nq2, nphi, nt).transpose(1, 0, 3, 2)
 
 
+def _response_diagonal(response_matrix: Path, number_of_bins: int) -> np.ndarray:
+    matrix = load_npz(response_matrix).tocsr()
+    if matrix.shape[0] != number_of_bins or matrix.shape[1] < number_of_bins:
+        raise ValueError(
+            f"response matrix shape {matrix.shape} does not match {number_of_bins} analysis bins"
+        )
+    return matrix[:, :number_of_bins].diagonal()
+
+
 def _edge_labels(edges: np.ndarray) -> list[str]:
     return [f"{lo:g}-{hi:g}" for lo, hi in zip(edges[:-1], edges[1:])]
 
@@ -1812,36 +1852,51 @@ def _pass_fraction(populated: np.ndarray, passing: np.ndarray, axes: tuple[int, 
 
 
 def _plot_acceptance_histograms(
-    populated_eff: np.ndarray,
-    positive_eff: np.ndarray,
+    values_by_label: dict[str, np.ndarray],
     minimum_acceptance: float,
     output_dir: Path,
 ) -> None:
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(populated_eff, bins=100, histtype="step", linewidth=1.5)
+    for label, values in values_by_label.items():
+        finite = np.asarray(values, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        if finite.size == 0:
+            continue
+        ax.hist(finite, bins=100, histtype="step", linewidth=1.5, label=label)
     ax.axvline(minimum_acceptance, color="red", linestyle="--",
                label=f"minimum_acceptance = {minimum_acceptance:g}")
-    ax.set_xlabel("Acceptance / efficiency")
+    ax.set_xlabel("Acceptance-like quantity")
     ax.set_ylabel("Number of 4D bins")
-    ax.set_title("Acceptance over truth-populated 4D bins")
+    ax.set_title("Acceptance diagnostics over truth-populated 4D bins")
     ax.legend()
     fig.tight_layout()
     fig.savefig(output_dir / "acceptance_hist.png", dpi=200)
     plt.close(fig)
 
-    if positive_eff.size == 0:
+    positive_sets = {}
+    for label, values in values_by_label.items():
+        finite = np.asarray(values, dtype=float)
+        finite = finite[np.isfinite(finite) & (finite > 0)]
+        if finite.size > 0:
+            positive_sets[label] = finite
+    if not positive_sets:
+        return
+    positive_min = min(values.min() for values in positive_sets.values())
+    positive_max = max(values.max() for values in positive_sets.values())
+    if positive_min <= 0 or positive_max <= positive_min:
         return
     fig, ax = plt.subplots(figsize=(8, 5))
-    bins = np.logspace(np.log10(positive_eff.min()), np.log10(positive_eff.max()), 100)
-    ax.hist(positive_eff, bins=bins, histtype="step", linewidth=1.5)
+    bins = np.logspace(np.log10(positive_min), np.log10(positive_max), 100)
+    for label, values in positive_sets.items():
+        ax.hist(values, bins=bins, histtype="step", linewidth=1.5, label=label)
     ax.axvline(minimum_acceptance, color="red", linestyle="--",
                label=f"minimum_acceptance = {minimum_acceptance:g}")
     ax.set_xscale("log")
-    ax.set_xlabel("Acceptance / efficiency")
+    ax.set_xlabel("Acceptance-like quantity")
     ax.set_ylabel("Number of 4D bins")
-    ax.set_title("Acceptance over positive-acceptance 4D bins")
+    ax.set_title("Positive acceptance diagnostics over truth-populated 4D bins")
     ax.legend()
     fig.tight_layout()
     fig.savefig(output_dir / "acceptance_hist_log.png", dpi=200)
@@ -2308,6 +2363,8 @@ def _plot_heatmap(
 def _plot_acceptance_vs_phi(
     efficiency: np.ndarray,
     truth: np.ndarray,
+    bin_by_bin: np.ndarray,
+    diagonal: np.ndarray | None,
     q2_edges: np.ndarray,
     xb_edges: np.ndarray,
     t_edges: np.ndarray,
@@ -2325,8 +2382,9 @@ def _plot_acceptance_vs_phi(
     csv_lines = [
         "iq2,q2_low,q2_high,ixb,xb_low,xb_high,it,t_low,t_high,"
         "truth_phi_bins,passing_phi_bins,zero_phi_bins,low_phi_bins,"
-        "truth_sum,rec_sum,mean_positive_acceptance,max_acceptance,"
-        "max_acceptance_stat_error,median_relative_stat_error"
+        "truth_sum,truth_eff_rec_sum,mean_positive_truth_eff,max_truth_eff,"
+        "max_truth_eff_stat_error,median_truth_eff_relative_stat_error,"
+        "mean_positive_bin_by_bin,max_bin_by_bin,mean_positive_diagonal,max_diagonal"
     ]
 
     with PdfPages(pdf_path) as pdf:
@@ -2335,6 +2393,8 @@ def _plot_acceptance_vs_phi(
                 for it in range(efficiency.shape[2]):
                     eff_phi = efficiency[iq2, ixb, it, :]
                     truth_phi = truth[iq2, ixb, it, :]
+                    bin_by_bin_phi = bin_by_bin[iq2, ixb, it, :]
+                    diagonal_phi = diagonal[iq2, ixb, it, :] if diagonal is not None else None
                     populated = truth_phi > 0
                     passing = populated & (eff_phi >= minimum_acceptance)
                     if np.count_nonzero(passing) < min_passing_bins:
@@ -2356,6 +2416,11 @@ def _plot_acceptance_vs_phi(
                         eff_phi,
                         out=np.full_like(stat_error, np.nan),
                         where=eff_phi > 0,
+                    )
+                    positive_bin_by_bin = populated & (bin_by_bin_phi > 0)
+                    positive_diagonal = (
+                        populated & (diagonal_phi > 0)
+                        if diagonal_phi is not None else np.zeros_like(populated, dtype=bool)
                     )
 
                     csv_lines.append(
@@ -2382,6 +2447,14 @@ def _plot_acceptance_vs_phi(
                                 float(np.nanmax(stat_error[populated])) if np.any(populated) else np.nan,
                                 float(np.nanmedian(relative_stat_error[positive]))
                                 if np.any(positive) else np.nan,
+                                float(np.nanmean(bin_by_bin_phi[positive_bin_by_bin]))
+                                if np.any(positive_bin_by_bin) else np.nan,
+                                float(np.nanmax(bin_by_bin_phi[populated]))
+                                if np.any(populated) else np.nan,
+                                float(np.nanmean(diagonal_phi[positive_diagonal]))
+                                if diagonal_phi is not None and np.any(positive_diagonal) else np.nan,
+                                float(np.nanmax(diagonal_phi[populated]))
+                                if diagonal_phi is not None and np.any(populated) else np.nan,
                             )
                         )
                     )
@@ -2425,8 +2498,33 @@ def _plot_acceptance_vs_phi(
                         label=">= threshold",
                         zorder=5,
                     )
-                    ax.plot(phi_centers[populated], eff_phi[populated],
-                            color="#4c78a8", linewidth=1.0, alpha=0.7)
+                    ax.plot(
+                        phi_centers[populated],
+                        eff_phi[populated],
+                        color="#4c78a8",
+                        linewidth=1.1,
+                        alpha=0.8,
+                        label="truth-bin efficiency",
+                    )
+                    ax.plot(
+                        phi_centers[populated],
+                        bin_by_bin_phi[populated],
+                        color="#7b3294",
+                        linestyle="--",
+                        linewidth=1.2,
+                        alpha=0.85,
+                        label="bin-by-bin rec/gen",
+                    )
+                    if diagonal_phi is not None:
+                        ax.plot(
+                            phi_centers[populated],
+                            diagonal_phi[populated],
+                            color="#222222",
+                            linestyle=":",
+                            linewidth=1.4,
+                            alpha=0.9,
+                            label="diagonal same-bin",
+                        )
                     ax.axhline(
                         minimum_acceptance,
                         color="red",
@@ -2437,9 +2535,9 @@ def _plot_acceptance_vs_phi(
                     ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
                     ax.set_ylim(bottom=0.0)
                     ax.set_xlabel("phi bin center [deg]")
-                    ax.set_ylabel("Acceptance / efficiency")
+                    ax.set_ylabel("Acceptance-like quantity")
                     ax.set_title(
-                        "Acceptance vs phi\n"
+                        "Acceptance diagnostics vs phi\n"
                         f"Q2 {q2_edges[iq2]:g}-{q2_edges[iq2 + 1]:g}, "
                         f"xB {xb_edges[ixb]:g}-{xb_edges[ixb + 1]:g}, "
                         f"-t {t_edges[it]:g}-{t_edges[it + 1]:g}"
