@@ -276,7 +276,12 @@ def parser() -> argparse.ArgumentParser:
     acceptance.add_argument(
         "--response-matrix",
         type=Path,
-        help="Optional response_matrix.npz used to add purity and same-bin efficiency diagnostics",
+        help="Optional response_matrix.npz used to add migration diagnostics from the response diagonal",
+    )
+    acceptance.add_argument(
+        "--include-purity",
+        action="store_true",
+        help="Include P_i purity in the overlaid acceptance histograms and phi PDF",
     )
     acceptance.add_argument("--minimum-acceptance", type=float, default=0.005)
     acceptance.add_argument(
@@ -1734,7 +1739,7 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
         if same_bin_efficiency is not None else None
     )
     purity4 = None
-    if same_bin4 is not None:
+    if args.include_purity and same_bin4 is not None:
         same_counts4 = same_bin4 * truth4
         purity4 = np.divide(
             same_counts4,
@@ -1753,9 +1758,9 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
             "A_i bin-by-bin acceptance": acceptance4[populated],
             "epsilon_i IBU total efficiency": eff4[populated],
             **({
-                "P_i purity": purity4[populated],
                 "E_i same-bin efficiency": same_bin4[populated],
-            } if purity4 is not None and same_bin4 is not None else {}),
+            } if same_bin4 is not None else {}),
+            **({"P_i purity": purity4[populated]} if purity4 is not None else {}),
         },
         args.minimum_acceptance,
         args.output_dir,
@@ -1830,9 +1835,11 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
     print(f"Passing bins: {int(passing.sum())}")
     print(f"3D phi pages: {phi_pages}")
     if response_matrix:
-        print(f"Purity and same-bin efficiency source: {response_matrix}")
+        print(f"Migration diagnostic source: {response_matrix}")
+        if not args.include_purity:
+            print("Purity overlay: disabled; pass --include-purity to show P_i")
     else:
-        print("Purity and same-bin efficiency source: unavailable; pass --response-matrix to include them")
+        print("Migration diagnostic source: unavailable; pass --response-matrix to include E_i/P_i")
     print(f"Wrote acceptance plots under {args.output_dir}")
 
 

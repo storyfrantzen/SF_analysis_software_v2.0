@@ -121,6 +121,10 @@ with `N_same,i = N(rec i and gen i)`, they are:
 - `E_i = N_same,i / N_gen,i`, the same-bin efficiency;
 - `epsilon_i = sum_j R[j,i]`, the total truth-bin efficiency used by IBU.
 
+The default phi overlay includes `A_i`, `E_i`, and `epsilon_i`. Add
+`--include-purity` to include `P_i`, whose scale can differ substantially from
+the other three diagnostics.
+
 The full unfolding still uses the migration matrix `R[j,i]`, not any one of
 these scalar diagnostics alone.
 
