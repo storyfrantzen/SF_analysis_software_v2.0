@@ -281,6 +281,7 @@ python3 scripts/compare_proton_energy_loss.py \
   --baseline-label standard \
   --updated-label fiducial \
   --output calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2_compare/residual_summary.csv \
+  --binned-output calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2_compare/residual_summary_binned.csv \
   --plot-dir calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2_compare \
   --dataset-tag 6.535RGK_clasdisP2_compare \
   --beam-energy 6.535
