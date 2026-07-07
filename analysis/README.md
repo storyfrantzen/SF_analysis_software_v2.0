@@ -113,6 +113,17 @@ and restart their event numbers.
 `export_selected_data.py` creates the compact data artifact and carries the
 converter's accumulated charge into the pipeline.
 
+`acceptance-plots` visualizes four related response diagnostics. For bin `i`,
+with `N_same,i = N(rec i and gen i)`, they are:
+
+- `A_i = N_rec,i / N_gen,i`, the simple bin-by-bin acceptance;
+- `P_i = N_same,i / N_rec,i`, the bin purity;
+- `E_i = N_same,i / N_gen,i`, the same-bin efficiency;
+- `epsilon_i = sum_j R[j,i]`, the total truth-bin efficiency used by IBU.
+
+The full unfolding still uses the migration matrix `R[j,i]`, not any one of
+these scalar diagnostics alone.
+
 The compact tree path does not require `--beam-energy`, because generated
 kinematics were calculated by the converter. For a legacy particle-level input,
 the adapter requires `--beam-energy` to reconstruct those quantities:

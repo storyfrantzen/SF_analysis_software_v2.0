@@ -276,7 +276,7 @@ def parser() -> argparse.ArgumentParser:
     acceptance.add_argument(
         "--response-matrix",
         type=Path,
-        help="Optional response_matrix.npz used to add diagonal same-bin stability diagnostics",
+        help="Optional response_matrix.npz used to add purity and same-bin efficiency diagnostics",
     )
     acceptance.add_argument("--minimum-acceptance", type=float, default=0.005)
     acceptance.add_argument(
@@ -1718,18 +1718,30 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
     if response_matrix is None:
         candidate = args.response_meta.parent / "response_matrix.npz"
         response_matrix = candidate if candidate.exists() else None
-    diagonal = _response_diagonal(response_matrix, efficiency.size) if response_matrix else None
+    same_bin_efficiency = _response_diagonal(response_matrix, efficiency.size) if response_matrix else None
 
     eff4 = _unflatten_response(efficiency, shape)
     truth4 = _unflatten_response(truth, shape)
     rec4 = _unflatten_response(reconstructed, shape)
-    bin_by_bin4 = np.divide(
+    acceptance4 = np.divide(
         rec4,
         truth4,
         out=np.zeros_like(rec4),
         where=truth4 > 0,
     )
-    diag4 = _unflatten_response(diagonal, shape) if diagonal is not None else None
+    same_bin4 = (
+        _unflatten_response(same_bin_efficiency, shape)
+        if same_bin_efficiency is not None else None
+    )
+    purity4 = None
+    if same_bin4 is not None:
+        same_counts4 = same_bin4 * truth4
+        purity4 = np.divide(
+            same_counts4,
+            rec4,
+            out=np.zeros_like(same_counts4),
+            where=rec4 > 0,
+        )
     populated = truth4 > 0
     zero = populated & (eff4 == 0)
     low = populated & (eff4 > 0) & (eff4 < args.minimum_acceptance)
@@ -1738,9 +1750,12 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
 
     _plot_acceptance_histograms(
         {
-            "truth-bin efficiency": eff4[populated],
-            "bin-by-bin rec/gen": bin_by_bin4[populated],
-            **({"diagonal same-bin": diag4[populated]} if diag4 is not None else {}),
+            "A_i bin-by-bin acceptance": acceptance4[populated],
+            "epsilon_i IBU total efficiency": eff4[populated],
+            **({
+                "P_i purity": purity4[populated],
+                "E_i same-bin efficiency": same_bin4[populated],
+            } if purity4 is not None and same_bin4 is not None else {}),
         },
         args.minimum_acceptance,
         args.output_dir,
@@ -1796,8 +1811,9 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
     phi_pages = _plot_acceptance_vs_phi(
         eff4,
         truth4,
-        bin_by_bin4,
-        diag4,
+        acceptance4,
+        purity4,
+        same_bin4,
         q2_edges,
         xb_edges,
         t_edges,
@@ -1814,9 +1830,9 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
     print(f"Passing bins: {int(passing.sum())}")
     print(f"3D phi pages: {phi_pages}")
     if response_matrix:
-        print(f"Diagonal stability source: {response_matrix}")
+        print(f"Purity and same-bin efficiency source: {response_matrix}")
     else:
-        print("Diagonal stability source: unavailable; pass --response-matrix to include it")
+        print("Purity and same-bin efficiency source: unavailable; pass --response-matrix to include them")
     print(f"Wrote acceptance plots under {args.output_dir}")
 
 
@@ -2363,8 +2379,9 @@ def _plot_heatmap(
 def _plot_acceptance_vs_phi(
     efficiency: np.ndarray,
     truth: np.ndarray,
-    bin_by_bin: np.ndarray,
-    diagonal: np.ndarray | None,
+    acceptance: np.ndarray,
+    purity: np.ndarray | None,
+    same_bin_efficiency: np.ndarray | None,
     q2_edges: np.ndarray,
     xb_edges: np.ndarray,
     t_edges: np.ndarray,
@@ -2382,9 +2399,10 @@ def _plot_acceptance_vs_phi(
     csv_lines = [
         "iq2,q2_low,q2_high,ixb,xb_low,xb_high,it,t_low,t_high,"
         "truth_phi_bins,passing_phi_bins,zero_phi_bins,low_phi_bins,"
-        "truth_sum,truth_eff_rec_sum,mean_positive_truth_eff,max_truth_eff,"
-        "max_truth_eff_stat_error,median_truth_eff_relative_stat_error,"
-        "mean_positive_bin_by_bin,max_bin_by_bin,mean_positive_diagonal,max_diagonal"
+        "truth_sum,epsilon_rec_sum,mean_positive_A,max_A,"
+        "mean_positive_epsilon,max_epsilon,max_epsilon_stat_error,"
+        "median_epsilon_relative_stat_error,mean_positive_P,max_P,"
+        "mean_positive_E,max_E"
     ]
 
     with PdfPages(pdf_path) as pdf:
@@ -2393,8 +2411,12 @@ def _plot_acceptance_vs_phi(
                 for it in range(efficiency.shape[2]):
                     eff_phi = efficiency[iq2, ixb, it, :]
                     truth_phi = truth[iq2, ixb, it, :]
-                    bin_by_bin_phi = bin_by_bin[iq2, ixb, it, :]
-                    diagonal_phi = diagonal[iq2, ixb, it, :] if diagonal is not None else None
+                    acceptance_phi = acceptance[iq2, ixb, it, :]
+                    purity_phi = purity[iq2, ixb, it, :] if purity is not None else None
+                    same_bin_phi = (
+                        same_bin_efficiency[iq2, ixb, it, :]
+                        if same_bin_efficiency is not None else None
+                    )
                     populated = truth_phi > 0
                     passing = populated & (eff_phi >= minimum_acceptance)
                     if np.count_nonzero(passing) < min_passing_bins:
@@ -2417,10 +2439,14 @@ def _plot_acceptance_vs_phi(
                         out=np.full_like(stat_error, np.nan),
                         where=eff_phi > 0,
                     )
-                    positive_bin_by_bin = populated & (bin_by_bin_phi > 0)
-                    positive_diagonal = (
-                        populated & (diagonal_phi > 0)
-                        if diagonal_phi is not None else np.zeros_like(populated, dtype=bool)
+                    positive_acceptance = populated & (acceptance_phi > 0)
+                    positive_purity = (
+                        populated & (purity_phi > 0)
+                        if purity_phi is not None else np.zeros_like(populated, dtype=bool)
+                    )
+                    positive_same_bin = (
+                        populated & (same_bin_phi > 0)
+                        if same_bin_phi is not None else np.zeros_like(populated, dtype=bool)
                     )
 
                     csv_lines.append(
@@ -2442,19 +2468,23 @@ def _plot_acceptance_vs_phi(
                                 int(low.sum()),
                                 float(truth_phi[populated].sum()),
                                 float(rec_phi[populated].sum()),
+                                float(np.nanmean(acceptance_phi[positive_acceptance]))
+                                if np.any(positive_acceptance) else np.nan,
+                                float(np.nanmax(acceptance_phi[populated]))
+                                if np.any(populated) else np.nan,
                                 float(np.nanmean(eff_phi[positive])) if np.any(positive) else np.nan,
                                 float(np.nanmax(eff_phi[populated])) if np.any(populated) else np.nan,
                                 float(np.nanmax(stat_error[populated])) if np.any(populated) else np.nan,
                                 float(np.nanmedian(relative_stat_error[positive]))
                                 if np.any(positive) else np.nan,
-                                float(np.nanmean(bin_by_bin_phi[positive_bin_by_bin]))
-                                if np.any(positive_bin_by_bin) else np.nan,
-                                float(np.nanmax(bin_by_bin_phi[populated]))
-                                if np.any(populated) else np.nan,
-                                float(np.nanmean(diagonal_phi[positive_diagonal]))
-                                if diagonal_phi is not None and np.any(positive_diagonal) else np.nan,
-                                float(np.nanmax(diagonal_phi[populated]))
-                                if diagonal_phi is not None and np.any(populated) else np.nan,
+                                float(np.nanmean(purity_phi[positive_purity]))
+                                if purity_phi is not None and np.any(positive_purity) else np.nan,
+                                float(np.nanmax(purity_phi[populated]))
+                                if purity_phi is not None and np.any(populated) else np.nan,
+                                float(np.nanmean(same_bin_phi[positive_same_bin]))
+                                if same_bin_phi is not None and np.any(positive_same_bin) else np.nan,
+                                float(np.nanmax(same_bin_phi[populated]))
+                                if same_bin_phi is not None and np.any(populated) else np.nan,
                             )
                         )
                     )
@@ -2504,26 +2534,36 @@ def _plot_acceptance_vs_phi(
                         color="#4c78a8",
                         linewidth=1.1,
                         alpha=0.8,
-                        label="truth-bin efficiency",
+                        label="epsilon_i total IBU efficiency",
                     )
                     ax.plot(
                         phi_centers[populated],
-                        bin_by_bin_phi[populated],
+                        acceptance_phi[populated],
                         color="#7b3294",
                         linestyle="--",
                         linewidth=1.2,
                         alpha=0.85,
-                        label="bin-by-bin rec/gen",
+                        label="A_i bin-by-bin acceptance",
                     )
-                    if diagonal_phi is not None:
+                    if purity_phi is not None:
                         ax.plot(
                             phi_centers[populated],
-                            diagonal_phi[populated],
+                            purity_phi[populated],
+                            color="#f58518",
+                            linestyle="-.",
+                            linewidth=1.2,
+                            alpha=0.9,
+                            label="P_i purity",
+                        )
+                    if same_bin_phi is not None:
+                        ax.plot(
+                            phi_centers[populated],
+                            same_bin_phi[populated],
                             color="#222222",
                             linestyle=":",
                             linewidth=1.4,
                             alpha=0.9,
-                            label="diagonal same-bin",
+                            label="E_i same-bin efficiency",
                         )
                     ax.axhline(
                         minimum_acceptance,
@@ -2535,7 +2575,7 @@ def _plot_acceptance_vs_phi(
                     ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
                     ax.set_ylim(bottom=0.0)
                     ax.set_xlabel("phi bin center [deg]")
-                    ax.set_ylabel("Acceptance-like quantity")
+                    ax.set_ylabel("Migration/acceptance diagnostic")
                     ax.set_title(
                         "Acceptance diagnostics vs phi\n"
                         f"Q2 {q2_edges[iq2]:g}-{q2_edges[iq2 + 1]:g}, "
