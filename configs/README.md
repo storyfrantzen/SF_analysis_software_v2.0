@@ -39,6 +39,7 @@ The active RGK 6.535 GeV files are:
 - `post/rgk/6.535/eppi0_base.json`;
 - `post/rgk/6.535/aao_rad_eppi0_loose.json`;
 - `processing/rgk/6.535/eppi0_mc_acceptance.json`;
+- `post/rgk/6.535/eppi0_mc_acceptance.json`;
 - `processing/rgk/6.535/calibration/sidis_electrons_data.json`;
 - `processing/rgk/6.535/calibration/sidis_electrons_mc.json`;
 - `processing/rgk/6.535/calibration/proton_energy_loss_mc.json`;
@@ -160,6 +161,20 @@ phase-space families in the filenames: `Q2 >= 0.7, electron p >= 1.00` for
 `11225`, and `11238`. The post config extends the RGK EPPI0 base but keeps a
 loose photon selection with a very low reconstructed photon momentum threshold,
 so the comparison is sensitive to the generated `EG` threshold scan.
+
+For calibrated RGK 6.535 GeV acceptance studies, use the compact acceptance
+processing config together with the acceptance post config. The processing
+config applies the `6.535RGK_clasdisP2` proton energy-loss corrections; the
+post config extends the nominal RGK EPPI0 base selection and loads the
+`6.535RGK_clasdisGEMC_11285` sampling-fraction parameters:
+
+```bash
+./build/hipo2root configs/processing/rgk/6.535/eppi0_mc_acceptance.json \
+  /volatile/clas12/osg/storyf/11285 0 1000000
+
+./build/post_process configs/post/rgk/6.535/eppi0_mc_acceptance.json \
+  6.535_rgk_eppi0_mc_acceptance.root 1000000
+```
 
 Example smoke-test commands on ifarm:
 
