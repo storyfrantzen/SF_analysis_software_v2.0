@@ -254,7 +254,19 @@ python3 analysis/run_analysis.py bin-centering-merge \
 ```
 
 Repeat with larger `--N` values, for example `N=2,4,6,8`, and compare the
-merged `C_BC` artifacts to assess convergence.
+merged `C_BC` artifacts to assess convergence. To summarize and visualize a
+scan after merging all requested `C_BC_N*.npz` files:
+
+```bash
+python3 scripts/plot_bin_centering_convergence.py results/bin_centering_convergence/rgk_6.535 \
+  --n-values 2 4 6 8 \
+  --reference-N 8
+```
+
+The script writes a Markdown summary, pairwise statistics CSV, worst-bin CSV,
+and a PNG showing reliable-bin growth, relative-difference histograms/CDFs,
+adjacent-`N` convergence, and where the largest tail sits in phi and kinematic
+bin index.
 
 ## Legacy behavior intentionally corrected
 
