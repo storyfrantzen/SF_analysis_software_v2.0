@@ -36,6 +36,8 @@ The active RGK 6.535 GeV files are:
 
 - `processing/rgk/6.535/aao_rad_q2_0.7_ep_1.00.json`;
 - `processing/rgk/6.535/aao_rad_q2_0.9_ep_1.15.json`;
+- `processing/rgk/6.535/eppi0_data.json`;
+- `post/rgk/6.535/eppi0_data.json`;
 - `post/rgk/6.535/eppi0_base.json`;
 - `post/rgk/6.535/aao_rad_eppi0_loose.json`;
 - `processing/rgk/6.535/eppi0_mc_acceptance.json`;
@@ -161,6 +163,26 @@ phase-space families in the filenames: `Q2 >= 0.7, electron p >= 1.00` for
 `11225`, and `11238`. The post config extends the RGK EPPI0 base but keeps a
 loose photon selection with a very low reconstructed photon momentum threshold,
 so the comparison is sensitive to the generated `EG` threshold scan.
+
+For RGK 6.535 GeV data processing, use the data config pair. The processing
+config enables QADB, applies the `6.535RGK_clasdisP2` proton energy-loss
+corrections, and records accumulated beam charge for cross-section
+normalization. The post config extends the nominal RGK EPPI0 base selection and
+loads the data-side `6.535RGKSKIM1` sampling-fraction parameters:
+
+```bash
+./build/hipo2root configs/processing/rgk/6.535/eppi0_data.json \
+  /path/to/rgk/6.535/data 0 1000000
+
+./build/post_process configs/post/rgk/6.535/eppi0_data.json \
+  6.535_rgk_eppi0_data.root 1000000
+
+python3 analysis/export_selected_data.py \
+  6.535_rgk_eppi0_data_selected.root \
+  6.535_rgk_eppi0_data.root \
+  results/data/rgk_6.535_data_events.npz \
+  --dictionary build/libROOTBranchesDict.so
+```
 
 For calibrated RGK 6.535 GeV acceptance studies, use the compact acceptance
 processing config together with the acceptance post config. The processing
