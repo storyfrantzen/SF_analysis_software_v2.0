@@ -2325,7 +2325,8 @@ def _plot_acceptance_vs_phi(
     csv_lines = [
         "iq2,q2_low,q2_high,ixb,xb_low,xb_high,it,t_low,t_high,"
         "truth_phi_bins,passing_phi_bins,zero_phi_bins,low_phi_bins,"
-        "truth_sum,rec_sum,mean_positive_acceptance,max_acceptance"
+        "truth_sum,rec_sum,mean_positive_acceptance,max_acceptance,"
+        "max_acceptance_stat_error,median_relative_stat_error"
     ]
 
     with PdfPages(pdf_path) as pdf:
@@ -2343,6 +2344,19 @@ def _plot_acceptance_vs_phi(
                     low = populated & (eff_phi > 0) & (eff_phi < minimum_acceptance)
                     positive = populated & (eff_phi > 0)
                     rec_phi = eff_phi * truth_phi
+                    variance = np.divide(
+                        eff_phi * (1.0 - eff_phi),
+                        truth_phi,
+                        out=np.zeros_like(eff_phi),
+                        where=truth_phi > 0,
+                    )
+                    stat_error = np.sqrt(np.maximum(variance, 0.0))
+                    relative_stat_error = np.divide(
+                        stat_error,
+                        eff_phi,
+                        out=np.full_like(stat_error, np.nan),
+                        where=eff_phi > 0,
+                    )
 
                     csv_lines.append(
                         ",".join(
@@ -2365,19 +2379,52 @@ def _plot_acceptance_vs_phi(
                                 float(rec_phi[populated].sum()),
                                 float(np.nanmean(eff_phi[positive])) if np.any(positive) else np.nan,
                                 float(np.nanmax(eff_phi[populated])) if np.any(populated) else np.nan,
+                                float(np.nanmax(stat_error[populated])) if np.any(populated) else np.nan,
+                                float(np.nanmedian(relative_stat_error[positive]))
+                                if np.any(positive) else np.nan,
                             )
                         )
                     )
 
                     fig, ax = plt.subplots(figsize=(8, 5))
                     if np.any(zero):
-                        ax.scatter(phi_centers[zero], eff_phi[zero], color="#9aa0a6",
-                                   label="zero", zorder=3)
+                        ax.errorbar(
+                            phi_centers[zero],
+                            eff_phi[zero],
+                            yerr=stat_error[zero],
+                            fmt="o",
+                            color="#9aa0a6",
+                            ecolor="#9aa0a6",
+                            elinewidth=0.9,
+                            capsize=2,
+                            label="zero",
+                            zorder=3,
+                        )
                     if np.any(low):
-                        ax.scatter(phi_centers[low], eff_phi[low], color="#d95f02",
-                                   label="positive < threshold", zorder=4)
-                    ax.scatter(phi_centers[passing], eff_phi[passing], color="#1b9e77",
-                               label=">= threshold", zorder=5)
+                        ax.errorbar(
+                            phi_centers[low],
+                            eff_phi[low],
+                            yerr=stat_error[low],
+                            fmt="o",
+                            color="#d95f02",
+                            ecolor="#d95f02",
+                            elinewidth=0.9,
+                            capsize=2,
+                            label="positive < threshold",
+                            zorder=4,
+                        )
+                    ax.errorbar(
+                        phi_centers[passing],
+                        eff_phi[passing],
+                        yerr=stat_error[passing],
+                        fmt="o",
+                        color="#1b9e77",
+                        ecolor="#1b9e77",
+                        elinewidth=0.9,
+                        capsize=2,
+                        label=">= threshold",
+                        zorder=5,
+                    )
                     ax.plot(phi_centers[populated], eff_phi[populated],
                             color="#4c78a8", linewidth=1.0, alpha=0.7)
                     ax.axhline(
