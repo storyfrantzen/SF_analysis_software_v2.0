@@ -220,11 +220,13 @@ sidecar includes event counts, and fall back to an unweighted mean for legacy
 `.sum`-only directories. Use
 `--born-integrated-cross-section` and `--radiative-integrated-cross-section`
 when entering the values manually. The resulting global factor is
-`(Sigma_born / Sigma_rad) * (N_rad / N_born)`, so the per-bin ratio is normalized
-as a cross-section ratio rather than a raw event-density ratio. The artifact also
-stores support diagnostics: per-bin born/radiative counts, overlap and status
-masks, generated `Q2`/`Eprime` ranges, and the integrated cross sections used for
-each sample. When sidecars are supplied, the artifact also preserves the
+`(Sigma_rad / Sigma_born) * (N_born / N_rad)`, so the stored `C_rad` is the
+radiative-to-Born cross-section ratio rather than a raw event-density ratio.
+`unfold --radiative-correction` divides unfolded yields by this factor. The
+artifact also stores support diagnostics: per-bin born/radiative counts, overlap
+and status masks, generated `Q2`/`Eprime` ranges, and the integrated cross
+sections used for each sample. When sidecars are supplied, the artifact also
+preserves the
 normalization records used to get those cross sections: sidecar paths,
 combination method, `sig_sum`, `sig_int`, `events`, `ntries`, `nevent`,
 `mcall_max`, `sigr_max`, generator name, and units. Regenerate the diagnostic

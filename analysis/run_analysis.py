@@ -452,9 +452,24 @@ def command_unfold(args: argparse.Namespace) -> None:
         factor = binning.flatten_values(correction["C_rad"])
         factor_uncertainty = binning.flatten_values(correction["delta_C"])
         radiative_reliable = binning.flatten_values(correction["reliable"]).astype(bool)
-        radiative_valid = radiative_reliable & (efficiency > minimum_acceptance)
-        corrected_yield = np.where(radiative_valid, unfolded * factor, 0.0)
-        radiative_sigma = unfolded * factor_uncertainty
+        radiative_valid = (
+            radiative_reliable
+            & (efficiency > minimum_acceptance)
+            & np.isfinite(factor)
+            & (factor > 0.0)
+        )
+        corrected_yield = np.divide(
+            unfolded,
+            factor,
+            out=np.zeros_like(unfolded),
+            where=radiative_valid,
+        )
+        radiative_sigma = np.divide(
+            unfolded * factor_uncertainty,
+            factor * factor,
+            out=np.zeros_like(unfolded),
+            where=radiative_valid,
+        )
         corrected_uncertainty = np.where(
             radiative_valid, np.hypot(sigma_total, radiative_sigma), 0.0
         )

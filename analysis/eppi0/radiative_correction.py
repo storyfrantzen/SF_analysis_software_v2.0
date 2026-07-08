@@ -66,6 +66,8 @@ def compute_radiative_correction(
     Histograms are accumulated in the native flat bin order and unflattened only at
     output time.  The trento phi convention is inherited from the analysis core:
     electron-proton planes through ``event_sample._trento_phi``.
+    The stored correction is the radiative-to-Born cross-section ratio; downstream
+    unfolding divides by it.
     """
     if min_counts < 0:
         raise ValueError("min_counts must be non-negative")
@@ -120,20 +122,20 @@ def compute_radiative_correction(
             radiative_integrated_cross_section, "radiative_integrated_cross_section"
         )
         normalization_ratio = (
-            born_integrated_cross_section
-            / radiative_integrated_cross_section
-            * radiative_result.topology_events
-            / born_result.topology_events
+            radiative_integrated_cross_section
+            / born_integrated_cross_section
+            * born_result.topology_events
+            / radiative_result.topology_events
         )
     elif normalization_ratio is None:
-        normalization_ratio = radiative_result.topology_events / born_result.topology_events
+        normalization_ratio = born_result.topology_events / radiative_result.topology_events
     normalization_ratio = float(normalization_ratio)
     if not np.isfinite(normalization_ratio) or normalization_ratio <= 0.0:
         raise ValueError("normalization_ratio must be positive and finite")
 
     lambda_born = born_result.counts + 0.5
     lambda_rad = radiative_result.counts + 0.5
-    c_rad_flat = normalization_ratio * lambda_born / lambda_rad
+    c_rad_flat = normalization_ratio * lambda_rad / lambda_born
     delta_flat = c_rad_flat * np.sqrt((1.0 / lambda_born) + (1.0 / lambda_rad))
     reliable_flat = (born_result.counts >= min_counts) & (radiative_result.counts >= min_counts)
 

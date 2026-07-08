@@ -9,12 +9,12 @@ import tempfile
 import unittest
 
 import numpy as np
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, eye, save_npz
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from eppi0.binning import AnalysisBinning, legacy_binning
+from eppi0.binning import AnalysisBinning, from_config, legacy_binning
 from eppi0.bin_centering import compute_bin_centering, physical_mask
 from eppi0.cross_section import integrated_luminosity_fb, virtual_photon_flux
 from eppi0.event_sample import (
@@ -33,6 +33,7 @@ from eppi0.radiative_correction import (
 )
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
 from run_analysis import (
+    command_unfold,
     command_bin_centering_merge,
     _normalization_npz_fields,
     _read_generator_integrated_cross_section,
@@ -215,6 +216,64 @@ class UnfoldingTests(unittest.TestCase):
         np.testing.assert_allclose(first[0], second[0])
         np.testing.assert_allclose(first[1], second[1])
 
+    def test_unfold_divides_by_radiative_correction(self) -> None:
+        config = Path("configs/analysis/rgk/6.535.json")
+        binning = from_config(config)
+        flat = int(binning.coordinates_to_flat(
+            np.asarray([1.2]),
+            np.asarray([0.12]),
+            np.asarray([0.2]),
+            np.asarray([0.1]),
+        )[0])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            data_path = tmpdir / "data.npz"
+            matrix_path = tmpdir / "response.npz"
+            meta_path = tmpdir / "response_meta.npz"
+            correction_path = tmpdir / "C_rad.npz"
+            output_path = tmpdir / "unfolding.npz"
+            np.savez_compressed(
+                data_path,
+                rec_Q2=np.asarray([1.2]),
+                rec_xB=np.asarray([0.12]),
+                rec_minus_t=np.asarray([0.2]),
+                rec_trento_phi=np.asarray([0.1]),
+                rec_selected=np.asarray([True]),
+            )
+            save_npz(matrix_path, eye(binning.size, format="csr"))
+            np.savez_compressed(
+                meta_path,
+                efficiency=np.ones(binning.size),
+                feed_in_fraction=0.0,
+                feed_in_shape=np.zeros(binning.size),
+                response_variance_sum=np.zeros(binning.size),
+            )
+            c_rad_flat = np.ones(binning.size)
+            c_rad_flat[flat] = 2.0
+            np.savez_compressed(
+                correction_path,
+                C_rad=binning.unflatten(c_rad_flat),
+                delta_C=np.zeros(binning.shape),
+                reliable=np.ones(binning.shape, dtype=bool),
+            )
+            args = argparse.Namespace(
+                data=data_path,
+                response_matrix=matrix_path,
+                response_meta=meta_path,
+                config=config,
+                output=output_path,
+                selection_mask=None,
+                iterations=0,
+                bootstrap=0,
+                seed=12345,
+                radiative_correction=correction_path,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_unfold(args)
+            result = np.load(output_path, allow_pickle=False)
+        self.assertEqual(result["unfolded"][flat], 1.0)
+        self.assertEqual(result["corrected_yield"][flat], 0.5)
+
 
 class RadiativeCorrectionTests(unittest.TestCase):
     def test_lund_histogram_streams_into_configured_bins(self) -> None:
@@ -292,8 +351,8 @@ class RadiativeCorrectionTests(unittest.TestCase):
                 born_integrated_cross_section=2.0,
                 radiative_integrated_cross_section=1.0,
             )
-        np.testing.assert_allclose(result.c_rad[result.reliable], [2.0])
-        self.assertEqual(result.normalization_ratio, 2.0)
+        np.testing.assert_allclose(result.c_rad[result.reliable], [0.5])
+        self.assertEqual(result.normalization_ratio, 0.5)
 
     def test_generator_integrated_cross_section_parser_reads_norm_and_sum(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
