@@ -293,6 +293,20 @@ def parser() -> argparse.ArgumentParser:
         default=1,
         help="Minimum number of above-threshold phi bins required to include a 3D bin in the phi PDF",
     )
+    response_plots = commands.add_parser(
+        "response-plots",
+        help="Visualize the sparse IBU response matrix and migration by kinematic variable",
+    )
+    response_plots.add_argument("response_matrix", type=Path)
+    response_plots.add_argument("response_meta", type=Path)
+    response_plots.add_argument("--output", type=Path, required=True)
+    response_plots.add_argument(
+        "--max-points",
+        type=int,
+        default=500_000,
+        help="Maximum nonzero entries to draw in the global sparse response image",
+    )
+    response_plots.add_argument("--seed", type=int, default=12345)
     return root
 
 
@@ -1995,6 +2009,84 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
     print(f"Wrote acceptance plots under {args.output_dir}")
 
 
+def command_response_plots(args: argparse.Namespace) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    metadata = np.load(args.response_meta, allow_pickle=False)
+    matrix = load_npz(args.response_matrix).tocsr()
+    q2_edges = np.asarray(metadata["q2_edges"], dtype=float)
+    xb_edges = np.asarray(metadata["xb_edges"], dtype=float)
+    t_edges = np.asarray(metadata["t_edges"], dtype=float)
+    phi_edges = np.asarray(metadata["phi_edges"], dtype=float)
+    shape = (
+        q2_edges.size - 1,
+        xb_edges.size - 1,
+        t_edges.size - 1,
+        phi_edges.size - 1,
+    )
+    number_of_bins = int(np.prod(shape))
+    if matrix.shape[0] != number_of_bins or matrix.shape[1] < number_of_bins:
+        raise ValueError(
+            f"response matrix shape {matrix.shape} does not match {number_of_bins} analysis bins"
+        )
+    core = matrix[:, :number_of_bins].tocoo()
+    efficiency = np.asarray(metadata["efficiency"], dtype=float)
+    truth = np.asarray(metadata["truth_total"], dtype=float)
+    if efficiency.size != number_of_bins or truth.size != number_of_bins:
+        raise ValueError("response metadata arrays do not match bin-edge dimensions")
+
+    rec_indices = _flat_indices_for_shape(core.row, shape)
+    truth_indices = _flat_indices_for_shape(core.col, shape)
+    migration = _response_migration_diagnostics(
+        core,
+        rec_indices,
+        truth_indices,
+        shape,
+        efficiency,
+    )
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with PdfPages(args.output) as pdf:
+        _plot_response_summary_page(
+            pdf,
+            args.response_matrix,
+            args.response_meta,
+            matrix,
+            core,
+            efficiency,
+            truth,
+        )
+        _plot_response_sparse_global_page(pdf, core, number_of_bins, args.max_points, args.seed)
+        _plot_response_variable_matrices_page(pdf, migration["collapsed_matrices"], shape)
+        _plot_response_variable_histograms_page(
+            pdf,
+            efficiency,
+            migration["same_bin_probability"],
+            migration["different_probability"],
+            migration["mean_abs_delta"],
+        )
+        _plot_response_projection_page(
+            pdf,
+            migration["different_probability"],
+            shape,
+            q2_edges,
+            xb_edges,
+            projection="q2_xb",
+        )
+        _plot_response_projection_page(
+            pdf,
+            migration["different_probability"],
+            shape,
+            t_edges,
+            phi_edges,
+            projection="t_phi",
+        )
+
+    print(f"Wrote response diagnostics PDF: {args.output}")
+
+
 def _load_mask(path: Path, expected: int) -> np.ndarray:
     mask = np.asarray(np.load(path), dtype=bool)
     if mask.shape != (expected,):
@@ -2014,6 +2106,264 @@ def _response_diagonal(response_matrix: Path, number_of_bins: int) -> np.ndarray
             f"response matrix shape {matrix.shape} does not match {number_of_bins} analysis bins"
         )
     return matrix[:, :number_of_bins].diagonal()
+
+
+RESPONSE_VARIABLES = ("Q2", "xB", "-t", "phi")
+
+
+def _flat_indices_for_shape(flat: np.ndarray, shape: tuple[int, int, int, int]) -> tuple[np.ndarray, ...]:
+    nq2, nxb, nt, nphi = shape
+    flat = np.asarray(flat, dtype=np.int64)
+    it = flat % nt
+    tmp = flat // nt
+    iphi = tmp % nphi
+    tmp = tmp // nphi
+    iq2 = tmp % nq2
+    ixb = tmp // nq2
+    return iq2, ixb, it, iphi
+
+
+def _response_migration_diagnostics(
+    core,
+    rec_indices: tuple[np.ndarray, ...],
+    truth_indices: tuple[np.ndarray, ...],
+    shape: tuple[int, int, int, int],
+    efficiency: np.ndarray,
+) -> dict[str, np.ndarray | list[np.ndarray]]:
+    number_of_bins = int(np.prod(shape))
+    data = np.asarray(core.data, dtype=float)
+    columns = np.asarray(core.col, dtype=np.int64)
+
+    same_all = np.ones(data.size, dtype=bool)
+    for rec, truth in zip(rec_indices, truth_indices):
+        same_all &= rec == truth
+    same_bin_probability = np.bincount(
+        columns[same_all],
+        weights=data[same_all],
+        minlength=number_of_bins,
+    ).astype(float)
+
+    different_probability = np.zeros((4, number_of_bins), dtype=float)
+    mean_abs_delta = np.zeros((4, number_of_bins), dtype=float)
+    collapsed_matrices: list[np.ndarray] = []
+    for ivar, (rec, truth) in enumerate(zip(rec_indices, truth_indices)):
+        delta = np.abs(rec - truth).astype(float)
+        different = delta > 0
+        different_probability[ivar] = np.bincount(
+            columns[different],
+            weights=data[different],
+            minlength=number_of_bins,
+        ).astype(float)
+        delta_sum = np.bincount(columns, weights=data * delta, minlength=number_of_bins).astype(float)
+        mean_abs_delta[ivar] = np.divide(
+            delta_sum,
+            efficiency,
+            out=np.zeros(number_of_bins, dtype=float),
+            where=efficiency > 0,
+        )
+        size = shape[ivar]
+        collapsed = np.zeros((size, size), dtype=float)
+        np.add.at(collapsed, (rec, truth), data)
+        truth_totals = collapsed.sum(axis=0)
+        collapsed = np.divide(
+            collapsed,
+            truth_totals[np.newaxis, :],
+            out=np.zeros_like(collapsed),
+            where=truth_totals[np.newaxis, :] > 0,
+        )
+        collapsed_matrices.append(collapsed)
+
+    return {
+        "same_bin_probability": same_bin_probability,
+        "different_probability": different_probability,
+        "mean_abs_delta": mean_abs_delta,
+        "collapsed_matrices": collapsed_matrices,
+    }
+
+
+def _plot_response_summary_page(
+    pdf,
+    response_matrix: Path,
+    response_meta: Path,
+    matrix,
+    core,
+    efficiency: np.ndarray,
+    truth: np.ndarray,
+) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    populated = truth > 0
+    lines = [
+        "Response-matrix diagnostics",
+        "",
+        f"Response matrix: {response_matrix}",
+        f"Response metadata: {response_meta}",
+        f"Matrix shape: {matrix.shape}",
+        f"Core nonzero entries: {core.nnz}",
+        f"Analysis bins: {efficiency.size}",
+        f"Truth-populated bins: {int(np.count_nonzero(populated))}",
+        f"Mean efficiency, populated: {np.nanmean(efficiency[populated]) if np.any(populated) else np.nan:.8g}",
+        f"Median efficiency, populated: {np.nanmedian(efficiency[populated]) if np.any(populated) else np.nan:.8g}",
+        f"Max efficiency: {np.nanmax(efficiency) if efficiency.size else np.nan:.8g}",
+        "",
+        "Rows are reconstructed bins; columns are truth bins.",
+        "Each core column sums to the IBU reconstruction efficiency for that truth bin.",
+        "Collapsed variable matrices are column-normalized within the reconstructed sample.",
+    ]
+    fig = plt.figure(figsize=(11, 8.5))
+    fig.text(0.06, 0.94, "\n".join(lines), va="top", ha="left", family="monospace", fontsize=11)
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _plot_response_sparse_global_page(pdf, core, number_of_bins: int, max_points: int, seed: int) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    if max_points <= 0:
+        raise ValueError("--max-points must be positive")
+    rng = np.random.default_rng(seed)
+    rows = np.asarray(core.row)
+    cols = np.asarray(core.col)
+    values = np.asarray(core.data, dtype=float)
+    if values.size > max_points:
+        choice = rng.choice(values.size, size=max_points, replace=False)
+        rows = rows[choice]
+        cols = cols[choice]
+        values = values[choice]
+        sampled = True
+    else:
+        sampled = False
+    colors = np.log10(np.clip(values, 1.0e-12, None))
+    fig, ax = plt.subplots(figsize=(8.5, 8.0))
+    scatter = ax.scatter(cols, rows, c=colors, s=0.15, marker="s", linewidths=0, cmap="viridis")
+    fig.colorbar(scatter, ax=ax, label="log10 R[reco, truth]")
+    ax.plot([0, number_of_bins], [0, number_of_bins], color="white", linewidth=0.6, alpha=0.7)
+    ax.set_xlim(0, number_of_bins)
+    ax.set_ylim(number_of_bins, 0)
+    ax.set_xlabel("Truth flat bin")
+    ax.set_ylabel("Reconstructed flat bin")
+    title = "Sparse global response matrix"
+    if sampled:
+        title += f" ({max_points:g} sampled nonzeros)"
+    ax.set_title(title)
+    fig.tight_layout()
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _plot_response_variable_matrices_page(pdf, matrices: list[np.ndarray], shape: tuple[int, ...]) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(2, 2, figsize=(11, 8.5), constrained_layout=True)
+    for ax, label, matrix, size in zip(axes.ravel(), RESPONSE_VARIABLES, matrices, shape):
+        shown = np.where(matrix > 0, matrix, np.nan)
+        image = ax.imshow(shown, origin="lower", aspect="auto", vmin=0.0, vmax=1.0, cmap="viridis")
+        fig.colorbar(image, ax=ax, label="P(reco bin | truth bin, reconstructed)")
+        ax.plot([-0.5, size - 0.5], [-0.5, size - 0.5], color="white", linewidth=0.8, alpha=0.8)
+        ax.set_xlabel(f"Truth {label} bin")
+        ax.set_ylabel(f"Reco {label} bin")
+        ax.set_title(f"Collapsed migration in {label}")
+    fig.suptitle("Variable-wise collapsed response matrices")
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _plot_response_variable_histograms_page(
+    pdf,
+    efficiency: np.ndarray,
+    same_bin_probability: np.ndarray,
+    different_probability: np.ndarray,
+    mean_abs_delta: np.ndarray,
+) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    populated = efficiency > 0
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.8), constrained_layout=True)
+    axes[0].hist(efficiency[populated], bins=80, histtype="step", linewidth=1.5, label="epsilon total")
+    axes[0].hist(
+        same_bin_probability[populated],
+        bins=80,
+        histtype="step",
+        linewidth=1.5,
+        label="same 4D bin",
+    )
+    for ivar, label in enumerate(RESPONSE_VARIABLES):
+        axes[0].hist(
+            different_probability[ivar, populated],
+            bins=80,
+            histtype="step",
+            linewidth=1.2,
+            label=f"different {label}",
+        )
+    axes[0].set_xlabel("Unconditional response probability per truth bin")
+    axes[0].set_ylabel("Truth bins")
+    axes[0].set_title("Migration probability distributions")
+    axes[0].legend(fontsize="x-small")
+    axes[0].grid(True, alpha=0.25)
+
+    means = [
+        np.nanmean(mean_abs_delta[ivar, populated])
+        if np.any(populated) else np.nan
+        for ivar in range(len(RESPONSE_VARIABLES))
+    ]
+    axes[1].bar(RESPONSE_VARIABLES, means, color="#4c78a8")
+    axes[1].set_ylabel("Mean |reco index - truth index| among reconstructed")
+    axes[1].set_title("Average migration distance by variable")
+    axes[1].grid(True, axis="y", alpha=0.25)
+    for index, value in enumerate(means):
+        axes[1].text(index, value, f"{value:.3g}", ha="center", va="bottom", fontsize=9)
+
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _plot_response_projection_page(
+    pdf,
+    different_probability: np.ndarray,
+    shape: tuple[int, int, int, int],
+    y_edges: np.ndarray,
+    x_edges: np.ndarray,
+    *,
+    projection: str,
+) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    if projection == "q2_xb":
+        title = "Median per-truth-bin migration probability in Q2 and xB"
+        x_label, y_label = "xB", "Q2 [GeV^2]"
+        axes_to_reduce = (2, 3)
+    elif projection == "t_phi":
+        title = "Median per-truth-bin migration probability in phi and -t"
+        x_label, y_label = "phi [deg]", "-t [GeV^2]"
+        axes_to_reduce = (0, 1)
+    else:
+        raise ValueError(f"unknown response projection: {projection}")
+
+    fig, axes = plt.subplots(2, 2, figsize=(11, 8.5), constrained_layout=True)
+    for ax, label, values in zip(axes.ravel(), RESPONSE_VARIABLES, different_probability):
+        values4 = _unflatten_response(values, shape)
+        projected = _nanmedian_where(values4, values4 > 0.0, axis=axes_to_reduce)
+        image = ax.pcolormesh(
+            x_edges,
+            y_edges,
+            projected,
+            vmin=0.0,
+            vmax=1.0,
+            cmap="magma",
+            shading="flat",
+        )
+        fig.colorbar(image, ax=ax, label=f"P(reco {label} != truth {label})")
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(y_label)
+        ax.set_title(f"Migration in {label}")
+    fig.suptitle(title)
+    pdf.savefig(fig)
+    plt.close(fig)
 
 
 def _edge_labels(edges: np.ndarray) -> list[str]:
@@ -2778,6 +3128,8 @@ def main() -> int:
         command_cross_section_plots(args)
     elif args.command == "acceptance-plots":
         command_acceptance_plots(args)
+    elif args.command == "response-plots":
+        command_response_plots(args)
     return 0
 
 

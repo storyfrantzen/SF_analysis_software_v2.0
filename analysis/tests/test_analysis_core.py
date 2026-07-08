@@ -34,6 +34,7 @@ from eppi0.radiative_correction import (
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
 from run_analysis import (
     command_unfold,
+    command_response_plots,
     command_bin_centering_merge,
     _normalization_npz_fields,
     _read_generator_integrated_cross_section,
@@ -101,6 +102,45 @@ class ResponseTests(unittest.TestCase):
         np.testing.assert_allclose(counted.efficiency, dense.efficiency)
         self.assertAlmostEqual(counted.feed_in_fraction, dense.feed_in_fraction)
         np.testing.assert_allclose(counted.feed_in_shape, dense.feed_in_shape)
+
+    def test_response_plots_writes_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            matrix_path = tmpdir / "response_matrix.npz"
+            meta_path = tmpdir / "response_meta.npz"
+            output_path = tmpdir / "response_plots.pdf"
+            save_npz(
+                matrix_path,
+                csr_matrix(
+                    np.array(
+                        [
+                            [0.8, 0.2],
+                            [0.1, 0.7],
+                        ]
+                    )
+                ),
+            )
+            np.savez_compressed(
+                meta_path,
+                efficiency=np.array([0.9, 0.9]),
+                truth_total=np.array([100.0, 100.0]),
+                reconstructed_total=np.array([90.0, 90.0]),
+                q2_edges=np.array([1.0, 2.0]),
+                xb_edges=np.array([0.1, 0.2, 0.3]),
+                t_edges=np.array([0.1, 0.2]),
+                phi_edges=np.array([0.0, 360.0]),
+            )
+            args = argparse.Namespace(
+                response_matrix=matrix_path,
+                response_meta=meta_path,
+                output=output_path,
+                max_points=1000,
+                seed=12345,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_response_plots(args)
+            self.assertTrue(output_path.is_file())
+            self.assertGreater(output_path.stat().st_size, 0)
 
 
 class EventSampleTests(unittest.TestCase):

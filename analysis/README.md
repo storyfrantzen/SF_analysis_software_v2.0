@@ -128,6 +128,19 @@ the other three diagnostics.
 The full unfolding still uses the migration matrix `R[j,i]`, not any one of
 these scalar diagnostics alone.
 
+To inspect that sparse IBU response matrix directly, use:
+
+```bash
+python3 analysis/run_analysis.py response-plots \
+  results/response/response_matrix.npz results/response/response_meta.npz \
+  --output results/response/response_diagnostics.pdf
+```
+
+This PDF includes a sparse global image of `R[reco, truth]`, collapsed migration
+matrices for `Q2`, `xB`, `-t`, and phi, migration-probability histograms, and
+projection heatmaps showing which kinematic variables drive migration in
+`(xB,Q2)` and `(phi,-t)` space.
+
 The compact tree path does not require `--beam-energy`, because generated
 kinematics were calculated by the converter. For a legacy particle-level input,
 the adapter requires `--beam-energy` to reconstruct those quantities:
