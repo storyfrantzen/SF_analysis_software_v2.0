@@ -235,6 +235,11 @@ python3 analysis/run_analysis.py radiative-correction-plots results/C_rad.npz \
   --output results/C_rad_diagnostics.pdf --csv results/C_rad_diagnostics.csv
 ```
 
+The PDF includes summary/support pages, a clipped `0<C_rad<2` summary
+histogram, projection heatmaps of median reliable `C_rad` and reliable-bin
+fraction in `(xB,Q2)` and `(phi,-t)`, and then detailed per-`(Q2,xB,-t)` phi
+pages.
+
 ## Bin-centering correction
 
 `bin-centering` computes `C_BC = <d4sigma>_physical_bin / d4sigma(center)` with

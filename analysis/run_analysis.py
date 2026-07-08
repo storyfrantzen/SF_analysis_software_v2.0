@@ -956,6 +956,12 @@ def _plot_radiative_correction_diagnostics(
         _plot_radcorr_reliable_fraction_heatmap(pdf, reliable, q2_edges, xb_edges)
         pages += 1
 
+        _plot_radcorr_q2_xb_projection(pdf, c_rad, reliable, q2_edges, xb_edges)
+        pages += 1
+
+        _plot_radcorr_t_phi_projection(pdf, c_rad, reliable, t_edges, phi_edges)
+        pages += 1
+
         for iq2 in range(c_rad.shape[0]):
             for ixb in range(c_rad.shape[1]):
                 for it in range(c_rad.shape[2]):
@@ -1170,6 +1176,95 @@ def _plot_radcorr_reliable_fraction_heatmap(pdf, reliable, q2_edges, xb_edges) -
     fig.tight_layout()
     pdf.savefig(fig)
     plt.close(fig)
+
+
+def _plot_radcorr_q2_xb_projection(pdf, c_rad, reliable, q2_edges, xb_edges) -> None:
+    median = _nanmedian_where(c_rad, reliable, axis=(2, 3))
+    fraction = np.mean(reliable, axis=(2, 3))
+    _plot_radcorr_projection_page(
+        pdf,
+        median,
+        fraction,
+        x_edges=xb_edges,
+        y_edges=q2_edges,
+        x_label="xB",
+        y_label="Q2 [GeV^2]",
+        title="Radiative correction coverage in Q2 and xB",
+    )
+
+
+def _plot_radcorr_t_phi_projection(pdf, c_rad, reliable, t_edges, phi_edges) -> None:
+    median = _nanmedian_where(c_rad, reliable, axis=(0, 1))
+    fraction = np.mean(reliable, axis=(0, 1))
+    _plot_radcorr_projection_page(
+        pdf,
+        median,
+        fraction,
+        x_edges=phi_edges,
+        y_edges=t_edges,
+        x_label="phi [deg]",
+        y_label="-t [GeV^2]",
+        title="Radiative correction coverage in phi and -t",
+    )
+
+
+def _plot_radcorr_projection_page(
+    pdf,
+    median_c_rad,
+    reliable_fraction,
+    *,
+    x_edges,
+    y_edges,
+    x_label: str,
+    y_label: str,
+    title: str,
+) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.8), constrained_layout=True)
+    extent = [x_edges[0], x_edges[-1], y_edges[0], y_edges[-1]]
+    c_image = axes[0].imshow(
+        median_c_rad,
+        origin="lower",
+        aspect="auto",
+        extent=extent,
+        vmin=C_RAD_DIAGNOSTIC_PLOT_RANGE[0],
+        vmax=C_RAD_DIAGNOSTIC_PLOT_RANGE[1],
+        cmap="viridis",
+    )
+    fig.colorbar(c_image, ax=axes[0], label="Median reliable C_rad (clipped 0-2)")
+    axes[0].set_title("Median C_rad")
+    axes[0].set_xlabel(x_label)
+    axes[0].set_ylabel(y_label)
+
+    f_image = axes[1].imshow(
+        reliable_fraction,
+        origin="lower",
+        aspect="auto",
+        extent=extent,
+        vmin=0.0,
+        vmax=1.0,
+        cmap="magma",
+    )
+    fig.colorbar(f_image, ax=axes[1], label="Reliable fraction")
+    axes[1].set_title("Reliable-bin fraction")
+    axes[1].set_xlabel(x_label)
+    axes[1].set_ylabel(y_label)
+
+    fig.suptitle(title)
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _nanmedian_where(values, mask, axis):
+    import warnings
+
+    masked = np.where(mask & np.isfinite(values), values, np.nan)
+    with np.errstate(all="ignore"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            return np.nanmedian(masked, axis=axis)
 
 
 def _plot_radcorr_phi_page(
