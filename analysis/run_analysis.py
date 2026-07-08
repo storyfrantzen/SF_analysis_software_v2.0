@@ -953,9 +953,6 @@ def _plot_radiative_correction_diagnostics(
         _plot_radcorr_histograms(pdf, c_rad, delta_c, reliable)
         pages += 1
 
-        _plot_radcorr_reliable_fraction_heatmap(pdf, reliable, q2_edges, xb_edges)
-        pages += 1
-
         _plot_radcorr_q2_xb_projection(pdf, c_rad, reliable, q2_edges, xb_edges)
         pages += 1
 
@@ -1149,30 +1146,6 @@ def _plot_radcorr_histograms(pdf, c_rad, delta_c, reliable) -> None:
     axes[1].set_title("Correction uncertainty distribution")
     for ax in axes:
         ax.grid(True, alpha=0.25)
-    fig.tight_layout()
-    pdf.savefig(fig)
-    plt.close(fig)
-
-
-def _plot_radcorr_reliable_fraction_heatmap(pdf, reliable, q2_edges, xb_edges) -> None:
-    _prepare_matplotlib_cache()
-    import matplotlib.pyplot as plt
-
-    fraction = np.mean(reliable, axis=(2, 3))
-    fig, ax = plt.subplots(figsize=(9, 6))
-    image = ax.imshow(
-        fraction,
-        origin="lower",
-        aspect="auto",
-        vmin=0.0,
-        vmax=1.0,
-        extent=[xb_edges[0], xb_edges[-1], q2_edges[0], q2_edges[-1]],
-        cmap="viridis",
-    )
-    fig.colorbar(image, ax=ax, label="Reliable fraction across -t and phi")
-    ax.set_xlabel("xB")
-    ax.set_ylabel("Q2 [GeV^2]")
-    ax.set_title("Reliable-bin coverage by Q2 and xB")
     fig.tight_layout()
     pdf.savefig(fig)
     plt.close(fig)
