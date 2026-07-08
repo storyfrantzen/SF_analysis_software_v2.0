@@ -1196,17 +1196,17 @@ def _plot_radcorr_projection_page(
     import matplotlib.pyplot as plt
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.8), constrained_layout=True)
-    extent = [x_edges[0], x_edges[-1], y_edges[0], y_edges[-1]]
-    c_image = axes[0].imshow(
+    c_image = axes[0].pcolormesh(
+        x_edges,
+        y_edges,
         median_c_rad,
-        origin="lower",
-        aspect="auto",
-        extent=extent,
         vmin=C_RAD_DIAGNOSTIC_PLOT_RANGE[0],
         vmax=C_RAD_DIAGNOSTIC_PLOT_RANGE[1],
         cmap="viridis",
+        shading="flat",
     )
     fig.colorbar(c_image, ax=axes[0], label="Median reliable C_rad (clipped 0-2)")
+    axes[0].set_aspect("auto")
     axes[0].set_title("Median C_rad")
     axes[0].set_xlabel(x_label)
     axes[0].set_ylabel(y_label)
@@ -1218,16 +1218,17 @@ def _plot_radcorr_projection_page(
         value_kind="c_rad",
     )
 
-    f_image = axes[1].imshow(
+    f_image = axes[1].pcolormesh(
+        x_edges,
+        y_edges,
         reliable_fraction,
-        origin="lower",
-        aspect="auto",
-        extent=extent,
         vmin=0.0,
         vmax=1.0,
         cmap="magma",
+        shading="flat",
     )
     fig.colorbar(f_image, ax=axes[1], label="Reliable fraction")
+    axes[1].set_aspect("auto")
     axes[1].set_title("Reliable-bin fraction")
     axes[1].set_xlabel(x_label)
     axes[1].set_ylabel(y_label)
@@ -1252,6 +1253,8 @@ def _annotate_radcorr_projection(ax, values, x_edges, y_edges, *, value_kind: st
     fontsize = 6.5 if rows * cols <= 100 else 4.8
     for iy, ix in np.ndindex(values.shape):
         value = values[iy, ix]
+        if not np.isfinite(value) or value <= 0.0:
+            continue
         label = _format_projection_value(value, value_kind)
         color = _projection_text_color(value, value_kind)
         ax.text(
@@ -1266,8 +1269,6 @@ def _annotate_radcorr_projection(ax, values, x_edges, y_edges, *, value_kind: st
 
 
 def _format_projection_value(value: float, value_kind: str) -> str:
-    if not np.isfinite(value):
-        return "n/a"
     if value_kind == "fraction":
         return f"{value:.2f}"
     if abs(value) < 10.0:
