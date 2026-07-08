@@ -1210,6 +1210,13 @@ def _plot_radcorr_projection_page(
     axes[0].set_title("Median C_rad")
     axes[0].set_xlabel(x_label)
     axes[0].set_ylabel(y_label)
+    _annotate_radcorr_projection(
+        axes[0],
+        median_c_rad,
+        x_edges,
+        y_edges,
+        value_kind="c_rad",
+    )
 
     f_image = axes[1].imshow(
         reliable_fraction,
@@ -1224,10 +1231,60 @@ def _plot_radcorr_projection_page(
     axes[1].set_title("Reliable-bin fraction")
     axes[1].set_xlabel(x_label)
     axes[1].set_ylabel(y_label)
+    _annotate_radcorr_projection(
+        axes[1],
+        reliable_fraction,
+        x_edges,
+        y_edges,
+        value_kind="fraction",
+    )
 
     fig.suptitle(title)
     pdf.savefig(fig)
     plt.close(fig)
+
+
+def _annotate_radcorr_projection(ax, values, x_edges, y_edges, *, value_kind: str) -> None:
+    values = np.asarray(values, dtype=float)
+    x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+    rows, cols = values.shape
+    fontsize = 6.5 if rows * cols <= 100 else 4.8
+    for iy, ix in np.ndindex(values.shape):
+        value = values[iy, ix]
+        label = _format_projection_value(value, value_kind)
+        color = _projection_text_color(value, value_kind)
+        ax.text(
+            x_centers[ix],
+            y_centers[iy],
+            label,
+            ha="center",
+            va="center",
+            fontsize=fontsize,
+            color=color,
+        )
+
+
+def _format_projection_value(value: float, value_kind: str) -> str:
+    if not np.isfinite(value):
+        return "n/a"
+    if value_kind == "fraction":
+        return f"{value:.2f}"
+    if abs(value) < 10.0:
+        return f"{value:.2f}"
+    if abs(value) < 100.0:
+        return f"{value:.1f}"
+    return f"{value:.0f}"
+
+
+def _projection_text_color(value: float, value_kind: str) -> str:
+    if not np.isfinite(value):
+        return "#555555"
+    if value_kind == "fraction":
+        return "white" if value < 0.55 else "black"
+    clipped = min(max(value, C_RAD_DIAGNOSTIC_PLOT_RANGE[0]), C_RAD_DIAGNOSTIC_PLOT_RANGE[1])
+    midpoint = 0.5 * sum(C_RAD_DIAGNOSTIC_PLOT_RANGE)
+    return "white" if clipped < midpoint else "black"
 
 
 def _nanmedian_where(values, mask, axis):
