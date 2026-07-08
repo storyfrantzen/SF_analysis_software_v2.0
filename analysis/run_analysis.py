@@ -1125,7 +1125,14 @@ def _plot_radcorr_histograms(pdf, c_rad, delta_c, reliable) -> None:
     good = reliable & np.isfinite(c_rad) & np.isfinite(delta_c)
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.8))
     if np.any(good):
-        axes[0].hist(c_rad[good], bins=80, histtype="stepfilled", color="#4c78a8", alpha=0.75)
+        axes[0].hist(
+            c_rad[good],
+            bins=80,
+            range=C_RAD_DIAGNOSTIC_PLOT_RANGE,
+            histtype="stepfilled",
+            color="#4c78a8",
+            alpha=0.75,
+        )
         axes[1].hist(delta_c[good], bins=80, histtype="stepfilled", color="#f58518", alpha=0.75)
     axes[0].axvline(1.0, color="black", linestyle="--", linewidth=1.0)
     axes[0].set_xlim(*C_RAD_DIAGNOSTIC_PLOT_RANGE)
