@@ -30,6 +30,9 @@ from eppi0.harmonics import fit_grid
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes, subtract_feed_in
 
 
+C_RAD_DIAGNOSTIC_PLOT_RANGE = (0.0, 2.0)
+
+
 @dataclass(frozen=True)
 class GeneratorNormalizationRecord:
     path: Path
@@ -1125,6 +1128,7 @@ def _plot_radcorr_histograms(pdf, c_rad, delta_c, reliable) -> None:
         axes[0].hist(c_rad[good], bins=80, histtype="stepfilled", color="#4c78a8", alpha=0.75)
         axes[1].hist(delta_c[good], bins=80, histtype="stepfilled", color="#f58518", alpha=0.75)
     axes[0].axvline(1.0, color="black", linestyle="--", linewidth=1.0)
+    axes[0].set_xlim(*C_RAD_DIAGNOSTIC_PLOT_RANGE)
     axes[0].set_xlabel("C_rad")
     axes[0].set_ylabel("Reliable phi bins")
     axes[0].set_title("C_rad distribution")
