@@ -243,6 +243,13 @@ class RadiativeCorrectionTests(unittest.TestCase):
         self.assertEqual(result.files, 1)
         self.assertEqual(result.topology_events, 1)
 
+    def test_lund_discovery_trusts_nonempty_lund_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            path = tmpdir / "events.lund"
+            path.write_text("metadata preamble\nnot a standard header\n", encoding="utf-8")
+            self.assertEqual(_lund_files(tmpdir), [path])
+
     def test_radiative_correction_keeps_native_4d_shape(self) -> None:
         bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
         with tempfile.TemporaryDirectory() as tmp:

@@ -410,11 +410,17 @@ def _lund_files(pattern_or_dir: str | Path | Sequence[Path], max_files: int | No
 def _filter_lund_files(candidates: Iterable[Path], max_files: int | None = None) -> list[Path]:
     files: list[Path] = []
     for item in candidates:
+        if not item.is_file() or item.suffix.lower() not in LUND_TEXT_SUFFIXES:
+            continue
+        if item.stat().st_size <= 0:
+            continue
+        if item.suffix.lower() == ".lund":
+            files.append(item)
+            if max_files is not None and len(files) >= max_files:
+                break
+            continue
         if (
-            item.is_file()
-            and item.suffix.lower() in LUND_TEXT_SUFFIXES
-            and item.stat().st_size > 0
-            and _looks_text(item)
+            _looks_text(item)
             and _looks_lund_header(item)
         ):
             files.append(item)
