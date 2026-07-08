@@ -139,7 +139,9 @@ python3 analysis/run_analysis.py response-plots \
 This PDF includes a sparse global image of `R[reco, truth]`, collapsed migration
 matrices for `Q2`, `xB`, `-t`, and phi, migration-probability histograms, and
 projection heatmaps showing which kinematic variables drive migration in
-`(xB,Q2)` and `(phi,-t)` space.
+`(xB,Q2)` and `(phi,-t)` space. Coarse heatmaps include nonzero in-cell values,
+and the projection pages use adaptive color scales so small migration
+probabilities remain visible.
 
 The compact tree path does not require `--beam-energy`, because generated
 kinematics were calculated by the converter. For a legacy particle-level input,

@@ -2109,6 +2109,7 @@ def _response_diagonal(response_matrix: Path, number_of_bins: int) -> np.ndarray
 
 
 RESPONSE_VARIABLES = ("Q2", "xB", "-t", "phi")
+RESPONSE_LABEL_CELL_LIMIT = 180
 
 
 def _flat_indices_for_shape(flat: np.ndarray, shape: tuple[int, int, int, int]) -> tuple[np.ndarray, ...]:
@@ -2179,6 +2180,51 @@ def _response_migration_diagnostics(
         "mean_abs_delta": mean_abs_delta,
         "collapsed_matrices": collapsed_matrices,
     }
+
+
+def _positive_heatmap_scale(values: np.ndarray, percentile: float = 95.0) -> float:
+    positive = np.asarray(values, dtype=float)
+    positive = positive[np.isfinite(positive) & (positive > 0.0)]
+    if positive.size == 0:
+        return 1.0
+    vmax = float(np.nanpercentile(positive, percentile))
+    if not np.isfinite(vmax) or vmax <= 0.0:
+        vmax = float(np.nanmax(positive))
+    return max(vmax, 1.0e-12)
+
+
+def _heatmap_label(value: float) -> str:
+    if value >= 0.1:
+        return f"{value:.2f}"
+    if value >= 0.01:
+        return f"{value:.3f}"
+    return f"{value:.1e}"
+
+
+def _annotate_heatmap_cells(
+    ax,
+    values: np.ndarray,
+    x_centers: np.ndarray,
+    y_centers: np.ndarray,
+    *,
+    max_cells: int = RESPONSE_LABEL_CELL_LIMIT,
+) -> None:
+    if values.size > max_cells:
+        return
+    for iy, y in enumerate(y_centers):
+        for ix, x in enumerate(x_centers):
+            value = float(values[iy, ix])
+            if not np.isfinite(value) or value <= 0.0:
+                continue
+            ax.text(
+                x,
+                y,
+                _heatmap_label(value),
+                ha="center",
+                va="center",
+                fontsize=6,
+                color="white" if value < 0.55 else "black",
+            )
 
 
 def _plot_response_summary_page(
@@ -2262,6 +2308,13 @@ def _plot_response_variable_matrices_page(pdf, matrices: list[np.ndarray], shape
         shown = np.where(matrix > 0, matrix, np.nan)
         image = ax.imshow(shown, origin="lower", aspect="auto", vmin=0.0, vmax=1.0, cmap="viridis")
         fig.colorbar(image, ax=ax, label="P(reco bin | truth bin, reconstructed)")
+        _annotate_heatmap_cells(
+            ax,
+            matrix,
+            np.arange(matrix.shape[1]),
+            np.arange(matrix.shape[0]),
+            max_cells=RESPONSE_LABEL_CELL_LIMIT,
+        )
         ax.plot([-0.5, size - 0.5], [-0.5, size - 0.5], color="white", linewidth=0.8, alpha=0.8)
         ax.set_xlabel(f"Truth {label} bin")
         ax.set_ylabel(f"Reco {label} bin")
@@ -2348,19 +2401,29 @@ def _plot_response_projection_page(
     for ax, label, values in zip(axes.ravel(), RESPONSE_VARIABLES, different_probability):
         values4 = _unflatten_response(values, shape)
         projected = _nanmedian_where(values4, values4 > 0.0, axis=axes_to_reduce)
+        vmax = _positive_heatmap_scale(projected)
+        cmap = plt.get_cmap("magma").copy()
+        cmap.set_bad("#eeeeee")
         image = ax.pcolormesh(
             x_edges,
             y_edges,
-            projected,
+            np.ma.masked_invalid(projected),
             vmin=0.0,
-            vmax=1.0,
-            cmap="magma",
+            vmax=vmax,
+            cmap=cmap,
             shading="flat",
         )
         fig.colorbar(image, ax=ax, label=f"P(reco {label} != truth {label})")
+        _annotate_heatmap_cells(
+            ax,
+            projected,
+            0.5 * (x_edges[:-1] + x_edges[1:]),
+            0.5 * (y_edges[:-1] + y_edges[1:]),
+            max_cells=RESPONSE_LABEL_CELL_LIMIT,
+        )
         ax.set_xlabel(x_label)
         ax.set_ylabel(y_label)
-        ax.set_title(f"Migration in {label}")
+        ax.set_title(f"Migration in {label} (scale max {vmax:.3g})")
     fig.suptitle(title)
     pdf.savefig(fig)
     plt.close(fig)
