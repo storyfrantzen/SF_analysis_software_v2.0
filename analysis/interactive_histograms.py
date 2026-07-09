@@ -869,6 +869,12 @@ canvas {{
   border-radius: 8px;
   background: var(--bg);
 }}
+.hover-info {{
+  min-height: 24px;
+  margin: -2px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}}
 .table-wrap {{
   margin-top: 10px;
   border: 1px solid var(--border);
@@ -896,8 +902,8 @@ th:first-child, td:first-child {{ text-align: left; }}
       <button type="button" id="mode1d">1D</button>
       <button type="button" id="mode2d">2D</button>
     </div>
-    <label>X <select id="xvar"></select></label>
     <label id="ylabel">Y <select id="yvar"></select></label>
+    <label>X <select id="xvar"></select></label>
     <div class="row">
       <label>X bins <input id="xbins" type="number" min="5" max="400" value="80"></label>
       <label>Y bins <input id="ybins" type="number" min="5" max="300" value="80"></label>
@@ -939,6 +945,7 @@ th:first-child, td:first-child {{ text-align: left; }}
       <div class="stat"><span class="subtle">mean Y</span><strong id="meanY">-</strong></div>
       <div class="subtle" id="samplingNote"></div>
     </div>
+    <div class="hover-info" id="hoverInfo">Hover over a bin to inspect it.</div>
     <canvas id="plot" width="1200" height="780"></canvas>
     <div class="table-wrap"><table id="preview"></table></div>
   </section>
@@ -962,6 +969,7 @@ const variables = payload.variables;
 const byName = Object.fromEntries(variables.map(v => [v.name, v]));
 let mode = "2d";
 let activeRanges = [];
+let lastPlot = null;
 
 const el = id => document.getElementById(id);
 const fmt = value => Number.isFinite(value) ? (Math.abs(value) >= 1000 || Math.abs(value) < 0.01 ? value.toExponential(3) : value.toPrecision(4)) : "-";
@@ -1048,6 +1056,10 @@ function attachEvents() {{
   el("resetFilters").addEventListener("click", resetFilters);
   el("resetRanges").addEventListener("click", () => {{ resetAxisRanges(); update(); }});
   document.querySelectorAll("input[data-filter], input[data-text-filter]").forEach(input => input.addEventListener("input", update));
+  el("plot").addEventListener("mousemove", showHoverInfo);
+  el("plot").addEventListener("mouseleave", () => {{
+    el("hoverInfo").textContent = "Hover over a bin to inspect it.";
+  }});
   window.addEventListener("resize", update);
 }}
 
@@ -1175,7 +1187,7 @@ function plotArea(canvas) {{
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const width = canvas.width / dpr;
   const height = canvas.height / dpr;
-  return {{ctx, width, height, left: 58, right: 18, top: 18, bottom: 50}};
+  return {{ctx, width, height, left: 76, right: 22, top: 18, bottom: 62}};
 }}
 
 function colors() {{
@@ -1193,28 +1205,46 @@ function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel) {{
   const c = colors();
   const pw = area.width - area.left - area.right;
   const ph = area.height - area.top - area.bottom;
+  ctx.lineWidth = 1;
+  ctx.font = "12px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+
   ctx.strokeStyle = c.border;
   ctx.fillStyle = c.muted;
-  ctx.lineWidth = 1;
+  ctx.textBaseline = "middle";
+  for (const tick of niceTicks(xMin, xMax, 6)) {{
+    const x = area.left + (tick - xMin) / (xMax - xMin) * pw;
+    ctx.beginPath();
+    ctx.moveTo(x, area.top);
+    ctx.lineTo(x, area.top + ph + 5);
+    ctx.stroke();
+    ctx.textAlign = "center";
+    ctx.fillText(fmt(tick), x, area.top + ph + 20);
+  }}
+  for (const tick of niceTicks(yMin, yMax, 6)) {{
+    const y = area.top + ph - (tick - yMin) / (yMax - yMin) * ph;
+    ctx.beginPath();
+    ctx.moveTo(area.left - 5, y);
+    ctx.lineTo(area.left + pw, y);
+    ctx.stroke();
+    ctx.textAlign = "right";
+    ctx.fillText(fmt(tick), area.left - 8, y);
+  }}
+
+  ctx.strokeStyle = c.fg;
   ctx.beginPath();
   ctx.moveTo(area.left, area.top);
   ctx.lineTo(area.left, area.top + ph);
   ctx.lineTo(area.left + pw, area.top + ph);
   ctx.stroke();
+  ctx.fillStyle = c.muted;
+  ctx.textBaseline = "alphabetic";
   ctx.textAlign = "center";
-  ctx.fillText(xLabel, area.left + pw / 2, area.height - 12);
+  ctx.fillText(xLabel, area.left + pw / 2, area.height - 14);
   ctx.save();
-  ctx.translate(14, area.top + ph / 2);
+  ctx.translate(16, area.top + ph / 2);
   ctx.rotate(-Math.PI / 2);
   ctx.fillText(yLabel, 0, 0);
   ctx.restore();
-  ctx.textAlign = "left";
-  ctx.fillText(fmt(xMin), area.left, area.top + ph + 18);
-  ctx.textAlign = "right";
-  ctx.fillText(fmt(xMax), area.left + pw, area.top + ph + 18);
-  ctx.textAlign = "right";
-  ctx.fillText(fmt(yMin), area.left - 6, area.top + ph);
-  ctx.fillText(fmt(yMax), area.left - 6, area.top + 8);
 }}
 
 function draw1d(mask) {{
@@ -1252,6 +1282,10 @@ function draw1d(mask) {{
     ctx.fillRect(x0, top + ph - barH, Math.max(1, x1 - x0 - 1), barH);
   }}
   drawAxes(ctx, area, xMin, xMax, 0, maxCount, byName[xName].label, el("density").checked ? "density" : "counts");
+  lastPlot = {{
+    mode: "1d", area, xName, xMin, xMax, bins, counts,
+    selected, density: el("density").checked, yMax: maxCount
+  }};
   updateStats(selected, sumX / selected, NaN);
 }}
 
@@ -1302,7 +1336,59 @@ function draw2d(mask) {{
     }}
   }}
   drawAxes(ctx, area, xMin, xMax, yMin, yMax, byName[xName].label, byName[yName].label);
+  lastPlot = {{
+    mode: "2d", area, xName, yName, xMin, xMax, yMin, yMax,
+    xBins, yBins, counts, selected, density: el("density").checked
+  }};
   updateStats(selected, sumX / selected, sumY / selected);
+}}
+
+function niceTicks(min, max, target) {{
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return [];
+  const span = max - min;
+  const rawStep = span / Math.max(1, target);
+  const power = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const fraction = rawStep / power;
+  const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
+  const step = niceFraction * power;
+  const start = Math.ceil(min / step) * step;
+  const ticks = [];
+  for (let value = start; value <= max + step * 0.5; value += step) {{
+    if (value >= min - step * 0.5) ticks.push(Number(value.toPrecision(12)));
+  }}
+  return ticks;
+}}
+
+function showHoverInfo(event) {{
+  if (!lastPlot) return;
+  const rect = el("plot").getBoundingClientRect();
+  const px = event.clientX - rect.left;
+  const py = event.clientY - rect.top;
+  const area = lastPlot.area;
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  if (px < area.left || px > area.left + pw || py < area.top || py > area.top + ph) {{
+    el("hoverInfo").textContent = "Hover over a bin to inspect it.";
+    return;
+  }}
+  if (lastPlot.mode === "1d") {{
+    const bin = clamp(Math.floor((px - area.left) / pw * lastPlot.bins), 0, lastPlot.bins - 1);
+    const x0 = lastPlot.xMin + bin / lastPlot.bins * (lastPlot.xMax - lastPlot.xMin);
+    const x1 = lastPlot.xMin + (bin + 1) / lastPlot.bins * (lastPlot.xMax - lastPlot.xMin);
+    const value = lastPlot.counts[bin];
+    const label = lastPlot.density ? "density" : "count";
+    el("hoverInfo").textContent = `${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}; bin=${{bin + 1}}/${{lastPlot.bins}}; selected=${{lastPlot.selected.toLocaleString()}}`;
+    return;
+  }}
+  const xi = clamp(Math.floor((px - area.left) / pw * lastPlot.xBins), 0, lastPlot.xBins - 1);
+  const yi = clamp(Math.floor((area.top + ph - py) / ph * lastPlot.yBins), 0, lastPlot.yBins - 1);
+  const x0 = lastPlot.xMin + xi / lastPlot.xBins * (lastPlot.xMax - lastPlot.xMin);
+  const x1 = lastPlot.xMin + (xi + 1) / lastPlot.xBins * (lastPlot.xMax - lastPlot.xMin);
+  const y0 = lastPlot.yMin + yi / lastPlot.yBins * (lastPlot.yMax - lastPlot.yMin);
+  const y1 = lastPlot.yMin + (yi + 1) / lastPlot.yBins * (lastPlot.yMax - lastPlot.yMin);
+  const value = lastPlot.counts[yi * lastPlot.xBins + xi];
+  const label = lastPlot.density ? "density" : "count";
+  el("hoverInfo").textContent = `${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}; bin=(${{xi + 1}}, ${{yi + 1}}); selected=${{lastPlot.selected.toLocaleString()}}`;
 }}
 
 function heatColor(t) {{
