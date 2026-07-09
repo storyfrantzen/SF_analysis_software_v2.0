@@ -155,6 +155,13 @@ GEN_OBJECT_FIELDS = (
     "phi",
 )
 
+REDUNDANT_COLUMNS = (
+    ("electronIdx", "eIdx"),
+    ("electronDet", "eDet"),
+    ("protonDet", "pDet"),
+    ("rec_proton_detector", "pDet"),
+)
+
 
 DISPLAY_NAMES = {
     "Q2": "Q2",
@@ -254,6 +261,7 @@ def main() -> int:
 
     log("Preparing embedded data")
     arrays = add_derived_quantities(arrays)
+    arrays = normalize_visual_columns(arrays)
     arrays = rectangular_numeric_and_text(arrays)
     arrays, downsample = downsample_arrays(arrays, args.max_events, args.seed)
     payload = build_payload(args.input, arrays, metadata, downsample, args.title)
@@ -522,6 +530,25 @@ def add_derived_quantities(arrays: dict[str, Any]) -> dict[str, Any]:
     return derived
 
 
+def normalize_visual_columns(arrays: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(arrays)
+    for duplicate, canonical in REDUNDANT_COLUMNS:
+        if duplicate in normalized and canonical in normalized:
+            normalized.pop(duplicate)
+
+    for name in list(normalized):
+        if name.endswith("_deg"):
+            continue
+        if is_angle_column_name(name) and f"{name}_deg" in normalized:
+            normalized.pop(name)
+    return normalized
+
+
+def is_angle_column_name(name: str) -> bool:
+    lower = name.lower()
+    return "theta" in lower or "phi" in lower
+
+
 def finite_fraction(values: np.ndarray) -> float:
     if values.size == 0:
         return 0.0
@@ -616,7 +643,7 @@ def build_payload(
     )
     preferred_y = first_present(
         variables,
-        ("protonTheta_deg", "theta_p_deg", "protonTheta", "rec_Q2", "Q2", "xB"),
+        ("protonTheta_deg", "theta_p_deg", "rec_theta_deg", "gen_theta_deg", "rec_Q2", "Q2", "xB"),
         fallback_index=1,
     )
     return {
@@ -647,8 +674,15 @@ def sort_key(name: str) -> tuple[int, str]:
         "rec_minus_t",
         "gen_minus_t",
         "protonTheta_deg",
-        "protonTheta",
-        "trentoPhi",
+        "electronTheta_deg",
+        "pi0_theta_deg",
+        "trentoPhi_deg",
+        "rec_trento_phi_deg",
+        "gen_trento_phi_deg",
+        "rec_theta_deg",
+        "gen_theta_deg",
+        "rec_phi_deg",
+        "gen_phi_deg",
         "rec_trento_phi",
         "gen_trento_phi",
         "m_gg",
