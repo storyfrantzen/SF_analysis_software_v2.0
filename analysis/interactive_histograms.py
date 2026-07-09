@@ -8,6 +8,7 @@ import json
 import math
 from pathlib import Path
 import random
+import re
 import sys
 from typing import Any
 
@@ -193,7 +194,8 @@ def load_root(
         root_file.Close()
         raise RuntimeError(f"Could not find tree {tree_name} in {root_path}")
 
-    available = {branch.GetName() for branch in tree.GetListOfBranches()}
+    branches = {branch.GetName(): branch for branch in tree.GetListOfBranches()}
+    available = set(branches)
     if requested_columns:
         columns = [name for name in requested_columns if name in available]
         missing = [name for name in requested_columns if name not in available]
@@ -201,10 +203,15 @@ def load_root(
             raise RuntimeError(f"Tree {tree_name} is missing requested branches: {missing}")
     else:
         columns = [name for name in ROOT_PREFERRED_BRANCHES if name in available]
-        columns.extend(sorted(name for name in available if name not in columns))
+        columns.extend(
+            sorted(
+                name for name, branch in branches.items()
+                if name not in columns and is_plain_root_branch(branch)
+            )
+        )
     root_file.Close()
 
-    raw = ROOT.RDataFrame(tree_name, root_path).AsNumpy(columns)
+    raw = read_root_arrays(ROOT, root_path, tree_name, columns, strict=bool(requested_columns))
     arrays = {name: raw[name] for name in columns}
     arrays.update(extract_selected_particle_quantities(raw))
     metadata = {"format": "root", "tree": tree_name}
@@ -235,6 +242,40 @@ def load_root_dictionary(ROOT: Any, dictionary: Path | None) -> Path | None:
     tried = ", ".join(str(candidate) for candidate in candidates)
     print(f"Warning: ROOT dictionary not found ({tried}); continuing without it", file=sys.stderr)
     return None
+
+
+def is_plain_root_branch(branch: Any) -> bool:
+    class_name = str(branch.GetClassName() or "")
+    if class_name:
+        return False
+    leaves = branch.GetListOfLeaves()
+    return bool(leaves and leaves.GetEntries() == 1)
+
+
+def read_root_arrays(
+    ROOT: Any,
+    root_path: str,
+    tree_name: str,
+    columns: list[str],
+    *,
+    strict: bool,
+) -> dict[str, Any]:
+    remaining = list(columns)
+    while remaining:
+        try:
+            return ROOT.RDataFrame(tree_name, root_path).AsNumpy(remaining)
+        except RuntimeError as error:
+            match = re.search(r'The column named "([^"]+)"', str(error))
+            if strict or not match or match.group(1) not in remaining:
+                raise
+            column = match.group(1)
+            print(
+                f"Warning: skipping ROOT branch {column!r}; its type needs a dictionary",
+                file=sys.stderr,
+            )
+            remaining.remove(column)
+            columns[:] = remaining
+    raise RuntimeError(f"No readable scalar or vector branches found in {tree_name}")
 
 
 def extract_selected_particle_quantities(raw: dict[str, Any]) -> dict[str, np.ndarray]:
