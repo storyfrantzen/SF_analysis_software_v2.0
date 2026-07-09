@@ -123,7 +123,7 @@ python3 analysis/interactive_histograms.py data_events.npz \
 
 python3 analysis/interactive_histograms.py selected_data.root \
   --format root --output results/selected_data_histograms.html \
-  --dictionary build/libROOTBranchesDict.dylib
+  --dictionary build/libROOTBranchesDict.so
 ```
 
 The browser discovers stored scalar quantities, adds common derived views such
@@ -133,6 +133,9 @@ and arbitrary numeric range filters. Selected ROOT inputs expose the richest
 set of reconstruction filters, including `pDet`, `passFiducial`,
 `passSamplingFraction`, `passExclusivity`, and selected-particle kinematics
 such as `protonTheta`, so plots like `theta_p` vs `-t` can be explored directly.
+The dictionary is optional for ordinary selected `Events` trees; if the named
+dictionary is missing, the script continues with ROOT's built-in scalar and STL
+branch readers.
 
 `acceptance-plots` visualizes four related response diagnostics. For bin `i`,
 with `N_same,i = N(rec i and gen i)`, they are:

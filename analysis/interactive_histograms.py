@@ -182,8 +182,7 @@ def load_root(
     import ROOT  # type: ignore
 
     ROOT.gROOT.SetBatch(True)
-    if dictionary and ROOT.gSystem.Load(str(dictionary.resolve())) < 0:
-        raise RuntimeError(f"Could not load ROOT dictionary: {dictionary}")
+    loaded_dictionary = load_root_dictionary(ROOT, dictionary)
 
     root_path = str(path.resolve())
     root_file = ROOT.TFile.Open(root_path, "READ")
@@ -209,7 +208,33 @@ def load_root(
     arrays = {name: raw[name] for name in columns}
     arrays.update(extract_selected_particle_quantities(raw))
     metadata = {"format": "root", "tree": tree_name}
+    if loaded_dictionary:
+        metadata["dictionary"] = str(loaded_dictionary)
     return arrays, metadata
+
+
+def load_root_dictionary(ROOT: Any, dictionary: Path | None) -> Path | None:
+    if dictionary is None:
+        return None
+    candidates = [dictionary]
+    if dictionary.suffix == ".dylib":
+        candidates.append(dictionary.with_suffix(".so"))
+    elif dictionary.suffix == ".so":
+        candidates.append(dictionary.with_suffix(".dylib"))
+
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        if ROOT.gSystem.Load(str(candidate.resolve())) >= 0:
+            if candidate != dictionary:
+                print(f"Using ROOT dictionary {candidate} instead of {dictionary}", file=sys.stderr)
+            return candidate
+        print(f"Warning: could not load ROOT dictionary {candidate}; trying without it", file=sys.stderr)
+        return None
+
+    tried = ", ".join(str(candidate) for candidate in candidates)
+    print(f"Warning: ROOT dictionary not found ({tried}); continuing without it", file=sys.stderr)
+    return None
 
 
 def extract_selected_particle_quantities(raw: dict[str, Any]) -> dict[str, np.ndarray]:
