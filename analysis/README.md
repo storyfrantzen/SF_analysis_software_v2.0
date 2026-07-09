@@ -124,6 +124,8 @@ python3 analysis/interactive_histograms.py data_events.npz \
 python3 analysis/interactive_histograms.py selected_data.root \
   --format root --output results/selected_data_histograms.html \
   --dictionary build/libROOTBranchesDict.so
+
+scripts/serve_visualizer.sh results/selected_data_histograms.html
 ```
 
 The browser discovers stored scalar quantities, adds common derived views such
