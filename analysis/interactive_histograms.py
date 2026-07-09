@@ -73,6 +73,88 @@ ROOT_PREFERRED_BRANCHES = (
     "failedCuts",
 ) + ROOT_VECTOR_BRANCHES
 
+EVENT_OBJECT_FIELDS = (
+    "sourceFileId",
+    "sourceEventIndex",
+    "runNum",
+    "eventNum",
+    "helicity",
+    "charge",
+)
+
+REC_OBJECT_FIELDS = (
+    "runNum",
+    "eventNum",
+    "particleIdx",
+    "matchedGenIdx",
+    "matchAngleDeg",
+    "pid",
+    "charge",
+    "status",
+    "det",
+    "sector",
+    "p",
+    "px",
+    "py",
+    "pz",
+    "theta",
+    "phi",
+    "p_raw",
+    "theta_raw",
+    "phi_raw",
+    "delta_p",
+    "delta_theta",
+    "delta_phi",
+    "beta",
+    "chi2pid",
+    "vx",
+    "vy",
+    "vz",
+    "time",
+    "xFT",
+    "yFT",
+    "xDC1",
+    "yDC1",
+    "xDC2",
+    "yDC2",
+    "xDC3",
+    "yDC3",
+    "edgeDC1",
+    "edgeDC2",
+    "edgeDC3",
+    "xPCAL",
+    "yPCAL",
+    "uPCAL",
+    "vPCAL",
+    "wPCAL",
+    "E_PCAL",
+    "uECIN",
+    "vECIN",
+    "wECIN",
+    "E_ECIN",
+    "uECOUT",
+    "vECOUT",
+    "wECOUT",
+    "E_ECOUT",
+    "edge_cvt1",
+    "edge_cvt3",
+    "edge_cvt5",
+    "edge_cvt7",
+    "edge_cvt12",
+    "theta_cvt",
+    "phi_cvt",
+)
+
+GEN_OBJECT_FIELDS = (
+    "runNum",
+    "eventNum",
+    "particleIdx",
+    "pid",
+    "p",
+    "theta",
+    "phi",
+)
+
 
 DISPLAY_NAMES = {
     "Q2": "Q2",
@@ -102,6 +184,19 @@ DISPLAY_NAMES = {
     "protonP": "p_p",
     "electronTheta_deg": "theta_e deg",
     "pi0_theta_deg": "theta_pi0 deg",
+    "rec_pid": "REC pid",
+    "rec_det": "REC detector",
+    "rec_p": "REC p",
+    "rec_theta": "REC theta",
+    "rec_theta_deg": "REC theta deg",
+    "rec_phi": "REC phi",
+    "rec_phi_deg": "REC phi deg",
+    "gen_pid": "GEN pid",
+    "gen_p": "GEN p",
+    "gen_theta": "GEN theta",
+    "gen_theta_deg": "GEN theta deg",
+    "gen_phi": "GEN phi",
+    "gen_phi_deg": "GEN phi deg",
 }
 
 
@@ -196,9 +291,13 @@ def load_root(
 
     branches = {branch.GetName(): branch for branch in tree.GetListOfBranches()}
     available = set(branches)
+    object_aliases = object_branch_aliases(available)
     if requested_columns:
-        columns = [name for name in requested_columns if name in available]
-        missing = [name for name in requested_columns if name not in available]
+        columns = [name for name in requested_columns if name in available or name in object_aliases]
+        missing = [
+            name for name in requested_columns
+            if name not in available and name not in object_aliases
+        ]
         if missing:
             raise RuntimeError(f"Tree {tree_name} is missing requested branches: {missing}")
     else:
@@ -209,9 +308,17 @@ def load_root(
                 if name not in columns and is_plain_root_branch(branch)
             )
         )
+        columns.extend(name for name in object_aliases if name not in columns)
     root_file.Close()
 
-    raw = read_root_arrays(ROOT, root_path, tree_name, columns, strict=bool(requested_columns))
+    raw = read_root_arrays(
+        ROOT,
+        root_path,
+        tree_name,
+        columns,
+        aliases=object_branch_aliases(available),
+        strict=bool(requested_columns),
+    )
     arrays = {name: raw[name] for name in columns}
     arrays.update(extract_selected_particle_quantities(raw))
     metadata = {"format": "root", "tree": tree_name}
@@ -252,18 +359,34 @@ def is_plain_root_branch(branch: Any) -> bool:
     return bool(leaves and leaves.GetEntries() == 1)
 
 
+def object_branch_aliases(available: set[str]) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    if "event" in available:
+        aliases.update({f"event_{field}": f"event.{field}" for field in EVENT_OBJECT_FIELDS})
+    if "rec" in available:
+        aliases.update({f"rec_{field}": f"rec.{field}" for field in REC_OBJECT_FIELDS})
+    if "gen" in available:
+        aliases.update({f"gen_{field}": f"gen.{field}" for field in GEN_OBJECT_FIELDS})
+    return aliases
+
+
 def read_root_arrays(
     ROOT: Any,
     root_path: str,
     tree_name: str,
     columns: list[str],
     *,
+    aliases: dict[str, str],
     strict: bool,
 ) -> dict[str, Any]:
     remaining = list(columns)
     while remaining:
         try:
-            return ROOT.RDataFrame(tree_name, root_path).AsNumpy(remaining)
+            frame = ROOT.RDataFrame(tree_name, root_path)
+            for name in remaining:
+                if name in aliases:
+                    frame = frame.Define(name, aliases[name])
+            return frame.AsNumpy(remaining)
         except RuntimeError as error:
             match = re.search(r'The column named "([^"]+)"', str(error))
             if strict or not match or match.group(1) not in remaining:
