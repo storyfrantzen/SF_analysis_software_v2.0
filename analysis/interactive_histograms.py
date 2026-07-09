@@ -670,7 +670,12 @@ def categorical_filter_info(name: str, values: np.ndarray) -> dict[str, Any] | N
     if finite.size == 0:
         return None
     integers = np.all(np.isclose(finite, np.rint(finite)))
-    unique = np.unique(finite.astype(np.int64) if integers else finite)
+    if integers:
+        if np.min(finite) < np.iinfo(np.int64).min or np.max(finite) > np.iinfo(np.int64).max:
+            return None
+        unique = np.unique(finite.astype(np.int64))
+    else:
+        unique = np.unique(finite)
     if 1 < unique.size <= 12 and (integers or name.startswith("pass") or name.endswith("Det")):
         labels = [category_label(name, item) for item in unique.tolist()]
         return {
