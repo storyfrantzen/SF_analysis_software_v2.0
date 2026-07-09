@@ -221,7 +221,10 @@ def parse_args() -> argparse.Namespace:
         "--max-events",
         type=int,
         default=250_000,
-        help="Maximum rows embedded in the HTML after deterministic downsampling.",
+        help=(
+            "Maximum rows embedded in the HTML. ROOT inputs read at most this many rows "
+            "by default; use 0 to read all rows."
+        ),
     )
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--title", default=None, help="Title shown inside the visualizer")
@@ -238,14 +241,23 @@ def main() -> int:
             raise ValueError("Could not infer input format; pass --format npz or --format root")
 
     if input_format == "npz":
+        log(f"Reading NPZ input {args.input}")
         arrays, metadata = load_npz(args.input)
     else:
-        arrays, metadata = load_root(args.input, args.tree, args.dictionary, args.columns)
+        arrays, metadata = load_root(
+            args.input,
+            args.tree,
+            args.dictionary,
+            args.columns,
+            max_events=args.max_events,
+        )
 
+    log("Preparing embedded data")
     arrays = add_derived_quantities(arrays)
     arrays = rectangular_numeric_and_text(arrays)
     arrays, downsample = downsample_arrays(arrays, args.max_events, args.seed)
     payload = build_payload(args.input, arrays, metadata, downsample, args.title)
+    log(f"Writing {args.output}")
     html = render_html(payload)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(html, encoding="utf-8")
@@ -253,6 +265,10 @@ def main() -> int:
     print(f"Variables: {len(payload['variables'])}")
     print(f"Wrote {args.output}")
     return 0
+
+
+def log(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
 
 
 def load_npz(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -274,10 +290,12 @@ def load_root(
     tree_name: str,
     dictionary: Path | None,
     requested_columns: list[str] | None,
+    max_events: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     import ROOT  # type: ignore
 
     ROOT.gROOT.SetBatch(True)
+    log(f"Opening ROOT input {path}")
     loaded_dictionary = load_root_dictionary(ROOT, dictionary)
 
     root_path = str(path.resolve())
@@ -289,6 +307,7 @@ def load_root(
         root_file.Close()
         raise RuntimeError(f"Could not find tree {tree_name} in {root_path}")
 
+    entries = int(tree.GetEntries())
     branches = {branch.GetName(): branch for branch in tree.GetListOfBranches()}
     available = set(branches)
     object_aliases = object_branch_aliases(available)
@@ -311,12 +330,18 @@ def load_root(
         columns.extend(name for name in object_aliases if name not in columns)
     root_file.Close()
 
+    read_limit = entries if max_events <= 0 else min(entries, max_events)
+    if read_limit < entries:
+        log(f"Reading {len(columns)} ROOT columns from first {read_limit} of {entries} rows")
+    else:
+        log(f"Reading {len(columns)} ROOT columns from {entries} rows")
     raw = read_root_arrays(
         ROOT,
         root_path,
         tree_name,
         columns,
         aliases=object_branch_aliases(available),
+        max_events=max_events,
         strict=bool(requested_columns),
     )
     arrays = {name: raw[name] for name in columns}
@@ -324,6 +349,9 @@ def load_root(
     metadata = {"format": "root", "tree": tree_name}
     if loaded_dictionary:
         metadata["dictionary"] = str(loaded_dictionary)
+    if max_events > 0 and entries > max_events:
+        metadata["root_rows_total"] = entries
+        metadata["root_rows_read"] = max_events
     return arrays, metadata
 
 
@@ -377,6 +405,7 @@ def read_root_arrays(
     columns: list[str],
     *,
     aliases: dict[str, str],
+    max_events: int,
     strict: bool,
 ) -> dict[str, Any]:
     remaining = list(columns)
@@ -386,6 +415,8 @@ def read_root_arrays(
             for name in remaining:
                 if name in aliases:
                     frame = frame.Define(name, aliases[name])
+            if max_events > 0:
+                frame = frame.Range(max_events)
             return frame.AsNumpy(remaining)
         except RuntimeError as error:
             match = re.search(r'The column named "([^"]+)"', str(error))
