@@ -113,6 +113,27 @@ and restart their event numbers.
 `export_selected_data.py` creates the compact data artifact and carries the
 converter's accumulated charge into the pipeline.
 
+For interactive cut studies and quick detector/topology comparisons, build a
+standalone histogram browser from either compact NPZ samples or selected ROOT
+trees:
+
+```bash
+python3 analysis/interactive_histograms.py data_events.npz \
+  --output results/data_histograms.html
+
+python3 analysis/interactive_histograms.py selected_data.root \
+  --format root --output results/selected_data_histograms.html \
+  --dictionary build/libROOTBranchesDict.dylib
+```
+
+The browser discovers stored scalar quantities, adds common derived views such
+as degree versions of angular branches and signed/unsigned `t` aliases, and
+supports 1D histograms, 2D histograms, detector/pass-flag toggles, text filters,
+and arbitrary numeric range filters. Selected ROOT inputs expose the richest
+set of reconstruction filters, including `pDet`, `passFiducial`,
+`passSamplingFraction`, `passExclusivity`, and selected-particle kinematics
+such as `protonTheta`, so plots like `theta_p` vs `-t` can be explored directly.
+
 `acceptance-plots` visualizes four related response diagnostics. For bin `i`,
 with `N_same,i = N(rec i and gen i)`, they are:
 
