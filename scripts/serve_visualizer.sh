@@ -19,7 +19,7 @@ EOF
 }
 
 PORT="${PORT:-8765}"
-HOST="${HOST:-127.0.0.1}"
+BIND_HOST="${BIND_HOST:-127.0.0.1}"
 HTML=""
 
 while (($#)); do
@@ -37,7 +37,7 @@ while (($#)); do
         echo "Missing value for $1" >&2
         exit 2
       fi
-      HOST="$2"
+      BIND_HOST="$2"
       shift 2
       ;;
     -h|--help)
@@ -79,19 +79,24 @@ fi
 DIR="$(cd "$(dirname "$HTML")" && pwd -P)"
 FILE="$(basename "$HTML")"
 URL_FILE="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$FILE")"
-URL="http://${HOST}:${PORT}/${URL_FILE}"
+FORWARDED_URL="http://127.0.0.1:${PORT}/${URL_FILE}"
+BIND_URL="http://${BIND_HOST}:${PORT}/${URL_FILE}"
 
 cat <<EOF
 Serving: ${DIR}/${FILE}
+Binding: ${BIND_HOST}:${PORT}
 
 In VS Code Remote SSH:
   1. Forward port ${PORT} if VS Code does not auto-detect it.
   2. Open "Simple Browser: Show" from the Command Palette.
   3. Paste:
-     ${URL}
+     ${FORWARDED_URL}
+
+Remote-side URL:
+  ${BIND_URL}
 
 Press Ctrl-C here to stop serving.
 
 EOF
 
-python3 -m http.server "$PORT" --bind "$HOST" --directory "$DIR"
+python3 -m http.server "$PORT" --bind "$BIND_HOST" --directory "$DIR"
