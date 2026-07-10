@@ -131,8 +131,9 @@ scripts/serve_visualizer.sh results/selected_data_histograms.html
 The browser discovers stored scalar quantities, adds common derived views such
 as degree versions of angular branches and signed/unsigned `t` aliases, and
 supports 1D histograms, 2D histograms, detector/pass-flag toggles, text filters,
-and arbitrary numeric range filters. Selected ROOT inputs expose the richest
-set of reconstruction filters, including `pDet`, `passFiducial`,
+arbitrary numeric range filters, and a two-panel comparison mode for placing
+independent histograms side by side under the same filters. Selected ROOT inputs
+expose the richest set of reconstruction filters, including `pDet`, `passFiducial`,
 `passSamplingFraction`, `passExclusivity`, and selected-particle kinematics
 such as `protonTheta`, so plots like `theta_p` vs `-t` can be explored directly.
 The dictionary is optional for ordinary selected `Events` trees; if the named

@@ -905,11 +905,40 @@ button.active {{
 canvas {{
   display: block;
   width: 100%;
-  height: min(72vh, 720px);
+  height: min(70vh, 700px);
   min-height: 420px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg);
+}}
+.plot-grid {{
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}}
+.plot-grid.compare {{
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}}
+.plot-pane.hidden {{ display: none; }}
+.plot-head {{
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 5px;
+}}
+.plot-title {{
+  font-weight: 600;
+  font-size: 13px;
+}}
+.plot-summary {{
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}}
+.plot-grid.compare canvas {{
+  height: min(64vh, 660px);
+  min-height: 390px;
 }}
 .hover-info {{
   min-height: 24px;
@@ -930,6 +959,7 @@ th:first-child, td:first-child {{ text-align: left; }}
 @media (max-width: 820px) {{
   main {{ grid-template-columns: 1fr; }}
   aside {{ border-right: 0; border-bottom: 1px solid var(--border); }}
+  .plot-grid.compare {{ grid-template-columns: 1fr; }}
   canvas {{ min-height: 340px; height: 58vh; }}
 }}
 </style>
@@ -940,6 +970,13 @@ th:first-child, td:first-child {{ text-align: left; }}
     <h1></h1>
     <div class="subtle" id="source"></div>
     <h2>Plot</h2>
+    <div class="chips">
+      <label class="chip"><input id="compareMode" type="checkbox"> two panels</label>
+    </div>
+    <div class="segmented" id="panelSelector">
+      <button type="button" id="panelA">Panel A</button>
+      <button type="button" id="panelB">Panel B</button>
+    </div>
     <div class="segmented">
       <button type="button" id="mode1d">1D</button>
       <button type="button" id="mode2d">2D</button>
@@ -989,7 +1026,24 @@ th:first-child, td:first-child {{ text-align: left; }}
       <div class="subtle" id="samplingNote"></div>
     </div>
     <div class="hover-info" id="hoverInfo">Hover over a bin to inspect it.</div>
-    <canvas id="plot" width="1200" height="780"></canvas>
+    <div class="plot-grid" id="plotGrid">
+      <div class="plot-pane" id="plotPaneA">
+        <div class="plot-head">
+          <div class="plot-title">Panel A</div>
+          <div class="plot-summary" id="panelSummaryA"></div>
+        </div>
+        <div class="hover-info" id="hoverInfoA">Hover over a bin to inspect it.</div>
+        <canvas id="plotA" width="1200" height="780"></canvas>
+      </div>
+      <div class="plot-pane hidden" id="plotPaneB">
+        <div class="plot-head">
+          <div class="plot-title">Panel B</div>
+          <div class="plot-summary" id="panelSummaryB"></div>
+        </div>
+        <div class="hover-info" id="hoverInfoB">Hover over a bin to inspect it.</div>
+        <canvas id="plotB" width="1200" height="780"></canvas>
+      </div>
+    </div>
     <div class="table-wrap"><table id="preview"></table></div>
   </section>
 </main>
@@ -1010,12 +1064,50 @@ for (const [name, value] of Object.entries(payload.columns)) {{
 }}
 const variables = payload.variables;
 const byName = Object.fromEntries(variables.map(v => [v.name, v]));
-let mode = "2d";
+const panelKeys = ["A", "B"];
+let activePanel = "A";
+let compareMode = false;
 let activeRanges = [];
-let lastPlot = null;
+const panels = {{
+  A: makePanel("A", payload.defaultX, payload.defaultY),
+  B: makePanel("B", comparisonDefaultX(), payload.defaultY)
+}};
 
 const el = id => document.getElementById(id);
 const fmt = value => Number.isFinite(value) ? (Math.abs(value) >= 1000 || Math.abs(value) < 0.01 ? value.toExponential(3) : value.toPrecision(4)) : "-";
+
+function comparisonDefaultX() {{
+  for (const name of ["rec_minus_t_pi0", "t_pi0", "gen_minus_t", payload.defaultX]) {{
+    if (name && columns[name]) return name;
+  }}
+  return payload.defaultX;
+}}
+
+function makePanel(key, xvar, yvar) {{
+  const xInfo = byName[xvar] || variables[0];
+  const yInfo = byName[yvar] || variables[1] || xInfo;
+  return {{
+    key,
+    mode: "2d",
+    xvar: xInfo.name,
+    yvar: yInfo.name,
+    splitVar: "",
+    xbins: 80,
+    ybins: 80,
+    xmin: xInfo.min,
+    xmax: xInfo.max,
+    ymin: yInfo.min,
+    ymax: yInfo.max,
+    logz: false,
+    density: false,
+    lastPlot: null,
+    stats: {{selected: 0, meanX: NaN, meanY: NaN}}
+  }};
+}}
+
+function currentPanel() {{
+  return panels[activePanel];
+}}
 
 function fillSelect(select, selected) {{
   select.innerHTML = "";
@@ -1028,7 +1120,7 @@ function fillSelect(select, selected) {{
   select.value = selected;
 }}
 
-function fillSectorSelect() {{
+function fillSectorSelect(selected) {{
   const label = el("splitLabel");
   const select = el("splitVar");
   select.innerHTML = "";
@@ -1042,6 +1134,7 @@ function fillSectorSelect() {{
     option.textContent = split.label;
     select.appendChild(option);
   }}
+  select.value = selected || "";
   label.style.display = (payload.sectorSplits || []).length ? "" : "none";
 }}
 
@@ -1052,15 +1145,11 @@ function init() {{
   if (payload.downsample.sampled) {{
     el("samplingNote").textContent = `downsampled from ${{payload.downsample.originalRows.toLocaleString()}} rows`;
   }}
-  fillSelect(el("xvar"), payload.defaultX);
-  fillSelect(el("yvar"), payload.defaultY);
   fillSelect(el("rangeVar"), payload.defaultX);
-  fillSectorSelect();
   renderCategoryFilters();
   renderTextFilters();
-  setMode("2d");
-  resetAxisRanges();
   attachEvents();
+  syncControlsFromPanel();
   update();
 }}
 
@@ -1108,41 +1197,103 @@ function renderTextFilters() {{
 }}
 
 function attachEvents() {{
-  ["xvar","yvar","splitVar","xbins","ybins","xmin","xmax","ymin","ymax","logz","density"].forEach(id => el(id).addEventListener("input", update));
-  el("xvar").addEventListener("change", () => {{ setRangeInputs("x"); update(); }});
-  el("yvar").addEventListener("change", () => {{ setRangeInputs("y"); update(); }});
+  ["splitVar","xbins","ybins","xmin","xmax","ymin","ymax","logz","density"].forEach(id => {{
+    el(id).addEventListener("input", () => {{ readControlsToPanel(); update(); }});
+  }});
+  el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
+  el("yvar").addEventListener("change", () => {{ setPanelVariable("y"); update(); }});
+  el("compareMode").addEventListener("input", () => {{ compareMode = el("compareMode").checked; update(); }});
+  el("panelA").addEventListener("click", () => setActivePanel("A"));
+  el("panelB").addEventListener("click", () => setActivePanel("B"));
   el("mode1d").addEventListener("click", () => setMode("1d"));
   el("mode2d").addEventListener("click", () => setMode("2d"));
   el("addRange").addEventListener("click", addRangeFilter);
   el("resetFilters").addEventListener("click", resetFilters);
-  el("resetRanges").addEventListener("click", () => {{ resetAxisRanges(); update(); }});
+  el("resetRanges").addEventListener("click", () => {{ resetAxisRanges(currentPanel()); syncControlsFromPanel(); update(); }});
   document.querySelectorAll("input[data-filter], input[data-text-filter]").forEach(input => input.addEventListener("input", update));
-  el("plot").addEventListener("mousemove", showHoverInfo);
-  el("plot").addEventListener("mouseleave", () => {{
-    el("hoverInfo").textContent = "Hover over a bin to inspect it.";
-  }});
+  for (const key of panelKeys) {{
+    el("plot" + key).addEventListener("mousemove", event => showHoverInfo(event, key));
+    el("plot" + key).addEventListener("mouseleave", () => {{
+      hoverElement(key).textContent = "Hover over a bin to inspect it.";
+      el("hoverInfo").textContent = "Hover over a bin to inspect it.";
+    }});
+  }}
   window.addEventListener("resize", update);
 }}
 
-function setMode(next) {{
-  mode = next;
-  el("mode1d").classList.toggle("active", mode === "1d");
-  el("mode2d").classList.toggle("active", mode === "2d");
-  el("ylabel").style.display = mode === "2d" ? "" : "none";
-  el("yrange").style.display = mode === "2d" ? "" : "none";
-  el("ybins").closest("label").style.display = mode === "2d" ? "" : "none";
+function setActivePanel(key) {{
+  activePanel = key;
+  syncControlsFromPanel();
   update();
 }}
 
-function setRangeInputs(axis) {{
-  const variable = byName[el(axis + "var").value];
-  el(axis + "min").value = variable ? variable.min : "";
-  el(axis + "max").value = variable ? variable.max : "";
+function syncControlsFromPanel() {{
+  const panel = currentPanel();
+  fillSelect(el("xvar"), panel.xvar);
+  fillSelect(el("yvar"), panel.yvar);
+  fillSectorSelect(panel.splitVar);
+  el("xbins").value = panel.xbins;
+  el("ybins").value = panel.ybins;
+  el("xmin").value = panel.xmin;
+  el("xmax").value = panel.xmax;
+  el("ymin").value = panel.ymin;
+  el("ymax").value = panel.ymax;
+  el("logz").checked = panel.logz;
+  el("density").checked = panel.density;
+  el("compareMode").checked = compareMode;
+  el("panelA").classList.toggle("active", activePanel === "A");
+  el("panelB").classList.toggle("active", activePanel === "B");
+  el("mode1d").classList.toggle("active", panel.mode === "1d");
+  el("mode2d").classList.toggle("active", panel.mode === "2d");
+  el("ylabel").style.display = panel.mode === "2d" ? "" : "none";
+  el("yrange").style.display = panel.mode === "2d" ? "" : "none";
+  el("ybins").closest("label").style.display = panel.mode === "2d" ? "" : "none";
 }}
 
-function resetAxisRanges() {{
-  setRangeInputs("x");
-  setRangeInputs("y");
+function readControlsToPanel() {{
+  const panel = currentPanel();
+  panel.xvar = el("xvar").value;
+  panel.yvar = el("yvar").value;
+  panel.splitVar = el("splitVar").value;
+  panel.xbins = clamp(Number(el("xbins").value) || 80, 5, 400);
+  panel.ybins = clamp(Number(el("ybins").value) || 80, 5, 300);
+  panel.xmin = parseNumber(el("xmin").value);
+  panel.xmax = parseNumber(el("xmax").value);
+  panel.ymin = parseNumber(el("ymin").value);
+  panel.ymax = parseNumber(el("ymax").value);
+  panel.logz = el("logz").checked;
+  panel.density = el("density").checked;
+}}
+
+function setMode(next) {{
+  currentPanel().mode = next;
+  syncControlsFromPanel();
+  update();
+}}
+
+function setPanelVariable(axis) {{
+  const panel = currentPanel();
+  const name = el(axis + "var").value;
+  const variable = byName[name];
+  if (axis === "x") {{
+    panel.xvar = name;
+    panel.xmin = variable ? variable.min : "";
+    panel.xmax = variable ? variable.max : "";
+  }} else {{
+    panel.yvar = name;
+    panel.ymin = variable ? variable.min : "";
+    panel.ymax = variable ? variable.max : "";
+  }}
+  syncControlsFromPanel();
+}}
+
+function resetAxisRanges(panel) {{
+  const xInfo = byName[panel.xvar];
+  const yInfo = byName[panel.yvar];
+  panel.xmin = xInfo ? xInfo.min : "";
+  panel.xmax = xInfo ? xInfo.max : "";
+  panel.ymin = yInfo ? yInfo.min : "";
+  panel.ymax = yInfo ? yInfo.max : "";
 }}
 
 function addRangeFilter() {{
@@ -1232,11 +1383,29 @@ function selectedMask() {{
 }}
 
 function update() {{
-  if (!columns[el("xvar").value]) return;
+  readControlsToPanel();
   const mask = selectedMask();
-  if (mode === "1d") draw1d(mask);
-  else draw2d(mask);
+  updatePanelVisibility();
+  for (const key of visiblePanelKeys()) {{
+    const panel = panels[key];
+    if (!columns[panel.xvar]) continue;
+    if (panel.mode === "1d") draw1d(panel, mask);
+    else draw2d(panel, mask);
+  }}
+  updateActiveStats();
   renderPreview(mask);
+}}
+
+function visiblePanelKeys() {{
+  return compareMode ? panelKeys : [activePanel];
+}}
+
+function updatePanelVisibility() {{
+  el("plotGrid").classList.toggle("compare", compareMode);
+  for (const key of panelKeys) {{
+    const visible = compareMode || key === activePanel;
+    el("plotPane" + key).classList.toggle("hidden", !visible);
+  }}
 }}
 
 function plotArea(canvas) {{
@@ -1308,17 +1477,17 @@ function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel) {{
   ctx.restore();
 }}
 
-function draw1d(mask) {{
-  const splitName = el("splitVar").value;
+function draw1d(panel, mask) {{
+  const splitName = panel.splitVar;
   if (splitName) {{
-    draw1dFacets(mask, splitName);
+    draw1dFacets(panel, mask, splitName);
     return;
   }}
-  const xName = el("xvar").value;
+  const xName = panel.xvar;
   const x = columns[xName];
-  const bins = clamp(Number(el("xbins").value) || 80, 5, 400);
-  const xMin = parseNumber(el("xmin").value);
-  const xMax = parseNumber(el("xmax").value);
+  const bins = panel.xbins;
+  const xMin = panel.xmin;
+  const xMax = panel.xmax;
   const counts = new Float64Array(bins);
   let selected = 0, sumX = 0;
   for (let i = 0; i < rowCount; i++) {{
@@ -1329,11 +1498,11 @@ function draw1d(mask) {{
     selected++;
     sumX += xv;
   }}
-  if (el("density").checked && selected > 0) {{
+  if (panel.density && selected > 0) {{
     for (let i = 0; i < bins; i++) counts[i] /= selected;
   }}
   const maxCount = maxOf(counts, 1);
-  const canvas = el("plot");
+  const canvas = el("plot" + panel.key);
   const area = plotArea(canvas);
   const {{ctx, width, height, left, right, top, bottom}} = area;
   const c = colors();
@@ -1347,30 +1516,30 @@ function draw1d(mask) {{
     const x1 = left + (i + 1) / bins * pw;
     ctx.fillRect(x0, top + ph - barH, Math.max(1, x1 - x0 - 1), barH);
   }}
-  drawAxes(ctx, area, xMin, xMax, 0, maxCount, byName[xName].label, el("density").checked ? "density" : "counts");
-  lastPlot = {{
+  drawAxes(ctx, area, xMin, xMax, 0, maxCount, byName[xName].label, panel.density ? "density" : "counts");
+  panel.lastPlot = {{
     mode: "1d", area, xName, xMin, xMax, bins, counts,
-    selected, density: el("density").checked, yMax: maxCount
+    selected, density: panel.density, yMax: maxCount
   }};
-  updateStats(selected, sumX / selected, NaN);
+  setPanelStats(panel, selected, sumX / selected, NaN);
 }}
 
-function draw2d(mask) {{
-  const splitName = el("splitVar").value;
+function draw2d(panel, mask) {{
+  const splitName = panel.splitVar;
   if (splitName) {{
-    draw2dFacets(mask, splitName);
+    draw2dFacets(panel, mask, splitName);
     return;
   }}
-  const xName = el("xvar").value;
-  const yName = el("yvar").value;
+  const xName = panel.xvar;
+  const yName = panel.yvar;
   const x = columns[xName];
   const y = columns[yName];
-  const xBins = clamp(Number(el("xbins").value) || 80, 5, 400);
-  const yBins = clamp(Number(el("ybins").value) || 80, 5, 300);
-  const xMin = parseNumber(el("xmin").value);
-  const xMax = parseNumber(el("xmax").value);
-  const yMin = parseNumber(el("ymin").value);
-  const yMax = parseNumber(el("ymax").value);
+  const xBins = panel.xbins;
+  const yBins = panel.ybins;
+  const xMin = panel.xmin;
+  const xMax = panel.xmax;
+  const yMin = panel.ymin;
+  const yMax = panel.ymax;
   const counts = new Float64Array(xBins * yBins);
   let selected = 0, sumX = 0, sumY = 0;
   for (let i = 0; i < rowCount; i++) {{
@@ -1383,11 +1552,11 @@ function draw2d(mask) {{
     sumX += xv;
     sumY += yv;
   }}
-  if (el("density").checked && selected > 0) {{
+  if (panel.density && selected > 0) {{
     for (let i = 0; i < counts.length; i++) counts[i] /= selected;
   }}
   const maxCount = maxOf(counts, 1);
-  const canvas = el("plot");
+  const canvas = el("plot" + panel.key);
   const area = plotArea(canvas);
   const {{ctx, width, height, left, right, top, bottom}} = area;
   ctx.clearRect(0, 0, width, height);
@@ -1397,7 +1566,7 @@ function draw2d(mask) {{
     for (let xi = 0; xi < xBins; xi++) {{
       const count = counts[yi * xBins + xi];
       if (count <= 0) continue;
-      const fraction = el("logz").checked ? Math.log1p(count) / Math.log1p(maxCount) : count / maxCount;
+      const fraction = panel.logz ? Math.log1p(count) / Math.log1p(maxCount) : count / maxCount;
       ctx.fillStyle = heatColor(fraction);
       const x0 = left + xi / xBins * pw;
       const x1 = left + (xi + 1) / xBins * pw;
@@ -1407,20 +1576,20 @@ function draw2d(mask) {{
     }}
   }}
   drawAxes(ctx, area, xMin, xMax, yMin, yMax, byName[xName].label, byName[yName].label);
-  lastPlot = {{
+  panel.lastPlot = {{
     mode: "2d", area, xName, yName, xMin, xMax, yMin, yMax,
-    xBins, yBins, counts, selected, density: el("density").checked
+    xBins, yBins, counts, selected, density: panel.density
   }};
-  updateStats(selected, sumX / selected, sumY / selected);
+  setPanelStats(panel, selected, sumX / selected, sumY / selected);
 }}
 
-function draw1dFacets(mask, splitName) {{
-  const xName = el("xvar").value;
+function draw1dFacets(panel, mask, splitName) {{
+  const xName = panel.xvar;
   const x = columns[xName];
   const split = columns[splitName];
-  const bins = clamp(Number(el("xbins").value) || 80, 5, 400);
-  const xMin = parseNumber(el("xmin").value);
-  const xMax = parseNumber(el("xmax").value);
+  const bins = panel.xbins;
+  const xMin = panel.xmin;
+  const xMax = panel.xmax;
   const facets = [];
   let totalSelected = 0, sumXAll = 0;
   for (let sector = 1; sector <= 6; sector++) {{
@@ -1438,14 +1607,14 @@ function draw1dFacets(mask, splitName) {{
     sumXAll += sumX;
     facets.push({{sector, counts, selected}});
   }}
-  if (el("density").checked) {{
+  if (panel.density) {{
     for (const facet of facets) {{
       if (facet.selected === 0) continue;
       for (let i = 0; i < bins; i++) facet.counts[i] /= facet.selected;
     }}
   }}
   const maxCount = Math.max(1, ...facets.map(f => maxOf(f.counts, 0)));
-  const canvas = el("plot");
+  const canvas = el("plot" + panel.key);
   const area = plotArea(canvas);
   const {{ctx, width, height}} = area;
   const c = colors();
@@ -1453,39 +1622,39 @@ function draw1dFacets(mask, splitName) {{
   const layout = facetLayout(area);
   for (let index = 0; index < facets.length; index++) {{
     const facet = facets[index];
-    const panel = panelArea(area, layout, index);
-    const pw = panel.width - panel.left - panel.right;
-    const ph = panel.height - panel.top - panel.bottom;
+    const facetAreaInfo = panelArea(area, layout, index);
+    const pw = facetAreaInfo.width - facetAreaInfo.left - facetAreaInfo.right;
+    const ph = facetAreaInfo.height - facetAreaInfo.top - facetAreaInfo.bottom;
     ctx.fillStyle = c.mark;
     for (let i = 0; i < bins; i++) {{
       const barH = facet.counts[i] / maxCount * ph;
-      const x0 = panel.left + i / bins * pw;
-      const x1 = panel.left + (i + 1) / bins * pw;
-      ctx.fillRect(x0, panel.top + ph - barH, Math.max(1, x1 - x0 - 1), barH);
+      const x0 = facetAreaInfo.left + i / bins * pw;
+      const x1 = facetAreaInfo.left + (i + 1) / bins * pw;
+      ctx.fillRect(x0, facetAreaInfo.top + ph - barH, Math.max(1, x1 - x0 - 1), barH);
     }}
-    drawAxes(ctx, panel, xMin, xMax, 0, maxCount, byName[xName].label, el("density").checked ? "density" : "counts");
-    drawFacetTitle(ctx, panel, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
-    facet.area = panel;
+    drawAxes(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, byName[xName].label, panel.density ? "density" : "counts");
+    drawFacetTitle(ctx, facetAreaInfo, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
+    facet.area = facetAreaInfo;
   }}
-  lastPlot = {{
+  panel.lastPlot = {{
     mode: "1d-facet", area, facets, splitName, xName, xMin, xMax, bins,
-    selected: totalSelected, density: el("density").checked
+    selected: totalSelected, density: panel.density
   }};
-  updateStats(totalSelected, sumXAll / totalSelected, NaN);
+  setPanelStats(panel, totalSelected, sumXAll / totalSelected, NaN);
 }}
 
-function draw2dFacets(mask, splitName) {{
-  const xName = el("xvar").value;
-  const yName = el("yvar").value;
+function draw2dFacets(panel, mask, splitName) {{
+  const xName = panel.xvar;
+  const yName = panel.yvar;
   const x = columns[xName];
   const y = columns[yName];
   const split = columns[splitName];
-  const xBins = clamp(Number(el("xbins").value) || 80, 5, 400);
-  const yBins = clamp(Number(el("ybins").value) || 80, 5, 300);
-  const xMin = parseNumber(el("xmin").value);
-  const xMax = parseNumber(el("xmax").value);
-  const yMin = parseNumber(el("ymin").value);
-  const yMax = parseNumber(el("ymax").value);
+  const xBins = panel.xbins;
+  const yBins = panel.ybins;
+  const xMin = panel.xmin;
+  const xMax = panel.xmax;
+  const yMin = panel.ymin;
+  const yMax = panel.ymax;
   const facets = [];
   let totalSelected = 0, sumXAll = 0, sumYAll = 0;
   for (let sector = 1; sector <= 6; sector++) {{
@@ -1506,45 +1675,45 @@ function draw2dFacets(mask, splitName) {{
     sumYAll += sumY;
     facets.push({{sector, counts, selected}});
   }}
-  if (el("density").checked) {{
+  if (panel.density) {{
     for (const facet of facets) {{
       if (facet.selected === 0) continue;
       for (let i = 0; i < facet.counts.length; i++) facet.counts[i] /= facet.selected;
     }}
   }}
   const maxCount = Math.max(1, ...facets.map(f => maxOf(f.counts, 0)));
-  const canvas = el("plot");
+  const canvas = el("plot" + panel.key);
   const area = plotArea(canvas);
   const {{ctx, width, height}} = area;
   ctx.clearRect(0, 0, width, height);
   const layout = facetLayout(area);
   for (let index = 0; index < facets.length; index++) {{
     const facet = facets[index];
-    const panel = panelArea(area, layout, index);
-    const pw = panel.width - panel.left - panel.right;
-    const ph = panel.height - panel.top - panel.bottom;
+    const facetAreaInfo = panelArea(area, layout, index);
+    const pw = facetAreaInfo.width - facetAreaInfo.left - facetAreaInfo.right;
+    const ph = facetAreaInfo.height - facetAreaInfo.top - facetAreaInfo.bottom;
     for (let yi = 0; yi < yBins; yi++) {{
       for (let xi = 0; xi < xBins; xi++) {{
         const count = facet.counts[yi * xBins + xi];
         if (count <= 0) continue;
-        const fraction = el("logz").checked ? Math.log1p(count) / Math.log1p(maxCount) : count / maxCount;
+        const fraction = panel.logz ? Math.log1p(count) / Math.log1p(maxCount) : count / maxCount;
         ctx.fillStyle = heatColor(fraction);
-        const x0 = panel.left + xi / xBins * pw;
-        const x1 = panel.left + (xi + 1) / xBins * pw;
-        const y0 = panel.top + ph - (yi + 1) / yBins * ph;
-        const y1 = panel.top + ph - yi / yBins * ph;
+        const x0 = facetAreaInfo.left + xi / xBins * pw;
+        const x1 = facetAreaInfo.left + (xi + 1) / xBins * pw;
+        const y0 = facetAreaInfo.top + ph - (yi + 1) / yBins * ph;
+        const y1 = facetAreaInfo.top + ph - yi / yBins * ph;
         ctx.fillRect(x0, y0, Math.ceil(x1 - x0), Math.ceil(y1 - y0));
       }}
     }}
-    drawAxes(ctx, panel, xMin, xMax, yMin, yMax, byName[xName].label, byName[yName].label);
-    drawFacetTitle(ctx, panel, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
-    facet.area = panel;
+    drawAxes(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, byName[xName].label, byName[yName].label);
+    drawFacetTitle(ctx, facetAreaInfo, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
+    facet.area = facetAreaInfo;
   }}
-  lastPlot = {{
+  panel.lastPlot = {{
     mode: "2d-facet", area, facets, splitName, xName, yName, xMin, xMax, yMin, yMax,
-    xBins, yBins, selected: totalSelected, density: el("density").checked
+    xBins, yBins, selected: totalSelected, density: panel.density
   }};
-  updateStats(totalSelected, sumXAll / totalSelected, sumYAll / totalSelected);
+  setPanelStats(panel, totalSelected, sumXAll / totalSelected, sumYAll / totalSelected);
 }}
 
 function facetLayout(area) {{
@@ -1598,20 +1767,30 @@ function niceTicks(min, max, target) {{
   return ticks;
 }}
 
-function showHoverInfo(event) {{
+function hoverElement(key) {{
+  return el("hoverInfo" + key);
+}}
+
+function setHoverText(key, text) {{
+  hoverElement(key).textContent = text;
+  if (key === activePanel) el("hoverInfo").textContent = text;
+}}
+
+function showHoverInfo(event, key) {{
+  const lastPlot = panels[key].lastPlot;
   if (!lastPlot) return;
-  const rect = el("plot").getBoundingClientRect();
+  const rect = el("plot" + key).getBoundingClientRect();
   const px = event.clientX - rect.left;
   const py = event.clientY - rect.top;
   if (lastPlot.mode === "1d-facet" || lastPlot.mode === "2d-facet") {{
-    showFacetHover(px, py);
+    showFacetHover(px, py, key);
     return;
   }}
   const area = lastPlot.area;
   const pw = area.width - area.left - area.right;
   const ph = area.height - area.top - area.bottom;
   if (px < area.left || px > area.left + pw || py < area.top || py > area.top + ph) {{
-    el("hoverInfo").textContent = "Hover over a bin to inspect it.";
+    setHoverText(key, "Hover over a bin to inspect it.");
     return;
   }}
   if (lastPlot.mode === "1d") {{
@@ -1620,7 +1799,7 @@ function showHoverInfo(event) {{
     const x1 = lastPlot.xMin + (bin + 1) / lastPlot.bins * (lastPlot.xMax - lastPlot.xMin);
     const value = lastPlot.counts[bin];
     const label = lastPlot.density ? "density" : "count";
-    el("hoverInfo").textContent = `${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}; bin=${{bin + 1}}/${{lastPlot.bins}}; selected=${{lastPlot.selected.toLocaleString()}}`;
+    setHoverText(key, `Panel ${{key}}; ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}; bin=${{bin + 1}}/${{lastPlot.bins}}; selected=${{lastPlot.selected.toLocaleString()}}`);
     return;
   }}
   const xi = clamp(Math.floor((px - area.left) / pw * lastPlot.xBins), 0, lastPlot.xBins - 1);
@@ -1631,10 +1810,11 @@ function showHoverInfo(event) {{
   const y1 = lastPlot.yMin + (yi + 1) / lastPlot.yBins * (lastPlot.yMax - lastPlot.yMin);
   const value = lastPlot.counts[yi * lastPlot.xBins + xi];
   const label = lastPlot.density ? "density" : "count";
-  el("hoverInfo").textContent = `${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}; bin=(${{xi + 1}}, ${{yi + 1}}); selected=${{lastPlot.selected.toLocaleString()}}`;
+  setHoverText(key, `Panel ${{key}}; ${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}; bin=(${{xi + 1}}, ${{yi + 1}}); selected=${{lastPlot.selected.toLocaleString()}}`);
 }}
 
-function showFacetHover(px, py) {{
+function showFacetHover(px, py, key) {{
+  const lastPlot = panels[key].lastPlot;
   for (const facet of lastPlot.facets) {{
     const area = facet.area;
     const pw = area.width - area.left - area.right;
@@ -1646,7 +1826,7 @@ function showFacetHover(px, py) {{
       const x1 = lastPlot.xMin + (bin + 1) / lastPlot.bins * (lastPlot.xMax - lastPlot.xMin);
       const value = facet.counts[bin];
       const label = lastPlot.density ? "density" : "count";
-      el("hoverInfo").textContent = `Sector ${{facet.sector}}; ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}; bin=${{bin + 1}}/${{lastPlot.bins}}; sector selected=${{facet.selected.toLocaleString()}}`;
+      setHoverText(key, `Panel ${{key}}; sector ${{facet.sector}}; ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}; bin=${{bin + 1}}/${{lastPlot.bins}}; sector selected=${{facet.selected.toLocaleString()}}`);
       return;
     }}
     const xi = clamp(Math.floor((px - area.left) / pw * lastPlot.xBins), 0, lastPlot.xBins - 1);
@@ -1657,10 +1837,10 @@ function showFacetHover(px, py) {{
     const y1 = lastPlot.yMin + (yi + 1) / lastPlot.yBins * (lastPlot.yMax - lastPlot.yMin);
     const value = facet.counts[yi * lastPlot.xBins + xi];
     const label = lastPlot.density ? "density" : "count";
-    el("hoverInfo").textContent = `Sector ${{facet.sector}}; ${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}; bin=(${{xi + 1}}, ${{yi + 1}}); sector selected=${{facet.selected.toLocaleString()}}`;
+    setHoverText(key, `Panel ${{key}}; sector ${{facet.sector}}; ${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}; bin=(${{xi + 1}}, ${{yi + 1}}); sector selected=${{facet.selected.toLocaleString()}}`);
     return;
   }}
-  el("hoverInfo").textContent = "Hover over a bin to inspect it.";
+  setHoverText(key, "Hover over a bin to inspect it.");
 }}
 
 function heatColor(t) {{
@@ -1681,14 +1861,22 @@ function maxOf(values, fallback) {{
   return result;
 }}
 
-function updateStats(selected, meanX, meanY) {{
-  el("selectedCount").textContent = selected.toLocaleString();
-  el("meanX").textContent = fmt(meanX);
-  el("meanY").textContent = fmt(meanY);
+function setPanelStats(panel, selected, meanX, meanY) {{
+  panel.stats = {{selected, meanX, meanY}};
+  const yLabel = panel.mode === "2d" ? `${{byName[panel.yvar]?.label || panel.yvar}} vs ` : "";
+  el("panelSummary" + panel.key).textContent = `${{yLabel}}${{byName[panel.xvar]?.label || panel.xvar}}; selected ${{selected.toLocaleString()}}`;
+}}
+
+function updateActiveStats() {{
+  const stats = currentPanel().stats;
+  el("selectedCount").textContent = stats.selected.toLocaleString();
+  el("meanX").textContent = fmt(stats.meanX);
+  el("meanY").textContent = fmt(stats.meanY);
 }}
 
 function renderPreview(mask) {{
-  const names = [el("xvar").value, el("yvar").value, "Q2", "xB", "t", "rec_minus_t", "pDet", "passFiducial", "passSamplingFraction", "passExclusivity"]
+  const panel = currentPanel();
+  const names = [panel.xvar, panel.mode === "2d" ? panel.yvar : "", "Q2", "xB", "t", "t_pi0", "rec_minus_t", "rec_minus_t_pi0", "pDet", "passFiducial", "passSamplingFraction", "passExclusivity"]
     .filter((name, index, arr) => name && columns[name] && arr.indexOf(name) === index)
     .slice(0, 8);
   const table = el("preview");
