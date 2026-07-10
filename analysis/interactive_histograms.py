@@ -998,8 +998,8 @@ th:first-child, td:first-child {{ text-align: left; }}
       <label><span>Y max</span><input id="ymax" type="number" step="any"></label>
     </div>
     <div class="row">
-      <label><span>X ticks <span id="xtickValue"></span></span><input id="xticks" type="range" min="2" max="12" value="6"></label>
-      <label><span>Y ticks <span id="ytickValue"></span></span><input id="yticks" type="range" min="2" max="12" value="6"></label>
+      <label><span>X ticks <span id="xtickValue"></span></span><input id="xticks" type="range" min="1" max="40" step="0.5" value="6"></label>
+      <label><span>Y ticks <span id="ytickValue"></span></span><input id="yticks" type="range" min="1" max="40" step="0.5" value="6"></label>
     </div>
     <div class="chips">
       <label class="chip"><input id="logz" type="checkbox"> log color</label>
@@ -1083,6 +1083,7 @@ const panels = {{
 
 const el = id => document.getElementById(id);
 const fmt = value => Number.isFinite(value) ? (Math.abs(value) >= 1000 || Math.abs(value) < 0.01 ? value.toExponential(3) : value.toPrecision(4)) : "-";
+const fmtTickTarget = value => Number.isInteger(value) ? String(value) : value.toFixed(1);
 
 function comparisonDefaultX() {{
   for (const name of ["rec_minus_t_pi0", "t_pi0", "gen_minus_t", payload.defaultX]) {{
@@ -1264,8 +1265,8 @@ function syncControlsFromPanel() {{
   el("ybins").value = panel.ybins;
   el("xticks").value = panel.xticks;
   el("yticks").value = panel.yticks;
-  el("xtickValue").textContent = panel.xticks;
-  el("ytickValue").textContent = panel.yticks;
+  el("xtickValue").textContent = fmtTickTarget(panel.xticks);
+  el("ytickValue").textContent = fmtTickTarget(panel.yticks);
   el("xmin").value = panel.xmin;
   el("xmax").value = panel.xmax;
   el("ymin").value = panel.ymin;
@@ -1291,10 +1292,10 @@ function readControlsToPanel() {{
   panel.splitVar = el("splitVar").value;
   panel.xbins = clamp(Number(el("xbins").value) || 80, 5, 400);
   panel.ybins = clamp(Number(el("ybins").value) || 80, 5, 300);
-  panel.xticks = clamp(Number(el("xticks").value) || 6, 2, 12);
-  panel.yticks = clamp(Number(el("yticks").value) || 6, 2, 12);
-  el("xtickValue").textContent = panel.xticks;
-  el("ytickValue").textContent = panel.yticks;
+  panel.xticks = clamp(Number(el("xticks").value) || 6, 1, 40);
+  panel.yticks = clamp(Number(el("yticks").value) || 6, 1, 40);
+  el("xtickValue").textContent = fmtTickTarget(panel.xticks);
+  el("ytickValue").textContent = fmtTickTarget(panel.yticks);
   panel.xmin = parseNumber(el("xmin").value);
   panel.xmax = parseNumber(el("xmax").value);
   panel.ymin = parseNumber(el("ymin").value);
