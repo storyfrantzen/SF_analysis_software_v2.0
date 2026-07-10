@@ -128,6 +128,8 @@ python3 analysis/interactive_histograms.py selected_data.root \
 scripts/serve_visualizer.sh results/selected_data_histograms.html
 ```
 
+Run `scripts/serve_visualizer.sh` with no path to serve a click-enabled listing
+of `results/`.
 The browser discovers stored scalar quantities, adds common derived views such
 as degree versions of angular branches and signed/unsigned `t` aliases, and
 supports 1D histograms, 2D histograms, detector/pass-flag toggles, text filters,

@@ -3,9 +3,13 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/serve_visualizer.sh [--port PORT] [--host HOST] PATH.html
+Usage: scripts/serve_visualizer.sh [--port PORT] [--host HOST] [PATH.html|DIRECTORY]
 
-Serve a generated interactive_histograms.py HTML file for VS Code Remote SSH.
+Serve generated visualizer HTML files for VS Code Remote SSH.
+
+With no path, the script serves results/ if it exists, otherwise the current
+directory. Passing a directory opens a click-enabled file listing. Passing an
+HTML file opens that file directly.
 
 Options:
   -p, --port PORT   Port to bind locally on the remote host (default: 8765)
@@ -13,6 +17,8 @@ Options:
   -h, --help        Show this help
 
 Example:
+  scripts/serve_visualizer.sh
+  scripts/serve_visualizer.sh results
   scripts/serve_visualizer.sh results/selected_data_histograms_2.html
   scripts/serve_visualizer.sh --port 8877 results/selected_data_histograms_2.html
 EOF
@@ -20,7 +26,7 @@ EOF
 
 PORT="${PORT:-8765}"
 BIND_HOST="${BIND_HOST:-127.0.0.1}"
-HTML=""
+TARGET=""
 
 while (($#)); do
   case "$1" in
@@ -54,36 +60,61 @@ while (($#)); do
       exit 2
       ;;
     *)
-      if [[ -n "$HTML" ]]; then
-        echo "Only one HTML file may be served at a time" >&2
+      if [[ -n "$TARGET" ]]; then
+        echo "Only one file or directory may be served at a time" >&2
         usage >&2
         exit 2
       fi
-      HTML="$1"
+      TARGET="$1"
       shift
       ;;
   esac
 done
 
-if [[ -z "$HTML" ]]; then
-  echo "Missing HTML file" >&2
+if (($#)); then
+  if [[ -n "$TARGET" ]]; then
+    echo "Only one file or directory may be served at a time" >&2
+    usage >&2
+    exit 2
+  fi
+  TARGET="$1"
+  shift
+fi
+
+if (($#)); then
+  echo "Only one file or directory may be served at a time" >&2
   usage >&2
   exit 2
 fi
 
-if [[ ! -f "$HTML" ]]; then
-  echo "HTML file does not exist: $HTML" >&2
+if [[ -z "$TARGET" ]]; then
+  if [[ -d results ]]; then
+    TARGET="results"
+  else
+    TARGET="."
+  fi
+fi
+
+if [[ -d "$TARGET" ]]; then
+  DIR="$(cd "$TARGET" && pwd -P)"
+  URL_PATH="/"
+  SERVING="${DIR}/"
+elif [[ -f "$TARGET" ]]; then
+  DIR="$(cd "$(dirname "$TARGET")" && pwd -P)"
+  FILE="$(basename "$TARGET")"
+  URL_FILE="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$FILE")"
+  URL_PATH="/${URL_FILE}"
+  SERVING="${DIR}/${FILE}"
+else
+  echo "File or directory does not exist: $TARGET" >&2
   exit 1
 fi
 
-DIR="$(cd "$(dirname "$HTML")" && pwd -P)"
-FILE="$(basename "$HTML")"
-URL_FILE="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$FILE")"
-FORWARDED_URL="http://127.0.0.1:${PORT}/${URL_FILE}"
-BIND_URL="http://${BIND_HOST}:${PORT}/${URL_FILE}"
+FORWARDED_URL="http://127.0.0.1:${PORT}${URL_PATH}"
+BIND_URL="http://${BIND_HOST}:${PORT}${URL_PATH}"
 
 cat <<EOF
-Serving: ${DIR}/${FILE}
+Serving: ${SERVING}
 Binding: ${BIND_HOST}:${PORT}
 
 In VS Code Remote SSH:
