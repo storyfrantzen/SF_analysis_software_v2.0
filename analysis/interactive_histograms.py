@@ -186,8 +186,13 @@ DISPLAY_NAMES = {
     "pDet": "proton detector",
     "rec_proton_detector": "REC proton detector",
     "passFiducial": "fiducial",
-    "passSamplingFraction": "sampling fraction",
+    "passSamplingFraction": "passes SF cut",
     "passExclusivity": "loose exclusivity",
+    "electronSamplingFraction": "electron SF",
+    "electronSamplingFractionPCAL": "electron SF PCAL",
+    "electronSamplingFractionECIN": "electron SF ECIN",
+    "electronSamplingFractionECOUT": "electron SF ECOUT",
+    "electronSamplingFractionECAL": "electron SF ECAL",
     "protonTheta": "theta_p",
     "protonTheta_deg": "theta_p deg",
     "protonP": "p_p",
@@ -535,7 +540,37 @@ def add_derived_quantities(arrays: dict[str, Any]) -> dict[str, Any]:
         derived["pDet"] = derived["rec_proton_detector"]
     if "rec_selected" in derived:
         derived["rec_not_selected"] = ~np.asarray(derived["rec_selected"], dtype=bool)
+    add_sampling_fraction_quantities(derived)
     return derived
+
+
+def add_sampling_fraction_quantities(arrays: dict[str, Any]) -> None:
+    if "electronP" not in arrays:
+        return
+    momentum = np.asarray(arrays["electronP"], dtype=float)
+    pcal = np.asarray(arrays["electronEPCAL"], dtype=float) if "electronEPCAL" in arrays else None
+    ecin = np.asarray(arrays["electronEECIN"], dtype=float) if "electronEECIN" in arrays else None
+    ecout = np.asarray(arrays["electronEECOUT"], dtype=float) if "electronEECOUT" in arrays else None
+    if pcal is not None:
+        arrays.setdefault("electronSamplingFractionPCAL", safe_ratio(pcal, momentum))
+    if ecin is not None:
+        arrays.setdefault("electronSamplingFractionECIN", safe_ratio(ecin, momentum))
+    if ecout is not None:
+        arrays.setdefault("electronSamplingFractionECOUT", safe_ratio(ecout, momentum))
+    parts = [part for part in (pcal, ecin, ecout) if part is not None]
+    if parts:
+        total = np.zeros_like(momentum, dtype=float)
+        for part in parts:
+            total = total + part
+        arrays.setdefault("electronSamplingFraction", safe_ratio(total, momentum))
+        arrays.setdefault("electronSamplingFractionECAL", safe_ratio(total, momentum))
+
+
+def safe_ratio(numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
+    result = np.full_like(denominator, np.nan, dtype=float)
+    valid = np.isfinite(numerator) & np.isfinite(denominator) & (denominator != 0)
+    result[valid] = numerator[valid] / denominator[valid]
+    return result
 
 
 def normalize_visual_columns(arrays: dict[str, Any]) -> dict[str, Any]:
@@ -723,6 +758,12 @@ def sort_key(name: str) -> tuple[int, str]:
         "gen_theta_deg",
         "rec_phi_deg",
         "gen_phi_deg",
+        "electronSamplingFraction",
+        "electronSamplingFractionECAL",
+        "electronSamplingFractionPCAL",
+        "electronSamplingFractionECIN",
+        "electronSamplingFractionECOUT",
+        "passSamplingFraction",
         "rec_trento_phi",
         "gen_trento_phi",
         "m_gg",

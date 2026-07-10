@@ -139,6 +139,9 @@ with a distinct color map for direct within-panel comparisons. Selected ROOT
 inputs expose the richest set of reconstruction filters, including `pDet`, `passFiducial`,
 `passSamplingFraction`, `passExclusivity`, and selected-particle kinematics
 such as `protonTheta`, so plots like `theta_p` vs `-t` can be explored directly.
+The `passSamplingFraction` flag is labeled as a cut result; selected ROOT inputs
+also derive total and PCAL/ECIN/ECOUT electron sampling fractions from the stored
+calorimeter energies divided by `electronP`.
 The dictionary is optional for ordinary selected `Events` trees; if the named
 dictionary is missing, the script continues with ROOT's built-in scalar and STL
 branch readers.
