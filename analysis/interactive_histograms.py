@@ -185,6 +185,10 @@ REDUNDANT_COLUMNS = (
 
 
 DISPLAY_NAMES = {
+    "run": "run",
+    "runNum": "run",
+    "rec_runNum": "REC run",
+    "gen_runNum": "GEN run",
     "Q2": "Q2",
     "rec_Q2": "REC Q2",
     "gen_Q2": "GEN Q2",
@@ -749,6 +753,7 @@ def build_payload(
                     "max": display_max,
                     "mean": float(np.mean(finite)),
                     "finite": int(finite.size),
+                    "integer": bool(is_integer_category(name)),
                 }
             )
             encoded_columns[name] = encode_float32(numeric)
@@ -809,6 +814,10 @@ def is_wrapped_phi_degree_column(name: str) -> bool:
 
 def sort_key(name: str) -> tuple[int, str]:
     preferred = (
+        "run",
+        "runNum",
+        "rec_runNum",
+        "gen_runNum",
         "Q2",
         "rec_Q2",
         "gen_Q2",
@@ -880,9 +889,13 @@ def categorical_filter_info(name: str, values: np.ndarray) -> dict[str, Any] | N
         unique = np.unique(finite.astype(np.int64))
     else:
         unique = np.unique(finite)
-    max_categories = 40 if is_index_column(name) else 12
+    max_categories = 500 if is_run_number_column(name) else 40 if is_index_column(name) else 12
     if 1 < unique.size <= max_categories and (
-        integers or is_pass_flag(name) or name.endswith("Det") or is_index_column(name)
+        integers
+        or is_pass_flag(name)
+        or name.endswith("Det")
+        or is_index_column(name)
+        or is_run_number_column(name)
     ):
         labels = [category_label(name, item) for item in unique.tolist()]
         return {
@@ -895,6 +908,8 @@ def categorical_filter_info(name: str, values: np.ndarray) -> dict[str, Any] | N
 
 
 def category_label(name: str, value: Any) -> str:
+    if is_run_number_column(name):
+        return str(int(value))
     if name in {"pDet", "rec_proton_detector", "protonDet"}:
         return {1: "FD", 2: "CD", 0: "FT", -999: "missing"}.get(int(value), str(value))
     if "sector" in name.lower():
@@ -916,6 +931,14 @@ def is_pass_flag(name: str) -> bool:
 
 def is_index_column(name: str) -> bool:
     return name.endswith("Idx") or name.endswith("Index")
+
+
+def is_run_number_column(name: str) -> bool:
+    return name in {"run", "runNum", "rec_runNum", "gen_runNum"} or name.lower().endswith("runnum")
+
+
+def is_integer_category(name: str) -> bool:
+    return is_run_number_column(name) or is_index_column(name) or "sector" in name.lower() or name.endswith("Det")
 
 
 def label_for(name: str) -> str:
@@ -1250,6 +1273,7 @@ for (const [name, value] of Object.entries(payload.columns)) {{
 }}
 const variables = payload.variables;
 const byName = Object.fromEntries(variables.map(v => [v.name, v]));
+const integerVariables = new Set(variables.filter(v => v.integer).map(v => v.name));
 const panelKeys = ["A", "B"];
 let activePanel = "A";
 let compareMode = false;
@@ -1261,6 +1285,7 @@ const panels = {{
 
 const el = id => document.getElementById(id);
 const fmt = value => Number.isFinite(value) ? (Math.abs(value) >= 1000 || Math.abs(value) < 0.01 ? value.toExponential(3) : value.toPrecision(4)) : "-";
+const fmtColumn = (name, value) => integerVariables.has(name) && Number.isFinite(value) ? String(Math.round(value)) : fmt(value);
 const fmtTickTarget = value => Number.isInteger(value) ? String(value) : value.toFixed(1);
 
 function comparisonDefaultX() {{
@@ -2625,7 +2650,7 @@ function renderPreview(mask) {{
     if (!mask[i]) continue;
     const row = document.createElement("tr");
     row.appendChild(document.createElement("td")).textContent = i;
-    for (const name of names) row.appendChild(document.createElement("td")).textContent = fmt(columns[name][i]);
+    for (const name of names) row.appendChild(document.createElement("td")).textContent = fmtColumn(name, columns[name][i]);
     table.appendChild(row);
     shown++;
   }}
