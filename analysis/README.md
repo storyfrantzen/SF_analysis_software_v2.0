@@ -136,7 +136,10 @@ independent histograms side by side under the same filters. Axis tick-count
 sliders adjust every displayed axis, and the visible display can be saved as a
 PNG. In 1D mode, an optional overlay-X variable can be drawn on the same axes;
 in 2D mode, an optional overlay-Y variable can be drawn on the same axes with a
-distinct color map for direct within-panel comparisons. Selected ROOT inputs
+distinct color map for direct within-panel comparisons. The derived-operations
+menu can add browser-side comparison variables such as `rec_theta_deg - gen_theta_deg`,
+ratios, fractional residuals, or sums, and the fit menu can overlay Gaussian,
+linear, or quadratic fits where applicable. Selected ROOT inputs
 expose the richest set of reconstruction filters, including `pDet`, `passFiducial`,
 `passSamplingFraction`, `passExclusivity`, and selected-particle kinematics
 such as `protonTheta`, so plots like `theta_p` vs `-t` can be explored directly.

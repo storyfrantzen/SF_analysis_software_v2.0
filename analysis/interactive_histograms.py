@@ -959,6 +959,13 @@ button.active {{
   align-items: center;
 }}
 .filter-row input {{ width: 100%; }}
+.operation-grid {{
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}}
+.operation-grid .row {{ grid-template-columns: 1fr 1fr; }}
+.operation-grid button {{ width: 100%; }}
 .stats {{
   display: flex;
   gap: 10px;
@@ -1077,6 +1084,29 @@ th:first-child, td:first-child {{ text-align: left; }}
       <label class="chip"><input id="logz" type="checkbox"> log color</label>
       <label class="chip"><input id="density" type="checkbox"> density</label>
     </div>
+    <h2>Derived Operations</h2>
+    <div class="operation-grid">
+      <label>Left <select id="opLeft"></select></label>
+      <div class="row">
+        <label>Operation <select id="opKind">
+          <option value="subtract">left - right</option>
+          <option value="add">left + right</option>
+          <option value="ratio">left / right</option>
+          <option value="fractional">(left - right) / right</option>
+        </select></label>
+        <label>Right <select id="opRight"></select></label>
+      </div>
+      <button type="button" id="addDerived">Add variable</button>
+      <div class="subtle" id="opStatus"></div>
+    </div>
+    <h2>Fit</h2>
+    <label>Model <select id="fitModel">
+      <option value="none">none</option>
+      <option value="gaussian">Gaussian</option>
+      <option value="linear">linear</option>
+      <option value="quadratic">quadratic</option>
+    </select></label>
+    <div class="subtle" id="fitSummary">No fit</div>
     <h2>Category Filters</h2>
     <div id="categoryFilters"></div>
     <h2>Range Filters</h2>
@@ -1185,6 +1215,8 @@ function makePanel(key, xvar, yvar) {{
     ymax: yInfo.max,
     logz: false,
     density: false,
+    fitModel: "none",
+    fitSummary: "No fit",
     lastPlot: null,
     stats: {{selected: 0, meanX: NaN, meanY: NaN}}
   }};
@@ -1220,6 +1252,111 @@ function fillOverlaySelect(select, selected) {{
   select.value = selected && byName[selected] ? selected : "";
 }}
 
+function fillOperationSelects() {{
+  const left = el("opLeft");
+  const right = el("opRight");
+  const currentLeft = left.value || firstPresent(["rec_theta_deg", "recTheta_deg", "rec_theta", "theta_deg", payload.defaultY]);
+  const currentRight = right.value || matchingGeneratedName(currentLeft) || firstPresent(["gen_theta_deg", "gen_theta", payload.defaultX]);
+  fillSelect(left, currentLeft);
+  fillSelect(right, currentRight);
+}}
+
+function firstPresent(names) {{
+  for (const name of names) {{
+    if (name && columns[name]) return name;
+  }}
+  return variables[0]?.name || "";
+}}
+
+function matchingGeneratedName(name) {{
+  if (!name) return "";
+  const candidates = [];
+  if (name.startsWith("rec_")) candidates.push("gen_" + name.slice(4));
+  if (name.startsWith("rec")) candidates.push("gen" + name.slice(3));
+  candidates.push(name.replace(/^rec_?/, "gen_"));
+  for (const candidate of candidates) {{
+    if (columns[candidate]) return candidate;
+  }}
+  return "";
+}}
+
+function addDerivedVariable() {{
+  const leftName = el("opLeft").value;
+  const rightName = el("opRight").value;
+  const kind = el("opKind").value;
+  const left = columns[leftName];
+  const right = columns[rightName];
+  if (!left || !right || leftName === rightName) {{
+    el("opStatus").textContent = "Choose two different numeric variables.";
+    return;
+  }}
+  const values = new Float32Array(rowCount);
+  let finite = 0, sum = 0, min = Infinity, max = -Infinity;
+  for (let i = 0; i < rowCount; i++) {{
+    const a = left[i];
+    const b = right[i];
+    let value = NaN;
+    if (Number.isFinite(a) && Number.isFinite(b)) {{
+      if (kind === "subtract") value = a - b;
+      else if (kind === "add") value = a + b;
+      else if (kind === "ratio") value = b !== 0 ? a / b : NaN;
+      else if (kind === "fractional") value = b !== 0 ? (a - b) / b : NaN;
+    }}
+    values[i] = value;
+    if (Number.isFinite(value)) {{
+      finite++;
+      sum += value;
+      if (value < min) min = value;
+      if (value > max) max = value;
+    }}
+  }}
+  if (!finite) {{
+    el("opStatus").textContent = "No finite values were produced.";
+    return;
+  }}
+  const label = derivedLabel(leftName, rightName, kind);
+  const name = uniqueDerivedName(label);
+  columns[name] = values;
+  const variable = {{name, label, min, max, mean: sum / finite, finite}};
+  variables.push(variable);
+  byName[name] = variable;
+  fillSelect(el("rangeVar"), name);
+  fillOperationSelects();
+  for (const key of panelKeys) {{
+    if (panels[key].xvar === leftName) {{
+      panels[key].xvar = name;
+      panels[key].xmin = min;
+      panels[key].xmax = max;
+      break;
+    }}
+  }}
+  currentPanel().xvar = name;
+  currentPanel().xmin = min;
+  currentPanel().xmax = max;
+  el("opStatus").textContent = `Added ${{label}}`;
+  syncControlsFromPanel();
+  update();
+}}
+
+function derivedLabel(leftName, rightName, kind) {{
+  const left = byName[leftName]?.label || leftName;
+  const right = byName[rightName]?.label || rightName;
+  if (kind === "add") return `${{left}} + ${{right}}`;
+  if (kind === "ratio") return `${{left}} / ${{right}}`;
+  if (kind === "fractional") return `(${{left}} - ${{right}}) / ${{right}}`;
+  return `${{left}} - ${{right}}`;
+}}
+
+function uniqueDerivedName(label) {{
+  const base = "derived_" + label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 70);
+  let name = base || "derived_value";
+  let suffix = 2;
+  while (columns[name] || textColumns[name]) {{
+    name = `${{base}}_${{suffix++}}`;
+  }}
+  return name;
+}}
+
 function fillSectorSelect(selected) {{
   const label = el("splitLabel");
   const select = el("splitVar");
@@ -1246,6 +1383,7 @@ function init() {{
     el("samplingNote").textContent = `downsampled from ${{payload.downsample.originalRows.toLocaleString()}} rows`;
   }}
   fillSelect(el("rangeVar"), payload.defaultX);
+  fillOperationSelects();
   renderCategoryFilters();
   renderTextFilters();
   attachEvents();
@@ -1297,11 +1435,12 @@ function renderTextFilters() {{
 }}
 
 function attachEvents() {{
-  ["x2var","y2var","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density"].forEach(id => {{
+  ["x2var","y2var","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","fitModel"].forEach(id => {{
     el(id).addEventListener("input", () => {{ readControlsToPanel(); update(); }});
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
   el("yvar").addEventListener("change", () => {{ setPanelVariable("y"); update(); }});
+  el("addDerived").addEventListener("click", addDerivedVariable);
   el("compareMode").addEventListener("input", () => {{ compareMode = el("compareMode").checked; update(); }});
   el("panelA").addEventListener("click", () => setActivePanel("A"));
   el("panelB").addEventListener("click", () => setActivePanel("B"));
@@ -1347,6 +1486,8 @@ function syncControlsFromPanel() {{
   el("ymax").value = panel.ymax;
   el("logz").checked = panel.logz;
   el("density").checked = panel.density;
+  el("fitModel").value = panel.fitModel || "none";
+  el("fitSummary").textContent = panel.fitSummary || "No fit";
   el("compareMode").checked = compareMode;
   el("panelA").classList.toggle("active", activePanel === "A");
   el("panelB").classList.toggle("active", activePanel === "B");
@@ -1378,6 +1519,7 @@ function readControlsToPanel() {{
   panel.ymax = parseNumber(el("ymax").value);
   panel.logz = el("logz").checked;
   panel.density = el("density").checked;
+  panel.fitModel = el("fitModel").value;
 }}
 
 function setMode(next) {{
@@ -1661,6 +1803,7 @@ function draw1d(panel, mask) {{
   }}
   drawAxes(ctx, area, xMin, xMax, 0, maxCount, byName[xName].label, panel.density ? "density" : "counts", panel.xticks, panel.yticks);
   if (x2Name) drawOverlayLegend(ctx, area, byName[xName].label, byName[x2Name].label);
+  panel.fitSummary = draw1dFit(ctx, area, panel, counts, xMin, xMax, 0, maxCount);
   panel.lastPlot = {{
     mode: "1d", area, xName, x2Name, xMin, xMax, bins, counts, overlayCounts,
     selected, overlaySelected, density: panel.density, yMax: maxCount
@@ -1758,6 +1901,7 @@ function draw2d(panel, mask) {{
   const yAxisLabel = y2Name ? `${{byName[yName].label}} / ${{byName[y2Name].label}}` : byName[yName].label;
   drawAxes(ctx, area, xMin, xMax, yMin, yMax, byName[xName].label, yAxisLabel, panel.xticks, panel.yticks);
   if (y2Name) drawOverlayLegend(ctx, area, byName[yName].label, byName[y2Name].label);
+  panel.fitSummary = draw2dFit(ctx, area, panel, mask, x, y, xMin, xMax, yMin, yMax);
   panel.lastPlot = {{
     mode: "2d", area, xName, yName, y2Name, xMin, xMax, yMin, yMax,
     xBins, yBins, counts, overlayCounts, selected, overlaySelected, density: panel.density
@@ -1857,6 +2001,7 @@ function draw1dFacets(panel, mask, splitName) {{
     mode: "1d-facet", area, facets, splitName, xName, x2Name, xMin, xMax, bins,
     selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density
   }};
+  panel.fitSummary = panel.fitModel === "none" ? "No fit" : "Fits are disabled while sector split is active";
   setPanelStats(panel, totalSelected, sumXAll / totalSelected, NaN);
 }}
 
@@ -1970,6 +2115,7 @@ function draw2dFacets(panel, mask, splitName) {{
     mode: "2d-facet", area, facets, splitName, xName, yName, y2Name, xMin, xMax, yMin, yMax,
     xBins, yBins, selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density
   }};
+  panel.fitSummary = panel.fitModel === "none" ? "No fit" : "Fits are disabled while sector split is active";
   setPanelStats(panel, totalSelected, sumXAll / totalSelected, sumYAll / totalSelected);
 }}
 
@@ -2029,6 +2175,152 @@ function drawOverlayLegend(ctx, area, primaryLabel, overlayLabel) {{
   ctx.fillStyle = c.fg;
   ctx.fillText(overlayLabel, x + 15, y);
   ctx.restore();
+}}
+
+function draw1dFit(ctx, area, panel, counts, xMin, xMax, yMin, yMax) {{
+  const model = panel.fitModel || "none";
+  if (model === "none") return "No fit";
+  const xs = [];
+  const ys = [];
+  const binWidth = (xMax - xMin) / counts.length;
+  for (let i = 0; i < counts.length; i++) {{
+    const y = counts[i];
+    if (!Number.isFinite(y)) continue;
+    xs.push(xMin + (i + 0.5) * binWidth);
+    ys.push(y);
+  }}
+  if (xs.length < 3) return "Not enough bins for fit";
+  let fit = null;
+  if (model === "gaussian") fit = gaussianMomentFit(xs, ys);
+  else fit = polynomialFit(xs, ys, model === "quadratic" ? 2 : 1);
+  if (!fit) return "Fit failed";
+  drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, fit.predict);
+  return fit.summary;
+}}
+
+function draw2dFit(ctx, area, panel, mask, xValues, yValues, xMin, xMax, yMin, yMax) {{
+  const model = panel.fitModel || "none";
+  if (model === "none") return "No fit";
+  if (model === "gaussian") return "Gaussian fit is available for 1D histograms";
+  const xs = [];
+  const ys = [];
+  for (let i = 0; i < rowCount; i++) {{
+    const x = xValues[i];
+    const y = yValues[i];
+    if (!mask[i] || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+    if (x < xMin || x > xMax || y < yMin || y > yMax) continue;
+    xs.push(x);
+    ys.push(y);
+  }}
+  if (xs.length < (model === "quadratic" ? 3 : 2)) return "Not enough selected points for fit";
+  const fit = polynomialFit(xs, ys, model === "quadratic" ? 2 : 1);
+  if (!fit) return "Fit failed";
+  drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, fit.predict);
+  return `${{fit.summary}}; n=${{xs.length.toLocaleString()}}`;
+}}
+
+function drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, predict) {{
+  const c = colors();
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  ctx.save();
+  ctx.strokeStyle = c.fg;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([7, 4]);
+  ctx.beginPath();
+  let started = false;
+  for (let step = 0; step <= 160; step++) {{
+    const x = xMin + (xMax - xMin) * step / 160;
+    const y = predict(x);
+    if (!Number.isFinite(y)) {{
+      started = false;
+      continue;
+    }}
+    const px = area.left + (x - xMin) / (xMax - xMin) * pw;
+    const py = area.top + ph - (y - yMin) / (yMax - yMin) * ph;
+    if (py < area.top - ph || py > area.top + ph * 2) {{
+      started = false;
+      continue;
+    }}
+    if (!started) {{
+      ctx.moveTo(px, py);
+      started = true;
+    }} else {{
+      ctx.lineTo(px, py);
+    }}
+  }}
+  ctx.stroke();
+  ctx.restore();
+}}
+
+function polynomialFit(xs, ys, degree) {{
+  const n = degree + 1;
+  const matrix = Array.from({{length: n}}, () => Array(n).fill(0));
+  const rhs = Array(n).fill(0);
+  for (let i = 0; i < xs.length; i++) {{
+    const x = xs[i];
+    const y = ys[i];
+    const powers = [1];
+    for (let p = 1; p <= degree * 2; p++) powers[p] = powers[p - 1] * x;
+    for (let row = 0; row < n; row++) {{
+      rhs[row] += y * powers[row];
+      for (let col = 0; col < n; col++) matrix[row][col] += powers[row + col];
+    }}
+  }}
+  const coeff = solveLinearSystem(matrix, rhs);
+  if (!coeff) return null;
+  const predict = x => coeff.reduce((sum, value, power) => sum + value * Math.pow(x, power), 0);
+  const summary = degree === 1
+    ? `linear: y=${{fmt(coeff[1])}}x + ${{fmt(coeff[0])}}`
+    : `quadratic: y=${{fmt(coeff[2])}}x^2 + ${{fmt(coeff[1])}}x + ${{fmt(coeff[0])}}`;
+  return {{predict, summary, coeff}};
+}}
+
+function gaussianMomentFit(xs, ys) {{
+  const baseline = Math.min(...ys);
+  let weightSum = 0, meanSum = 0, peak = 0;
+  for (let i = 0; i < xs.length; i++) {{
+    const weight = Math.max(0, ys[i] - baseline);
+    weightSum += weight;
+    meanSum += weight * xs[i];
+    if (ys[i] > peak) peak = ys[i];
+  }}
+  if (weightSum <= 0) return null;
+  const mean = meanSum / weightSum;
+  let variance = 0;
+  for (let i = 0; i < xs.length; i++) {{
+    const weight = Math.max(0, ys[i] - baseline);
+    variance += weight * Math.pow(xs[i] - mean, 2);
+  }}
+  const sigma = Math.sqrt(variance / weightSum);
+  if (!Number.isFinite(sigma) || sigma <= 0) return null;
+  const amplitude = peak - baseline;
+  const predict = x => baseline + amplitude * Math.exp(-0.5 * Math.pow((x - mean) / sigma, 2));
+  return {{
+    predict,
+    summary: `Gaussian: mu=${{fmt(mean)}}, sigma=${{fmt(sigma)}}, A=${{fmt(amplitude)}}`
+  }};
+}}
+
+function solveLinearSystem(matrix, rhs) {{
+  const n = rhs.length;
+  const a = matrix.map((row, i) => row.concat(rhs[i]));
+  for (let col = 0; col < n; col++) {{
+    let pivot = col;
+    for (let row = col + 1; row < n; row++) {{
+      if (Math.abs(a[row][col]) > Math.abs(a[pivot][col])) pivot = row;
+    }}
+    if (Math.abs(a[pivot][col]) < 1e-12) return null;
+    [a[col], a[pivot]] = [a[pivot], a[col]];
+    const scale = a[col][col];
+    for (let j = col; j <= n; j++) a[col][j] /= scale;
+    for (let row = 0; row < n; row++) {{
+      if (row === col) continue;
+      const factor = a[row][col];
+      for (let j = col; j <= n; j++) a[row][j] -= factor * a[col][j];
+    }}
+  }}
+  return a.map(row => row[n]);
 }}
 
 function savePng() {{
@@ -2238,6 +2530,7 @@ function updateActiveStats() {{
   el("selectedCount").textContent = stats.selected.toLocaleString();
   el("meanX").textContent = fmt(stats.meanX);
   el("meanY").textContent = fmt(stats.meanY);
+  el("fitSummary").textContent = currentPanel().fitSummary || "No fit";
 }}
 
 function renderPreview(mask) {{
