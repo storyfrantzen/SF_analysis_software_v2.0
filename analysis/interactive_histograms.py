@@ -997,6 +997,10 @@ th:first-child, td:first-child {{ text-align: left; }}
       <label><span>Y min</span><input id="ymin" type="number" step="any"></label>
       <label><span>Y max</span><input id="ymax" type="number" step="any"></label>
     </div>
+    <div class="row">
+      <label><span>X ticks <span id="xtickValue"></span></span><input id="xticks" type="range" min="2" max="12" value="6"></label>
+      <label><span>Y ticks <span id="ytickValue"></span></span><input id="yticks" type="range" min="2" max="12" value="6"></label>
+    </div>
     <div class="chips">
       <label class="chip"><input id="logz" type="checkbox"> log color</label>
       <label class="chip"><input id="density" type="checkbox"> density</label>
@@ -1016,6 +1020,9 @@ th:first-child, td:first-child {{ text-align: left; }}
     <div class="segmented">
       <button type="button" id="resetFilters">Reset filters</button>
       <button type="button" id="resetRanges">Reset axes</button>
+    </div>
+    <div class="segmented">
+      <button type="button" id="savePng">Save PNG</button>
     </div>
   </aside>
   <section>
@@ -1096,6 +1103,8 @@ function makePanel(key, xvar, yvar) {{
     splitVar: "",
     xbins: 80,
     ybins: 80,
+    xticks: 6,
+    yticks: 6,
     xmin: xInfo.min,
     xmax: xInfo.max,
     ymin: yInfo.min,
@@ -1214,7 +1223,7 @@ function renderTextFilters() {{
 }}
 
 function attachEvents() {{
-  ["y2var","splitVar","xbins","ybins","xmin","xmax","ymin","ymax","logz","density"].forEach(id => {{
+  ["y2var","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density"].forEach(id => {{
     el(id).addEventListener("input", () => {{ readControlsToPanel(); update(); }});
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
@@ -1227,6 +1236,7 @@ function attachEvents() {{
   el("addRange").addEventListener("click", addRangeFilter);
   el("resetFilters").addEventListener("click", resetFilters);
   el("resetRanges").addEventListener("click", () => {{ resetAxisRanges(currentPanel()); syncControlsFromPanel(); update(); }});
+  el("savePng").addEventListener("click", savePng);
   document.querySelectorAll("input[data-filter], input[data-text-filter]").forEach(input => input.addEventListener("input", update));
   for (const key of panelKeys) {{
     el("plot" + key).addEventListener("mousemove", event => showHoverInfo(event, key));
@@ -1252,6 +1262,10 @@ function syncControlsFromPanel() {{
   fillSectorSelect(panel.splitVar);
   el("xbins").value = panel.xbins;
   el("ybins").value = panel.ybins;
+  el("xticks").value = panel.xticks;
+  el("yticks").value = panel.yticks;
+  el("xtickValue").textContent = panel.xticks;
+  el("ytickValue").textContent = panel.yticks;
   el("xmin").value = panel.xmin;
   el("xmax").value = panel.xmax;
   el("ymin").value = panel.ymin;
@@ -1277,6 +1291,10 @@ function readControlsToPanel() {{
   panel.splitVar = el("splitVar").value;
   panel.xbins = clamp(Number(el("xbins").value) || 80, 5, 400);
   panel.ybins = clamp(Number(el("ybins").value) || 80, 5, 300);
+  panel.xticks = clamp(Number(el("xticks").value) || 6, 2, 12);
+  panel.yticks = clamp(Number(el("yticks").value) || 6, 2, 12);
+  el("xtickValue").textContent = panel.xticks;
+  el("ytickValue").textContent = panel.yticks;
   panel.xmin = parseNumber(el("xmin").value);
   panel.xmax = parseNumber(el("xmax").value);
   panel.ymin = parseNumber(el("ymin").value);
@@ -1451,7 +1469,7 @@ function colors() {{
   }};
 }}
 
-function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel) {{
+function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel, xTickCount, yTickCount) {{
   const c = colors();
   const pw = area.width - area.left - area.right;
   const ph = area.height - area.top - area.bottom;
@@ -1461,7 +1479,7 @@ function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel) {{
   ctx.strokeStyle = c.border;
   ctx.fillStyle = c.muted;
   ctx.textBaseline = "middle";
-  for (const tick of niceTicks(xMin, xMax, 6)) {{
+  for (const tick of niceTicks(xMin, xMax, xTickCount)) {{
     const x = area.left + (tick - xMin) / (xMax - xMin) * pw;
     ctx.beginPath();
     ctx.moveTo(x, area.top);
@@ -1470,7 +1488,7 @@ function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel) {{
     ctx.textAlign = "center";
     ctx.fillText(fmt(tick), x, area.top + ph + 20);
   }}
-  for (const tick of niceTicks(yMin, yMax, 6)) {{
+  for (const tick of niceTicks(yMin, yMax, yTickCount)) {{
     const y = area.top + ph - (tick - yMin) / (yMax - yMin) * ph;
     ctx.beginPath();
     ctx.moveTo(area.left - 5, y);
@@ -1536,7 +1554,7 @@ function draw1d(panel, mask) {{
     const x1 = left + (i + 1) / bins * pw;
     ctx.fillRect(x0, top + ph - barH, Math.max(1, x1 - x0 - 1), barH);
   }}
-  drawAxes(ctx, area, xMin, xMax, 0, maxCount, byName[xName].label, panel.density ? "density" : "counts");
+  drawAxes(ctx, area, xMin, xMax, 0, maxCount, byName[xName].label, panel.density ? "density" : "counts", panel.xticks, panel.yticks);
   panel.lastPlot = {{
     mode: "1d", area, xName, xMin, xMax, bins, counts,
     selected, density: panel.density, yMax: maxCount
@@ -1632,7 +1650,7 @@ function draw2d(panel, mask) {{
     ctx.restore();
   }}
   const yAxisLabel = y2Name ? `${{byName[yName].label}} / ${{byName[y2Name].label}}` : byName[yName].label;
-  drawAxes(ctx, area, xMin, xMax, yMin, yMax, byName[xName].label, yAxisLabel);
+  drawAxes(ctx, area, xMin, xMax, yMin, yMax, byName[xName].label, yAxisLabel, panel.xticks, panel.yticks);
   if (y2Name) drawOverlayLegend(ctx, area, byName[yName].label, byName[y2Name].label);
   panel.lastPlot = {{
     mode: "2d", area, xName, yName, y2Name, xMin, xMax, yMin, yMax,
@@ -1690,7 +1708,7 @@ function draw1dFacets(panel, mask, splitName) {{
       const x1 = facetAreaInfo.left + (i + 1) / bins * pw;
       ctx.fillRect(x0, facetAreaInfo.top + ph - barH, Math.max(1, x1 - x0 - 1), barH);
     }}
-    drawAxes(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, byName[xName].label, panel.density ? "density" : "counts");
+    drawAxes(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, byName[xName].label, panel.density ? "density" : "counts", panel.xticks, panel.yticks);
     drawFacetTitle(ctx, facetAreaInfo, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
     facet.area = facetAreaInfo;
   }}
@@ -1802,7 +1820,7 @@ function draw2dFacets(panel, mask, splitName) {{
       ctx.restore();
     }}
     const yAxisLabel = y2Name ? `${{byName[yName].label}} / ${{byName[y2Name].label}}` : byName[yName].label;
-    drawAxes(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, byName[xName].label, yAxisLabel);
+    drawAxes(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, byName[xName].label, yAxisLabel, panel.xticks, panel.yticks);
     if (y2Name && index === 0) drawOverlayLegend(ctx, facetAreaInfo, byName[yName].label, byName[y2Name].label);
     drawFacetTitle(ctx, facetAreaInfo, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
     facet.area = facetAreaInfo;
@@ -1870,6 +1888,73 @@ function drawOverlayLegend(ctx, area, primaryLabel, overlayLabel) {{
   ctx.fillStyle = c.fg;
   ctx.fillText(overlayLabel, x + 15, y);
   ctx.restore();
+}}
+
+function savePng() {{
+  update();
+  const keys = visiblePanelKeys();
+  const plots = keys.map(key => ({{
+    key,
+    canvas: el("plot" + key),
+    title: `Panel ${{key}}`,
+    summary: el("panelSummary" + key).textContent || ""
+  }}));
+  if (!plots.length) return;
+  const horizontal = compareMode && plots.length > 1;
+  const pad = 28;
+  const gap = 24;
+  const header = 48;
+  const width = horizontal
+    ? plots.reduce((sum, plot) => sum + plot.canvas.width, 0) + gap * (plots.length - 1) + pad * 2
+    : Math.max(...plots.map(plot => plot.canvas.width)) + pad * 2;
+  const height = horizontal
+    ? Math.max(...plots.map(plot => plot.canvas.height)) + header + pad * 2
+    : plots.reduce((sum, plot) => sum + plot.canvas.height + header, 0) + gap * (plots.length - 1) + pad * 2;
+  const output = document.createElement("canvas");
+  output.width = Math.max(1, width);
+  output.height = Math.max(1, height);
+  const ctx = output.getContext("2d");
+  const c = colors();
+  const bodyStyle = getComputedStyle(document.body);
+  ctx.fillStyle = bodyStyle.backgroundColor || c.bg || "white";
+  ctx.fillRect(0, 0, output.width, output.height);
+  ctx.fillStyle = c.fg;
+  ctx.strokeStyle = c.border;
+  ctx.font = "22px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  let x = pad;
+  let y = pad;
+  for (const plot of plots) {{
+    ctx.fillStyle = c.fg;
+    ctx.font = "22px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+    ctx.fillText(plot.title, x, y + 18);
+    ctx.fillStyle = c.muted;
+    ctx.font = "16px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+    ctx.fillText(plot.summary, x, y + 40);
+    ctx.drawImage(plot.canvas, x, y + header);
+    ctx.strokeStyle = c.border;
+    ctx.strokeRect(x + 0.5, y + header + 0.5, plot.canvas.width - 1, plot.canvas.height - 1);
+    if (horizontal) x += plot.canvas.width + gap;
+    else y += plot.canvas.height + header + gap;
+  }}
+  output.toBlob(blob => {{
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${{safeFilename(payload.title)}}.png`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }}, "image/png");
+}}
+
+function safeFilename(value) {{
+  const cleaned = String(value || "histograms")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return cleaned || "histograms";
 }}
 
 function niceTicks(min, max, target) {{
