@@ -134,9 +134,10 @@ supports 1D histograms, 2D histograms, detector/pass-flag toggles, text filters,
 arbitrary numeric range filters, and a two-panel comparison mode for placing
 independent histograms side by side under the same filters. Axis tick-count
 sliders adjust every displayed axis, and the visible display can be saved as a
-PNG. In 2D mode, an optional overlay-Y variable can be drawn on the same axes
-with a distinct color map for direct within-panel comparisons. Selected ROOT
-inputs expose the richest set of reconstruction filters, including `pDet`, `passFiducial`,
+PNG. In 1D mode, an optional overlay-X variable can be drawn on the same axes;
+in 2D mode, an optional overlay-Y variable can be drawn on the same axes with a
+distinct color map for direct within-panel comparisons. Selected ROOT inputs
+expose the richest set of reconstruction filters, including `pDet`, `passFiducial`,
 `passSamplingFraction`, `passExclusivity`, and selected-particle kinematics
 such as `protonTheta`, so plots like `theta_p` vs `-t` can be explored directly.
 The `passSamplingFraction` flag is labeled as a cut result; selected ROOT inputs
