@@ -115,6 +115,7 @@ struct CandidateOutput {
     std::vector<int> selectedIdx;
     std::vector<int> selectedPid;
     std::vector<int> selectedDet;
+    std::vector<int> selectedSector;
     std::vector<double> selectedP;
     std::vector<double> selectedTheta;
     std::vector<double> selectedPhi;
@@ -139,6 +140,10 @@ struct CandidateOutput {
     int eppi0_pDet = -999;
     int eppi0_g1Det = -999;
     int eppi0_g2Det = -999;
+    int eppi0_eSector = -999;
+    int eppi0_pSector = -999;
+    int eppi0_g1Sector = -999;
+    int eppi0_g2Sector = -999;
     int eppi0_passFiducial = 0;
     int eppi0_passSamplingFraction = 0;
     int eppi0_passExclusivity = 0;
@@ -182,6 +187,7 @@ struct CandidateOutput {
         tree.Branch("selectedIdx", &selectedIdx);
         tree.Branch("selectedPid", &selectedPid);
         tree.Branch("selectedDet", &selectedDet);
+        tree.Branch("selectedSector", &selectedSector);
         tree.Branch("selectedP", &selectedP);
         tree.Branch("selectedTheta", &selectedTheta);
         tree.Branch("selectedPhi", &selectedPhi);
@@ -208,6 +214,10 @@ struct CandidateOutput {
         tree.Branch("pDet", &eppi0_pDet, "pDet/I");
         tree.Branch("g1Det", &eppi0_g1Det, "g1Det/I");
         tree.Branch("g2Det", &eppi0_g2Det, "g2Det/I");
+        tree.Branch("eSector", &eppi0_eSector, "eSector/I");
+        tree.Branch("pSector", &eppi0_pSector, "pSector/I");
+        tree.Branch("g1Sector", &eppi0_g1Sector, "g1Sector/I");
+        tree.Branch("g2Sector", &eppi0_g2Sector, "g2Sector/I");
         tree.Branch("passFiducial", &eppi0_passFiducial, "passFiducial/I");
         tree.Branch("passSamplingFraction", &eppi0_passSamplingFraction, "passSamplingFraction/I");
         tree.Branch("passExclusivity", &eppi0_passExclusivity, "passExclusivity/I");
@@ -259,6 +269,7 @@ void fillSelectedParticleBranches(const Selection& selection,
             out.selectedIdx.push_back(particle->particleIdx);
             out.selectedPid.push_back(particle->pid);
             out.selectedDet.push_back(particle->det);
+            out.selectedSector.push_back(particle->sector);
             out.selectedP.push_back(particle->p);
             out.selectedTheta.push_back(particle->theta);
             out.selectedPhi.push_back(particle->phi);
@@ -405,6 +416,10 @@ void runEppi0Logic(const Selection& selection,
     out.eppi0_pDet = p.det;
     out.eppi0_g1Det = g1.det;
     out.eppi0_g2Det = g2.det;
+    out.eppi0_eSector = e.sector;
+    out.eppi0_pSector = p.sector;
+    out.eppi0_g1Sector = g1.sector;
+    out.eppi0_g2Sector = g2.sector;
     const CutDecision fiducial = cuts.evaluateFiducial(e);
     CutDecision fiducialP = cuts.evaluateFiducial(p);
     CutDecision fiducialG1 = cuts.evaluateFiducial(g1);

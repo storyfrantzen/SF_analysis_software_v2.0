@@ -20,6 +20,7 @@ ROOT_VECTOR_BRANCHES = (
     "selectedIdx",
     "selectedPid",
     "selectedDet",
+    "selectedSector",
     "selectedP",
     "selectedTheta",
     "selectedPhi",
@@ -45,6 +46,14 @@ ROOT_PREFERRED_BRANCHES = (
     "pDet",
     "g1Det",
     "g2Det",
+    "eIdx",
+    "pIdx",
+    "g1Idx",
+    "g2Idx",
+    "eSector",
+    "pSector",
+    "g1Sector",
+    "g2Sector",
     "passFiducial",
     "passSamplingFraction",
     "passExclusivity",
@@ -158,7 +167,19 @@ GEN_OBJECT_FIELDS = (
 REDUNDANT_COLUMNS = (
     ("electronIdx", "eIdx"),
     ("electronDet", "eDet"),
+    ("eSector", "electronSector"),
+    ("protonIdx", "pIdx"),
     ("protonDet", "pDet"),
+    ("protonSector", "pSector"),
+    ("gammaIdx", "gamma1Idx"),
+    ("gammaDet", "gamma1Det"),
+    ("gammaSector", "gamma1Sector"),
+    ("gamma1Idx", "g1Idx"),
+    ("gamma2Idx", "g2Idx"),
+    ("gamma1Det", "g1Det"),
+    ("gamma2Det", "g2Det"),
+    ("gamma1Sector", "g1Sector"),
+    ("gamma2Sector", "g2Sector"),
     ("rec_proton_detector", "pDet"),
 )
 
@@ -201,10 +222,27 @@ DISPLAY_NAMES = {
     "rec_electronSamplingFractionECIN": "REC electron SF ECIN",
     "rec_electronSamplingFractionECOUT": "REC electron SF ECOUT",
     "rec_electronSamplingFractionECAL": "REC electron SF ECAL",
+    "eIdx": "electron index",
+    "pIdx": "proton index",
+    "g1Idx": "gamma 1 index",
+    "g2Idx": "gamma 2 index",
+    "eSector": "electron sector",
+    "pSector": "proton sector",
+    "g1Sector": "gamma 1 sector",
+    "g2Sector": "gamma 2 sector",
     "protonTheta": "theta_p",
     "protonTheta_deg": "theta_p deg",
     "protonP": "p_p",
+    "protonIdx": "proton index",
+    "protonSector": "proton sector",
+    "gammaIdx": "gamma index",
+    "gammaSector": "gamma sector",
+    "gamma1Idx": "gamma 1 index",
+    "gamma1Sector": "gamma 1 sector",
+    "gamma2Idx": "gamma 2 index",
+    "gamma2Sector": "gamma 2 sector",
     "electronTheta_deg": "theta_e deg",
+    "electronIdx": "electron index",
     "pi0_theta_deg": "theta_pi0 deg",
     "rec_pid": "REC pid",
     "rec_det": "REC detector",
@@ -465,32 +503,54 @@ def extract_selected_particle_quantities(raw: dict[str, Any]) -> dict[str, np.nd
     roles = raw["selectedRoles"]
     size = len(roles)
     output: dict[str, np.ndarray] = {}
-    for role in ("electron", "proton", "gamma"):
+    for role in ("electron", "proton", "gamma", "gamma1", "gamma2"):
+        output[f"{role}Idx"] = np.full(size, -999, dtype=np.int64)
         output[f"{role}P"] = np.full(size, np.nan, dtype=float)
         output[f"{role}Theta"] = np.full(size, np.nan, dtype=float)
         output[f"{role}Phi"] = np.full(size, np.nan, dtype=float)
         output[f"{role}Det"] = np.full(size, -999, dtype=np.int64)
+        output[f"{role}Sector"] = np.full(size, -999, dtype=np.int64)
+    selected_idx = raw.get("selectedIdx")
     selected_det = raw.get("selectedDet")
+    selected_sector = raw.get("selectedSector")
     for row in range(size):
         row_roles = vector_to_list(roles[row])
+        row_idx = vector_to_list(selected_idx[row]) if selected_idx is not None else []
         row_p = vector_to_list(raw["selectedP"][row])
         row_theta = vector_to_list(raw["selectedTheta"][row])
         row_phi = vector_to_list(raw["selectedPhi"][row])
         row_det = vector_to_list(selected_det[row]) if selected_det is not None else []
-        seen: set[str] = set()
+        row_sector = vector_to_list(selected_sector[row]) if selected_sector is not None else []
+        seen: dict[str, int] = {}
         for index, role_value in enumerate(row_roles):
             role = str(role_value)
-            if role not in ("electron", "proton", "gamma") or role in seen:
+            if role not in ("electron", "proton", "gamma"):
                 continue
-            seen.add(role)
-            if index < len(row_p):
-                output[f"{role}P"][row] = as_float(row_p[index])
-            if index < len(row_theta):
-                output[f"{role}Theta"][row] = as_float(row_theta[index])
-            if index < len(row_phi):
-                output[f"{role}Phi"][row] = as_float(row_phi[index])
-            if index < len(row_det):
-                output[f"{role}Det"][row] = int(as_float(row_det[index]))
+            count = seen.get(role, 0) + 1
+            seen[role] = count
+            output_roles = [role]
+            if role == "gamma":
+                if count == 1:
+                    output_roles.append("gamma1")
+                elif count == 2:
+                    output_roles = ["gamma2"]
+                else:
+                    continue
+            elif count > 1:
+                continue
+            for output_role in output_roles:
+                if index < len(row_idx):
+                    output[f"{output_role}Idx"][row] = int(as_float(row_idx[index]))
+                if index < len(row_p):
+                    output[f"{output_role}P"][row] = as_float(row_p[index])
+                if index < len(row_theta):
+                    output[f"{output_role}Theta"][row] = as_float(row_theta[index])
+                if index < len(row_phi):
+                    output[f"{output_role}Phi"][row] = as_float(row_phi[index])
+                if index < len(row_det):
+                    output[f"{output_role}Det"][row] = int(as_float(row_det[index]))
+                if index < len(row_sector):
+                    output[f"{output_role}Sector"][row] = int(as_float(row_sector[index]))
     return output
 
 
@@ -785,6 +845,14 @@ def sort_key(name: str) -> tuple[int, str]:
         "rec_passFiducial",
         "rec_passSamplingFraction",
         "rec_passExclusivity",
+        "electronSector",
+        "pSector",
+        "g1Sector",
+        "g2Sector",
+        "eIdx",
+        "pIdx",
+        "g1Idx",
+        "g2Idx",
         "rec_trento_phi",
         "gen_trento_phi",
         "m_gg",
@@ -812,7 +880,10 @@ def categorical_filter_info(name: str, values: np.ndarray) -> dict[str, Any] | N
         unique = np.unique(finite.astype(np.int64))
     else:
         unique = np.unique(finite)
-    if 1 < unique.size <= 12 and (integers or is_pass_flag(name) or name.endswith("Det")):
+    max_categories = 40 if is_index_column(name) else 12
+    if 1 < unique.size <= max_categories and (
+        integers or is_pass_flag(name) or name.endswith("Det") or is_index_column(name)
+    ):
         labels = [category_label(name, item) for item in unique.tolist()]
         return {
             "name": name,
@@ -827,7 +898,8 @@ def category_label(name: str, value: Any) -> str:
     if name in {"pDet", "rec_proton_detector", "protonDet"}:
         return {1: "FD", 2: "CD", 0: "FT", -999: "missing"}.get(int(value), str(value))
     if "sector" in name.lower():
-        return f"sector {int(value)}"
+        sector = int(value)
+        return "missing" if sector < 0 else f"sector {sector}"
     if is_pass_flag(name) or name in {"rec_selected", "rec_not_selected"}:
         flag = int(value)
         if flag == 1:
@@ -840,6 +912,10 @@ def category_label(name: str, value: Any) -> str:
 
 def is_pass_flag(name: str) -> bool:
     return name.startswith("pass") or name.startswith("rec_pass")
+
+
+def is_index_column(name: str) -> bool:
+    return name.endswith("Idx") or name.endswith("Index")
 
 
 def label_for(name: str) -> str:

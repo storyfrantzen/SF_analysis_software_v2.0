@@ -143,6 +143,9 @@ linear, or quadratic fits where applicable. Selected ROOT inputs
 expose the richest set of reconstruction filters, including `pDet`, `passFiducial`,
 `passSamplingFraction`, `passExclusivity`, and selected-particle kinematics
 such as `protonTheta`, so plots like `theta_p` vs `-t` can be explored directly.
+Newly post-processed selected files also expose selected-particle indices and
+sectors, including `pIdx`, `g1Idx`, `g2Idx`, `pSector`, `g1Sector`, and
+`g2Sector`, so proton and photon selections can be filtered like the electron.
 The `passSamplingFraction` flag is labeled as a cut result; selected ROOT inputs
 also derive total and PCAL/ECIN/ECOUT electron sampling fractions from the stored
 calorimeter energies divided by `electronP`.
