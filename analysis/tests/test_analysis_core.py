@@ -40,6 +40,7 @@ from run_analysis import (
     _read_generator_integrated_cross_section,
     _read_generator_normalization_summary,
 )
+from build_event_sample import reconstructed_columns
 
 
 class BinningTests(unittest.TestCase):
@@ -218,6 +219,25 @@ class EventSampleTests(unittest.TestCase):
         np.testing.assert_array_equal(joined["rec_selected"], [True, False])
         self.assertTrue(np.isnan(joined["rec_Q2"][1]))
         np.testing.assert_allclose(joined["gen_weight"], [1.0, 1.0])
+
+    def test_reconstructed_columns_keep_extra_selected_scalars(self) -> None:
+        rec = {
+            "runNum": np.array([11, 11]),
+            "eventNum": np.array([10, 11]),
+            "sourceFileId": np.array([1001, 1001], dtype=np.uint64),
+            "sourceEventIndex": np.array([0, 1], dtype=np.uint64),
+            "Q2": np.array([1.5, 1.6]),
+            "t": np.array([0.3, 0.4]),
+            "passSamplingFraction": np.array([1, 0]),
+            "electronP": np.array([3.0, 3.2]),
+        }
+        values = reconstructed_columns(rec, list(rec))
+        self.assertNotIn("rec_runNum", values)
+        self.assertNotIn("rec_sourceFileId", values)
+        np.testing.assert_allclose(values["rec_Q2"], [1.5, 1.6])
+        np.testing.assert_allclose(values["rec_minus_t"], [0.3, 0.4])
+        np.testing.assert_array_equal(values["rec_passSamplingFraction"], [1, 0])
+        np.testing.assert_allclose(values["rec_electronP"], [3.0, 3.2])
 
 
 class ExclusivityTests(unittest.TestCase):

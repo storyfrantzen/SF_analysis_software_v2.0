@@ -42,25 +42,24 @@ GENERATED_EVENT_COLUMNS = [
     "weight",
 ]
 
-REC_COLUMNS = [
-    "runNum",
-    "eventNum",
-    "Q2",
-    "xB",
-    "t",
-    "trentoPhi",
-    "pDet",
-    "m_gg",
-    "m2_miss",
-    "m2_epX",
-    "m_eggX",
-    "E_miss",
-    "pT_miss",
-]
-
-OPTIONAL_REC_COLUMNS = ["t_pi0"]
-
 REC_SOURCE_COLUMNS = ["sourceFileId", "sourceEventIndex"]
+
+REC_KEY_COLUMNS = {"runNum", "eventNum", *REC_SOURCE_COLUMNS}
+
+REC_COLUMN_ALIASES = {
+    "Q2": "rec_Q2",
+    "xB": "rec_xB",
+    "t": "rec_minus_t",
+    "t_pi0": "rec_minus_t_pi0",
+    "trentoPhi": "rec_trento_phi",
+    "pDet": "rec_proton_detector",
+    "m_gg": "rec_m_gg",
+    "m2_miss": "rec_m2_miss",
+    "m2_epX": "rec_m2_epX",
+    "m_eggX": "rec_m_eggX",
+    "E_miss": "rec_E_miss",
+    "pT_miss": "rec_pT_miss",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -146,29 +145,17 @@ def main() -> int:
     if not selected_tree:
         raise RuntimeError(f"Could not find tree {args.tree} in {selected_path}")
     has_source_key = all(selected_tree.GetBranch(name) for name in REC_SOURCE_COLUMNS)
-    optional_rec_columns = [
-        name for name in OPTIONAL_REC_COLUMNS if selected_tree.GetBranch(name)
-    ]
+    requested_rec_columns = scalar_branch_names(selected_tree)
     selected_file.Close()
-    requested_rec_columns = REC_COLUMNS + optional_rec_columns + (
-        REC_SOURCE_COLUMNS if has_source_key else []
-    )
+    missing_keys = [name for name in ("runNum", "eventNum") if name not in requested_rec_columns]
+    if missing_keys:
+        raise RuntimeError(f"Selected tree is missing required branches: {missing_keys}")
+    if has_source_key:
+        for name in REC_SOURCE_COLUMNS:
+            if name not in requested_rec_columns:
+                requested_rec_columns.append(name)
     rec = ROOT.RDataFrame(args.tree, selected_path).AsNumpy(requested_rec_columns)
-    rec_values = {
-        "rec_Q2": rec["Q2"],
-        "rec_xB": rec["xB"],
-        "rec_minus_t": rec["t"],
-        "rec_trento_phi": rec["trentoPhi"],
-        "rec_proton_detector": rec["pDet"],
-        "rec_m_gg": rec["m_gg"],
-        "rec_m2_miss": rec["m2_miss"],
-        "rec_m2_epX": rec["m2_epX"],
-        "rec_m_eggX": rec["m_eggX"],
-        "rec_E_miss": rec["E_miss"],
-        "rec_pT_miss": rec["pT_miss"],
-    }
-    if "t_pi0" in rec:
-        rec_values["rec_minus_t_pi0"] = rec["t_pi0"]
+    rec_values = reconstructed_columns(rec, requested_rec_columns)
     sample = join_reconstructed(
         generated,
         rec["runNum"],
@@ -184,14 +171,42 @@ def main() -> int:
         "selected_root": str(args.selected_root.resolve()),
         "generated_events": int(generated.run.size),
         "selected_reconstructed_events": int(sample["rec_selected"].sum()),
-        "schema_version": 2,
+        "reconstructed_columns": sorted(rec_values),
+        "schema_version": 3,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(args.output, **sample, metadata_json=json.dumps(metadata, sort_keys=True))
     print(f"Generated events: {generated.run.size}")
     print(f"Selected REC matches: {sample['rec_selected'].sum()}")
+    print(f"REC variables carried: {len(rec_values)}")
     print(f"Wrote {args.output}")
     return 0
+
+
+def scalar_branch_names(tree) -> list[str]:
+    names: list[str] = []
+    for branch in tree.GetListOfBranches():
+        name = branch.GetName()
+        class_name = str(branch.GetClassName() or "")
+        if class_name:
+            continue
+        leaves = branch.GetListOfLeaves()
+        if not leaves or leaves.GetEntries() != 1:
+            continue
+        names.append(name)
+    return names
+
+
+def reconstructed_columns(rec: dict[str, np.ndarray], columns: list[str]) -> dict[str, np.ndarray]:
+    output: dict[str, np.ndarray] = {}
+    for name in columns:
+        if name in REC_KEY_COLUMNS:
+            continue
+        if name not in rec:
+            continue
+        output_name = REC_COLUMN_ALIASES.get(name, f"rec_{name}")
+        output.setdefault(output_name, rec[name])
+    return output
 
 
 if __name__ == "__main__":

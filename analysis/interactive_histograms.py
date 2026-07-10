@@ -188,11 +188,19 @@ DISPLAY_NAMES = {
     "passFiducial": "fiducial",
     "passSamplingFraction": "passes SF cut",
     "passExclusivity": "loose exclusivity",
+    "rec_passFiducial": "REC fiducial",
+    "rec_passSamplingFraction": "REC passes SF cut",
+    "rec_passExclusivity": "REC loose exclusivity",
     "electronSamplingFraction": "electron SF",
     "electronSamplingFractionPCAL": "electron SF PCAL",
     "electronSamplingFractionECIN": "electron SF ECIN",
     "electronSamplingFractionECOUT": "electron SF ECOUT",
     "electronSamplingFractionECAL": "electron SF ECAL",
+    "rec_electronSamplingFraction": "REC electron SF",
+    "rec_electronSamplingFractionPCAL": "REC electron SF PCAL",
+    "rec_electronSamplingFractionECIN": "REC electron SF ECIN",
+    "rec_electronSamplingFractionECOUT": "REC electron SF ECOUT",
+    "rec_electronSamplingFractionECAL": "REC electron SF ECAL",
     "protonTheta": "theta_p",
     "protonTheta_deg": "theta_p deg",
     "protonP": "p_p",
@@ -540,30 +548,35 @@ def add_derived_quantities(arrays: dict[str, Any]) -> dict[str, Any]:
         derived["pDet"] = derived["rec_proton_detector"]
     if "rec_selected" in derived:
         derived["rec_not_selected"] = ~np.asarray(derived["rec_selected"], dtype=bool)
-    add_sampling_fraction_quantities(derived)
+    add_sampling_fraction_quantities(derived, "")
+    add_sampling_fraction_quantities(derived, "rec_")
     return derived
 
 
-def add_sampling_fraction_quantities(arrays: dict[str, Any]) -> None:
-    if "electronP" not in arrays:
+def add_sampling_fraction_quantities(arrays: dict[str, Any], prefix: str) -> None:
+    momentum_name = f"{prefix}electronP"
+    if momentum_name not in arrays:
         return
-    momentum = np.asarray(arrays["electronP"], dtype=float)
-    pcal = np.asarray(arrays["electronEPCAL"], dtype=float) if "electronEPCAL" in arrays else None
-    ecin = np.asarray(arrays["electronEECIN"], dtype=float) if "electronEECIN" in arrays else None
-    ecout = np.asarray(arrays["electronEECOUT"], dtype=float) if "electronEECOUT" in arrays else None
+    momentum = np.asarray(arrays[momentum_name], dtype=float)
+    pcal_name = f"{prefix}electronEPCAL"
+    ecin_name = f"{prefix}electronEECIN"
+    ecout_name = f"{prefix}electronEECOUT"
+    pcal = np.asarray(arrays[pcal_name], dtype=float) if pcal_name in arrays else None
+    ecin = np.asarray(arrays[ecin_name], dtype=float) if ecin_name in arrays else None
+    ecout = np.asarray(arrays[ecout_name], dtype=float) if ecout_name in arrays else None
     if pcal is not None:
-        arrays.setdefault("electronSamplingFractionPCAL", safe_ratio(pcal, momentum))
+        arrays.setdefault(f"{prefix}electronSamplingFractionPCAL", safe_ratio(pcal, momentum))
     if ecin is not None:
-        arrays.setdefault("electronSamplingFractionECIN", safe_ratio(ecin, momentum))
+        arrays.setdefault(f"{prefix}electronSamplingFractionECIN", safe_ratio(ecin, momentum))
     if ecout is not None:
-        arrays.setdefault("electronSamplingFractionECOUT", safe_ratio(ecout, momentum))
+        arrays.setdefault(f"{prefix}electronSamplingFractionECOUT", safe_ratio(ecout, momentum))
     parts = [part for part in (pcal, ecin, ecout) if part is not None]
     if parts:
         total = np.zeros_like(momentum, dtype=float)
         for part in parts:
             total = total + part
-        arrays.setdefault("electronSamplingFraction", safe_ratio(total, momentum))
-        arrays.setdefault("electronSamplingFractionECAL", safe_ratio(total, momentum))
+        arrays.setdefault(f"{prefix}electronSamplingFraction", safe_ratio(total, momentum))
+        arrays.setdefault(f"{prefix}electronSamplingFractionECAL", safe_ratio(total, momentum))
 
 
 def safe_ratio(numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
@@ -764,6 +777,14 @@ def sort_key(name: str) -> tuple[int, str]:
         "electronSamplingFractionECIN",
         "electronSamplingFractionECOUT",
         "passSamplingFraction",
+        "rec_electronSamplingFraction",
+        "rec_electronSamplingFractionECAL",
+        "rec_electronSamplingFractionPCAL",
+        "rec_electronSamplingFractionECIN",
+        "rec_electronSamplingFractionECOUT",
+        "rec_passFiducial",
+        "rec_passSamplingFraction",
+        "rec_passExclusivity",
         "rec_trento_phi",
         "gen_trento_phi",
         "m_gg",
@@ -791,7 +812,7 @@ def categorical_filter_info(name: str, values: np.ndarray) -> dict[str, Any] | N
         unique = np.unique(finite.astype(np.int64))
     else:
         unique = np.unique(finite)
-    if 1 < unique.size <= 12 and (integers or name.startswith("pass") or name.endswith("Det")):
+    if 1 < unique.size <= 12 and (integers or is_pass_flag(name) or name.endswith("Det")):
         labels = [category_label(name, item) for item in unique.tolist()]
         return {
             "name": name,
@@ -807,9 +828,18 @@ def category_label(name: str, value: Any) -> str:
         return {1: "FD", 2: "CD", 0: "FT", -999: "missing"}.get(int(value), str(value))
     if "sector" in name.lower():
         return f"sector {int(value)}"
-    if name.startswith("pass") or name in {"rec_selected", "rec_not_selected", "passTopology"}:
-        return "pass" if int(value) == 1 else "fail"
+    if is_pass_flag(name) or name in {"rec_selected", "rec_not_selected"}:
+        flag = int(value)
+        if flag == 1:
+            return "pass"
+        if flag == 0:
+            return "fail"
+        return "missing"
     return str(value)
+
+
+def is_pass_flag(name: str) -> bool:
+    return name.startswith("pass") or name.startswith("rec_pass")
 
 
 def label_for(name: str) -> str:
@@ -2212,7 +2242,7 @@ function updateActiveStats() {{
 
 function renderPreview(mask) {{
   const panel = currentPanel();
-  const names = [panel.xvar, panel.mode === "1d" ? panel.x2var : "", panel.mode === "2d" ? panel.yvar : "", panel.mode === "2d" ? panel.y2var : "", "Q2", "xB", "t", "t_pi0", "rec_minus_t", "rec_minus_t_pi0", "pDet", "passFiducial", "passSamplingFraction", "passExclusivity"]
+  const names = [panel.xvar, panel.mode === "1d" ? panel.x2var : "", panel.mode === "2d" ? panel.yvar : "", panel.mode === "2d" ? panel.y2var : "", "Q2", "xB", "t", "t_pi0", "rec_minus_t", "rec_minus_t_pi0", "pDet", "passFiducial", "passSamplingFraction", "passExclusivity", "rec_passFiducial", "rec_passSamplingFraction", "rec_passExclusivity"]
     .filter((name, index, arr) => name && columns[name] && arr.indexOf(name) === index)
     .slice(0, 8);
   const table = el("preview");
