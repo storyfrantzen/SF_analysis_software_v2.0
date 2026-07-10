@@ -204,6 +204,9 @@ DISPLAY_NAMES = {
     "gen_theta_deg": "GEN theta deg",
     "gen_phi": "GEN phi",
     "gen_phi_deg": "GEN phi deg",
+    "electronSector": "electron sector",
+    "rec_sector": "REC sector",
+    "sector": "sector",
 }
 
 
@@ -522,7 +525,10 @@ def add_derived_quantities(arrays: dict[str, Any]) -> dict[str, Any]:
             if values.dtype.kind in "fiu" and finite_fraction(values) > 0:
                 finite = values[np.isfinite(values.astype(float))]
                 if finite.size and np.nanmax(np.abs(finite)) <= 2.0 * math.pi + 1.0e-6:
-                    derived[f"{source}_deg"] = np.asarray(values, dtype=float) * 180.0 / math.pi
+                    degrees = np.asarray(values, dtype=float) * 180.0 / math.pi
+                    if is_wrapped_phi_column_name(source):
+                        degrees = np.mod(degrees, 360.0)
+                    derived[f"{source}_deg"] = degrees
     if "rec_proton_detector" in derived and "pDet" not in derived:
         derived["pDet"] = derived["rec_proton_detector"]
     if "rec_selected" in derived:
@@ -547,6 +553,11 @@ def normalize_visual_columns(arrays: dict[str, Any]) -> dict[str, Any]:
 def is_angle_column_name(name: str) -> bool:
     lower = name.lower()
     return "theta" in lower or "phi" in lower
+
+
+def is_wrapped_phi_column_name(name: str) -> bool:
+    lower = name.lower()
+    return "phi" in lower and "delta" not in lower
 
 
 def finite_fraction(values: np.ndarray) -> float:
@@ -609,6 +620,7 @@ def build_payload(
     encoded_columns: dict[str, Any] = {}
     categorical_filters: list[dict[str, Any]] = []
     text_filters: list[dict[str, Any]] = []
+    sector_splits = sector_split_candidates(arrays)
 
     for name in sorted(arrays, key=sort_key):
         values = arrays[name]
@@ -617,12 +629,14 @@ def build_payload(
             finite = numeric[np.isfinite(numeric)]
             if finite.size == 0:
                 continue
+            display_min = 0.0 if is_wrapped_phi_degree_column(name) else float(np.min(finite))
+            display_max = 360.0 if is_wrapped_phi_degree_column(name) else float(np.max(finite))
             variables.append(
                 {
                     "name": name,
                     "label": label_for(name),
-                    "min": float(np.min(finite)),
-                    "max": float(np.max(finite)),
+                    "min": display_min,
+                    "max": display_max,
                     "mean": float(np.mean(finite)),
                     "finite": int(finite.size),
                 }
@@ -656,9 +670,31 @@ def build_payload(
         "columns": encoded_columns,
         "categoricalFilters": categorical_filters,
         "textFilters": text_filters,
+        "sectorSplits": sector_splits,
         "defaultX": preferred_x,
         "defaultY": preferred_y,
     }
+
+
+def sector_split_candidates(arrays: dict[str, np.ndarray]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for name, values in arrays.items():
+        if "sector" not in name.lower():
+            continue
+        if values.dtype.kind not in "biuf":
+            continue
+        numeric = np.asarray(values, dtype=float)
+        finite = numeric[np.isfinite(numeric)]
+        if finite.size == 0 or not np.all(np.isclose(finite, np.rint(finite))):
+            continue
+        unique = np.unique(finite.astype(np.int64))
+        if unique.size >= 2 and set(unique.tolist()).issubset({1, 2, 3, 4, 5, 6}):
+            candidates.append({"name": name, "label": label_for(name)})
+    return sorted(candidates, key=lambda item: sort_key(str(item["name"])))
+
+
+def is_wrapped_phi_degree_column(name: str) -> bool:
+    return name.endswith("_deg") and is_wrapped_phi_column_name(name[:-4])
 
 
 def sort_key(name: str) -> tuple[int, str]:
@@ -724,6 +760,8 @@ def categorical_filter_info(name: str, values: np.ndarray) -> dict[str, Any] | N
 def category_label(name: str, value: Any) -> str:
     if name in {"pDet", "rec_proton_detector", "protonDet"}:
         return {1: "FD", 2: "CD", 0: "FT", -999: "missing"}.get(int(value), str(value))
+    if "sector" in name.lower():
+        return f"sector {int(value)}"
     if name.startswith("pass") or name in {"rec_selected", "rec_not_selected", "passTopology"}:
         return "pass" if int(value) == 1 else "fail"
     return str(value)
@@ -904,6 +942,7 @@ th:first-child, td:first-child {{ text-align: left; }}
     </div>
     <label id="ylabel">Y <select id="yvar"></select></label>
     <label>X <select id="xvar"></select></label>
+    <label id="splitLabel">Split by sector <select id="splitVar"></select></label>
     <div class="row">
       <label>X bins <input id="xbins" type="number" min="5" max="400" value="80"></label>
       <label>Y bins <input id="ybins" type="number" min="5" max="300" value="80"></label>
@@ -985,6 +1024,23 @@ function fillSelect(select, selected) {{
   select.value = selected;
 }}
 
+function fillSectorSelect() {{
+  const label = el("splitLabel");
+  const select = el("splitVar");
+  select.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "none";
+  select.appendChild(none);
+  for (const split of payload.sectorSplits || []) {{
+    const option = document.createElement("option");
+    option.value = split.name;
+    option.textContent = split.label;
+    select.appendChild(option);
+  }}
+  label.style.display = (payload.sectorSplits || []).length ? "" : "none";
+}}
+
 function init() {{
   document.querySelector("h1").textContent = payload.title;
   el("source").textContent = payload.source;
@@ -995,6 +1051,7 @@ function init() {{
   fillSelect(el("xvar"), payload.defaultX);
   fillSelect(el("yvar"), payload.defaultY);
   fillSelect(el("rangeVar"), payload.defaultX);
+  fillSectorSelect();
   renderCategoryFilters();
   renderTextFilters();
   setMode("2d");
@@ -1047,7 +1104,7 @@ function renderTextFilters() {{
 }}
 
 function attachEvents() {{
-  ["xvar","yvar","xbins","ybins","xmin","xmax","ymin","ymax","logz","density"].forEach(id => el(id).addEventListener("input", update));
+  ["xvar","yvar","splitVar","xbins","ybins","xmin","xmax","ymin","ymax","logz","density"].forEach(id => el(id).addEventListener("input", update));
   el("xvar").addEventListener("change", () => {{ setRangeInputs("x"); update(); }});
   el("yvar").addEventListener("change", () => {{ setRangeInputs("y"); update(); }});
   el("mode1d").addEventListener("click", () => setMode("1d"));
@@ -1248,6 +1305,11 @@ function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel) {{
 }}
 
 function draw1d(mask) {{
+  const splitName = el("splitVar").value;
+  if (splitName) {{
+    draw1dFacets(mask, splitName);
+    return;
+  }}
   const xName = el("xvar").value;
   const x = columns[xName];
   const bins = clamp(Number(el("xbins").value) || 80, 5, 400);
@@ -1290,6 +1352,11 @@ function draw1d(mask) {{
 }}
 
 function draw2d(mask) {{
+  const splitName = el("splitVar").value;
+  if (splitName) {{
+    draw2dFacets(mask, splitName);
+    return;
+  }}
   const xName = el("xvar").value;
   const yName = el("yvar").value;
   const x = columns[xName];
@@ -1343,6 +1410,174 @@ function draw2d(mask) {{
   updateStats(selected, sumX / selected, sumY / selected);
 }}
 
+function draw1dFacets(mask, splitName) {{
+  const xName = el("xvar").value;
+  const x = columns[xName];
+  const split = columns[splitName];
+  const bins = clamp(Number(el("xbins").value) || 80, 5, 400);
+  const xMin = parseNumber(el("xmin").value);
+  const xMax = parseNumber(el("xmax").value);
+  const facets = [];
+  let totalSelected = 0, sumXAll = 0;
+  for (let sector = 1; sector <= 6; sector++) {{
+    const counts = new Float64Array(bins);
+    let selected = 0, sumX = 0;
+    for (let i = 0; i < rowCount; i++) {{
+      const xv = x[i];
+      if (!mask[i] || Math.round(split[i]) !== sector || !Number.isFinite(xv) || xv < xMin || xv > xMax || xMax <= xMin) continue;
+      const bin = Math.min(bins - 1, Math.max(0, Math.floor((xv - xMin) / (xMax - xMin) * bins)));
+      counts[bin] += 1;
+      selected++;
+      sumX += xv;
+    }}
+    totalSelected += selected;
+    sumXAll += sumX;
+    facets.push({{sector, counts, selected}});
+  }}
+  if (el("density").checked) {{
+    for (const facet of facets) {{
+      if (facet.selected === 0) continue;
+      for (let i = 0; i < bins; i++) facet.counts[i] /= facet.selected;
+    }}
+  }}
+  const maxCount = Math.max(1, ...facets.map(f => maxOf(f.counts, 0)));
+  const canvas = el("plot");
+  const area = plotArea(canvas);
+  const {{ctx, width, height}} = area;
+  const c = colors();
+  ctx.clearRect(0, 0, width, height);
+  const layout = facetLayout(area);
+  for (let index = 0; index < facets.length; index++) {{
+    const facet = facets[index];
+    const panel = panelArea(area, layout, index);
+    const pw = panel.width - panel.left - panel.right;
+    const ph = panel.height - panel.top - panel.bottom;
+    ctx.fillStyle = c.mark;
+    for (let i = 0; i < bins; i++) {{
+      const barH = facet.counts[i] / maxCount * ph;
+      const x0 = panel.left + i / bins * pw;
+      const x1 = panel.left + (i + 1) / bins * pw;
+      ctx.fillRect(x0, panel.top + ph - barH, Math.max(1, x1 - x0 - 1), barH);
+    }}
+    drawAxes(ctx, panel, xMin, xMax, 0, maxCount, byName[xName].label, el("density").checked ? "density" : "counts");
+    drawFacetTitle(ctx, panel, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
+    facet.area = panel;
+  }}
+  lastPlot = {{
+    mode: "1d-facet", area, facets, splitName, xName, xMin, xMax, bins,
+    selected: totalSelected, density: el("density").checked
+  }};
+  updateStats(totalSelected, sumXAll / totalSelected, NaN);
+}}
+
+function draw2dFacets(mask, splitName) {{
+  const xName = el("xvar").value;
+  const yName = el("yvar").value;
+  const x = columns[xName];
+  const y = columns[yName];
+  const split = columns[splitName];
+  const xBins = clamp(Number(el("xbins").value) || 80, 5, 400);
+  const yBins = clamp(Number(el("ybins").value) || 80, 5, 300);
+  const xMin = parseNumber(el("xmin").value);
+  const xMax = parseNumber(el("xmax").value);
+  const yMin = parseNumber(el("ymin").value);
+  const yMax = parseNumber(el("ymax").value);
+  const facets = [];
+  let totalSelected = 0, sumXAll = 0, sumYAll = 0;
+  for (let sector = 1; sector <= 6; sector++) {{
+    const counts = new Float64Array(xBins * yBins);
+    let selected = 0, sumX = 0, sumY = 0;
+    for (let i = 0; i < rowCount; i++) {{
+      const xv = x[i], yv = y[i];
+      if (!mask[i] || Math.round(split[i]) !== sector || !Number.isFinite(xv) || !Number.isFinite(yv) || xv < xMin || xv > xMax || yv < yMin || yv > yMax || xMax <= xMin || yMax <= yMin) continue;
+      const xi = Math.min(xBins - 1, Math.max(0, Math.floor((xv - xMin) / (xMax - xMin) * xBins)));
+      const yi = Math.min(yBins - 1, Math.max(0, Math.floor((yv - yMin) / (yMax - yMin) * yBins)));
+      counts[yi * xBins + xi] += 1;
+      selected++;
+      sumX += xv;
+      sumY += yv;
+    }}
+    totalSelected += selected;
+    sumXAll += sumX;
+    sumYAll += sumY;
+    facets.push({{sector, counts, selected}});
+  }}
+  if (el("density").checked) {{
+    for (const facet of facets) {{
+      if (facet.selected === 0) continue;
+      for (let i = 0; i < facet.counts.length; i++) facet.counts[i] /= facet.selected;
+    }}
+  }}
+  const maxCount = Math.max(1, ...facets.map(f => maxOf(f.counts, 0)));
+  const canvas = el("plot");
+  const area = plotArea(canvas);
+  const {{ctx, width, height}} = area;
+  ctx.clearRect(0, 0, width, height);
+  const layout = facetLayout(area);
+  for (let index = 0; index < facets.length; index++) {{
+    const facet = facets[index];
+    const panel = panelArea(area, layout, index);
+    const pw = panel.width - panel.left - panel.right;
+    const ph = panel.height - panel.top - panel.bottom;
+    for (let yi = 0; yi < yBins; yi++) {{
+      for (let xi = 0; xi < xBins; xi++) {{
+        const count = facet.counts[yi * xBins + xi];
+        if (count <= 0) continue;
+        const fraction = el("logz").checked ? Math.log1p(count) / Math.log1p(maxCount) : count / maxCount;
+        ctx.fillStyle = heatColor(fraction);
+        const x0 = panel.left + xi / xBins * pw;
+        const x1 = panel.left + (xi + 1) / xBins * pw;
+        const y0 = panel.top + ph - (yi + 1) / yBins * ph;
+        const y1 = panel.top + ph - yi / yBins * ph;
+        ctx.fillRect(x0, y0, Math.ceil(x1 - x0), Math.ceil(y1 - y0));
+      }}
+    }}
+    drawAxes(ctx, panel, xMin, xMax, yMin, yMax, byName[xName].label, byName[yName].label);
+    drawFacetTitle(ctx, panel, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
+    facet.area = panel;
+  }}
+  lastPlot = {{
+    mode: "2d-facet", area, facets, splitName, xName, yName, xMin, xMax, yMin, yMax,
+    xBins, yBins, selected: totalSelected, density: el("density").checked
+  }};
+  updateStats(totalSelected, sumXAll / totalSelected, sumYAll / totalSelected);
+}}
+
+function facetLayout(area) {{
+  const cols = area.width >= 900 ? 3 : 2;
+  const rows = Math.ceil(6 / cols);
+  return {{cols, rows, gapX: 16, gapY: 30, outerLeft: 8, outerRight: 8, outerTop: 4, outerBottom: 8}};
+}}
+
+function panelArea(area, layout, index) {{
+  const cellW = (area.width - layout.outerLeft - layout.outerRight - (layout.cols - 1) * layout.gapX) / layout.cols;
+  const cellH = (area.height - layout.outerTop - layout.outerBottom - (layout.rows - 1) * layout.gapY) / layout.rows;
+  const col = index % layout.cols;
+  const row = Math.floor(index / layout.cols);
+  const cellLeft = layout.outerLeft + col * (cellW + layout.gapX);
+  const cellTop = layout.outerTop + row * (cellH + layout.gapY);
+  const miniLeft = 52, miniRight = 8, miniTop = 24, miniBottom = 40;
+  return {{
+    ctx: area.ctx,
+    width: area.width,
+    height: area.height,
+    left: cellLeft + miniLeft,
+    right: area.width - (cellLeft + cellW - miniRight),
+    top: cellTop + miniTop,
+    bottom: area.height - (cellTop + cellH - miniBottom)
+  }};
+}}
+
+function drawFacetTitle(ctx, area, title) {{
+  const c = colors();
+  const pw = area.width - area.left - area.right;
+  ctx.fillStyle = c.fg;
+  ctx.font = "12px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(title, area.left + pw / 2, area.top - 8);
+}}
+
 function niceTicks(min, max, target) {{
   if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return [];
   const span = max - min;
@@ -1364,6 +1599,10 @@ function showHoverInfo(event) {{
   const rect = el("plot").getBoundingClientRect();
   const px = event.clientX - rect.left;
   const py = event.clientY - rect.top;
+  if (lastPlot.mode === "1d-facet" || lastPlot.mode === "2d-facet") {{
+    showFacetHover(px, py);
+    return;
+  }}
   const area = lastPlot.area;
   const pw = area.width - area.left - area.right;
   const ph = area.height - area.top - area.bottom;
@@ -1389,6 +1628,35 @@ function showHoverInfo(event) {{
   const value = lastPlot.counts[yi * lastPlot.xBins + xi];
   const label = lastPlot.density ? "density" : "count";
   el("hoverInfo").textContent = `${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}; bin=(${{xi + 1}}, ${{yi + 1}}); selected=${{lastPlot.selected.toLocaleString()}}`;
+}}
+
+function showFacetHover(px, py) {{
+  for (const facet of lastPlot.facets) {{
+    const area = facet.area;
+    const pw = area.width - area.left - area.right;
+    const ph = area.height - area.top - area.bottom;
+    if (px < area.left || px > area.left + pw || py < area.top || py > area.top + ph) continue;
+    if (lastPlot.mode === "1d-facet") {{
+      const bin = clamp(Math.floor((px - area.left) / pw * lastPlot.bins), 0, lastPlot.bins - 1);
+      const x0 = lastPlot.xMin + bin / lastPlot.bins * (lastPlot.xMax - lastPlot.xMin);
+      const x1 = lastPlot.xMin + (bin + 1) / lastPlot.bins * (lastPlot.xMax - lastPlot.xMin);
+      const value = facet.counts[bin];
+      const label = lastPlot.density ? "density" : "count";
+      el("hoverInfo").textContent = `Sector ${{facet.sector}}; ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}; bin=${{bin + 1}}/${{lastPlot.bins}}; sector selected=${{facet.selected.toLocaleString()}}`;
+      return;
+    }}
+    const xi = clamp(Math.floor((px - area.left) / pw * lastPlot.xBins), 0, lastPlot.xBins - 1);
+    const yi = clamp(Math.floor((area.top + ph - py) / ph * lastPlot.yBins), 0, lastPlot.yBins - 1);
+    const x0 = lastPlot.xMin + xi / lastPlot.xBins * (lastPlot.xMax - lastPlot.xMin);
+    const x1 = lastPlot.xMin + (xi + 1) / lastPlot.xBins * (lastPlot.xMax - lastPlot.xMin);
+    const y0 = lastPlot.yMin + yi / lastPlot.yBins * (lastPlot.yMax - lastPlot.yMin);
+    const y1 = lastPlot.yMin + (yi + 1) / lastPlot.yBins * (lastPlot.yMax - lastPlot.yMin);
+    const value = facet.counts[yi * lastPlot.xBins + xi];
+    const label = lastPlot.density ? "density" : "count";
+    el("hoverInfo").textContent = `Sector ${{facet.sector}}; ${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}; bin=(${{xi + 1}}, ${{yi + 1}}); sector selected=${{facet.selected.toLocaleString()}}`;
+    return;
+  }}
+  el("hoverInfo").textContent = "Hover over a bin to inspect it.";
 }}
 
 function heatColor(t) {{
