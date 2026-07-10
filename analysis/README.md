@@ -138,6 +138,10 @@ such as `protonTheta`, so plots like `theta_p` vs `-t` can be explored directly.
 The dictionary is optional for ordinary selected `Events` trees; if the named
 dictionary is missing, the script continues with ROOT's built-in scalar and STL
 branch readers.
+The selected tree's default `t` branch remains the proton-based positive `-t`,
+computed from the reconstructed recoil proton. New post-processed files also
+store `t_pi0`, the positive `-t` computed from the reconstructed pi0 side,
+for event-by-event comparison.
 
 `acceptance-plots` visualizes four related response diagnostics. For bin `i`,
 with `N_same,i = N(rec i and gen i)`, they are:

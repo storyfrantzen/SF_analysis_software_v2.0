@@ -58,6 +58,8 @@ REC_COLUMNS = [
     "pT_miss",
 ]
 
+OPTIONAL_REC_COLUMNS = ["t_pi0"]
+
 REC_SOURCE_COLUMNS = ["sourceFileId", "sourceEventIndex"]
 
 
@@ -144,8 +146,13 @@ def main() -> int:
     if not selected_tree:
         raise RuntimeError(f"Could not find tree {args.tree} in {selected_path}")
     has_source_key = all(selected_tree.GetBranch(name) for name in REC_SOURCE_COLUMNS)
+    optional_rec_columns = [
+        name for name in OPTIONAL_REC_COLUMNS if selected_tree.GetBranch(name)
+    ]
     selected_file.Close()
-    requested_rec_columns = REC_COLUMNS + (REC_SOURCE_COLUMNS if has_source_key else [])
+    requested_rec_columns = REC_COLUMNS + optional_rec_columns + (
+        REC_SOURCE_COLUMNS if has_source_key else []
+    )
     rec = ROOT.RDataFrame(args.tree, selected_path).AsNumpy(requested_rec_columns)
     rec_values = {
         "rec_Q2": rec["Q2"],
@@ -160,6 +167,8 @@ def main() -> int:
         "rec_E_miss": rec["E_miss"],
         "rec_pT_miss": rec["pT_miss"],
     }
+    if "t_pi0" in rec:
+        rec_values["rec_minus_t_pi0"] = rec["t_pi0"]
     sample = join_reconstructed(
         generated,
         rec["runNum"],

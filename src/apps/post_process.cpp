@@ -149,6 +149,7 @@ struct CandidateOutput {
     double y = NAN;
     double W = NAN;
     double t = NAN;
+    double t_pi0 = NAN;
     double trentoPhi = NAN;
 
     double pi0_p = NAN;
@@ -214,6 +215,7 @@ struct CandidateOutput {
         tree.Branch("y", &y, "y/D");
         tree.Branch("W", &W, "W/D");
         tree.Branch("t", &t, "t/D");
+        tree.Branch("t_pi0", &t_pi0, "t_pi0/D");
         tree.Branch("trentoPhi", &trentoPhi, "trentoPhi/D");
         tree.Branch("pi0_p", &pi0_p, "pi0_p/D");
         tree.Branch("pi0_theta", &pi0_theta, "pi0_theta/D");
@@ -416,6 +418,7 @@ void runEppi0Logic(const Selection& selection,
     out.y = dis.y;
     out.W = dis.W;
     out.t = -1.0 * (target - lvP).M2();
+    out.t_pi0 = -1.0 * (beam - lvE - lvPi0).M2();
     out.trentoPhi = Kinematics::trentoPhi(beam, lvE, lvP);
     out.pi0_p = lvPi0.P();
     out.pi0_theta = lvPi0.Theta();
