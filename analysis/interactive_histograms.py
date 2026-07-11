@@ -1302,6 +1302,30 @@ canvas {{
   position: relative;
 }}
 .plot-pane.hidden {{ display: none; }}
+.filter-badge {{
+  display: none;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 7px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+}}
+.filter-badge strong {{
+  font-weight: 600;
+  white-space: nowrap;
+}}
+.filter-badge span {{
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}}
 .color-scale-hover {{
   position: absolute;
   z-index: 3;
@@ -1482,6 +1506,7 @@ th:first-child, td:first-child {{ text-align: left; }}
           <div class="plot-title" id="plotTitleA">Panel 1</div>
           <div class="plot-summary" id="panelSummaryA"></div>
         </div>
+        <div class="filter-badge" id="filterBadgeA"><strong></strong><span></span></div>
         <div class="hover-info" id="hoverInfoA">Hover over a bin to inspect it.</div>
         <canvas id="plotA" width="1200" height="780"></canvas>
         <div class="color-scale-hover" id="colorScaleHoverAPrimary"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
@@ -1492,6 +1517,7 @@ th:first-child, td:first-child {{ text-align: left; }}
           <div class="plot-title" id="plotTitleB">Panel 2</div>
           <div class="plot-summary" id="panelSummaryB"></div>
         </div>
+        <div class="filter-badge" id="filterBadgeB"><strong></strong><span></span></div>
         <div class="hover-info" id="hoverInfoB">Hover over a bin to inspect it.</div>
         <canvas id="plotB" width="1200" height="780"></canvas>
         <div class="color-scale-hover" id="colorScaleHoverBPrimary"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
@@ -2250,6 +2276,7 @@ function update() {{
   readControlsToPanel();
   const mask = selectedMask();
   updatePanelVisibility();
+  updateFilterBadges();
   for (const key of visiblePanelKeys()) {{
     hideColorScaleMarker(key);
     const panel = panels[key];
@@ -2294,40 +2321,30 @@ function colors() {{
     muted: style.getPropertyValue("--muted").trim(),
     border: style.getPropertyValue("--border").trim(),
     mark: style.getPropertyValue("--mark").trim(),
-    bg: style.getPropertyValue("--bg").trim(),
-    accent: style.getPropertyValue("--accent").trim()
+    bg: style.getPropertyValue("--bg").trim()
   }};
 }}
 
-function drawFilterBadge(ctx, area) {{
+function filterBadgeText() {{
   const summaries = activeFilterSummaries();
-  if (!summaries.length) return;
-  const c = colors();
-  const pw = area.width - area.left - area.right;
-  const x = area.left + 8;
-  const y = area.top + 8;
+  if (!summaries.length) return null;
   const detail = summaries.slice(0, 2).join("; ") + (summaries.length > 2 ? `; +${{summaries.length - 2}} more` : "");
-  const lines = [`Filters: ${{summaries.length}} active`, truncateText(detail, 62)];
-  ctx.save();
-  ctx.font = "11px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
-  const textWidth = Math.max(...lines.map(line => ctx.measureText(line).width));
-  const width = Math.min(Math.max(120, textWidth + 18), Math.max(130, pw - 16));
-  const height = 34;
-  ctx.globalAlpha = 0.92;
-  ctx.fillStyle = c.bg;
-  ctx.fillRect(x, y, width, height);
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = c.accent || c.fg;
-  ctx.fillRect(x, y, 4, height);
-  ctx.strokeStyle = c.border;
-  ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
-  ctx.fillStyle = c.fg;
-  ctx.textAlign = "left";
-  ctx.textBaseline = "top";
-  ctx.fillText(lines[0], x + 9, y + 4);
-  ctx.fillStyle = c.muted;
-  ctx.fillText(lines[1], x + 9, y + 18, width - 14);
-  ctx.restore();
+  return {{count: summaries.length, detail: truncateText(detail, 96)}};
+}}
+
+function updateFilterBadges() {{
+  const badge = filterBadgeText();
+  for (const key of panelKeys) {{
+    const node = el("filterBadge" + key);
+    if (!node) continue;
+    if (!badge) {{
+      node.style.display = "none";
+      continue;
+    }}
+    node.style.display = "flex";
+    node.querySelector("strong").textContent = `Filters: ${{badge.count}} active`;
+    node.querySelector("span").textContent = badge.detail;
+  }}
 }}
 
 function truncateText(text, maxChars) {{
@@ -2448,7 +2465,6 @@ function draw1d(panel, mask) {{
   drawAxes(ctx, area, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks);
   if (x2Name) drawOverlayLegend(ctx, area, byName[xName].label, byName[x2Name].label);
   panel.fitSummary = draw1dFit(ctx, area, panel, counts, xMin, xMax, 0, maxCount);
-  drawFilterBadge(ctx, area);
   panel.lastPlot = {{
     mode: "1d", area, xName, x2Name, xMin, xMax, bins, counts, overlayCounts,
     selected, overlaySelected, density: panel.density, yMax: maxCount
@@ -2550,7 +2566,6 @@ function draw2d(panel, mask) {{
   if (x2Name || y2Name) drawOverlayLegend(ctx, area, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
   const colorScale = panel.colorScale ? draw2dColorScale(ctx, area, maxCount, overlayCounts ? overlayMaxCount : 0, panel) : null;
   panel.fitSummary = draw2dFit(ctx, area, panel, mask, x, y, xMin, xMax, yMin, yMax);
-  drawFilterBadge(ctx, area);
   panel.lastPlot = {{
     mode: "2d", area, xName, x2Name, yName, y2Name, xMin, xMax, yMin, yMax,
     xBins, yBins, counts, overlayCounts, selected, overlaySelected, density: panel.density,
@@ -2651,7 +2666,6 @@ function draw1dFacets(panel, mask, splitName) {{
     }}
     facet.area = facetAreaInfo;
   }}
-  drawFilterBadge(ctx, area);
   panel.lastPlot = {{
     mode: "1d-facet", area, facets, splitName, xName, x2Name, xMin, xMax, bins,
     selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density
@@ -2785,7 +2799,6 @@ function draw2dFacets(panel, mask, splitName) {{
     }}
     facet.area = facetAreaInfo;
   }}
-  drawFilterBadge(ctx, area);
   panel.lastPlot = {{
     mode: "2d-facet", area, facets, splitName, xName, x2Name, yName, y2Name, xMin, xMax, yMin, yMax,
     xBins, yBins, selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density,
@@ -3122,11 +3135,12 @@ function solveLinearSystem(matrix, rhs) {{
 function savePng() {{
   update();
   const keys = visiblePanelKeys();
+  const badge = filterBadgeText();
   const plots = keys.map(key => ({{
     key,
     canvas: el("plot" + key),
     title: panelLabels[key] || key,
-    summary: el("panelSummary" + key).textContent || ""
+    summary: [el("panelSummary" + key).textContent || "", badge ? `Filters: ${{badge.count}} active - ${{badge.detail}}` : ""].filter(Boolean).join(" | ")
   }}));
   if (!plots.length) return;
   const horizontal = plots.length > 1;
