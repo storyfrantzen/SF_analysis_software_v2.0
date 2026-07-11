@@ -1085,6 +1085,28 @@ button.active {{
   background: var(--bg);
 }}
 .chip input {{ margin: 0; }}
+.quick-category {{
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 10px;
+}}
+.quick-category .chips {{
+  max-height: 118px;
+  overflow: auto;
+  padding-right: 2px;
+}}
+.filter-details {{
+  border-top: 1px solid var(--border);
+  padding: 6px 0;
+}}
+.filter-details summary {{
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}}
+.filter-details[open] summary {{
+  margin-bottom: 6px;
+}}
 .filter-row {{
   display: grid;
   grid-template-columns: 1fr 82px 82px auto;
@@ -1193,6 +1215,15 @@ th:first-child, td:first-child {{ text-align: left; }}
       <button type="button" id="mode1d">1D</button>
       <button type="button" id="mode2d">2D</button>
     </div>
+    <div class="quick-category" id="quickCategoryBlock">
+      <label>Quick category <select id="quickCategoryFilter"></select></label>
+      <div class="chips" id="quickCategoryChips"></div>
+      <div class="segmented">
+        <button type="button" id="quickCategoryAll">All</button>
+        <button type="button" id="quickCategoryNone">None</button>
+      </div>
+      <div class="subtle" id="quickCategorySummary"></div>
+    </div>
     <label id="ylabel">Y <select id="yvar"></select></label>
     <label id="overlayYLabel">Overlay Y <select id="y2var"></select></label>
     <label>X <select id="xvar"></select></label>
@@ -1241,7 +1272,7 @@ th:first-child, td:first-child {{ text-align: left; }}
       <option value="quadratic">quadratic</option>
     </select></label>
     <div class="subtle" id="fitSummary">No fit</div>
-    <h2>Category Filters</h2>
+    <h2>All Category Filters</h2>
     <div id="categoryFilters"></div>
     <h2>Range Filters</h2>
     <div class="filter-row">
@@ -1313,6 +1344,7 @@ const panelKeys = ["A", "B"];
 let activePanel = "A";
 let compareMode = false;
 let activeRanges = [];
+const categoryState = {{}};
 const panels = {{
   A: makePanel("A", payload.defaultX, payload.defaultY),
   B: makePanel("B", comparisonDefaultX(), payload.defaultY)
@@ -1520,39 +1552,125 @@ function init() {{
   }}
   fillSelect(el("rangeVar"), payload.defaultX);
   fillOperationSelects();
+  initializeCategoryState();
   renderCategoryFilters();
+  renderQuickCategoryOptions();
+  renderQuickCategory();
   renderTextFilters();
   attachEvents();
   syncControlsFromPanel();
   update();
 }}
 
+function initializeCategoryState() {{
+  for (const filter of payload.categoricalFilters) {{
+    if (!categoryState[filter.name]) {{
+      categoryState[filter.name] = new Set(filter.values.map(value => Number(value)));
+    }}
+  }}
+}}
+
 function renderCategoryFilters() {{
   const target = el("categoryFilters");
   target.innerHTML = "";
+  if (!payload.categoricalFilters.length) {{
+    target.textContent = "No categorical filters available.";
+    return;
+  }}
   for (const filter of payload.categoricalFilters) {{
-    const block = document.createElement("div");
-    const title = document.createElement("div");
-    title.className = "subtle";
-    title.textContent = filter.label;
+    const block = document.createElement("details");
+    block.className = "filter-details";
+    const title = document.createElement("summary");
+    title.textContent = categorySummaryText(filter);
     const chips = document.createElement("div");
     chips.className = "chips";
     filter.values.forEach((value, index) => {{
-      const label = document.createElement("label");
-      label.className = "chip";
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.checked = true;
-      input.dataset.filter = filter.name;
-      input.dataset.value = String(value);
-      label.appendChild(input);
-      label.appendChild(document.createTextNode(filter.labels[index]));
-      chips.appendChild(label);
+      chips.appendChild(categoryChip(filter, value, filter.labels[index], () => {{
+        renderCategoryFilters();
+        renderQuickCategory();
+      }}));
     }});
     block.appendChild(title);
     block.appendChild(chips);
     target.appendChild(block);
   }}
+}}
+
+function renderQuickCategoryOptions() {{
+  const block = el("quickCategoryBlock");
+  const select = el("quickCategoryFilter");
+  if (!payload.categoricalFilters.length) {{
+    block.style.display = "none";
+    return;
+  }}
+  block.style.display = "";
+  const previous = select.value;
+  select.innerHTML = "";
+  for (const filter of payload.categoricalFilters) {{
+    const option = document.createElement("option");
+    option.value = filter.name;
+    option.textContent = filter.label;
+    select.appendChild(option);
+  }}
+  select.value = payload.categoricalFilters.some(filter => filter.name === previous)
+    ? previous
+    : payload.categoricalFilters[0].name;
+}}
+
+function renderQuickCategory() {{
+  const select = el("quickCategoryFilter");
+  const chips = el("quickCategoryChips");
+  const summary = el("quickCategorySummary");
+  chips.innerHTML = "";
+  const filter = payload.categoricalFilters.find(item => item.name === select.value);
+  if (!filter) {{
+    summary.textContent = "";
+    return;
+  }}
+  filter.values.forEach((value, index) => {{
+    chips.appendChild(categoryChip(filter, value, filter.labels[index], () => {{
+      renderQuickCategory();
+      renderCategoryFilters();
+    }}));
+  }});
+  summary.textContent = categorySummaryText(filter);
+}}
+
+function categoryChip(filter, value, text, afterChange) {{
+  const label = document.createElement("label");
+  label.className = "chip";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = categoryState[filter.name]?.has(Number(value)) ?? true;
+  input.addEventListener("input", () => {{
+    setCategoryValue(filter.name, value, input.checked);
+    afterChange();
+    update();
+  }});
+  label.appendChild(input);
+  label.appendChild(document.createTextNode(text));
+  return label;
+}}
+
+function setCategoryValue(name, value, enabled) {{
+  if (!categoryState[name]) categoryState[name] = new Set();
+  const numeric = Number(value);
+  if (enabled) categoryState[name].add(numeric);
+  else categoryState[name].delete(numeric);
+}}
+
+function setCurrentCategoryValues(enabled) {{
+  const filter = payload.categoricalFilters.find(item => item.name === el("quickCategoryFilter").value);
+  if (!filter) return;
+  categoryState[filter.name] = enabled ? new Set(filter.values.map(value => Number(value))) : new Set();
+  renderQuickCategory();
+  renderCategoryFilters();
+  update();
+}}
+
+function categorySummaryText(filter) {{
+  const selected = categoryState[filter.name]?.size ?? filter.values.length;
+  return `${{filter.label}}: ${{selected}}/${{filter.values.length}} selected`;
 }}
 
 function renderTextFilters() {{
@@ -1586,7 +1704,10 @@ function attachEvents() {{
   el("resetFilters").addEventListener("click", resetFilters);
   el("resetRanges").addEventListener("click", () => {{ resetAxisRanges(currentPanel()); syncControlsFromPanel(); update(); }});
   el("savePng").addEventListener("click", savePng);
-  document.querySelectorAll("input[data-filter], input[data-text-filter]").forEach(input => input.addEventListener("input", update));
+  el("quickCategoryFilter").addEventListener("change", renderQuickCategory);
+  el("quickCategoryAll").addEventListener("click", () => setCurrentCategoryValues(true));
+  el("quickCategoryNone").addEventListener("click", () => setCurrentCategoryValues(false));
+  document.querySelectorAll("input[data-text-filter]").forEach(input => input.addEventListener("input", update));
   for (const key of panelKeys) {{
     el("plot" + key).addEventListener("mousemove", event => showHoverInfo(event, key));
     el("plot" + key).addEventListener("mouseleave", () => {{
@@ -1728,7 +1849,11 @@ function renderRangeFilters() {{
 }}
 
 function resetFilters() {{
-  document.querySelectorAll("input[data-filter]").forEach(input => input.checked = true);
+  for (const filter of payload.categoricalFilters) {{
+    categoryState[filter.name] = new Set(filter.values.map(value => Number(value)));
+  }}
+  renderQuickCategory();
+  renderCategoryFilters();
   document.querySelectorAll("input[data-text-filter]").forEach(input => input.value = "");
   activeRanges = [];
   renderRangeFilters();
@@ -1743,14 +1868,10 @@ function parseNumber(value) {{
 function selectedMask() {{
   const mask = new Uint8Array(rowCount);
   mask.fill(1);
-  const groups = {{}};
-  document.querySelectorAll("input[data-filter]").forEach(input => {{
-    if (!groups[input.dataset.filter]) groups[input.dataset.filter] = new Set();
-    if (input.checked) groups[input.dataset.filter].add(Number(input.dataset.value));
-  }});
-  for (const [name, allowed] of Object.entries(groups)) {{
-    const values = columns[name];
-    if (!values) continue;
+  for (const filter of payload.categoricalFilters) {{
+    const allowed = categoryState[filter.name];
+    const values = columns[filter.name];
+    if (!allowed || !values) continue;
     for (let i = 0; i < rowCount; i++) {{
       if (mask[i] && !allowed.has(Math.round(values[i]))) mask[i] = 0;
     }}
