@@ -139,8 +139,8 @@ plot. Axis tick-count
 sliders adjust every displayed axis, optional presentation labels can override
 the displayed X/Y axis labels per panel, and the visible display can be saved as
 a PNG. 2D views can optionally draw color scales beside the histogram, including
-per-sector scales in split views and a hover marker showing the hovered bin
-value on the active scale. Category
+per-sector scales in split views and hover markers showing hovered-bin values
+on primary and overlay scales. Category
 filters also have a `Filter topology` selector near the split
 control, with the full category list kept as the final compact reference section
 below the plot, after range filters, derived operations, fit controls, reset

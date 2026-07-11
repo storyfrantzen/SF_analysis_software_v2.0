@@ -1326,6 +1326,9 @@ canvas {{
   border: 1px solid var(--fg);
   background: var(--marker-color, currentColor);
 }}
+.scale-name {{
+  color: var(--muted);
+}}
 .plot-toolbar {{
   display: flex;
   justify-content: space-between;
@@ -1481,7 +1484,8 @@ th:first-child, td:first-child {{ text-align: left; }}
         </div>
         <div class="hover-info" id="hoverInfoA">Hover over a bin to inspect it.</div>
         <canvas id="plotA" width="1200" height="780"></canvas>
-        <div class="color-scale-hover" id="colorScaleHoverA"><span class="scale-slider"></span><span class="scale-value"></span></div>
+        <div class="color-scale-hover" id="colorScaleHoverAPrimary"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
+        <div class="color-scale-hover" id="colorScaleHoverAOverlay"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
       </div>
       <div class="plot-pane hidden" id="plotPaneB">
         <div class="plot-head">
@@ -1490,7 +1494,8 @@ th:first-child, td:first-child {{ text-align: left; }}
         </div>
         <div class="hover-info" id="hoverInfoB">Hover over a bin to inspect it.</div>
         <canvas id="plotB" width="1200" height="780"></canvas>
-        <div class="color-scale-hover" id="colorScaleHoverB"><span class="scale-slider"></span><span class="scale-value"></span></div>
+        <div class="color-scale-hover" id="colorScaleHoverBPrimary"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
+        <div class="color-scale-hover" id="colorScaleHoverBOverlay"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
       </div>
     </div>
     <div class="control-deck">
@@ -3156,12 +3161,14 @@ function setHoverText(key, text) {{
 }}
 
 function hideColorScaleMarker(key) {{
-  const marker = el("colorScaleHover" + key);
-  if (marker) marker.style.display = "none";
+  for (const suffix of ["Primary", "Overlay"]) {{
+    const marker = el("colorScaleHover" + key + suffix);
+    if (marker) marker.style.display = "none";
+  }}
 }}
 
-function showColorScaleMarker(key, scaleInfo, value, colorFn) {{
-  const marker = el("colorScaleHover" + key);
+function showColorScaleMarker(key, scaleInfo, value, colorFn, suffix) {{
+  const marker = el("colorScaleHover" + key + suffix);
   if (!marker || !scaleInfo) return;
   const maxValue = Math.max(scaleInfo.maxValue || 0, 0);
   const fraction = maxValue > 0
@@ -3176,8 +3183,18 @@ function showColorScaleMarker(key, scaleInfo, value, colorFn) {{
   marker.style.top = markerTop + "px";
   marker.style.setProperty("--marker-width", (scaleInfo.width + 10) + "px");
   marker.style.setProperty("--marker-color", colorFn(clamped));
+  marker.querySelector(".scale-name").textContent = scaleInfo.label || "";
   marker.querySelector(".scale-value").textContent = fmt(value);
   marker.style.display = "flex";
+}}
+
+function showColorScaleMarkers(key, colorScale, value, overlayValue) {{
+  hideColorScaleMarker(key);
+  if (!colorScale) return;
+  showColorScaleMarker(key, colorScale.primary, value, heatColor, "Primary");
+  if (colorScale.overlay && Number.isFinite(overlayValue)) {{
+    showColorScaleMarker(key, colorScale.overlay, overlayValue, overlayHeatColor, "Overlay");
+  }}
 }}
 
 function showHoverInfo(event, key) {{
@@ -3221,7 +3238,7 @@ function showHoverInfo(event, key) {{
   const label = lastPlot.density ? "density" : "count";
   const overlayText = lastPlot.overlayCounts ? `; ${{overlay2dLabel(lastPlot)}} ${{label}}=${{fmt(overlayValue)}}; overlay selected=${{lastPlot.overlaySelected.toLocaleString()}}` : "";
   setHoverText(key, `Panel ${{key}}; ${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=(${{xi + 1}}, ${{yi + 1}}); selected=${{lastPlot.selected.toLocaleString()}}`);
-  showColorScaleMarker(key, lastPlot.colorScale?.primary, value, heatColor);
+  showColorScaleMarkers(key, lastPlot.colorScale, value, overlayValue);
 }}
 
 function showFacetHover(px, py, key) {{
@@ -3254,7 +3271,7 @@ function showFacetHover(px, py, key) {{
     const label = lastPlot.density ? "density" : "count";
     const overlayText = facet.overlayCounts ? `; ${{overlay2dLabel(lastPlot)}} ${{label}}=${{fmt(overlayValue)}}; overlay sector selected=${{facet.overlaySelected.toLocaleString()}}` : "";
     setHoverText(key, `Panel ${{key}}; sector ${{facet.sector}}; ${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=(${{xi + 1}}, ${{yi + 1}}); sector selected=${{facet.selected.toLocaleString()}}`);
-    showColorScaleMarker(key, facet.colorScale?.primary, value, heatColor);
+    showColorScaleMarkers(key, facet.colorScale, value, overlayValue);
     return;
   }}
   setHoverText(key, "Hover over a bin to inspect it.");
