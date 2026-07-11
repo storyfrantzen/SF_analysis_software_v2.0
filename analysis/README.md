@@ -138,8 +138,8 @@ independent histograms side by side under the same filters. Axis tick-count
 sliders adjust every displayed axis, and the visible display can be saved as a
 PNG. Category filters also have a quick selector near the top of the sidebar, with
 the full category list kept in compact collapsible sections for less scrolling.
-In 1D mode, an optional overlay-X variable can be drawn on the same axes;
-in 2D mode, an optional overlay-Y variable can be drawn on the same axes with a
+In 1D mode, an optional additional X variable can be added to the same axes;
+in 2D mode, an optional additional Y variable can be added to the same axes with a
 distinct color map for direct within-panel comparisons. The derived-operations
 menu can add browser-side comparison variables such as `rec_theta_deg - gen_theta_deg`,
 ratios, fractional residuals, or sums, and the fit menu can overlay Gaussian,

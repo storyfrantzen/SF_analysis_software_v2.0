@@ -1170,10 +1170,23 @@ button.active {{
   padding: 6px 0;
 }}
 .category-group-title {{
-  color: var(--text);
+  color: var(--fg);
   font-size: 12px;
   font-weight: 600;
   margin-top: 10px;
+}}
+.extra-variable {{
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: end;
+}}
+.extra-variable label {{
+  margin: 0;
+}}
+.add-variable-button {{
+  width: 100%;
+  margin: 6px 0 8px;
 }}
 .filter-details summary {{
   cursor: pointer;
@@ -1301,9 +1314,17 @@ th:first-child, td:first-child {{ text-align: left; }}
       <div class="subtle" id="quickCategorySummary"></div>
     </div>
     <label id="ylabel">Y <select id="yvar"></select></label>
-    <label id="overlayYLabel">Overlay Y <select id="y2var"></select></label>
+    <div class="extra-variable" id="extraYControls">
+      <label>Additional Y <select id="y2var"></select></label>
+      <button type="button" id="removeYVar">Remove</button>
+    </div>
+    <button type="button" class="add-variable-button" id="addYVar">Add Y</button>
     <label>X <select id="xvar"></select></label>
-    <label id="overlayXLabel">Overlay X <select id="x2var"></select></label>
+    <div class="extra-variable" id="extraXControls">
+      <label>Additional X <select id="x2var"></select></label>
+      <button type="button" id="removeXVar">Remove</button>
+    </div>
+    <button type="button" class="add-variable-button" id="addXVar">Add X</button>
     <label id="splitLabel">Split by sector <select id="splitVar"></select></label>
     <div class="row">
       <label>X bins <input id="xbins" type="number" min="5" max="400" value="80"></label>
@@ -1482,10 +1503,6 @@ function fillSelect(select, selected) {{
 
 function fillOverlaySelect(select, selected) {{
   select.innerHTML = "";
-  const none = document.createElement("option");
-  none.value = "";
-  none.textContent = "none";
-  select.appendChild(none);
   for (const variable of variables) {{
     const option = document.createElement("option");
     option.value = variable.name;
@@ -1493,6 +1510,11 @@ function fillOverlaySelect(select, selected) {{
     select.appendChild(option);
   }}
   select.value = selected && byName[selected] ? selected : "";
+}}
+
+function firstAdditionalVariable(primary) {{
+  const candidate = variables.find(variable => variable.name !== primary);
+  return candidate ? candidate.name : "";
 }}
 
 function fillOperationSelects() {{
@@ -1793,6 +1815,10 @@ function attachEvents() {{
   el("panelB").addEventListener("click", () => setActivePanel("B"));
   el("mode1d").addEventListener("click", () => setMode("1d"));
   el("mode2d").addEventListener("click", () => setMode("2d"));
+  el("addXVar").addEventListener("click", () => addAdditionalVariable("x"));
+  el("addYVar").addEventListener("click", () => addAdditionalVariable("y"));
+  el("removeXVar").addEventListener("click", () => removeAdditionalVariable("x"));
+  el("removeYVar").addEventListener("click", () => removeAdditionalVariable("y"));
   el("addRange").addEventListener("click", addRangeFilter);
   el("resetFilters").addEventListener("click", resetFilters);
   el("resetRanges").addEventListener("click", () => {{ resetAxisRanges(currentPanel()); syncControlsFromPanel(); update(); }});
@@ -1843,10 +1869,33 @@ function syncControlsFromPanel() {{
   el("mode1d").classList.toggle("active", panel.mode === "1d");
   el("mode2d").classList.toggle("active", panel.mode === "2d");
   el("ylabel").style.display = panel.mode === "2d" ? "" : "none";
-  el("overlayYLabel").style.display = panel.mode === "2d" ? "" : "none";
-  el("overlayXLabel").style.display = panel.mode === "1d" ? "" : "none";
+  const showExtraX = panel.mode === "1d" && Boolean(panel.x2var);
+  const showExtraY = panel.mode === "2d" && Boolean(panel.y2var);
+  el("extraXControls").style.display = showExtraX ? "" : "none";
+  el("addXVar").style.display = panel.mode === "1d" && !panel.x2var ? "" : "none";
+  el("extraYControls").style.display = showExtraY ? "" : "none";
+  el("addYVar").style.display = panel.mode === "2d" && !panel.y2var ? "" : "none";
   el("yrange").style.display = panel.mode === "2d" ? "" : "none";
   el("ybins").closest("label").style.display = panel.mode === "2d" ? "" : "none";
+}}
+
+function addAdditionalVariable(axis) {{
+  const panel = currentPanel();
+  if (axis === "x") {{
+    panel.x2var = panel.x2var || firstAdditionalVariable(panel.xvar);
+  }} else {{
+    panel.y2var = panel.y2var || firstAdditionalVariable(panel.yvar);
+  }}
+  syncControlsFromPanel();
+  update();
+}}
+
+function removeAdditionalVariable(axis) {{
+  const panel = currentPanel();
+  if (axis === "x") panel.x2var = "";
+  else panel.y2var = "";
+  syncControlsFromPanel();
+  update();
 }}
 
 function readControlsToPanel() {{
@@ -1883,10 +1932,12 @@ function setPanelVariable(axis) {{
   const variable = byName[name];
   if (axis === "x") {{
     panel.xvar = name;
+    if (panel.x2var === name) panel.x2var = "";
     panel.xmin = variable ? variable.min : "";
     panel.xmax = variable ? variable.max : "";
   }} else {{
     panel.yvar = name;
+    if (panel.y2var === name) panel.y2var = "";
     panel.ymin = variable ? variable.min : "";
     panel.ymax = variable ? variable.max : "";
   }}
