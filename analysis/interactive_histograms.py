@@ -791,6 +791,9 @@ def build_payload(
                 text_filters.append({"name": name, "label": label_for(name), "values": unique[:40]})
             encoded_columns[name] = values.astype(str).tolist()
 
+    categorical_filters.sort(key=categorical_filter_sort_key)
+    text_filters.sort(key=lambda item: label_for(str(item["name"])).lower())
+
     preferred_x = first_present(
         variables,
         ("rec_minus_t", "t", "minus_t", "gen_minus_t", "Q2", "rec_Q2"),
@@ -936,16 +939,83 @@ def categorical_filter_info(name: str, values: np.ndarray) -> dict[str, Any] | N
         return {
             "name": name,
             "label": label_for(name),
+            "group": category_group_label(name),
             "values": [int(item) if float(item).is_integer() else float(item) for item in unique.tolist()],
             "labels": labels,
         }
     return None
 
 
+def categorical_filter_sort_key(filter_info: dict[str, Any]) -> tuple[int, int, str, str]:
+    name = str(filter_info["name"])
+    label = str(filter_info.get("label") or label_for(name)).lower()
+    return (category_group_rank(name), category_kind_rank(name), label, name.lower())
+
+
+def category_group_rank(name: str) -> int:
+    lowered = name.lower()
+    canonical = lowered.removeprefix("rec_").removeprefix("gen_").replace("_", "")
+    if is_run_number_column(name) or canonical in {"sourcefileid", "sourceeventindex", "eventnum", "helicity", "charge"}:
+        return 0
+    if is_pass_flag(name) or lowered in {"rec_selected", "rec_not_selected"} or "selected" in canonical:
+        return 1
+    if canonical.startswith("electron") or canonical in {"edet", "esector", "eidx"}:
+        return 2
+    if canonical.startswith("proton") or canonical in {"pdet", "psector", "pidx"}:
+        return 3
+    if canonical.startswith("gamma1") or canonical.startswith("g1"):
+        return 4
+    if canonical.startswith("gamma2") or canonical.startswith("g2"):
+        return 5
+    if canonical.startswith("gamma"):
+        return 6
+    if canonical.startswith("pi0"):
+        return 7
+    if "sector" in canonical:
+        return 8
+    if canonical.endswith("det") or canonical.endswith("detector"):
+        return 9
+    if is_index_column(name):
+        return 10
+    return 11
+
+
+def category_group_label(name: str) -> str:
+    labels = {
+        0: "Event",
+        1: "Selections",
+        2: "Electron",
+        3: "Proton",
+        4: "Gamma 1",
+        5: "Gamma 2",
+        6: "Gamma",
+        7: "Pi0",
+        8: "Sectors",
+        9: "Detectors",
+        10: "Indices",
+    }
+    return labels.get(category_group_rank(name), "Other")
+
+
+def category_kind_rank(name: str) -> int:
+    canonical = name.lower().removeprefix("rec_").removeprefix("gen_").replace("_", "")
+    if is_run_number_column(name):
+        return 0
+    if canonical.endswith("det") or canonical.endswith("detector"):
+        return 1
+    if "sector" in canonical:
+        return 2
+    if is_index_column(name):
+        return 3
+    if is_pass_flag(name):
+        return 4
+    return 5
+
+
 def category_label(name: str, value: Any) -> str:
     if is_run_number_column(name):
         return str(int(value))
-    if name in {"pDet", "rec_proton_detector", "protonDet"}:
+    if name in {"pDet", "rec_proton_detector", "protonDet", "protonDetector"}:
         return {1: "FD", 2: "CD", 0: "FT", -999: "missing"}.get(int(value), str(value))
     if "sector" in name.lower():
         sector = int(value)
@@ -1098,6 +1168,12 @@ button.active {{
 .filter-details {{
   border-top: 1px solid var(--border);
   padding: 6px 0;
+}}
+.category-group-title {{
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 10px;
 }}
 .filter-details summary {{
   cursor: pointer;
@@ -1576,7 +1652,16 @@ function renderCategoryFilters() {{
     target.textContent = "No categorical filters available.";
     return;
   }}
+  let currentGroup = "";
   for (const filter of payload.categoricalFilters) {{
+    const group = filter.group || "Other";
+    if (group !== currentGroup) {{
+      currentGroup = group;
+      const groupTitle = document.createElement("div");
+      groupTitle.className = "category-group-title";
+      groupTitle.textContent = group;
+      target.appendChild(groupTitle);
+    }}
     const block = document.createElement("details");
     block.className = "filter-details";
     const title = document.createElement("summary");
@@ -1605,11 +1690,20 @@ function renderQuickCategoryOptions() {{
   block.style.display = "";
   const previous = select.value;
   select.innerHTML = "";
+  let currentGroup = "";
+  let groupNode = null;
   for (const filter of payload.categoricalFilters) {{
+    const group = filter.group || "Other";
+    if (group !== currentGroup) {{
+      currentGroup = group;
+      groupNode = document.createElement("optgroup");
+      groupNode.label = group;
+      select.appendChild(groupNode);
+    }}
     const option = document.createElement("option");
     option.value = filter.name;
     option.textContent = filter.label;
-    select.appendChild(option);
+    groupNode.appendChild(option);
   }}
   select.value = payload.categoricalFilters.some(filter => filter.name === previous)
     ? previous
