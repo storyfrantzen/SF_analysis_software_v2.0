@@ -2556,6 +2556,7 @@ function draw1dFacets(panel, mask, splitName) {{
   const c = colors();
   ctx.clearRect(0, 0, width, height);
   const layout = facetLayout(area);
+  const fitSummaries = [];
   for (let index = 0; index < facets.length; index++) {{
     const facet = facets[index];
     const facetAreaInfo = panelArea(area, layout, index);
@@ -2583,13 +2584,21 @@ function draw1dFacets(panel, mask, splitName) {{
     drawAxes(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks);
     if (x2Name && index === 0) drawOverlayLegend(ctx, facetAreaInfo, byName[xName].label, byName[x2Name].label);
     drawFacetTitle(ctx, facetAreaInfo, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
+    if (panel.fitModel !== "none") {{
+      const fit = make1dFit(facet.counts, xMin, xMax, panel.fitModel);
+      if (fit.predict) {{
+        drawFitCurve(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, fit.predict);
+        drawFitAnnotation(ctx, facetAreaInfo, fit);
+      }}
+      fitSummaries.push(`S${{facet.sector}}: ${{fit.summary}}`);
+    }}
     facet.area = facetAreaInfo;
   }}
   panel.lastPlot = {{
     mode: "1d-facet", area, facets, splitName, xName, x2Name, xMin, xMax, bins,
     selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density
   }};
-  panel.fitSummary = panel.fitModel === "none" ? "No fit" : "Fits are disabled while sector split is active";
+  panel.fitSummary = panel.fitModel === "none" ? "No fit" : fitSummaries.join(" | ");
   setPanelStats(panel, totalSelected, sumXAll / totalSelected, NaN);
 }}
 
@@ -2610,10 +2619,13 @@ function draw2dFacets(panel, mask, splitName) {{
   const yMin = panel.ymin;
   const yMax = panel.ymax;
   const facets = [];
+  const collectFitPoints = panel.fitModel !== "none" && panel.fitModel !== "gaussian";
   let totalSelected = 0, totalOverlaySelected = 0, sumXAll = 0, sumYAll = 0;
   for (let sector = 1; sector <= 6; sector++) {{
     const counts = new Float64Array(xBins * yBins);
     const overlayCounts = (x2 || y2) ? new Float64Array(xBins * yBins) : null;
+    const fitXs = collectFitPoints ? [] : null;
+    const fitYs = collectFitPoints ? [] : null;
     let selected = 0, overlaySelected = 0, sumX = 0, sumY = 0;
     for (let i = 0; i < rowCount; i++) {{
       const xv = x[i], yv = y[i];
@@ -2622,6 +2634,10 @@ function draw2dFacets(panel, mask, splitName) {{
         const xi = Math.min(xBins - 1, Math.max(0, Math.floor((xv - xMin) / (xMax - xMin) * xBins)));
         const yi = Math.min(yBins - 1, Math.max(0, Math.floor((yv - yMin) / (yMax - yMin) * yBins)));
         counts[yi * xBins + xi] += 1;
+        if (collectFitPoints) {{
+          fitXs.push(xv);
+          fitYs.push(yv);
+        }}
         selected++;
         sumX += xv;
         sumY += yv;
@@ -2641,7 +2657,7 @@ function draw2dFacets(panel, mask, splitName) {{
     totalOverlaySelected += overlaySelected;
     sumXAll += sumX;
     sumYAll += sumY;
-    facets.push({{sector, counts, overlayCounts, selected, overlaySelected, maxCount: 1, overlayMaxCount: 0, colorScale: null}});
+    facets.push({{sector, counts, overlayCounts, selected, overlaySelected, fitXs, fitYs, maxCount: 1, overlayMaxCount: 0, colorScale: null}});
   }}
   if (panel.density) {{
     for (const facet of facets) {{
@@ -2662,6 +2678,7 @@ function draw2dFacets(panel, mask, splitName) {{
   const {{ctx, width, height}} = area;
   ctx.clearRect(0, 0, width, height);
   const layout = facetLayout(area);
+  const fitSummaries = [];
   for (let index = 0; index < facets.length; index++) {{
     const facet = facets[index];
     const facetAreaInfo = panelArea(area, layout, index, panel.colorScale ? (facet.overlayCounts ? 2 : 1) : 0);
@@ -2704,6 +2721,14 @@ function draw2dFacets(panel, mask, splitName) {{
     if ((x2Name || y2Name) && index === 0) drawOverlayLegend(ctx, facetAreaInfo, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
     drawFacetTitle(ctx, facetAreaInfo, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
     if (panel.colorScale) facet.colorScale = draw2dColorScale(ctx, facetAreaInfo, facet.maxCount, facet.overlayCounts ? facet.overlayMaxCount : 0, panel);
+    if (collectFitPoints) {{
+      const fit = make2dFit(facet.fitXs, facet.fitYs, panel.fitModel);
+      if (fit.predict) {{
+        drawFitCurve(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, fit.predict);
+        drawFitAnnotation(ctx, facetAreaInfo, fit);
+      }}
+      fitSummaries.push(`S${{facet.sector}}: ${{fit.summary}}; n=${{facet.fitXs.length.toLocaleString()}}`);
+    }}
     facet.area = facetAreaInfo;
   }}
   panel.lastPlot = {{
@@ -2711,7 +2736,11 @@ function draw2dFacets(panel, mask, splitName) {{
     xBins, yBins, selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density,
     logz: panel.logz
   }};
-  panel.fitSummary = panel.fitModel === "none" ? "No fit" : "Fits are disabled while sector split is active";
+  panel.fitSummary = panel.fitModel === "none"
+    ? "No fit"
+    : panel.fitModel === "gaussian"
+      ? "Gaussian fit is available for 1D histograms"
+      : fitSummaries.join(" | ");
   setPanelStats(panel, totalSelected, sumXAll / totalSelected, sumYAll / totalSelected);
 }}
 
@@ -2831,7 +2860,14 @@ function axisDisplayLabel(panel, axis, fallback) {{
 
 function draw1dFit(ctx, area, panel, counts, xMin, xMax, yMin, yMax) {{
   const model = panel.fitModel || "none";
-  if (model === "none") return "No fit";
+  const fit = make1dFit(counts, xMin, xMax, model);
+  if (!fit.predict) return fit.summary;
+  drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, fit.predict);
+  return fit.summary;
+}}
+
+function make1dFit(counts, xMin, xMax, model) {{
+  if (model === "none") return {{summary: "No fit"}};
   const xs = [];
   const ys = [];
   const binWidth = (xMax - xMin) / counts.length;
@@ -2841,19 +2877,15 @@ function draw1dFit(ctx, area, panel, counts, xMin, xMax, yMin, yMax) {{
     xs.push(xMin + (i + 0.5) * binWidth);
     ys.push(y);
   }}
-  if (xs.length < 3) return "Not enough bins for fit";
+  if (xs.length < 3) return {{summary: "Not enough bins for fit"}};
   let fit = null;
   if (model === "gaussian") fit = gaussianMomentFit(xs, ys);
   else fit = polynomialFit(xs, ys, model === "quadratic" ? 2 : 1);
-  if (!fit) return "Fit failed";
-  drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, fit.predict);
-  return fit.summary;
+  return fit || {{summary: "Fit failed"}};
 }}
 
 function draw2dFit(ctx, area, panel, mask, xValues, yValues, xMin, xMax, yMin, yMax) {{
   const model = panel.fitModel || "none";
-  if (model === "none") return "No fit";
-  if (model === "gaussian") return "Gaussian fit is available for 1D histograms";
   const xs = [];
   const ys = [];
   for (let i = 0; i < rowCount; i++) {{
@@ -2864,11 +2896,18 @@ function draw2dFit(ctx, area, panel, mask, xValues, yValues, xMin, xMax, yMin, y
     xs.push(x);
     ys.push(y);
   }}
-  if (xs.length < (model === "quadratic" ? 3 : 2)) return "Not enough selected points for fit";
-  const fit = polynomialFit(xs, ys, model === "quadratic" ? 2 : 1);
-  if (!fit) return "Fit failed";
+  const fit = make2dFit(xs, ys, model);
+  if (!fit.predict) return fit.summary;
   drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, fit.predict);
   return `${{fit.summary}}; n=${{xs.length.toLocaleString()}}`;
+}}
+
+function make2dFit(xs, ys, model) {{
+  if (model === "none") return {{summary: "No fit"}};
+  if (model === "gaussian") return {{summary: "Gaussian fit is available for 1D histograms"}};
+  if (xs.length < (model === "quadratic" ? 3 : 2)) return {{summary: "Not enough selected points for fit"}};
+  const fit = polynomialFit(xs, ys, model === "quadratic" ? 2 : 1);
+  return fit || {{summary: "Fit failed"}};
 }}
 
 function drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, predict) {{
@@ -2905,6 +2944,30 @@ function drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, predict) {{
   ctx.restore();
 }}
 
+function drawFitAnnotation(ctx, area, fit) {{
+  if (!fit || !fit.predict) return;
+  const lines = fit.annotation || [fit.summary];
+  const c = colors();
+  const x = area.left + 6;
+  const y = area.top + 8;
+  const lineHeight = 12;
+  const width = Math.min(130, Math.max(70, ...lines.map(line => line.length * 5.8)) + 8);
+  const height = lineHeight * lines.length + 7;
+  ctx.save();
+  ctx.globalAlpha = 0.88;
+  ctx.fillStyle = c.bg;
+  ctx.fillRect(x - 4, y - 3, width, height);
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = c.border;
+  ctx.strokeRect(x - 4, y - 3, width, height);
+  ctx.fillStyle = c.fg;
+  ctx.font = "11px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  lines.forEach((line, index) => ctx.fillText(line, x, y + index * lineHeight));
+  ctx.restore();
+}}
+
 function polynomialFit(xs, ys, degree) {{
   const n = degree + 1;
   const matrix = Array.from({{length: n}}, () => Array(n).fill(0));
@@ -2922,10 +2985,14 @@ function polynomialFit(xs, ys, degree) {{
   const coeff = solveLinearSystem(matrix, rhs);
   if (!coeff) return null;
   const predict = x => coeff.reduce((sum, value, power) => sum + value * Math.pow(x, power), 0);
+  const quality = fitQuality(xs, ys, predict, n);
   const summary = degree === 1
-    ? `linear: y=${{fmt(coeff[1])}}x + ${{fmt(coeff[0])}}`
-    : `quadratic: y=${{fmt(coeff[2])}}x^2 + ${{fmt(coeff[1])}}x + ${{fmt(coeff[0])}}`;
-  return {{predict, summary, coeff}};
+    ? `linear: y=${{fmt(coeff[1])}}x + ${{fmt(coeff[0])}}; chi2/ndf=${{fmt(quality.reduced)}}`
+    : `quadratic: y=${{fmt(coeff[2])}}x^2 + ${{fmt(coeff[1])}}x + ${{fmt(coeff[0])}}; chi2/ndf=${{fmt(quality.reduced)}}`;
+  const annotation = degree === 1
+    ? [`m=${{fmt(coeff[1])}}`, `b=${{fmt(coeff[0])}}`, `chi2/ndf=${{fmt(quality.reduced)}}`]
+    : [`a=${{fmt(coeff[2])}}`, `b=${{fmt(coeff[1])}}`, `chi2/ndf=${{fmt(quality.reduced)}}`];
+  return {{predict, summary, annotation, coeff, quality}};
 }}
 
 function gaussianMomentFit(xs, ys) {{
@@ -2948,10 +3015,32 @@ function gaussianMomentFit(xs, ys) {{
   if (!Number.isFinite(sigma) || sigma <= 0) return null;
   const amplitude = peak - baseline;
   const predict = x => baseline + amplitude * Math.exp(-0.5 * Math.pow((x - mean) / sigma, 2));
+  const quality = fitQuality(xs, ys, predict, 4);
   return {{
     predict,
-    summary: `Gaussian: mu=${{fmt(mean)}}, sigma=${{fmt(sigma)}}, A=${{fmt(amplitude)}}`
+    summary: `Gaussian: mu=${{fmt(mean)}}, sigma=${{fmt(sigma)}}, A=${{fmt(amplitude)}}, chi2/ndf=${{fmt(quality.reduced)}}`,
+    annotation: [`mu=${{fmt(mean)}}`, `sigma=${{fmt(sigma)}}`, `chi2/ndf=${{fmt(quality.reduced)}}`],
+    mean,
+    sigma,
+    amplitude,
+    baseline,
+    quality
   }};
+}}
+
+function fitQuality(xs, ys, predict, parameterCount) {{
+  let chi2 = 0;
+  let used = 0;
+  for (let i = 0; i < xs.length; i++) {{
+    const expected = predict(xs[i]);
+    const observed = ys[i];
+    if (!Number.isFinite(expected) || !Number.isFinite(observed)) continue;
+    const variance = Math.max(Math.abs(expected), 1);
+    chi2 += Math.pow(observed - expected, 2) / variance;
+    used++;
+  }}
+  const ndf = Math.max(1, used - parameterCount);
+  return {{chi2, ndf, reduced: chi2 / ndf}};
 }}
 
 function solveLinearSystem(matrix, rhs) {{
