@@ -1367,6 +1367,15 @@ th:first-child, td:first-child {{ text-align: left; }}
       <button type="button" class="axis-button" id="removeXVar" aria-label="Remove additional X quantity">-</button>
     </div>
     <label id="splitLabel">Split by sector <select id="splitVar"></select></label>
+    <div class="quick-category" id="quickCategoryBlock">
+      <label>Filter topology <select id="quickCategoryFilter"></select></label>
+      <div class="chips" id="quickCategoryChips"></div>
+      <div class="segmented">
+        <button type="button" id="quickCategoryAll">All</button>
+        <button type="button" id="quickCategoryNone">None</button>
+      </div>
+      <div class="subtle" id="quickCategorySummary"></div>
+    </div>
     <div class="row">
       <label>X bins <input id="xbins" type="number" min="5" max="400" value="80"></label>
       <label>Y bins <input id="ybins" type="number" min="5" max="300" value="80"></label>
@@ -1386,15 +1395,6 @@ th:first-child, td:first-child {{ text-align: left; }}
     <div class="chips">
       <label class="chip"><input id="logz" type="checkbox"> log color</label>
       <label class="chip"><input id="density" type="checkbox"> density</label>
-    </div>
-    <div class="quick-category" id="quickCategoryBlock">
-      <label>Quick category <select id="quickCategoryFilter"></select></label>
-      <div class="chips" id="quickCategoryChips"></div>
-      <div class="segmented">
-        <button type="button" id="quickCategoryAll">All</button>
-        <button type="button" id="quickCategoryNone">None</button>
-      </div>
-      <div class="subtle" id="quickCategorySummary"></div>
     </div>
   </aside>
   <section>
@@ -1471,12 +1471,14 @@ th:first-child, td:first-child {{ text-align: left; }}
         <h2>Text Filters</h2>
         <div id="textFilters"></div>
       </div>
+    </div>
+    <div class="table-wrap"><table id="preview"></table></div>
+    <div class="control-deck">
       <div class="control-panel wide">
         <h2>All Category Filters</h2>
         <div id="categoryFilters"></div>
       </div>
     </div>
-    <div class="table-wrap"><table id="preview"></table></div>
   </section>
 </main>
 <script>
