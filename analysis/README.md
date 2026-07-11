@@ -136,8 +136,9 @@ supports 1D histograms, 2D histograms, detector/pass-flag toggles, text filters,
 arbitrary numeric range filters, and optional panel tabs that can be viewed
 independently or side by side under the same filters from the toolbar above the
 plot. Axis tick-count
-sliders adjust every displayed axis, and the visible display can be saved as a
-PNG. 2D views can optionally draw a color scale beside the histogram. Category
+sliders adjust every displayed axis, optional presentation labels can override
+the displayed X/Y axis labels per panel, and the visible display can be saved as
+a PNG. 2D views can optionally draw a color scale beside the histogram. Category
 filters also have a `Filter topology` selector near the split
 control, with the full category list kept as the final compact reference section
 below the plot, after range filters, derived operations, fit controls, reset

@@ -1390,6 +1390,10 @@ th:first-child, td:first-child {{ text-align: left; }}
       <label>Additional X <select id="x2var"></select></label>
       <button type="button" class="axis-button" id="removeXVar" aria-label="Remove additional X quantity">-</button>
     </div>
+    <div class="row">
+      <label><span>X label</span><input id="xAxisLabel" type="text" placeholder="auto"></label>
+      <label><span>Y label</span><input id="yAxisLabel" type="text" placeholder="auto"></label>
+    </div>
     <label id="splitLabel">Split by sector <select id="splitVar"></select></label>
     <div class="quick-category" id="quickCategoryBlock">
       <label>Filter topology <select id="quickCategoryFilter"></select></label>
@@ -1564,6 +1568,8 @@ function makePanel(key, xvar, yvar) {{
     x2var: "",
     yvar: yInfo.name,
     y2var: "",
+    xLabel: "",
+    yLabel: "",
     splitVar: "",
     xbins: 80,
     ybins: 80,
@@ -1904,7 +1910,7 @@ function renderTextFilters() {{
 }}
 
 function attachEvents() {{
-  ["x2var","y2var","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","fitModel"].forEach(id => {{
+  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","fitModel"].forEach(id => {{
     el(id).addEventListener("input", () => {{ readControlsToPanel(); update(); }});
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
@@ -1987,6 +1993,8 @@ function syncControlsFromPanel() {{
   fillSelect(el("yvar"), panel.yvar);
   fillOverlaySelect(el("y2var"), panel.y2var);
   fillSectorSelect(panel.splitVar);
+  el("xAxisLabel").value = panel.xLabel || "";
+  el("yAxisLabel").value = panel.yLabel || "";
   el("xbins").value = panel.xbins;
   el("ybins").value = panel.ybins;
   el("xticks").value = panel.xticks;
@@ -2042,6 +2050,8 @@ function readControlsToPanel() {{
   panel.x2var = el("x2var").value;
   panel.yvar = el("yvar").value;
   panel.y2var = el("y2var").value;
+  panel.xLabel = el("xAxisLabel").value.trim();
+  panel.yLabel = el("yAxisLabel").value.trim();
   panel.splitVar = el("splitVar").value;
   panel.xbins = clamp(Number(el("xbins").value) || 80, 5, 400);
   panel.ybins = clamp(Number(el("ybins").value) || 80, 5, 300);
@@ -2340,7 +2350,7 @@ function draw1d(panel, mask) {{
     }}
     ctx.restore();
   }}
-  drawAxes(ctx, area, xMin, xMax, 0, maxCount, byName[xName].label, panel.density ? "density" : "counts", panel.xticks, panel.yticks);
+  drawAxes(ctx, area, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks);
   if (x2Name) drawOverlayLegend(ctx, area, byName[xName].label, byName[x2Name].label);
   panel.fitSummary = draw1dFit(ctx, area, panel, counts, xMin, xMax, 0, maxCount);
   panel.lastPlot = {{
@@ -2442,7 +2452,7 @@ function draw2d(panel, mask) {{
   }}
   const xAxisLabel = x2Name ? `${{byName[xName].label}} / ${{byName[x2Name].label}}` : byName[xName].label;
   const yAxisLabel = y2Name ? `${{byName[yName].label}} / ${{byName[y2Name].label}}` : byName[yName].label;
-  drawAxes(ctx, area, xMin, xMax, yMin, yMax, xAxisLabel, yAxisLabel, panel.xticks, panel.yticks);
+  drawAxes(ctx, area, xMin, xMax, yMin, yMax, axisDisplayLabel(panel, "x", xAxisLabel), axisDisplayLabel(panel, "y", yAxisLabel), panel.xticks, panel.yticks);
   if (x2Name || y2Name) drawOverlayLegend(ctx, area, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
   if (panel.colorScale) draw2dColorScale(ctx, area, maxCount, overlayCounts ? overlayMaxCount : 0, panel);
   panel.fitSummary = draw2dFit(ctx, area, panel, mask, x, y, xMin, xMax, yMin, yMax);
@@ -2536,7 +2546,7 @@ function draw1dFacets(panel, mask, splitName) {{
       }}
       ctx.restore();
     }}
-    drawAxes(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, byName[xName].label, panel.density ? "density" : "counts", panel.xticks, panel.yticks);
+    drawAxes(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks);
     if (x2Name && index === 0) drawOverlayLegend(ctx, facetAreaInfo, byName[xName].label, byName[x2Name].label);
     drawFacetTitle(ctx, facetAreaInfo, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
     facet.area = facetAreaInfo;
@@ -2654,7 +2664,7 @@ function draw2dFacets(panel, mask, splitName) {{
     }}
     const xAxisLabel = x2Name ? `${{byName[xName].label}} / ${{byName[x2Name].label}}` : byName[xName].label;
     const yAxisLabel = y2Name ? `${{byName[yName].label}} / ${{byName[y2Name].label}}` : byName[yName].label;
-    drawAxes(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, xAxisLabel, yAxisLabel, panel.xticks, panel.yticks);
+    drawAxes(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, axisDisplayLabel(panel, "x", xAxisLabel), axisDisplayLabel(panel, "y", yAxisLabel), panel.xticks, panel.yticks);
     if ((x2Name || y2Name) && index === 0) drawOverlayLegend(ctx, facetAreaInfo, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
     drawFacetTitle(ctx, facetAreaInfo, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
     facet.area = facetAreaInfo;
@@ -2772,6 +2782,11 @@ function overlay2dLabel(plot) {{
   const xName = plot.x2Name || plot.xName;
   const yName = plot.y2Name || plot.yName;
   return `${{byName[yName]?.label || yName}} vs ${{byName[xName]?.label || xName}}`;
+}}
+
+function axisDisplayLabel(panel, axis, fallback) {{
+  const label = axis === "x" ? panel.xLabel : panel.yLabel;
+  return label || fallback;
 }}
 
 function draw1dFit(ctx, area, panel, counts, xMin, xMax, yMin, yMax) {{
