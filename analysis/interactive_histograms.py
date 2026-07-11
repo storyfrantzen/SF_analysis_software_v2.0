@@ -1467,7 +1467,7 @@ th:first-child, td:first-child {{ text-align: left; }}
           <button type="button" id="savePng">Save PNG</button>
         </div>
       </div>
-      <div class="control-panel">
+      <div class="control-panel" id="textFilterPanel">
         <h2>Text Filters</h2>
         <div id="textFilters"></div>
       </div>
@@ -1852,8 +1852,10 @@ function categorySummaryText(filter) {{
 }}
 
 function renderTextFilters() {{
+  const panel = el("textFilterPanel");
   const target = el("textFilters");
   target.innerHTML = "";
+  panel.style.display = payload.textFilters.length ? "" : "none";
   for (const filter of payload.textFilters) {{
     const label = document.createElement("label");
     label.textContent = filter.label;
