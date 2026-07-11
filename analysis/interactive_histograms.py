@@ -1208,6 +1208,21 @@ button.active {{
   padding: 7px 0;
   text-align: center;
 }}
+.panel-tabs {{
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 8px 0;
+}}
+.panel-tabs button {{
+  flex: 0 1 auto;
+}}
+.panel-tab.active {{
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}}
 .extra-variable {{
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1349,16 +1364,14 @@ th:first-child, td:first-child {{ text-align: left; }}
     <h1></h1>
     <div class="subtle" id="source"></div>
     <h2>Plot</h2>
-    <div class="chips">
-      <label class="chip"><input id="compareMode" type="checkbox"> two panels</label>
-    </div>
-    <div class="segmented" id="panelSelector">
-      <button type="button" id="panelA">Panel A</button>
-      <button type="button" id="panelB">Panel B</button>
-    </div>
     <div class="segmented">
       <button type="button" id="mode1d">1D</button>
       <button type="button" id="mode2d">2D</button>
+    </div>
+    <div class="panel-tabs" id="panelTabs"></div>
+    <div class="chips">
+      <button type="button" id="addPanel">+ panel</button>
+      <label class="chip"><input id="splitView" type="checkbox"> split view</label>
     </div>
     <div class="axis-control" id="yAxisControl">
       <label>Y <select id="yvar"></select></label>
@@ -1425,7 +1438,7 @@ th:first-child, td:first-child {{ text-align: left; }}
     <div class="plot-grid" id="plotGrid">
       <div class="plot-pane" id="plotPaneA">
         <div class="plot-head">
-          <div class="plot-title">Panel A</div>
+          <div class="plot-title" id="plotTitleA">View 1</div>
           <div class="plot-summary" id="panelSummaryA"></div>
         </div>
         <div class="hover-info" id="hoverInfoA">Hover over a bin to inspect it.</div>
@@ -1433,7 +1446,7 @@ th:first-child, td:first-child {{ text-align: left; }}
       </div>
       <div class="plot-pane hidden" id="plotPaneB">
         <div class="plot-head">
-          <div class="plot-title">Panel B</div>
+          <div class="plot-title" id="plotTitleB">View 2</div>
           <div class="plot-summary" id="panelSummaryB"></div>
         </div>
         <div class="hover-info" id="hoverInfoB">Hover over a bin to inspect it.</div>
@@ -1511,6 +1524,8 @@ const variables = payload.variables;
 const byName = Object.fromEntries(variables.map(v => [v.name, v]));
 const integerVariables = new Set(variables.filter(v => v.integer).map(v => v.name));
 const panelKeys = ["A", "B"];
+const panelLabels = {{A: "View 1", B: "View 2"}};
+let enabledPanels = ["A"];
 let activePanel = "A";
 let compareMode = false;
 let activeRanges = [];
@@ -1729,6 +1744,7 @@ function init() {{
   renderQuickCategory();
   renderTextFilters();
   attachEvents();
+  renderPanelTabs();
   syncControlsFromPanel();
   update();
 }}
@@ -1886,9 +1902,13 @@ function attachEvents() {{
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
   el("yvar").addEventListener("change", () => {{ setPanelVariable("y"); update(); }});
   el("addDerived").addEventListener("click", addDerivedVariable);
-  el("compareMode").addEventListener("input", () => {{ compareMode = el("compareMode").checked; update(); }});
-  el("panelA").addEventListener("click", () => setActivePanel("A"));
-  el("panelB").addEventListener("click", () => setActivePanel("B"));
+  el("addPanel").addEventListener("click", addPanelTab);
+  el("splitView").addEventListener("input", () => {{
+    if (el("splitView").checked && enabledPanels.length < panelKeys.length) addPanelTab(false);
+    compareMode = el("splitView").checked && enabledPanels.length > 1;
+    renderPanelTabs();
+    update();
+  }});
   el("mode1d").addEventListener("click", () => setMode("1d"));
   el("mode2d").addEventListener("click", () => setMode("2d"));
   el("addXVar").addEventListener("click", () => addAdditionalVariable("x"));
@@ -1913,9 +1933,43 @@ function attachEvents() {{
 }}
 
 function setActivePanel(key) {{
+  if (!enabledPanels.includes(key)) return;
   activePanel = key;
   syncControlsFromPanel();
   update();
+}}
+
+function addPanelTab(activate = true) {{
+  const next = panelKeys.find(key => !enabledPanels.includes(key));
+  if (!next) return;
+  enabledPanels.push(next);
+  if (activate) {{
+    activePanel = next;
+    compareMode = false;
+  }}
+  renderPanelTabs();
+  syncControlsFromPanel();
+  update();
+}}
+
+function renderPanelTabs() {{
+  const target = el("panelTabs");
+  target.innerHTML = "";
+  for (const key of enabledPanels) {{
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "panel-tab";
+    button.textContent = panelLabels[key] || key;
+    button.classList.toggle("active", key === activePanel);
+    button.addEventListener("click", () => setActivePanel(key));
+    target.appendChild(button);
+  }}
+  el("addPanel").style.display = enabledPanels.length < panelKeys.length ? "" : "none";
+  el("splitView").checked = compareMode;
+  for (const key of panelKeys) {{
+    const title = el("plotTitle" + key);
+    if (title) title.textContent = panelLabels[key] || key;
+  }}
 }}
 
 function syncControlsFromPanel() {{
@@ -1939,9 +1993,7 @@ function syncControlsFromPanel() {{
   el("density").checked = panel.density;
   el("fitModel").value = panel.fitModel || "none";
   el("fitSummary").textContent = panel.fitSummary || "No fit";
-  el("compareMode").checked = compareMode;
-  el("panelA").classList.toggle("active", activePanel === "A");
-  el("panelB").classList.toggle("active", activePanel === "B");
+  renderPanelTabs();
   el("mode1d").classList.toggle("active", panel.mode === "1d");
   el("mode2d").classList.toggle("active", panel.mode === "2d");
   el("yAxisControl").style.display = panel.mode === "2d" ? "" : "none";
@@ -2130,14 +2182,14 @@ function update() {{
 }}
 
 function visiblePanelKeys() {{
-  return compareMode ? panelKeys : [activePanel];
+  return compareMode ? enabledPanels : [activePanel];
 }}
 
 function updatePanelVisibility() {{
-  el("plotGrid").classList.toggle("compare", compareMode);
+  const visible = visiblePanelKeys();
+  el("plotGrid").classList.toggle("compare", visible.length > 1);
   for (const key of panelKeys) {{
-    const visible = compareMode || key === activePanel;
-    el("plotPane" + key).classList.toggle("hidden", !visible);
+    el("plotPane" + key).classList.toggle("hidden", !visible.includes(key));
   }}
 }}
 
@@ -2819,11 +2871,11 @@ function savePng() {{
   const plots = keys.map(key => ({{
     key,
     canvas: el("plot" + key),
-    title: `Panel ${{key}}`,
+    title: panelLabels[key] || key,
     summary: el("panelSummary" + key).textContent || ""
   }}));
   if (!plots.length) return;
-  const horizontal = compareMode && plots.length > 1;
+  const horizontal = plots.length > 1;
   const pad = 28;
   const gap = 24;
   const header = 48;

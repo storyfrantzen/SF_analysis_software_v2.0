@@ -133,8 +133,8 @@ of `results/`.
 The browser discovers stored scalar quantities, adds common derived views such
 as degree versions of angular branches and signed/unsigned `t` aliases, and
 supports 1D histograms, 2D histograms, detector/pass-flag toggles, text filters,
-arbitrary numeric range filters, and a two-panel comparison mode for placing
-independent histograms side by side under the same filters. Axis tick-count
+arbitrary numeric range filters, and optional panel tabs that can be viewed
+independently or side by side under the same filters. Axis tick-count
 sliders adjust every displayed axis, and the visible display can be saved as a
 PNG. Category filters also have a `Filter topology` selector near the split
 control, with the full category list kept as the final compact reference section
