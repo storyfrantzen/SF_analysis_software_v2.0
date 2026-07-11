@@ -1298,7 +1298,34 @@ canvas {{
 .plot-grid.compare {{
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }}
+.plot-pane {{
+  position: relative;
+}}
 .plot-pane.hidden {{ display: none; }}
+.color-scale-hover {{
+  position: absolute;
+  z-index: 3;
+  display: none;
+  align-items: center;
+  gap: 5px;
+  pointer-events: none;
+  transform: translateY(-50%);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 5px;
+  font-size: 11px;
+  line-height: 1.1;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+  white-space: nowrap;
+}}
+.scale-slider {{
+  width: var(--marker-width, 18px);
+  height: 6px;
+  border: 1px solid var(--fg);
+  background: var(--marker-color, currentColor);
+}}
 .plot-toolbar {{
   display: flex;
   justify-content: space-between;
@@ -1454,6 +1481,7 @@ th:first-child, td:first-child {{ text-align: left; }}
         </div>
         <div class="hover-info" id="hoverInfoA">Hover over a bin to inspect it.</div>
         <canvas id="plotA" width="1200" height="780"></canvas>
+        <div class="color-scale-hover" id="colorScaleHoverA"><span class="scale-slider"></span><span class="scale-value"></span></div>
       </div>
       <div class="plot-pane hidden" id="plotPaneB">
         <div class="plot-head">
@@ -1462,6 +1490,7 @@ th:first-child, td:first-child {{ text-align: left; }}
         </div>
         <div class="hover-info" id="hoverInfoB">Hover over a bin to inspect it.</div>
         <canvas id="plotB" width="1200" height="780"></canvas>
+        <div class="color-scale-hover" id="colorScaleHoverB"><span class="scale-slider"></span><span class="scale-value"></span></div>
       </div>
     </div>
     <div class="control-deck">
@@ -1941,6 +1970,7 @@ function attachEvents() {{
     el("plot" + key).addEventListener("mousemove", event => showHoverInfo(event, key));
     el("plot" + key).addEventListener("mouseleave", () => {{
       hoverElement(key).textContent = "Hover over a bin to inspect it.";
+      hideColorScaleMarker(key);
     }});
   }}
   window.addEventListener("resize", update);
@@ -2193,6 +2223,7 @@ function update() {{
   const mask = selectedMask();
   updatePanelVisibility();
   for (const key of visiblePanelKeys()) {{
+    hideColorScaleMarker(key);
     const panel = panels[key];
     if (!columns[panel.xvar]) continue;
     if (panel.mode === "1d") draw1d(panel, mask);
@@ -2215,6 +2246,7 @@ function updatePanelVisibility() {{
 }}
 
 function plotArea(canvas, showColorScale = false) {{
+  const colorScaleSlots = typeof showColorScale === "number" ? showColorScale : showColorScale ? 1 : 0;
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
   canvas.width = Math.max(400, Math.floor(rect.width * dpr));
@@ -2223,7 +2255,8 @@ function plotArea(canvas, showColorScale = false) {{
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const width = canvas.width / dpr;
   const height = canvas.height / dpr;
-  return {{ctx, width, height, left: 76, right: showColorScale ? 82 : 22, top: 18, bottom: 62}};
+  const right = colorScaleSlots > 1 ? 112 : colorScaleSlots > 0 ? 82 : 22;
+  return {{ctx, width, height, left: 76, right, top: 18, bottom: 62}};
 }}
 
 function colors() {{
@@ -2414,7 +2447,7 @@ function draw2d(panel, mask) {{
   const maxCount = maxOf(counts, 1);
   const overlayMaxCount = overlayCounts ? maxOf(overlayCounts, 1) : 1;
   const canvas = el("plot" + panel.key);
-  const area = plotArea(canvas, panel.colorScale);
+  const area = plotArea(canvas, panel.colorScale ? (overlayCounts ? 2 : 1) : 0);
   const {{ctx, width, height, left, right, top, bottom}} = area;
   ctx.clearRect(0, 0, width, height);
   const pw = width - left - right;
@@ -2454,11 +2487,12 @@ function draw2d(panel, mask) {{
   const yAxisLabel = y2Name ? `${{byName[yName].label}} / ${{byName[y2Name].label}}` : byName[yName].label;
   drawAxes(ctx, area, xMin, xMax, yMin, yMax, axisDisplayLabel(panel, "x", xAxisLabel), axisDisplayLabel(panel, "y", yAxisLabel), panel.xticks, panel.yticks);
   if (x2Name || y2Name) drawOverlayLegend(ctx, area, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
-  if (panel.colorScale) draw2dColorScale(ctx, area, maxCount, overlayCounts ? overlayMaxCount : 0, panel);
+  const colorScale = panel.colorScale ? draw2dColorScale(ctx, area, maxCount, overlayCounts ? overlayMaxCount : 0, panel) : null;
   panel.fitSummary = draw2dFit(ctx, area, panel, mask, x, y, xMin, xMax, yMin, yMax);
   panel.lastPlot = {{
     mode: "2d", area, xName, x2Name, yName, y2Name, xMin, xMax, yMin, yMax,
-    xBins, yBins, counts, overlayCounts, selected, overlaySelected, density: panel.density
+    xBins, yBins, counts, overlayCounts, selected, overlaySelected, density: panel.density,
+    logz: panel.logz, colorScale
   }};
   setPanelStats(panel, selected, sumX / selected, sumY / selected);
 }}
@@ -2607,7 +2641,7 @@ function draw2dFacets(panel, mask, splitName) {{
     totalOverlaySelected += overlaySelected;
     sumXAll += sumX;
     sumYAll += sumY;
-    facets.push({{sector, counts, overlayCounts, selected, overlaySelected}});
+    facets.push({{sector, counts, overlayCounts, selected, overlaySelected, maxCount: 1, overlayMaxCount: 0, colorScale: null}});
   }}
   if (panel.density) {{
     for (const facet of facets) {{
@@ -2619,23 +2653,25 @@ function draw2dFacets(panel, mask, splitName) {{
       }}
     }}
   }}
-  const maxCount = Math.max(1, ...facets.map(f => maxOf(f.counts, 0)));
-  const overlayMaxCount = Math.max(1, ...facets.map(f => f.overlayCounts ? maxOf(f.overlayCounts, 0) : 0));
+  for (const facet of facets) {{
+    facet.maxCount = maxOf(facet.counts, 1);
+    facet.overlayMaxCount = facet.overlayCounts ? maxOf(facet.overlayCounts, 1) : 0;
+  }}
   const canvas = el("plot" + panel.key);
-  const area = plotArea(canvas, panel.colorScale);
+  const area = plotArea(canvas, panel.colorScale ? (x2Name || y2Name ? 2 : 1) : 0);
   const {{ctx, width, height}} = area;
   ctx.clearRect(0, 0, width, height);
   const layout = facetLayout(area);
   for (let index = 0; index < facets.length; index++) {{
     const facet = facets[index];
-    const facetAreaInfo = panelArea(area, layout, index);
+    const facetAreaInfo = panelArea(area, layout, index, panel.colorScale ? (facet.overlayCounts ? 2 : 1) : 0);
     const pw = facetAreaInfo.width - facetAreaInfo.left - facetAreaInfo.right;
     const ph = facetAreaInfo.height - facetAreaInfo.top - facetAreaInfo.bottom;
     for (let yi = 0; yi < yBins; yi++) {{
       for (let xi = 0; xi < xBins; xi++) {{
         const count = facet.counts[yi * xBins + xi];
         if (count <= 0) continue;
-        const fraction = panel.logz ? Math.log1p(count) / Math.log1p(maxCount) : count / maxCount;
+        const fraction = panel.logz ? Math.log1p(count) / Math.log1p(facet.maxCount) : count / facet.maxCount;
         ctx.fillStyle = heatColor(fraction);
         const x0 = facetAreaInfo.left + xi / xBins * pw;
         const x1 = facetAreaInfo.left + (xi + 1) / xBins * pw;
@@ -2651,7 +2687,7 @@ function draw2dFacets(panel, mask, splitName) {{
         for (let xi = 0; xi < xBins; xi++) {{
           const count = facet.overlayCounts[yi * xBins + xi];
           if (count <= 0) continue;
-          const fraction = panel.logz ? Math.log1p(count) / Math.log1p(overlayMaxCount) : count / overlayMaxCount;
+          const fraction = panel.logz ? Math.log1p(count) / Math.log1p(facet.overlayMaxCount) : count / facet.overlayMaxCount;
           ctx.fillStyle = overlayHeatColor(fraction);
           const x0 = facetAreaInfo.left + xi / xBins * pw;
           const x1 = facetAreaInfo.left + (xi + 1) / xBins * pw;
@@ -2667,12 +2703,13 @@ function draw2dFacets(panel, mask, splitName) {{
     drawAxes(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, axisDisplayLabel(panel, "x", xAxisLabel), axisDisplayLabel(panel, "y", yAxisLabel), panel.xticks, panel.yticks);
     if ((x2Name || y2Name) && index === 0) drawOverlayLegend(ctx, facetAreaInfo, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
     drawFacetTitle(ctx, facetAreaInfo, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
+    if (panel.colorScale) facet.colorScale = draw2dColorScale(ctx, facetAreaInfo, facet.maxCount, facet.overlayCounts ? facet.overlayMaxCount : 0, panel);
     facet.area = facetAreaInfo;
   }}
-  if (panel.colorScale) draw2dColorScale(ctx, area, maxCount, (x2Name || y2Name) ? overlayMaxCount : 0, panel);
   panel.lastPlot = {{
     mode: "2d-facet", area, facets, splitName, xName, x2Name, yName, y2Name, xMin, xMax, yMin, yMax,
-    xBins, yBins, selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density
+    xBins, yBins, selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density,
+    logz: panel.logz
   }};
   panel.fitSummary = panel.fitModel === "none" ? "No fit" : "Fits are disabled while sector split is active";
   setPanelStats(panel, totalSelected, sumXAll / totalSelected, sumYAll / totalSelected);
@@ -2684,14 +2721,14 @@ function facetLayout(area) {{
   return {{cols, rows, gapX: 16, gapY: 30, outerLeft: 8, outerRight: 8, outerTop: 4, outerBottom: 8}};
 }}
 
-function panelArea(area, layout, index) {{
+function panelArea(area, layout, index, colorScaleSlots = 0) {{
   const cellW = (area.width - layout.outerLeft - layout.outerRight - (layout.cols - 1) * layout.gapX) / layout.cols;
   const cellH = (area.height - layout.outerTop - layout.outerBottom - (layout.rows - 1) * layout.gapY) / layout.rows;
   const col = index % layout.cols;
   const row = Math.floor(index / layout.cols);
   const cellLeft = layout.outerLeft + col * (cellW + layout.gapX);
   const cellTop = layout.outerTop + row * (cellH + layout.gapY);
-  const miniLeft = 52, miniRight = 8, miniTop = 24, miniBottom = 40;
+  const miniLeft = 52, miniRight = colorScaleSlots > 1 ? 96 : colorScaleSlots > 0 ? 68 : 8, miniTop = 24, miniBottom = 40;
   return {{
     ctx: area.ctx,
     width: area.width,
@@ -2745,10 +2782,12 @@ function draw2dColorScale(ctx, area, maxValue, overlayMaxValue, panel) {{
   const barWidth = 10;
   const primaryX = plotRight + 16;
   const overlayX = overlayMaxValue > 0 ? primaryX + 24 : 0;
-  drawColorBar(ctx, primaryX, barTop, barWidth, barHeight, maxValue, heatColor, panel.logz, panel.density ? "density" : "count", c);
+  const primary = drawColorBar(ctx, primaryX, barTop, barWidth, barHeight, maxValue, heatColor, panel.logz, panel.density ? "density" : "count", c);
+  let overlay = null;
   if (overlayMaxValue > 0) {{
-    drawColorBar(ctx, overlayX, barTop, barWidth, barHeight, overlayMaxValue, overlayHeatColor, panel.logz, "overlay", c);
+    overlay = drawColorBar(ctx, overlayX, barTop, barWidth, barHeight, overlayMaxValue, overlayHeatColor, panel.logz, "overlay", c);
   }}
+  return {{primary, overlay}};
 }}
 
 function drawColorBar(ctx, x, y, width, height, maxValue, colorFn, logScale, label, c) {{
@@ -2776,6 +2815,7 @@ function drawColorBar(ctx, x, y, width, height, maxValue, colorFn, logScale, lab
   ctx.textAlign = "center";
   ctx.fillText(label, 0, 0);
   ctx.restore();
+  return {{x, y, width, height, maxValue, logScale, label}};
 }}
 
 function overlay2dLabel(plot) {{
@@ -3026,6 +3066,31 @@ function setHoverText(key, text) {{
   hoverElement(key).textContent = text;
 }}
 
+function hideColorScaleMarker(key) {{
+  const marker = el("colorScaleHover" + key);
+  if (marker) marker.style.display = "none";
+}}
+
+function showColorScaleMarker(key, scaleInfo, value, colorFn) {{
+  const marker = el("colorScaleHover" + key);
+  if (!marker || !scaleInfo) return;
+  const maxValue = Math.max(scaleInfo.maxValue || 0, 0);
+  const fraction = maxValue > 0
+    ? (scaleInfo.logScale ? Math.log1p(Math.max(0, value)) / Math.log1p(maxValue) : Math.max(0, value) / maxValue)
+    : 0;
+  const clamped = clamp(fraction, 0, 1);
+  const canvasRect = el("plot" + key).getBoundingClientRect();
+  const paneRect = el("plotPane" + key).getBoundingClientRect();
+  const markerLeft = canvasRect.left - paneRect.left + scaleInfo.x - 4;
+  const markerTop = canvasRect.top - paneRect.top + scaleInfo.y + scaleInfo.height - clamped * scaleInfo.height;
+  marker.style.left = markerLeft + "px";
+  marker.style.top = markerTop + "px";
+  marker.style.setProperty("--marker-width", (scaleInfo.width + 10) + "px");
+  marker.style.setProperty("--marker-color", colorFn(clamped));
+  marker.querySelector(".scale-value").textContent = fmt(value);
+  marker.style.display = "flex";
+}}
+
 function showHoverInfo(event, key) {{
   const lastPlot = panels[key].lastPlot;
   if (!lastPlot) return;
@@ -3041,6 +3106,7 @@ function showHoverInfo(event, key) {{
   const ph = area.height - area.top - area.bottom;
   if (px < area.left || px > area.left + pw || py < area.top || py > area.top + ph) {{
     setHoverText(key, "Hover over a bin to inspect it.");
+    hideColorScaleMarker(key);
     return;
   }}
   if (lastPlot.mode === "1d") {{
@@ -3052,6 +3118,7 @@ function showHoverInfo(event, key) {{
     const label = lastPlot.density ? "density" : "count";
     const overlayText = lastPlot.x2Name ? `; ${{byName[lastPlot.x2Name].label}} ${{label}}=${{fmt(overlayValue)}}; overlay selected=${{lastPlot.overlaySelected.toLocaleString()}}` : "";
     setHoverText(key, `Panel ${{key}}; ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=${{bin + 1}}/${{lastPlot.bins}}; selected=${{lastPlot.selected.toLocaleString()}}`);
+    hideColorScaleMarker(key);
     return;
   }}
   const xi = clamp(Math.floor((px - area.left) / pw * lastPlot.xBins), 0, lastPlot.xBins - 1);
@@ -3065,6 +3132,7 @@ function showHoverInfo(event, key) {{
   const label = lastPlot.density ? "density" : "count";
   const overlayText = lastPlot.overlayCounts ? `; ${{overlay2dLabel(lastPlot)}} ${{label}}=${{fmt(overlayValue)}}; overlay selected=${{lastPlot.overlaySelected.toLocaleString()}}` : "";
   setHoverText(key, `Panel ${{key}}; ${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=(${{xi + 1}}, ${{yi + 1}}); selected=${{lastPlot.selected.toLocaleString()}}`);
+  showColorScaleMarker(key, lastPlot.colorScale?.primary, value, heatColor);
 }}
 
 function showFacetHover(px, py, key) {{
@@ -3083,6 +3151,7 @@ function showFacetHover(px, py, key) {{
       const label = lastPlot.density ? "density" : "count";
       const overlayText = lastPlot.x2Name ? `; ${{byName[lastPlot.x2Name].label}} ${{label}}=${{fmt(overlayValue)}}; overlay sector selected=${{facet.overlaySelected.toLocaleString()}}` : "";
       setHoverText(key, `Panel ${{key}}; sector ${{facet.sector}}; ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=${{bin + 1}}/${{lastPlot.bins}}; sector selected=${{facet.selected.toLocaleString()}}`);
+      hideColorScaleMarker(key);
       return;
     }}
     const xi = clamp(Math.floor((px - area.left) / pw * lastPlot.xBins), 0, lastPlot.xBins - 1);
@@ -3096,9 +3165,11 @@ function showFacetHover(px, py, key) {{
     const label = lastPlot.density ? "density" : "count";
     const overlayText = facet.overlayCounts ? `; ${{overlay2dLabel(lastPlot)}} ${{label}}=${{fmt(overlayValue)}}; overlay sector selected=${{facet.overlaySelected.toLocaleString()}}` : "";
     setHoverText(key, `Panel ${{key}}; sector ${{facet.sector}}; ${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=(${{xi + 1}}, ${{yi + 1}}); sector selected=${{facet.selected.toLocaleString()}}`);
+    showColorScaleMarker(key, facet.colorScale?.primary, value, heatColor);
     return;
   }}
   setHoverText(key, "Hover over a bin to inspect it.");
+  hideColorScaleMarker(key);
 }}
 
 function heatColor(t) {{
