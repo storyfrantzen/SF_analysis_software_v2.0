@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from eppi0.event_sample import (
     build_generated_sample,
+    generated_particle_columns,
     generated_sample_from_tree,
     join_reconstructed,
 )
@@ -28,6 +29,8 @@ GEN_COLUMNS = [
     "gen.phi",
 ]
 
+GEN_SOURCE_COLUMNS = ["event.sourceFileId", "event.sourceEventIndex"]
+
 GENERATED_SOURCE_COLUMNS = ["sourceFileId", "sourceEventIndex"]
 
 GENERATED_EVENT_COLUMNS = [
@@ -40,6 +43,24 @@ GENERATED_EVENT_COLUMNS = [
     "trentoPhi",
     "radiative",
     "weight",
+]
+
+GENERATED_EVENT_PARTICLE_COLUMNS = [
+    "electronP",
+    "electronTheta",
+    "electronPhi",
+    "protonP",
+    "protonTheta",
+    "protonPhi",
+    "gamma1P",
+    "gamma1Theta",
+    "gamma1Phi",
+    "gamma2P",
+    "gamma2Theta",
+    "gamma2Phi",
+    "pi0P",
+    "pi0Theta",
+    "pi0Phi",
 ]
 
 REC_SOURCE_COLUMNS = ["sourceFileId", "sourceEventIndex"]
@@ -96,14 +117,21 @@ def main() -> int:
     has_generated_source_key = has_generated_tree and all(
         generated_tree.GetBranch(name) for name in GENERATED_SOURCE_COLUMNS
     )
+    generated_event_particle_columns = [
+        name for name in GENERATED_EVENT_PARTICLE_COLUMNS
+        if has_generated_tree and generated_tree.GetBranch(name)
+    ]
     input_file.Close()
 
     if has_generated_tree:
-        requested_gen_columns = GENERATED_EVENT_COLUMNS + (
-            GENERATED_SOURCE_COLUMNS if has_generated_source_key else []
+        requested_gen_columns = (
+            GENERATED_EVENT_COLUMNS
+            + (GENERATED_SOURCE_COLUMNS if has_generated_source_key else [])
+            + generated_event_particle_columns
         )
         gen = ROOT.RDataFrame(args.generated_tree, matched_path).AsNumpy(requested_gen_columns)
         generated_rows = np.asarray(gen["runNum"]).size
+        generated_mask = generated_event_mask(gen)
         generated = generated_sample_from_tree(
             gen["sourceFileId"] if has_generated_source_key else np.full(
                 generated_rows, np.iinfo(np.uint64).max, dtype=np.uint64
@@ -122,6 +150,10 @@ def main() -> int:
             gen["weight"],
         )
         generated_source = args.generated_tree
+        generated_values = {
+            f"gen_{name}": np.asarray(gen[name], dtype=float)[generated_mask]
+            for name in generated_event_particle_columns
+        }
     else:
         if args.beam_energy is None:
             raise ValueError("--beam-energy is required when GeneratedEvents is absent")
@@ -136,6 +168,16 @@ def main() -> int:
             args.beam_energy,
         )
         generated_source = f"{args.tree}.gen (legacy)"
+        generated_values = {}
+
+    if not generated_values:
+        generated_values = read_generated_particle_columns(
+            ROOT,
+            matched_path,
+            args.tree,
+            generated,
+            prefer_source_keys=has_generated_source_key,
+        )
 
     selected_path = str(args.selected_root.resolve())
     selected_file = ROOT.TFile.Open(selected_path, "READ")
@@ -164,23 +206,70 @@ def main() -> int:
         rec_source_file_id=rec["sourceFileId"] if has_source_key else None,
         rec_source_event_index=rec["sourceEventIndex"] if has_source_key else None,
     )
+    sample.update(generated_values)
     metadata = {
         "beam_energy": args.beam_energy,
         "generated_source": generated_source,
+        "generated_particle_columns": sorted(generated_values),
         "matched_root": str(args.matched_root.resolve()),
         "selected_root": str(args.selected_root.resolve()),
         "generated_events": int(generated.run.size),
         "selected_reconstructed_events": int(sample["rec_selected"].sum()),
         "reconstructed_columns": sorted(rec_values),
-        "schema_version": 3,
+        "schema_version": 4,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(args.output, **sample, metadata_json=json.dumps(metadata, sort_keys=True))
     print(f"Generated events: {generated.run.size}")
     print(f"Selected REC matches: {sample['rec_selected'].sum()}")
+    print(f"GEN particle variables carried: {len(generated_values)}")
     print(f"REC variables carried: {len(rec_values)}")
     print(f"Wrote {args.output}")
     return 0
+
+
+def generated_event_mask(gen: dict[str, np.ndarray]) -> np.ndarray:
+    valid = np.asarray(gen["topologyValid"], dtype=bool)
+    for name in ("Q2", "xB", "minusT", "trentoPhi"):
+        valid &= np.isfinite(np.asarray(gen[name], dtype=float))
+    return valid
+
+
+def read_generated_particle_columns(ROOT, root_path: str, tree_name: str, generated, prefer_source_keys: bool) -> dict[str, np.ndarray]:
+    column_sets = []
+    if prefer_source_keys:
+        column_sets.append(GEN_SOURCE_COLUMNS + GEN_COLUMNS)
+    column_sets.append(GEN_COLUMNS)
+    if not prefer_source_keys:
+        column_sets.append(GEN_SOURCE_COLUMNS + GEN_COLUMNS)
+
+    last_error: Exception | None = None
+    for columns in column_sets:
+        try:
+            raw = ROOT.RDataFrame(tree_name, root_path).AsNumpy(columns)
+        except Exception as exc:  # ROOT raises RuntimeError for missing dictionaries/branches.
+            last_error = exc
+            continue
+        has_source = all(name in raw for name in GEN_SOURCE_COLUMNS)
+        return generated_particle_columns(
+            raw["event.runNum"],
+            raw["event.eventNum"],
+            raw["gen.pid"],
+            raw["gen.p"],
+            raw["gen.theta"],
+            raw["gen.phi"],
+            generated.run,
+            generated.event,
+            source_file_id=raw["event.sourceFileId"] if has_source else None,
+            source_event_index=raw["event.sourceEventIndex"] if has_source else None,
+            target_source_file_id=generated.source_file_id if has_source else None,
+            target_source_event_index=generated.source_event_index if has_source else None,
+        )
+    message = f"Warning: could not read per-particle GEN kinematics from {tree_name}.gen"
+    if last_error is not None:
+        message += f": {last_error}"
+    print(message, file=sys.stderr)
+    return {}
 
 
 def scalar_branch_names(tree) -> list[str]:

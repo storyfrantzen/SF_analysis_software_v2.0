@@ -19,6 +19,7 @@ from eppi0.bin_centering import compute_bin_centering, physical_mask
 from eppi0.cross_section import integrated_luminosity_fb, virtual_photon_flux
 from eppi0.event_sample import (
     build_generated_sample,
+    generated_particle_columns,
     generated_sample_from_tree,
     join_reconstructed,
 )
@@ -238,6 +239,49 @@ class EventSampleTests(unittest.TestCase):
         np.testing.assert_allclose(values["rec_minus_t"], [0.3, 0.4])
         np.testing.assert_array_equal(values["rec_passSamplingFraction"], [1, 0])
         np.testing.assert_allclose(values["rec_electronP"], [3.0, 3.2])
+
+    def test_generated_particle_columns_align_to_generated_events(self) -> None:
+        run = np.full(8, 11)
+        event = np.array([10, 10, 10, 10, 11, 11, 11, 11])
+        pid = np.array([11, 2212, 22, 22, 11, 2212, 111, 22])
+        momentum = np.array([4.0, 1.0, 0.8, 0.7, 4.1, 1.1, 1.0, 0.05])
+        theta = np.array([0.25, 0.6, 0.3, 0.4, 0.26, 0.62, 0.35, 0.1])
+        phi = np.array([0.1, 2.0, 1.0, 1.2, 0.2, 2.1, 1.1, -0.5])
+        columns = generated_particle_columns(
+            run,
+            event,
+            pid,
+            momentum,
+            theta,
+            phi,
+            np.array([11, 11, 11]),
+            np.array([10, 11, 12]),
+        )
+        np.testing.assert_allclose(columns["gen_electronP"], [4.0, 4.1, np.nan])
+        np.testing.assert_allclose(columns["gen_protonTheta"], [0.6, 0.62, np.nan])
+        np.testing.assert_allclose(columns["gen_gamma1P"], [0.8, 0.05, np.nan])
+        np.testing.assert_allclose(columns["gen_gamma2P"], [0.7, np.nan, np.nan])
+        np.testing.assert_allclose(columns["gen_pi0P"][1], 1.0)
+        self.assertTrue(np.isfinite(columns["gen_pi0P"][0]))
+
+    def test_generated_particle_columns_use_source_keys_when_available(self) -> None:
+        run = np.array([11, 11])
+        event = np.array([10, 10])
+        columns = generated_particle_columns(
+            run,
+            event,
+            np.array([11, 11]),
+            np.array([4.0, 5.0]),
+            np.array([0.2, 0.3]),
+            np.array([1.0, 1.1]),
+            np.array([11, 11]),
+            np.array([10, 10]),
+            source_file_id=np.array([1001, 1002], dtype=np.uint64),
+            source_event_index=np.array([0, 0], dtype=np.uint64),
+            target_source_file_id=np.array([1002, 1001], dtype=np.uint64),
+            target_source_event_index=np.array([0, 0], dtype=np.uint64),
+        )
+        np.testing.assert_allclose(columns["gen_electronP"], [5.0, 4.0])
 
 
 class ExclusivityTests(unittest.TestCase):

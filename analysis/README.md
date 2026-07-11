@@ -155,7 +155,12 @@ Joined generated/reconstructed event samples made by `build_event_sample.py`
 carry every scalar branch from the selected reconstructed tree with a `rec_`
 prefix, so MC acceptance visualizers expose the same reconstructed filters and
 kinematic branches as the selected data visualizers after the `.npz` and HTML
-are regenerated.
+are regenerated. Newly converted MC files store complete per-particle GEN/LUND
+kinematics in `GeneratedEvents`; `build_event_sample.py` carries those columns,
+including `gen_electronP`, `gen_protonTheta`, `gen_gamma1Phi`, `gen_gamma2P`,
+and `gen_pi0P`, so generated-vs-reconstructed residuals can be built directly
+in the visualizer. Older converter ROOT files fall back to the available
+`Events.gen` rows, which may be less complete.
 The dictionary is optional for ordinary selected `Events` trees; if the named
 dictionary is missing, the script continues with ROOT's built-in scalar and STL
 branch readers.
