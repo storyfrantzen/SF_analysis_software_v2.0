@@ -145,7 +145,10 @@ filters also have a `Filter topology` selector near the split
 control, with the full category list kept as the final compact reference section
 below the plot, after range filters, derived operations, fit controls, reset
 buttons, PNG export, and the preview table. Common display/actions such as log
-color, reset, and PNG export sit above the plot. Compact `+` buttons
+color, density, reset, and PNG export sit above the plot. Density mode
+normalizes bin contents while auto-scaling the vertical and color ranges to the
+normalized peak, so the display does not collapse when densities are below one.
+Compact `+` buttons
 next to the axis selectors add optional comparison X/Y quantities on the same
 axes with a distinct color map for direct within-panel comparisons. The
 derived-operations menu can add browser-side comparison variables such as

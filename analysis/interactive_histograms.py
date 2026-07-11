@@ -1467,6 +1467,7 @@ th:first-child, td:first-child {{ text-align: left; }}
       </div>
       <div class="chips">
         <label class="chip"><input id="logz" type="checkbox"> log color</label>
+        <label class="chip"><input id="density" type="checkbox"> density</label>
         <label class="chip" id="colorScaleChip"><input id="colorScale" type="checkbox"> color scale</label>
       </div>
       <div class="plot-actions">
@@ -1613,6 +1614,7 @@ function makePanel(key, xvar, yvar) {{
     ymin: yInfo.min,
     ymax: yInfo.max,
     logz: false,
+    density: false,
     colorScale: false,
     fitModel: "none",
     fitSummary: "No fit",
@@ -1942,7 +1944,7 @@ function renderTextFilters() {{
 }}
 
 function attachEvents() {{
-  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","colorScale","fitModel"].forEach(id => {{
+  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","fitModel"].forEach(id => {{
     el(id).addEventListener("input", () => {{ readControlsToPanel(); update(); }});
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
@@ -2039,6 +2041,7 @@ function syncControlsFromPanel() {{
   el("ymin").value = panel.ymin;
   el("ymax").value = panel.ymax;
   el("logz").checked = panel.logz;
+  el("density").checked = panel.density;
   el("colorScale").checked = panel.colorScale;
   el("fitModel").value = panel.fitModel || "none";
   el("fitSummary").textContent = panel.fitSummary || "No fit";
@@ -2096,6 +2099,7 @@ function readControlsToPanel() {{
   panel.ymin = parseNumber(el("ymin").value);
   panel.ymax = parseNumber(el("ymax").value);
   panel.logz = el("logz").checked;
+  panel.density = el("density").checked;
   panel.colorScale = el("colorScale").checked;
   panel.fitModel = el("fitModel").value;
 }}
@@ -2351,7 +2355,11 @@ function draw1d(panel, mask) {{
       }}
     }}
   }}
-  const maxCount = Math.max(maxOf(counts, 1), overlayCounts ? maxOf(overlayCounts, 1) : 1);
+  if (panel.density) {{
+    normalizeHistogram(counts, selected);
+    normalizeHistogram(overlayCounts, overlaySelected);
+  }}
+  const maxCount = histogramMax(counts, overlayCounts);
   const canvas = el("plot" + panel.key);
   const area = plotArea(canvas);
   const {{ctx, width, height, left, right, top, bottom}} = area;
@@ -2378,12 +2386,12 @@ function draw1d(panel, mask) {{
     }}
     ctx.restore();
   }}
-  drawAxes(ctx, area, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", "counts"), panel.xticks, panel.yticks);
+  drawAxes(ctx, area, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks);
   if (x2Name) drawOverlayLegend(ctx, area, byName[xName].label, byName[x2Name].label);
   panel.fitSummary = draw1dFit(ctx, area, panel, counts, xMin, xMax, 0, maxCount);
   panel.lastPlot = {{
     mode: "1d", area, xName, x2Name, xMin, xMax, bins, counts, overlayCounts,
-    selected, overlaySelected, yMax: maxCount
+    selected, overlaySelected, density: panel.density, yMax: maxCount
   }};
   setPanelStats(panel, selected, sumX / selected, NaN);
 }}
@@ -2433,8 +2441,12 @@ function draw2d(panel, mask) {{
       }}
     }}
   }}
-  const maxCount = maxOf(counts, 1);
-  const overlayMaxCount = overlayCounts ? maxOf(overlayCounts, 1) : 1;
+  if (panel.density) {{
+    normalizeHistogram(counts, selected);
+    normalizeHistogram(overlayCounts, overlaySelected);
+  }}
+  const maxCount = histogramMax(counts);
+  const overlayMaxCount = overlayCounts ? histogramMax(overlayCounts) : 1;
   const canvas = el("plot" + panel.key);
   const area = plotArea(canvas, panel.colorScale ? (overlayCounts ? 2 : 1) : 0);
   const {{ctx, width, height, left, right, top, bottom}} = area;
@@ -2480,7 +2492,7 @@ function draw2d(panel, mask) {{
   panel.fitSummary = draw2dFit(ctx, area, panel, mask, x, y, xMin, xMax, yMin, yMax);
   panel.lastPlot = {{
     mode: "2d", area, xName, x2Name, yName, y2Name, xMin, xMax, yMin, yMax,
-    xBins, yBins, counts, overlayCounts, selected, overlaySelected,
+    xBins, yBins, counts, overlayCounts, selected, overlaySelected, density: panel.density,
     logz: panel.logz, colorScale
   }};
   setPanelStats(panel, selected, sumX / selected, sumY / selected);
@@ -2524,10 +2536,15 @@ function draw1dFacets(panel, mask, splitName) {{
     sumXAll += sumX;
     facets.push({{sector, counts, overlayCounts, selected, overlaySelected}});
   }}
-  const maxCount = Math.max(
-    1,
-    ...facets.map(f => maxOf(f.counts, 0)),
-    ...facets.map(f => f.overlayCounts ? maxOf(f.overlayCounts, 0) : 0)
+  if (panel.density) {{
+    for (const facet of facets) {{
+      normalizeHistogram(facet.counts, facet.selected);
+      normalizeHistogram(facet.overlayCounts, facet.overlaySelected);
+    }}
+  }}
+  const maxCount = histogramMax(
+    ...facets.map(f => f.counts),
+    ...facets.map(f => f.overlayCounts).filter(Boolean)
   );
   const canvas = el("plot" + panel.key);
   const area = plotArea(canvas);
@@ -2560,7 +2577,7 @@ function draw1dFacets(panel, mask, splitName) {{
       }}
       ctx.restore();
     }}
-    drawAxes(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", "counts"), panel.xticks, panel.yticks);
+    drawAxes(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks);
     if (x2Name && index === 0) drawOverlayLegend(ctx, facetAreaInfo, byName[xName].label, byName[x2Name].label);
     drawFacetTitle(ctx, facetAreaInfo, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
     if (panel.fitModel !== "none") {{
@@ -2575,7 +2592,7 @@ function draw1dFacets(panel, mask, splitName) {{
   }}
   panel.lastPlot = {{
     mode: "1d-facet", area, facets, splitName, xName, x2Name, xMin, xMax, bins,
-    selected: totalSelected, overlaySelected: totalOverlaySelected
+    selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density
   }};
   panel.fitSummary = panel.fitModel === "none" ? "No fit" : fitSummaries.join(" | ");
   setPanelStats(panel, totalSelected, sumXAll / totalSelected, NaN);
@@ -2638,9 +2655,15 @@ function draw2dFacets(panel, mask, splitName) {{
     sumYAll += sumY;
     facets.push({{sector, counts, overlayCounts, selected, overlaySelected, fitXs, fitYs, maxCount: 1, overlayMaxCount: 0, colorScale: null}});
   }}
+  if (panel.density) {{
+    for (const facet of facets) {{
+      normalizeHistogram(facet.counts, facet.selected);
+      normalizeHistogram(facet.overlayCounts, facet.overlaySelected);
+    }}
+  }}
   for (const facet of facets) {{
-    facet.maxCount = maxOf(facet.counts, 1);
-    facet.overlayMaxCount = facet.overlayCounts ? maxOf(facet.overlayCounts, 1) : 0;
+    facet.maxCount = histogramMax(facet.counts);
+    facet.overlayMaxCount = facet.overlayCounts ? histogramMax(facet.overlayCounts) : 0;
   }}
   const canvas = el("plot" + panel.key);
   const area = plotArea(canvas, panel.colorScale ? (x2Name || y2Name ? 2 : 1) : 0);
@@ -2702,7 +2725,7 @@ function draw2dFacets(panel, mask, splitName) {{
   }}
   panel.lastPlot = {{
     mode: "2d-facet", area, facets, splitName, xName, x2Name, yName, y2Name, xMin, xMax, yMin, yMax,
-    xBins, yBins, selected: totalSelected, overlaySelected: totalOverlaySelected,
+    xBins, yBins, selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density,
     logz: panel.logz
   }};
   panel.fitSummary = panel.fitModel === "none"
@@ -2780,7 +2803,7 @@ function draw2dColorScale(ctx, area, maxValue, overlayMaxValue, panel) {{
   const barWidth = 10;
   const primaryX = plotRight + 16;
   const overlayX = overlayMaxValue > 0 ? primaryX + 24 : 0;
-  const primary = drawColorBar(ctx, primaryX, barTop, barWidth, barHeight, maxValue, heatColor, panel.logz, "count", c);
+  const primary = drawColorBar(ctx, primaryX, barTop, barWidth, barHeight, maxValue, heatColor, panel.logz, panel.density ? "density" : "count", c);
   let overlay = null;
   if (overlayMaxValue > 0) {{
     overlay = drawColorBar(ctx, overlayX, barTop, barWidth, barHeight, overlayMaxValue, overlayHeatColor, panel.logz, "overlay", c);
@@ -3185,7 +3208,7 @@ function showHoverInfo(event, key) {{
     const x1 = lastPlot.xMin + (bin + 1) / lastPlot.bins * (lastPlot.xMax - lastPlot.xMin);
     const value = lastPlot.counts[bin];
     const overlayValue = lastPlot.overlayCounts ? lastPlot.overlayCounts[bin] : NaN;
-    const label = "count";
+    const label = lastPlot.density ? "density" : "count";
     const overlayText = lastPlot.x2Name ? `; ${{byName[lastPlot.x2Name].label}} ${{label}}=${{fmt(overlayValue)}}; overlay selected=${{lastPlot.overlaySelected.toLocaleString()}}` : "";
     setHoverText(key, `Panel ${{key}}; ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=${{bin + 1}}/${{lastPlot.bins}}; selected=${{lastPlot.selected.toLocaleString()}}`);
     hideColorScaleMarker(key);
@@ -3199,7 +3222,7 @@ function showHoverInfo(event, key) {{
   const y1 = lastPlot.yMin + (yi + 1) / lastPlot.yBins * (lastPlot.yMax - lastPlot.yMin);
   const value = lastPlot.counts[yi * lastPlot.xBins + xi];
   const overlayValue = lastPlot.overlayCounts ? lastPlot.overlayCounts[yi * lastPlot.xBins + xi] : NaN;
-  const label = "count";
+  const label = lastPlot.density ? "density" : "count";
   const overlayText = lastPlot.overlayCounts ? `; ${{overlay2dLabel(lastPlot)}} ${{label}}=${{fmt(overlayValue)}}; overlay selected=${{lastPlot.overlaySelected.toLocaleString()}}` : "";
   setHoverText(key, `Panel ${{key}}; ${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=(${{xi + 1}}, ${{yi + 1}}); selected=${{lastPlot.selected.toLocaleString()}}`);
   showColorScaleMarkers(key, lastPlot.colorScale, value, overlayValue);
@@ -3218,7 +3241,7 @@ function showFacetHover(px, py, key) {{
       const x1 = lastPlot.xMin + (bin + 1) / lastPlot.bins * (lastPlot.xMax - lastPlot.xMin);
       const value = facet.counts[bin];
       const overlayValue = facet.overlayCounts ? facet.overlayCounts[bin] : NaN;
-      const label = "count";
+      const label = lastPlot.density ? "density" : "count";
       const overlayText = lastPlot.x2Name ? `; ${{byName[lastPlot.x2Name].label}} ${{label}}=${{fmt(overlayValue)}}; overlay sector selected=${{facet.overlaySelected.toLocaleString()}}` : "";
       setHoverText(key, `Panel ${{key}}; sector ${{facet.sector}}; ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=${{bin + 1}}/${{lastPlot.bins}}; sector selected=${{facet.selected.toLocaleString()}}`);
       hideColorScaleMarker(key);
@@ -3232,7 +3255,7 @@ function showFacetHover(px, py, key) {{
     const y1 = lastPlot.yMin + (yi + 1) / lastPlot.yBins * (lastPlot.yMax - lastPlot.yMin);
     const value = facet.counts[yi * lastPlot.xBins + xi];
     const overlayValue = facet.overlayCounts ? facet.overlayCounts[yi * lastPlot.xBins + xi] : NaN;
-    const label = "count";
+    const label = lastPlot.density ? "density" : "count";
     const overlayText = facet.overlayCounts ? `; ${{overlay2dLabel(lastPlot)}} ${{label}}=${{fmt(overlayValue)}}; overlay sector selected=${{facet.overlaySelected.toLocaleString()}}` : "";
     setHoverText(key, `Panel ${{key}}; sector ${{facet.sector}}; ${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=(${{xi + 1}}, ${{yi + 1}}); sector selected=${{facet.selected.toLocaleString()}}`);
     showColorScaleMarkers(key, facet.colorScale, value, overlayValue);
@@ -3264,6 +3287,23 @@ function maxOf(values, fallback) {{
     if (values[i] > result) result = values[i];
   }}
   return result;
+}}
+
+function normalizeHistogram(values, total) {{
+  if (!values || total <= 0) return;
+  for (let i = 0; i < values.length; i++) values[i] /= total;
+}}
+
+function histogramMax(...arrays) {{
+  let result = 0;
+  for (const values of arrays) {{
+    if (!values) continue;
+    for (let i = 0; i < values.length; i++) {{
+      const value = values[i];
+      if (Number.isFinite(value) && value > result) result = value;
+    }}
+  }}
+  return result > 0 ? result : 1;
 }}
 
 function setPanelStats(panel, selected, meanX, meanY) {{
