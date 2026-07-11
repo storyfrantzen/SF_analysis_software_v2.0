@@ -1101,7 +1101,7 @@ body {{
 }}
 main {{
   display: grid;
-  grid-template-columns: minmax(260px, 340px) 1fr;
+  grid-template-columns: minmax(250px, 320px) 1fr;
   min-height: 100vh;
 }}
 aside {{
@@ -1113,6 +1113,33 @@ aside {{
 section {{
   padding: 14px;
   min-width: 0;
+}}
+.control-deck {{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px 16px;
+  align-items: start;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}}
+.control-panel {{
+  min-width: 0;
+}}
+.control-panel h2:first-child {{
+  margin-top: 0;
+}}
+.control-panel.wide {{
+  grid-column: 1 / -1;
+}}
+.control-actions {{
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}}
+.control-actions button {{
+  flex: 0 1 auto;
 }}
 h1 {{
   font-size: 17px;
@@ -1205,6 +1232,14 @@ button.active {{
 .filter-details[open] summary {{
   margin-bottom: 6px;
 }}
+#categoryFilters {{
+  column-width: 260px;
+  column-gap: 18px;
+}}
+#categoryFilters .category-group-title,
+#categoryFilters .filter-details {{
+  break-inside: avoid;
+}}
 .filter-row {{
   display: grid;
   grid-template-columns: 1fr 82px 82px auto;
@@ -1291,6 +1326,8 @@ th:first-child, td:first-child {{ text-align: left; }}
 @media (max-width: 820px) {{
   main {{ grid-template-columns: 1fr; }}
   aside {{ border-right: 0; border-bottom: 1px solid var(--border); }}
+  .control-deck {{ grid-template-columns: 1fr; }}
+  #categoryFilters {{ column-width: auto; }}
   .plot-grid.compare {{ grid-template-columns: 1fr; }}
   canvas {{ min-height: 340px; height: 58vh; }}
 }}
@@ -1359,48 +1396,6 @@ th:first-child, td:first-child {{ text-align: left; }}
       <label class="chip"><input id="logz" type="checkbox"> log color</label>
       <label class="chip"><input id="density" type="checkbox"> density</label>
     </div>
-    <h2>Derived Operations</h2>
-    <div class="operation-grid">
-      <label>Left <select id="opLeft"></select></label>
-      <div class="row">
-        <label>Operation <select id="opKind">
-          <option value="subtract">left - right</option>
-          <option value="add">left + right</option>
-          <option value="ratio">left / right</option>
-          <option value="fractional">(left - right) / right</option>
-        </select></label>
-        <label>Right <select id="opRight"></select></label>
-      </div>
-      <button type="button" id="addDerived">Add variable</button>
-      <div class="subtle" id="opStatus"></div>
-    </div>
-    <h2>Fit</h2>
-    <label>Model <select id="fitModel">
-      <option value="none">none</option>
-      <option value="gaussian">Gaussian</option>
-      <option value="linear">linear</option>
-      <option value="quadratic">quadratic</option>
-    </select></label>
-    <div class="subtle" id="fitSummary">No fit</div>
-    <h2>All Category Filters</h2>
-    <div id="categoryFilters"></div>
-    <h2>Range Filters</h2>
-    <div class="filter-row">
-      <select id="rangeVar"></select>
-      <input id="rangeMin" type="number" step="any" placeholder="min">
-      <input id="rangeMax" type="number" step="any" placeholder="max">
-      <button type="button" id="addRange">Add</button>
-    </div>
-    <div id="rangeFilters"></div>
-    <h2>Text Filters</h2>
-    <div id="textFilters"></div>
-    <div class="segmented">
-      <button type="button" id="resetFilters">Reset filters</button>
-      <button type="button" id="resetRanges">Reset axes</button>
-    </div>
-    <div class="segmented">
-      <button type="button" id="savePng">Save PNG</button>
-    </div>
   </aside>
   <section>
     <div class="stats">
@@ -1426,6 +1421,59 @@ th:first-child, td:first-child {{ text-align: left; }}
         </div>
         <div class="hover-info" id="hoverInfoB">Hover over a bin to inspect it.</div>
         <canvas id="plotB" width="1200" height="780"></canvas>
+      </div>
+    </div>
+    <div class="control-deck">
+      <div class="control-panel">
+        <h2>Range Filters</h2>
+        <div class="filter-row">
+          <select id="rangeVar"></select>
+          <input id="rangeMin" type="number" step="any" placeholder="min">
+          <input id="rangeMax" type="number" step="any" placeholder="max">
+          <button type="button" id="addRange">Add</button>
+        </div>
+        <div id="rangeFilters"></div>
+      </div>
+      <div class="control-panel">
+        <h2>Derived Operations</h2>
+        <div class="operation-grid">
+          <label>Left <select id="opLeft"></select></label>
+          <div class="row">
+            <label>Operation <select id="opKind">
+              <option value="subtract">left - right</option>
+              <option value="add">left + right</option>
+              <option value="ratio">left / right</option>
+              <option value="fractional">(left - right) / right</option>
+            </select></label>
+            <label>Right <select id="opRight"></select></label>
+          </div>
+          <button type="button" id="addDerived">Add variable</button>
+          <div class="subtle" id="opStatus"></div>
+        </div>
+      </div>
+      <div class="control-panel">
+        <h2>Fit</h2>
+        <label>Model <select id="fitModel">
+          <option value="none">none</option>
+          <option value="gaussian">Gaussian</option>
+          <option value="linear">linear</option>
+          <option value="quadratic">quadratic</option>
+        </select></label>
+        <div class="subtle" id="fitSummary">No fit</div>
+        <h2>Actions</h2>
+        <div class="control-actions">
+          <button type="button" id="resetFilters">Reset filters</button>
+          <button type="button" id="resetRanges">Reset axes</button>
+          <button type="button" id="savePng">Save PNG</button>
+        </div>
+      </div>
+      <div class="control-panel">
+        <h2>Text Filters</h2>
+        <div id="textFilters"></div>
+      </div>
+      <div class="control-panel wide">
+        <h2>All Category Filters</h2>
+        <div id="categoryFilters"></div>
       </div>
     </div>
     <div class="table-wrap"><table id="preview"></table></div>
