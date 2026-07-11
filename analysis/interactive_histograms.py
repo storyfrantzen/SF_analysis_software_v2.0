@@ -1175,17 +1175,26 @@ button.active {{
   font-weight: 600;
   margin-top: 10px;
 }}
+.axis-control {{
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: end;
+  margin: 8px 0;
+}}
+.axis-control label,
+.extra-variable label {{ margin: 0; }}
+.axis-button {{
+  width: 34px;
+  min-width: 34px;
+  padding: 7px 0;
+  text-align: center;
+}}
 .extra-variable {{
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px;
   align-items: end;
-}}
-.extra-variable label {{
-  margin: 0;
-}}
-.add-variable-button {{
-  width: 100%;
   margin: 6px 0 8px;
 }}
 .filter-details summary {{
@@ -1313,18 +1322,22 @@ th:first-child, td:first-child {{ text-align: left; }}
       </div>
       <div class="subtle" id="quickCategorySummary"></div>
     </div>
-    <label id="ylabel">Y <select id="yvar"></select></label>
+    <div class="axis-control" id="yAxisControl">
+      <label>Y <select id="yvar"></select></label>
+      <button type="button" class="axis-button" id="addYVar" aria-label="Add Y quantity">+</button>
+    </div>
     <div class="extra-variable" id="extraYControls">
       <label>Additional Y <select id="y2var"></select></label>
-      <button type="button" id="removeYVar">Remove</button>
+      <button type="button" class="axis-button" id="removeYVar" aria-label="Remove additional Y quantity">-</button>
     </div>
-    <button type="button" class="add-variable-button" id="addYVar">Add Y</button>
-    <label>X <select id="xvar"></select></label>
+    <div class="axis-control">
+      <label>X <select id="xvar"></select></label>
+      <button type="button" class="axis-button" id="addXVar" aria-label="Add X quantity">+</button>
+    </div>
     <div class="extra-variable" id="extraXControls">
       <label>Additional X <select id="x2var"></select></label>
-      <button type="button" id="removeXVar">Remove</button>
+      <button type="button" class="axis-button" id="removeXVar" aria-label="Remove additional X quantity">-</button>
     </div>
-    <button type="button" class="add-variable-button" id="addXVar">Add X</button>
     <label id="splitLabel">Split by sector <select id="splitVar"></select></label>
     <div class="row">
       <label>X bins <input id="xbins" type="number" min="5" max="400" value="80"></label>
@@ -1868,11 +1881,11 @@ function syncControlsFromPanel() {{
   el("panelB").classList.toggle("active", activePanel === "B");
   el("mode1d").classList.toggle("active", panel.mode === "1d");
   el("mode2d").classList.toggle("active", panel.mode === "2d");
-  el("ylabel").style.display = panel.mode === "2d" ? "" : "none";
-  const showExtraX = panel.mode === "1d" && Boolean(panel.x2var);
+  el("yAxisControl").style.display = panel.mode === "2d" ? "" : "none";
+  const showExtraX = Boolean(panel.x2var);
   const showExtraY = panel.mode === "2d" && Boolean(panel.y2var);
   el("extraXControls").style.display = showExtraX ? "" : "none";
-  el("addXVar").style.display = panel.mode === "1d" && !panel.x2var ? "" : "none";
+  el("addXVar").style.display = !panel.x2var ? "" : "none";
   el("extraYControls").style.display = showExtraY ? "" : "none";
   el("addYVar").style.display = panel.mode === "2d" && !panel.y2var ? "" : "none";
   el("yrange").style.display = panel.mode === "2d" ? "" : "none";
@@ -2219,9 +2232,11 @@ function draw2d(panel, mask) {{
   }}
   const xName = panel.xvar;
   const yName = panel.yvar;
+  const x2Name = panel.x2var && panel.x2var !== xName && columns[panel.x2var] ? panel.x2var : "";
   const y2Name = panel.y2var && panel.y2var !== yName && columns[panel.y2var] ? panel.y2var : "";
   const x = columns[xName];
   const y = columns[yName];
+  const x2 = x2Name ? columns[x2Name] : null;
   const y2 = y2Name ? columns[y2Name] : null;
   const xBins = panel.xbins;
   const yBins = panel.ybins;
@@ -2230,23 +2245,24 @@ function draw2d(panel, mask) {{
   const yMin = panel.ymin;
   const yMax = panel.ymax;
   const counts = new Float64Array(xBins * yBins);
-  const overlayCounts = y2 ? new Float64Array(xBins * yBins) : null;
+  const overlayCounts = (x2 || y2) ? new Float64Array(xBins * yBins) : null;
   let selected = 0, overlaySelected = 0, sumX = 0, sumY = 0;
   for (let i = 0; i < rowCount; i++) {{
     const xv = x[i], yv = y[i];
-    if (!mask[i] || !Number.isFinite(xv) || xv < xMin || xv > xMax || xMax <= xMin || yMax <= yMin) continue;
-    if (Number.isFinite(yv) && yv >= yMin && yv <= yMax) {{
-    const xi = Math.min(xBins - 1, Math.max(0, Math.floor((xv - xMin) / (xMax - xMin) * xBins)));
-    const yi = Math.min(yBins - 1, Math.max(0, Math.floor((yv - yMin) / (yMax - yMin) * yBins)));
-    counts[yi * xBins + xi] += 1;
-    selected++;
-    sumX += xv;
-    sumY += yv;
+    if (!mask[i] || xMax <= xMin || yMax <= yMin) continue;
+    if (Number.isFinite(xv) && xv >= xMin && xv <= xMax && Number.isFinite(yv) && yv >= yMin && yv <= yMax) {{
+      const xi = Math.min(xBins - 1, Math.max(0, Math.floor((xv - xMin) / (xMax - xMin) * xBins)));
+      const yi = Math.min(yBins - 1, Math.max(0, Math.floor((yv - yMin) / (yMax - yMin) * yBins)));
+      counts[yi * xBins + xi] += 1;
+      selected++;
+      sumX += xv;
+      sumY += yv;
     }}
-    if (y2) {{
-      const y2v = y2[i];
-      if (Number.isFinite(y2v) && y2v >= yMin && y2v <= yMax) {{
-        const xi = Math.min(xBins - 1, Math.max(0, Math.floor((xv - xMin) / (xMax - xMin) * xBins)));
+    if (overlayCounts) {{
+      const x2v = x2 ? x2[i] : xv;
+      const y2v = y2 ? y2[i] : yv;
+      if (Number.isFinite(x2v) && x2v >= xMin && x2v <= xMax && Number.isFinite(y2v) && y2v >= yMin && y2v <= yMax) {{
+        const xi = Math.min(xBins - 1, Math.max(0, Math.floor((x2v - xMin) / (xMax - xMin) * xBins)));
         const yi = Math.min(yBins - 1, Math.max(0, Math.floor((y2v - yMin) / (yMax - yMin) * yBins)));
         overlayCounts[yi * xBins + xi] += 1;
         overlaySelected++;
@@ -2298,12 +2314,13 @@ function draw2d(panel, mask) {{
     }}
     ctx.restore();
   }}
+  const xAxisLabel = x2Name ? `${{byName[xName].label}} / ${{byName[x2Name].label}}` : byName[xName].label;
   const yAxisLabel = y2Name ? `${{byName[yName].label}} / ${{byName[y2Name].label}}` : byName[yName].label;
-  drawAxes(ctx, area, xMin, xMax, yMin, yMax, byName[xName].label, yAxisLabel, panel.xticks, panel.yticks);
-  if (y2Name) drawOverlayLegend(ctx, area, byName[yName].label, byName[y2Name].label);
+  drawAxes(ctx, area, xMin, xMax, yMin, yMax, xAxisLabel, yAxisLabel, panel.xticks, panel.yticks);
+  if (x2Name || y2Name) drawOverlayLegend(ctx, area, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
   panel.fitSummary = draw2dFit(ctx, area, panel, mask, x, y, xMin, xMax, yMin, yMax);
   panel.lastPlot = {{
-    mode: "2d", area, xName, yName, y2Name, xMin, xMax, yMin, yMax,
+    mode: "2d", area, xName, x2Name, yName, y2Name, xMin, xMax, yMin, yMax,
     xBins, yBins, counts, overlayCounts, selected, overlaySelected, density: panel.density
   }};
   setPanelStats(panel, selected, sumX / selected, sumY / selected);
@@ -2408,9 +2425,11 @@ function draw1dFacets(panel, mask, splitName) {{
 function draw2dFacets(panel, mask, splitName) {{
   const xName = panel.xvar;
   const yName = panel.yvar;
+  const x2Name = panel.x2var && panel.x2var !== xName && columns[panel.x2var] ? panel.x2var : "";
   const y2Name = panel.y2var && panel.y2var !== yName && columns[panel.y2var] ? panel.y2var : "";
   const x = columns[xName];
   const y = columns[yName];
+  const x2 = x2Name ? columns[x2Name] : null;
   const y2 = y2Name ? columns[y2Name] : null;
   const split = columns[splitName];
   const xBins = panel.xbins;
@@ -2423,23 +2442,24 @@ function draw2dFacets(panel, mask, splitName) {{
   let totalSelected = 0, totalOverlaySelected = 0, sumXAll = 0, sumYAll = 0;
   for (let sector = 1; sector <= 6; sector++) {{
     const counts = new Float64Array(xBins * yBins);
-    const overlayCounts = y2 ? new Float64Array(xBins * yBins) : null;
+    const overlayCounts = (x2 || y2) ? new Float64Array(xBins * yBins) : null;
     let selected = 0, overlaySelected = 0, sumX = 0, sumY = 0;
     for (let i = 0; i < rowCount; i++) {{
       const xv = x[i], yv = y[i];
-      if (!mask[i] || Math.round(split[i]) !== sector || !Number.isFinite(xv) || xv < xMin || xv > xMax || xMax <= xMin || yMax <= yMin) continue;
-      if (Number.isFinite(yv) && yv >= yMin && yv <= yMax) {{
-      const xi = Math.min(xBins - 1, Math.max(0, Math.floor((xv - xMin) / (xMax - xMin) * xBins)));
-      const yi = Math.min(yBins - 1, Math.max(0, Math.floor((yv - yMin) / (yMax - yMin) * yBins)));
-      counts[yi * xBins + xi] += 1;
-      selected++;
-      sumX += xv;
-      sumY += yv;
+      if (!mask[i] || Math.round(split[i]) !== sector || xMax <= xMin || yMax <= yMin) continue;
+      if (Number.isFinite(xv) && xv >= xMin && xv <= xMax && Number.isFinite(yv) && yv >= yMin && yv <= yMax) {{
+        const xi = Math.min(xBins - 1, Math.max(0, Math.floor((xv - xMin) / (xMax - xMin) * xBins)));
+        const yi = Math.min(yBins - 1, Math.max(0, Math.floor((yv - yMin) / (yMax - yMin) * yBins)));
+        counts[yi * xBins + xi] += 1;
+        selected++;
+        sumX += xv;
+        sumY += yv;
       }}
-      if (y2) {{
-        const y2v = y2[i];
-        if (Number.isFinite(y2v) && y2v >= yMin && y2v <= yMax) {{
-          const xi = Math.min(xBins - 1, Math.max(0, Math.floor((xv - xMin) / (xMax - xMin) * xBins)));
+      if (overlayCounts) {{
+        const x2v = x2 ? x2[i] : xv;
+        const y2v = y2 ? y2[i] : yv;
+        if (Number.isFinite(x2v) && x2v >= xMin && x2v <= xMax && Number.isFinite(y2v) && y2v >= yMin && y2v <= yMax) {{
+          const xi = Math.min(xBins - 1, Math.max(0, Math.floor((x2v - xMin) / (xMax - xMin) * xBins)));
           const yi = Math.min(yBins - 1, Math.max(0, Math.floor((y2v - yMin) / (yMax - yMin) * yBins)));
           overlayCounts[yi * xBins + xi] += 1;
           overlaySelected++;
@@ -2505,14 +2525,15 @@ function draw2dFacets(panel, mask, splitName) {{
       }}
       ctx.restore();
     }}
+    const xAxisLabel = x2Name ? `${{byName[xName].label}} / ${{byName[x2Name].label}}` : byName[xName].label;
     const yAxisLabel = y2Name ? `${{byName[yName].label}} / ${{byName[y2Name].label}}` : byName[yName].label;
-    drawAxes(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, byName[xName].label, yAxisLabel, panel.xticks, panel.yticks);
-    if (y2Name && index === 0) drawOverlayLegend(ctx, facetAreaInfo, byName[yName].label, byName[y2Name].label);
+    drawAxes(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, xAxisLabel, yAxisLabel, panel.xticks, panel.yticks);
+    if ((x2Name || y2Name) && index === 0) drawOverlayLegend(ctx, facetAreaInfo, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
     drawFacetTitle(ctx, facetAreaInfo, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
     facet.area = facetAreaInfo;
   }}
   panel.lastPlot = {{
-    mode: "2d-facet", area, facets, splitName, xName, yName, y2Name, xMin, xMax, yMin, yMax,
+    mode: "2d-facet", area, facets, splitName, xName, x2Name, yName, y2Name, xMin, xMax, yMin, yMax,
     xBins, yBins, selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density
   }};
   panel.fitSummary = panel.fitModel === "none" ? "No fit" : "Fits are disabled while sector split is active";
@@ -2575,6 +2596,12 @@ function drawOverlayLegend(ctx, area, primaryLabel, overlayLabel) {{
   ctx.fillStyle = c.fg;
   ctx.fillText(overlayLabel, x + 15, y);
   ctx.restore();
+}}
+
+function overlay2dLabel(plot) {{
+  const xName = plot.x2Name || plot.xName;
+  const yName = plot.y2Name || plot.yName;
+  return `${{byName[yName]?.label || yName}} vs ${{byName[xName]?.label || xName}}`;
 }}
 
 function draw1dFit(ctx, area, panel, counts, xMin, xMax, yMin, yMax) {{
@@ -2851,7 +2878,7 @@ function showHoverInfo(event, key) {{
   const value = lastPlot.counts[yi * lastPlot.xBins + xi];
   const overlayValue = lastPlot.overlayCounts ? lastPlot.overlayCounts[yi * lastPlot.xBins + xi] : NaN;
   const label = lastPlot.density ? "density" : "count";
-  const overlayText = lastPlot.y2Name ? `; ${{byName[lastPlot.y2Name].label}} ${{label}}=${{fmt(overlayValue)}}; overlay selected=${{lastPlot.overlaySelected.toLocaleString()}}` : "";
+  const overlayText = lastPlot.overlayCounts ? `; ${{overlay2dLabel(lastPlot)}} ${{label}}=${{fmt(overlayValue)}}; overlay selected=${{lastPlot.overlaySelected.toLocaleString()}}` : "";
   setHoverText(key, `Panel ${{key}}; ${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=(${{xi + 1}}, ${{yi + 1}}); selected=${{lastPlot.selected.toLocaleString()}}`);
 }}
 
@@ -2882,7 +2909,7 @@ function showFacetHover(px, py, key) {{
     const value = facet.counts[yi * lastPlot.xBins + xi];
     const overlayValue = facet.overlayCounts ? facet.overlayCounts[yi * lastPlot.xBins + xi] : NaN;
     const label = lastPlot.density ? "density" : "count";
-    const overlayText = lastPlot.y2Name ? `; ${{byName[lastPlot.y2Name].label}} ${{label}}=${{fmt(overlayValue)}}; overlay sector selected=${{facet.overlaySelected.toLocaleString()}}` : "";
+    const overlayText = facet.overlayCounts ? `; ${{overlay2dLabel(lastPlot)}} ${{label}}=${{fmt(overlayValue)}}; overlay sector selected=${{facet.overlaySelected.toLocaleString()}}` : "";
     setHoverText(key, `Panel ${{key}}; sector ${{facet.sector}}; ${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=(${{xi + 1}}, ${{yi + 1}}); sector selected=${{facet.selected.toLocaleString()}}`);
     return;
   }}
@@ -2915,13 +2942,14 @@ function maxOf(values, fallback) {{
 
 function setPanelStats(panel, selected, meanX, meanY) {{
   panel.stats = {{selected, meanX, meanY}};
-  const overlayLabel = panel.mode === "2d" && panel.y2var && panel.y2var !== panel.yvar && byName[panel.y2var]
-    ? ` + ${{byName[panel.y2var].label}}`
-    : panel.mode === "1d" && panel.x2var && panel.x2var !== panel.xvar && byName[panel.x2var]
+  const overlayLabel = panel.mode === "1d" && panel.x2var && panel.x2var !== panel.xvar && byName[panel.x2var]
       ? ` + ${{byName[panel.x2var].label}}`
       : "";
-  const yLabel = panel.mode === "2d" ? `${{byName[panel.yvar]?.label || panel.yvar}}${{overlayLabel}} vs ` : "";
-  el("panelSummary" + panel.key).textContent = `${{yLabel}}${{byName[panel.xvar]?.label || panel.xvar}}${{panel.mode === "1d" ? overlayLabel : ""}}; selected ${{selected.toLocaleString()}}`;
+  const overlay2d = panel.mode === "2d" && ((panel.x2var && panel.x2var !== panel.xvar && byName[panel.x2var]) || (panel.y2var && panel.y2var !== panel.yvar && byName[panel.y2var]))
+    ? ` + ${{overlay2dLabel({{xName: panel.xvar, x2Name: panel.x2var, yName: panel.yvar, y2Name: panel.y2var}})}}`
+    : "";
+  const yLabel = panel.mode === "2d" ? `${{byName[panel.yvar]?.label || panel.yvar}} vs ` : "";
+  el("panelSummary" + panel.key).textContent = `${{yLabel}}${{byName[panel.xvar]?.label || panel.xvar}}${{panel.mode === "1d" ? overlayLabel : overlay2d}}; selected ${{selected.toLocaleString()}}`;
 }}
 
 function updateActiveStats() {{
