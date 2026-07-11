@@ -1178,10 +1178,31 @@ button.active {{
   gap: 6px;
   margin: 8px 0 10px;
 }}
+.quick-category-head {{
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: end;
+}}
+.quick-category-head label {{ margin: 0; }}
+.collapse-button {{
+  width: 30px;
+  min-width: 30px;
+  padding: 5px 0;
+}}
 .quick-category .chips {{
   max-height: 118px;
   overflow: auto;
   padding-right: 2px;
+}}
+.quick-category.collapsed #quickCategoryBody {{ display: none; }}
+.constraints-panel {{
+  margin: 10px 0 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}}
+.constraints-panel h2 {{
+  margin-top: 0;
 }}
 .filter-details {{
   border-top: 1px solid var(--border);
@@ -1450,13 +1471,28 @@ th:first-child, td:first-child {{ text-align: left; }}
     </div>
     <label id="splitLabel">Split by sector <select id="splitVar"></select></label>
     <div class="quick-category" id="quickCategoryBlock">
-      <label>Filter topology <select id="quickCategoryFilter"></select></label>
-      <div class="chips" id="quickCategoryChips"></div>
-      <div class="segmented">
-        <button type="button" id="quickCategoryAll">All</button>
-        <button type="button" id="quickCategoryNone">None</button>
+      <div class="quick-category-head">
+        <label>Filter topology <select id="quickCategoryFilter"></select></label>
+        <button type="button" class="collapse-button" id="toggleTopology" aria-expanded="true" aria-controls="quickCategoryBody">v</button>
       </div>
-      <div class="subtle" id="quickCategorySummary"></div>
+      <div id="quickCategoryBody">
+        <div class="chips" id="quickCategoryChips"></div>
+        <div class="segmented">
+          <button type="button" id="quickCategoryAll">All</button>
+          <button type="button" id="quickCategoryNone">None</button>
+        </div>
+        <div class="subtle" id="quickCategorySummary"></div>
+      </div>
+    </div>
+    <div class="constraints-panel">
+      <h2>Constraints</h2>
+      <div class="filter-row">
+        <select id="rangeVar"></select>
+        <input id="rangeMin" type="number" step="any" placeholder="min">
+        <input id="rangeMax" type="number" step="any" placeholder="max">
+        <button type="button" id="addRange">Add</button>
+      </div>
+      <div id="rangeFilters"></div>
     </div>
     <div class="row">
       <label>X bins <input id="xbins" type="number" min="5" max="400" value="80"></label>
@@ -1526,16 +1562,6 @@ th:first-child, td:first-child {{ text-align: left; }}
     </div>
     <div class="control-deck">
       <div class="control-panel">
-        <h2>Range Filters</h2>
-        <div class="filter-row">
-          <select id="rangeVar"></select>
-          <input id="rangeMin" type="number" step="any" placeholder="min">
-          <input id="rangeMax" type="number" step="any" placeholder="max">
-          <button type="button" id="addRange">Add</button>
-        </div>
-        <div id="rangeFilters"></div>
-      </div>
-      <div class="control-panel">
         <h2>Derived Operations</h2>
         <div class="operation-grid">
           <label>Left <select id="opLeft"></select></label>
@@ -1600,6 +1626,7 @@ let enabledPanels = ["A"];
 let activePanel = "A";
 let compareMode = false;
 let activeRanges = [];
+let topologyCollapsed = false;
 const categoryState = {{}};
 const panels = {{
   A: makePanel("A", payload.defaultX, payload.defaultY),
@@ -1894,6 +1921,7 @@ function renderQuickCategoryOptions() {{
   select.value = payload.categoricalFilters.some(filter => filter.name === previous)
     ? previous
     : payload.categoricalFilters[0].name;
+  syncTopologyCollapse();
 }}
 
 function renderQuickCategory() {{
@@ -1913,6 +1941,21 @@ function renderQuickCategory() {{
     }}));
   }});
   summary.textContent = categorySummaryText(filter);
+}}
+
+function toggleTopology() {{
+  topologyCollapsed = !topologyCollapsed;
+  syncTopologyCollapse();
+}}
+
+function syncTopologyCollapse() {{
+  const block = el("quickCategoryBlock");
+  const button = el("toggleTopology");
+  if (!block || !button) return;
+  block.classList.toggle("collapsed", topologyCollapsed);
+  button.textContent = topologyCollapsed ? ">" : "v";
+  button.setAttribute("aria-expanded", topologyCollapsed ? "false" : "true");
+  button.setAttribute("aria-label", topologyCollapsed ? "Expand filter topology" : "Collapse filter topology");
 }}
 
 function categoryChip(filter, value, text, afterChange) {{
@@ -1996,6 +2039,7 @@ function attachEvents() {{
   el("quickCategoryFilter").addEventListener("change", renderQuickCategory);
   el("quickCategoryAll").addEventListener("click", () => setCurrentCategoryValues(true));
   el("quickCategoryNone").addEventListener("click", () => setCurrentCategoryValues(false));
+  el("toggleTopology").addEventListener("click", toggleTopology);
   document.querySelectorAll("input[data-text-filter]").forEach(input => input.addEventListener("input", update));
   for (const key of panelKeys) {{
     el("plot" + key).addEventListener("mousemove", event => showHoverInfo(event, key));

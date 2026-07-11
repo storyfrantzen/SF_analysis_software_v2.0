@@ -133,7 +133,7 @@ of `results/`.
 The browser discovers stored scalar quantities, adds common derived views such
 as degree versions of angular branches and signed/unsigned `t` aliases, and
 supports 1D histograms, 2D histograms, detector/pass-flag toggles, text filters,
-arbitrary numeric range filters, and optional panel tabs that can be viewed
+numeric constraints, and optional panel tabs that can be viewed
 independently or side by side under the same filters from the toolbar above the
 plot. Axis tick-count
 sliders adjust every displayed axis, optional presentation labels can override
@@ -141,10 +141,11 @@ the displayed X/Y axis labels per panel, and the visible display can be saved as
 a PNG. 2D views can optionally draw color scales beside the histogram, including
 per-sector scales in split views and hover markers showing hovered-bin values
 on primary and overlay scales. Category
-filters also have a `Filter topology` selector near the split
-control, with the full category list kept as the final compact reference section
-below the plot, after range filters, derived operations, fit controls, reset
-buttons, PNG export, and the preview table. Active filters are also flagged
+filters also have a collapsible `Filter topology` selector near the split
+control, with numeric `Constraints` placed directly underneath it for quick
+filtering. The full category list is kept as the final compact reference section
+below the plot, after derived operations, fit controls, reset buttons, PNG
+export, and the preview table. Active filters are also flagged
 above each plot with a compact badge listing the number of active filter
 dimensions and a short summary. Common display/actions such as log
 color, density, reset, and PNG export sit above the plot. Density mode
