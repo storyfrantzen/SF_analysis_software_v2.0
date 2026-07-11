@@ -1132,15 +1132,6 @@ section {{
 .control-panel.wide {{
   grid-column: 1 / -1;
 }}
-.control-actions {{
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  align-items: center;
-}}
-.control-actions button {{
-  flex: 0 1 auto;
-}}
 h1 {{
   font-size: 17px;
   font-weight: 600;
@@ -1287,6 +1278,25 @@ canvas {{
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }}
 .plot-pane.hidden {{ display: none; }}
+.plot-toolbar {{
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 10px;
+}}
+.plot-toolbar .chips {{
+  align-items: center;
+}}
+.plot-actions {{
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}}
+.plot-actions button {{
+  flex: 0 0 auto;
+}}
 .plot-head {{
   display: flex;
   justify-content: space-between;
@@ -1392,10 +1402,6 @@ th:first-child, td:first-child {{ text-align: left; }}
       <label><span>X ticks <span id="xtickValue"></span></span><input id="xticks" type="range" min="1" max="40" step="0.5" value="6"></label>
       <label><span>Y ticks <span id="ytickValue"></span></span><input id="yticks" type="range" min="1" max="40" step="0.5" value="6"></label>
     </div>
-    <div class="chips">
-      <label class="chip"><input id="logz" type="checkbox"> log color</label>
-      <label class="chip"><input id="density" type="checkbox"> density</label>
-    </div>
   </aside>
   <section>
     <div class="stats">
@@ -1404,6 +1410,17 @@ th:first-child, td:first-child {{ text-align: left; }}
       <div class="stat"><span class="subtle">mean X</span><strong id="meanX">-</strong></div>
       <div class="stat"><span class="subtle">mean Y</span><strong id="meanY">-</strong></div>
       <div class="subtle" id="samplingNote"></div>
+    </div>
+    <div class="plot-toolbar">
+      <div class="chips">
+        <label class="chip"><input id="logz" type="checkbox"> log color</label>
+        <label class="chip"><input id="density" type="checkbox"> density</label>
+      </div>
+      <div class="plot-actions">
+        <button type="button" id="resetFilters">Reset filters</button>
+        <button type="button" id="resetRanges">Reset axes</button>
+        <button type="button" id="savePng">Save PNG</button>
+      </div>
     </div>
     <div class="plot-grid" id="plotGrid">
       <div class="plot-pane" id="plotPaneA">
@@ -1460,12 +1477,6 @@ th:first-child, td:first-child {{ text-align: left; }}
           <option value="quadratic">quadratic</option>
         </select></label>
         <div class="subtle" id="fitSummary">No fit</div>
-        <h2>Actions</h2>
-        <div class="control-actions">
-          <button type="button" id="resetFilters">Reset filters</button>
-          <button type="button" id="resetRanges">Reset axes</button>
-          <button type="button" id="savePng">Save PNG</button>
-        </div>
       </div>
       <div class="control-panel" id="textFilterPanel">
         <h2>Text Filters</h2>
