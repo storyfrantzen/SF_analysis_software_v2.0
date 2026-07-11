@@ -1434,6 +1434,7 @@ th:first-child, td:first-child {{ text-align: left; }}
       <div class="chips">
         <label class="chip"><input id="logz" type="checkbox"> log color</label>
         <label class="chip"><input id="density" type="checkbox"> density</label>
+        <label class="chip" id="colorScaleChip"><input id="colorScale" type="checkbox"> color scale</label>
       </div>
       <div class="plot-actions">
         <button type="button" id="resetFilters">Reset filters</button>
@@ -1574,6 +1575,7 @@ function makePanel(key, xvar, yvar) {{
     ymax: yInfo.max,
     logz: false,
     density: false,
+    colorScale: false,
     fitModel: "none",
     fitSummary: "No fit",
     lastPlot: null,
@@ -1902,7 +1904,7 @@ function renderTextFilters() {{
 }}
 
 function attachEvents() {{
-  ["x2var","y2var","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","fitModel"].forEach(id => {{
+  ["x2var","y2var","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","fitModel"].forEach(id => {{
     el(id).addEventListener("input", () => {{ readControlsToPanel(); update(); }});
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
@@ -1997,11 +1999,13 @@ function syncControlsFromPanel() {{
   el("ymax").value = panel.ymax;
   el("logz").checked = panel.logz;
   el("density").checked = panel.density;
+  el("colorScale").checked = panel.colorScale;
   el("fitModel").value = panel.fitModel || "none";
   el("fitSummary").textContent = panel.fitSummary || "No fit";
   renderPanelTabs();
   el("mode1d").classList.toggle("active", panel.mode === "1d");
   el("mode2d").classList.toggle("active", panel.mode === "2d");
+  el("colorScaleChip").style.display = panel.mode === "2d" ? "" : "none";
   el("yAxisControl").style.display = panel.mode === "2d" ? "" : "none";
   const showExtraX = Boolean(panel.x2var);
   const showExtraY = panel.mode === "2d" && Boolean(panel.y2var);
@@ -2051,6 +2055,7 @@ function readControlsToPanel() {{
   panel.ymax = parseNumber(el("ymax").value);
   panel.logz = el("logz").checked;
   panel.density = el("density").checked;
+  panel.colorScale = el("colorScale").checked;
   panel.fitModel = el("fitModel").value;
 }}
 
@@ -2199,7 +2204,7 @@ function updatePanelVisibility() {{
   }}
 }}
 
-function plotArea(canvas) {{
+function plotArea(canvas, showColorScale = false) {{
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
   canvas.width = Math.max(400, Math.floor(rect.width * dpr));
@@ -2208,7 +2213,7 @@ function plotArea(canvas) {{
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const width = canvas.width / dpr;
   const height = canvas.height / dpr;
-  return {{ctx, width, height, left: 76, right: 22, top: 18, bottom: 62}};
+  return {{ctx, width, height, left: 76, right: showColorScale ? 82 : 22, top: 18, bottom: 62}};
 }}
 
 function colors() {{
@@ -2399,7 +2404,7 @@ function draw2d(panel, mask) {{
   const maxCount = maxOf(counts, 1);
   const overlayMaxCount = overlayCounts ? maxOf(overlayCounts, 1) : 1;
   const canvas = el("plot" + panel.key);
-  const area = plotArea(canvas);
+  const area = plotArea(canvas, panel.colorScale);
   const {{ctx, width, height, left, right, top, bottom}} = area;
   ctx.clearRect(0, 0, width, height);
   const pw = width - left - right;
@@ -2439,6 +2444,7 @@ function draw2d(panel, mask) {{
   const yAxisLabel = y2Name ? `${{byName[yName].label}} / ${{byName[y2Name].label}}` : byName[yName].label;
   drawAxes(ctx, area, xMin, xMax, yMin, yMax, xAxisLabel, yAxisLabel, panel.xticks, panel.yticks);
   if (x2Name || y2Name) drawOverlayLegend(ctx, area, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
+  if (panel.colorScale) draw2dColorScale(ctx, area, maxCount, overlayCounts ? overlayMaxCount : 0, panel);
   panel.fitSummary = draw2dFit(ctx, area, panel, mask, x, y, xMin, xMax, yMin, yMax);
   panel.lastPlot = {{
     mode: "2d", area, xName, x2Name, yName, y2Name, xMin, xMax, yMin, yMax,
@@ -2606,7 +2612,7 @@ function draw2dFacets(panel, mask, splitName) {{
   const maxCount = Math.max(1, ...facets.map(f => maxOf(f.counts, 0)));
   const overlayMaxCount = Math.max(1, ...facets.map(f => f.overlayCounts ? maxOf(f.overlayCounts, 0) : 0));
   const canvas = el("plot" + panel.key);
-  const area = plotArea(canvas);
+  const area = plotArea(canvas, panel.colorScale);
   const {{ctx, width, height}} = area;
   ctx.clearRect(0, 0, width, height);
   const layout = facetLayout(area);
@@ -2653,6 +2659,7 @@ function draw2dFacets(panel, mask, splitName) {{
     drawFacetTitle(ctx, facetAreaInfo, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
     facet.area = facetAreaInfo;
   }}
+  if (panel.colorScale) draw2dColorScale(ctx, area, maxCount, (x2Name || y2Name) ? overlayMaxCount : 0, panel);
   panel.lastPlot = {{
     mode: "2d-facet", area, facets, splitName, xName, x2Name, yName, y2Name, xMin, xMax, yMin, yMax,
     xBins, yBins, selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density
@@ -2716,6 +2723,48 @@ function drawOverlayLegend(ctx, area, primaryLabel, overlayLabel) {{
   ctx.globalAlpha = 1;
   ctx.fillStyle = c.fg;
   ctx.fillText(overlayLabel, x + 15, y);
+  ctx.restore();
+}}
+
+function draw2dColorScale(ctx, area, maxValue, overlayMaxValue, panel) {{
+  const c = colors();
+  const ph = area.height - area.top - area.bottom;
+  const plotRight = area.width - area.right;
+  const barTop = area.top;
+  const barHeight = ph;
+  const barWidth = 10;
+  const primaryX = plotRight + 16;
+  const overlayX = overlayMaxValue > 0 ? primaryX + 24 : 0;
+  drawColorBar(ctx, primaryX, barTop, barWidth, barHeight, maxValue, heatColor, panel.logz, panel.density ? "density" : "count", c);
+  if (overlayMaxValue > 0) {{
+    drawColorBar(ctx, overlayX, barTop, barWidth, barHeight, overlayMaxValue, overlayHeatColor, panel.logz, "overlay", c);
+  }}
+}}
+
+function drawColorBar(ctx, x, y, width, height, maxValue, colorFn, logScale, label, c) {{
+  const steps = Math.max(20, Math.floor(height));
+  for (let i = 0; i < steps; i++) {{
+    const fraction = i / Math.max(1, steps - 1);
+    ctx.fillStyle = colorFn(fraction);
+    const y0 = y + height - (i + 1) / steps * height;
+    const y1 = y + height - i / steps * height;
+    ctx.fillRect(x, y0, width, Math.ceil(y1 - y0) + 1);
+  }}
+  ctx.strokeStyle = c.border;
+  ctx.strokeRect(x, y, width, height);
+  ctx.fillStyle = c.muted;
+  ctx.font = "11px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  const mid = logScale ? Math.expm1(Math.log1p(maxValue) * 0.5) : maxValue * 0.5;
+  ctx.fillText(fmt(maxValue), x + width + 4, y + 3);
+  ctx.fillText(fmt(mid), x + width + 4, y + height / 2);
+  ctx.fillText("0", x + width + 4, y + height - 3);
+  ctx.save();
+  ctx.translate(x + width / 2, y + height + 34);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = "center";
+  ctx.fillText(label, 0, 0);
   ctx.restore();
 }}
 

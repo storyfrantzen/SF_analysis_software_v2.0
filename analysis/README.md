@@ -137,7 +137,8 @@ arbitrary numeric range filters, and optional panel tabs that can be viewed
 independently or side by side under the same filters from the toolbar above the
 plot. Axis tick-count
 sliders adjust every displayed axis, and the visible display can be saved as a
-PNG. Category filters also have a `Filter topology` selector near the split
+PNG. 2D views can optionally draw a color scale beside the histogram. Category
+filters also have a `Filter topology` selector near the split
 control, with the full category list kept as the final compact reference section
 below the plot, after range filters, derived operations, fit controls, reset
 buttons, PNG export, and the preview table. Common display/actions such as log
