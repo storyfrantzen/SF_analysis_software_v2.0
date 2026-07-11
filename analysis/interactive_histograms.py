@@ -1300,7 +1300,6 @@ th:first-child, td:first-child {{ text-align: left; }}
       <div class="stat"><span class="subtle">mean Y</span><strong id="meanY">-</strong></div>
       <div class="subtle" id="samplingNote"></div>
     </div>
-    <div class="hover-info" id="hoverInfo">Hover over a bin to inspect it.</div>
     <div class="plot-grid" id="plotGrid">
       <div class="plot-pane" id="plotPaneA">
         <div class="plot-head">
@@ -1712,7 +1711,6 @@ function attachEvents() {{
     el("plot" + key).addEventListener("mousemove", event => showHoverInfo(event, key));
     el("plot" + key).addEventListener("mouseleave", () => {{
       hoverElement(key).textContent = "Hover over a bin to inspect it.";
-      el("hoverInfo").textContent = "Hover over a bin to inspect it.";
     }});
   }}
   window.addEventListener("resize", update);
@@ -2669,7 +2667,6 @@ function hoverElement(key) {{
 
 function setHoverText(key, text) {{
   hoverElement(key).textContent = text;
-  if (key === activePanel) el("hoverInfo").textContent = text;
 }}
 
 function showHoverInfo(event, key) {{
