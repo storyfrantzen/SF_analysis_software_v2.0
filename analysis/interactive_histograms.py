@@ -1097,7 +1097,7 @@ body {{
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 14px/1.42 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font: 13px/1.38 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }}
 main {{
   display: grid;
@@ -1133,14 +1133,14 @@ section {{
   grid-column: 1 / -1;
 }}
 h1 {{
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 600;
   margin: 0 0 4px;
 }}
 h2 {{
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  margin: 18px 0 8px;
+  margin: 14px 0 6px;
 }}
 .subtle {{ color: var(--muted); font-size: 12px; }}
 .row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }}
@@ -1150,8 +1150,8 @@ select, input, button {{
   color: inherit;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 7px 8px;
+  border-radius: 5px;
+  padding: 5px 7px;
   min-width: 0;
 }}
 button {{ cursor: pointer; }}
@@ -1162,14 +1162,14 @@ button.active {{
 }}
 .segmented {{ display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }}
 .segmented button {{ flex: 1 1 72px; }}
-.chips {{ display: flex; gap: 6px; flex-wrap: wrap; }}
+.chips {{ display: flex; gap: 5px; flex-wrap: wrap; }}
 .chip {{
   display: inline-flex;
   align-items: center;
   gap: 4px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 4px 8px;
+  padding: 3px 7px;
   background: var(--bg);
 }}
 .chip input {{ margin: 0; }}
@@ -1203,17 +1203,23 @@ button.active {{
 .axis-control label,
 .extra-variable label {{ margin: 0; }}
 .axis-button {{
-  width: 34px;
-  min-width: 34px;
-  padding: 7px 0;
+  width: 30px;
+  min-width: 30px;
+  padding: 5px 0;
   text-align: center;
+}}
+.plot-panel-controls {{
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
 }}
 .panel-tabs {{
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
   align-items: center;
-  margin: 8px 0;
+  margin: 0;
 }}
 .panel-tabs button {{
   flex: 0 1 auto;
@@ -1368,11 +1374,6 @@ th:first-child, td:first-child {{ text-align: left; }}
       <button type="button" id="mode1d">1D</button>
       <button type="button" id="mode2d">2D</button>
     </div>
-    <div class="panel-tabs" id="panelTabs"></div>
-    <div class="chips">
-      <button type="button" id="addPanel">+ panel</button>
-      <label class="chip"><input id="splitView" type="checkbox"> split view</label>
-    </div>
     <div class="axis-control" id="yAxisControl">
       <label>Y <select id="yvar"></select></label>
       <button type="button" class="axis-button" id="addYVar" aria-label="Add Y quantity">+</button>
@@ -1425,6 +1426,11 @@ th:first-child, td:first-child {{ text-align: left; }}
       <div class="subtle" id="samplingNote"></div>
     </div>
     <div class="plot-toolbar">
+      <div class="plot-panel-controls">
+        <div class="panel-tabs" id="panelTabs"></div>
+        <button type="button" id="addPanel">+ panel</button>
+        <label class="chip"><input id="splitView" type="checkbox"> split view</label>
+      </div>
       <div class="chips">
         <label class="chip"><input id="logz" type="checkbox"> log color</label>
         <label class="chip"><input id="density" type="checkbox"> density</label>
@@ -1438,7 +1444,7 @@ th:first-child, td:first-child {{ text-align: left; }}
     <div class="plot-grid" id="plotGrid">
       <div class="plot-pane" id="plotPaneA">
         <div class="plot-head">
-          <div class="plot-title" id="plotTitleA">View 1</div>
+          <div class="plot-title" id="plotTitleA">Panel 1</div>
           <div class="plot-summary" id="panelSummaryA"></div>
         </div>
         <div class="hover-info" id="hoverInfoA">Hover over a bin to inspect it.</div>
@@ -1446,7 +1452,7 @@ th:first-child, td:first-child {{ text-align: left; }}
       </div>
       <div class="plot-pane hidden" id="plotPaneB">
         <div class="plot-head">
-          <div class="plot-title" id="plotTitleB">View 2</div>
+          <div class="plot-title" id="plotTitleB">Panel 2</div>
           <div class="plot-summary" id="panelSummaryB"></div>
         </div>
         <div class="hover-info" id="hoverInfoB">Hover over a bin to inspect it.</div>
@@ -1524,7 +1530,7 @@ const variables = payload.variables;
 const byName = Object.fromEntries(variables.map(v => [v.name, v]));
 const integerVariables = new Set(variables.filter(v => v.integer).map(v => v.name));
 const panelKeys = ["A", "B"];
-const panelLabels = {{A: "View 1", B: "View 2"}};
+const panelLabels = {{A: "Panel 1", B: "Panel 2"}};
 let enabledPanels = ["A"];
 let activePanel = "A";
 let compareMode = false;
