@@ -144,7 +144,9 @@ on primary and overlay scales. Category
 filters also have a `Filter topology` selector near the split
 control, with the full category list kept as the final compact reference section
 below the plot, after range filters, derived operations, fit controls, reset
-buttons, PNG export, and the preview table. Common display/actions such as log
+buttons, PNG export, and the preview table. Active filters are also flagged
+directly on each plot with a compact badge listing the number of active filter
+dimensions and a short summary. Common display/actions such as log
 color, density, reset, and PNG export sit above the plot. Density mode
 normalizes bin contents while auto-scaling the vertical and color ranges to the
 normalized peak, so the display does not collapse when densities are below one.

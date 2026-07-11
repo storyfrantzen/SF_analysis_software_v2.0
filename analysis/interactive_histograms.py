@@ -2223,6 +2223,29 @@ function selectedMask() {{
   return mask;
 }}
 
+function activeFilterSummaries() {{
+  const summaries = [];
+  for (const filter of payload.categoricalFilters) {{
+    const selected = categoryState[filter.name]?.size ?? filter.values.length;
+    if (selected < filter.values.length) summaries.push(`${{filter.label}} ${{selected}}/${{filter.values.length}}`);
+  }}
+  for (const filter of activeRanges) {{
+    const label = byName[filter.name]?.label || filter.name;
+    const bounds = [];
+    if (Number.isFinite(filter.min)) bounds.push(`>=${{fmt(filter.min)}}`);
+    if (Number.isFinite(filter.max)) bounds.push(`<=${{fmt(filter.max)}}`);
+    if (bounds.length) summaries.push(`${{label}} ${{bounds.join(" ")}}`);
+  }}
+  document.querySelectorAll("input[data-text-filter]").forEach(input => {{
+    const needle = input.value.trim();
+    if (needle) {{
+      const filter = payload.textFilters.find(item => item.name === input.dataset.textFilter);
+      summaries.push(`${{filter?.label || input.dataset.textFilter}} contains "${{needle}}"`);
+    }}
+  }});
+  return summaries;
+}}
+
 function update() {{
   readControlsToPanel();
   const mask = selectedMask();
@@ -2271,8 +2294,44 @@ function colors() {{
     muted: style.getPropertyValue("--muted").trim(),
     border: style.getPropertyValue("--border").trim(),
     mark: style.getPropertyValue("--mark").trim(),
-    bg: style.getPropertyValue("--bg").trim()
+    bg: style.getPropertyValue("--bg").trim(),
+    accent: style.getPropertyValue("--accent").trim()
   }};
+}}
+
+function drawFilterBadge(ctx, area) {{
+  const summaries = activeFilterSummaries();
+  if (!summaries.length) return;
+  const c = colors();
+  const pw = area.width - area.left - area.right;
+  const x = area.left + 8;
+  const y = area.top + 8;
+  const detail = summaries.slice(0, 2).join("; ") + (summaries.length > 2 ? `; +${{summaries.length - 2}} more` : "");
+  const lines = [`Filters: ${{summaries.length}} active`, truncateText(detail, 62)];
+  ctx.save();
+  ctx.font = "11px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  const textWidth = Math.max(...lines.map(line => ctx.measureText(line).width));
+  const width = Math.min(Math.max(120, textWidth + 18), Math.max(130, pw - 16));
+  const height = 34;
+  ctx.globalAlpha = 0.92;
+  ctx.fillStyle = c.bg;
+  ctx.fillRect(x, y, width, height);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = c.accent || c.fg;
+  ctx.fillRect(x, y, 4, height);
+  ctx.strokeStyle = c.border;
+  ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
+  ctx.fillStyle = c.fg;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillText(lines[0], x + 9, y + 4);
+  ctx.fillStyle = c.muted;
+  ctx.fillText(lines[1], x + 9, y + 18, width - 14);
+  ctx.restore();
+}}
+
+function truncateText(text, maxChars) {{
+  return text.length <= maxChars ? text : text.slice(0, Math.max(0, maxChars - 3)) + "...";
 }}
 
 function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel, xTickCount, yTickCount) {{
@@ -2389,6 +2448,7 @@ function draw1d(panel, mask) {{
   drawAxes(ctx, area, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks);
   if (x2Name) drawOverlayLegend(ctx, area, byName[xName].label, byName[x2Name].label);
   panel.fitSummary = draw1dFit(ctx, area, panel, counts, xMin, xMax, 0, maxCount);
+  drawFilterBadge(ctx, area);
   panel.lastPlot = {{
     mode: "1d", area, xName, x2Name, xMin, xMax, bins, counts, overlayCounts,
     selected, overlaySelected, density: panel.density, yMax: maxCount
@@ -2490,6 +2550,7 @@ function draw2d(panel, mask) {{
   if (x2Name || y2Name) drawOverlayLegend(ctx, area, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
   const colorScale = panel.colorScale ? draw2dColorScale(ctx, area, maxCount, overlayCounts ? overlayMaxCount : 0, panel) : null;
   panel.fitSummary = draw2dFit(ctx, area, panel, mask, x, y, xMin, xMax, yMin, yMax);
+  drawFilterBadge(ctx, area);
   panel.lastPlot = {{
     mode: "2d", area, xName, x2Name, yName, y2Name, xMin, xMax, yMin, yMax,
     xBins, yBins, counts, overlayCounts, selected, overlaySelected, density: panel.density,
@@ -2590,6 +2651,7 @@ function draw1dFacets(panel, mask, splitName) {{
     }}
     facet.area = facetAreaInfo;
   }}
+  drawFilterBadge(ctx, area);
   panel.lastPlot = {{
     mode: "1d-facet", area, facets, splitName, xName, x2Name, xMin, xMax, bins,
     selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density
@@ -2723,6 +2785,7 @@ function draw2dFacets(panel, mask, splitName) {{
     }}
     facet.area = facetAreaInfo;
   }}
+  drawFilterBadge(ctx, area);
   panel.lastPlot = {{
     mode: "2d-facet", area, facets, splitName, xName, x2Name, yName, y2Name, xMin, xMax, yMin, yMax,
     xBins, yBins, selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density,
