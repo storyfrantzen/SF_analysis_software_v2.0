@@ -1350,15 +1350,6 @@ th:first-child, td:first-child {{ text-align: left; }}
       <button type="button" id="mode1d">1D</button>
       <button type="button" id="mode2d">2D</button>
     </div>
-    <div class="quick-category" id="quickCategoryBlock">
-      <label>Quick category <select id="quickCategoryFilter"></select></label>
-      <div class="chips" id="quickCategoryChips"></div>
-      <div class="segmented">
-        <button type="button" id="quickCategoryAll">All</button>
-        <button type="button" id="quickCategoryNone">None</button>
-      </div>
-      <div class="subtle" id="quickCategorySummary"></div>
-    </div>
     <div class="axis-control" id="yAxisControl">
       <label>Y <select id="yvar"></select></label>
       <button type="button" class="axis-button" id="addYVar" aria-label="Add Y quantity">+</button>
@@ -1395,6 +1386,15 @@ th:first-child, td:first-child {{ text-align: left; }}
     <div class="chips">
       <label class="chip"><input id="logz" type="checkbox"> log color</label>
       <label class="chip"><input id="density" type="checkbox"> density</label>
+    </div>
+    <div class="quick-category" id="quickCategoryBlock">
+      <label>Quick category <select id="quickCategoryFilter"></select></label>
+      <div class="chips" id="quickCategoryChips"></div>
+      <div class="segmented">
+        <button type="button" id="quickCategoryAll">All</button>
+        <button type="button" id="quickCategoryNone">None</button>
+      </div>
+      <div class="subtle" id="quickCategorySummary"></div>
     </div>
   </aside>
   <section>
