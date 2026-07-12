@@ -864,8 +864,7 @@ def build_payload(
             finite = numeric[np.isfinite(numeric)]
             if finite.size == 0:
                 continue
-            display_min = 0.0 if is_wrapped_phi_degree_column(name) else float(np.min(finite))
-            display_max = 360.0 if is_wrapped_phi_degree_column(name) else float(np.max(finite))
+            display_min, display_max = default_display_range(name, finite)
             variables.append(
                 {
                     "name": name,
@@ -931,6 +930,36 @@ def sector_split_candidates(arrays: dict[str, np.ndarray]) -> list[dict[str, Any
         if unique.size >= 2 and set(unique.tolist()).issubset({1, 2, 3, 4, 5, 6}):
             candidates.append({"name": name, "label": label_for(name)})
     return sorted(candidates, key=lambda item: sort_key(str(item["name"])))
+
+
+def default_display_range(name: str, finite: np.ndarray) -> tuple[float, float]:
+    if is_wrapped_phi_degree_column(name):
+        return 0.0, 360.0
+
+    data_min = float(np.min(finite))
+    data_max = float(np.max(finite))
+    if is_detector_code_column(name):
+        return data_min - 0.5, data_max + 0.5
+
+    if is_missing_mass_squared_column(name) and finite.size >= 20:
+        robust_min, robust_max = np.quantile(finite, (0.01, 0.99))
+        robust_min = float(robust_min)
+        robust_max = float(robust_max)
+        if np.isfinite(robust_min) and np.isfinite(robust_max) and robust_max > robust_min:
+            padding = 0.05 * (robust_max - robust_min)
+            return robust_min - padding, robust_max + padding
+
+    return data_min, data_max
+
+
+def is_detector_code_column(name: str) -> bool:
+    canonical = canonical_variable_name(name)
+    return canonical == "det" or canonical.endswith("det") or canonical.endswith("detector")
+
+
+def is_missing_mass_squared_column(name: str) -> bool:
+    canonical = canonical_variable_name(name)
+    return canonical in {"m2miss", "m2epx", "m2epi0x"} or canonical.startswith("missingmass2")
 
 
 def is_wrapped_phi_degree_column(name: str) -> bool:

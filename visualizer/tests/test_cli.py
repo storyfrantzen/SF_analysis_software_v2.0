@@ -10,6 +10,8 @@ import unittest
 
 import numpy as np
 
+from visualizer.app import build_payload
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -49,6 +51,25 @@ class VisualizerCliTests(unittest.TestCase):
 
     def test_package_entry_point_generates_standalone_html(self) -> None:
         self.run_visualizer([sys.executable, "-m", "visualizer"], "package.html")
+
+    def test_quantity_aware_default_axis_ranges(self) -> None:
+        central_missing_mass = np.linspace(-0.08, 0.08, 100)
+        arrays = {
+            "eDet": np.resize(np.array([1, 1, 2, 2], dtype=float), 102),
+            "m2_miss": np.concatenate(([-25.0], central_missing_mass, [40.0])),
+        }
+        payload = build_payload(
+            Path("events.npz"),
+            arrays,
+            metadata={},
+            downsample={"sampled": False, "originalRows": 102, "embeddedRows": 102},
+            title=None,
+        )
+        variables = {item["name"]: item for item in payload["variables"]}
+        self.assertEqual(variables["eDet"]["min"], 0.5)
+        self.assertEqual(variables["eDet"]["max"], 2.5)
+        self.assertGreater(variables["m2_miss"]["min"], -1.0)
+        self.assertLess(variables["m2_miss"]["max"], 1.0)
 
     def test_legacy_entry_point_remains_compatible(self) -> None:
         package_html = self.run_visualizer(

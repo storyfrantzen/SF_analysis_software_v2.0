@@ -58,6 +58,13 @@ preview sample, and run more mixture-fit refinement iterations. The fit summary
 records the selected detail and number of scanned shapes. Both Poisson WLS and
 unbinned likelihood fits operate independently in split views.
 
+Default axis ranges are quantity-aware. Discrete detector codes such as `eDet`
+receive half-category padding so the first and last detector bins are fully
+visible. Missing-mass-squared quantities use padded 1st-to-99th-percentile
+limits to keep rare extreme tails from dominating the initial display; the
+events remain embedded and available through manually entered axis limits and
+constraints.
+
 ## Source layout
 
 - `app.py` contains the current data adapters, payload builder, standalone HTML
