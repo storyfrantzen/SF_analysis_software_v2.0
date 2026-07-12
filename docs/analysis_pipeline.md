@@ -189,6 +189,10 @@ every 1,000,000 input events. Its optional trailing arguments are
 `[max_files] [progress_events]`; use `0` for `progress_events` to disable its
 progress messages.
 
+During reader construction, `hipo2root` suppresses the known CLAS12ROOT warning
+caused by `RICH::Particle` lacking the generic `detector` schema item. RICH is
+not used by this converter. Other HIPO and CLAS12ROOT diagnostics are preserved.
+
 For productions where malformed or incomplete HIPO files are possible, enable
 open-only input validation in the processing config:
 
