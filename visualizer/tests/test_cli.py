@@ -56,6 +56,7 @@ class VisualizerCliTests(unittest.TestCase):
         central_missing_mass = np.linspace(-0.08, 0.08, 100)
         arrays = {
             "eDet": np.resize(np.array([1, 1, 2, 2], dtype=float), 102),
+            "pSector": np.resize(np.arange(7, dtype=float), 102),
             "m2_miss": np.concatenate(([-25.0], central_missing_mass, [40.0])),
         }
         payload = build_payload(
@@ -70,6 +71,7 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertEqual(variables["eDet"]["max"], 2.5)
         self.assertGreater(variables["m2_miss"]["min"], -1.0)
         self.assertLess(variables["m2_miss"]["max"], 1.0)
+        self.assertIn("pSector", {item["name"] for item in payload["sectorSplits"]})
 
     def test_legacy_entry_point_remains_compatible(self) -> None:
         package_html = self.run_visualizer(
@@ -130,6 +132,11 @@ const unbinnedBackground = unbinnedLikelihoodFit(
 );
 const coarseShapes = unbinnedSignalCandidates("gaussian", {mean: 0, sigma: 1}, 1).length;
 const fineShapes = unbinnedSignalCandidates("gaussian", {mean: 0, sigma: 1}, 5).length;
+const protonFacets = orderSplitFacets(
+  "pSector",
+  [0, 1, 2, 3, 4, 5, 6].map(value => ({value, label: String(value), shortLabel: String(value)}))
+);
+const protonLayout = facetLayout({width: 1200}, protonFacets.length, "pSector", protonFacets);
 console.log(JSON.stringify({
   ordinaryCoeff: ordinary.coeff,
   poissonCoeff: poisson.coeff,
@@ -147,7 +154,9 @@ console.log(JSON.stringify({
   fineShapes,
   unbinnedNll40: unbinned40.nll,
   unbinnedNll100: unbinned100.nll,
-  unbinnedBackgroundDegree: unbinnedBackground.backgroundDegree
+  unbinnedBackgroundDegree: unbinnedBackground.backgroundDegree,
+  protonFacetValues: protonFacets.map(facet => facet.value),
+  protonFacetPositions: protonLayout.positions
 }));
 """
         script_path = self.directory / "weighted_fit_test.js"
@@ -178,6 +187,19 @@ console.log(JSON.stringify({
             result["unbinnedNll40"], result["unbinnedNll100"], places=8
         )
         self.assertEqual(result["unbinnedBackgroundDegree"], 3)
+        self.assertEqual(result["protonFacetValues"], [1, 2, 3, 4, 5, 6, 0])
+        self.assertEqual(
+            result["protonFacetPositions"],
+            [
+                {"row": 0, "col": 0},
+                {"row": 0, "col": 1},
+                {"row": 0, "col": 2},
+                {"row": 1, "col": 0},
+                {"row": 1, "col": 1},
+                {"row": 1, "col": 2},
+                {"row": 2, "col": 1},
+            ],
+        )
 
 
 if __name__ == "__main__":

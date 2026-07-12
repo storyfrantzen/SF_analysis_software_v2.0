@@ -927,7 +927,7 @@ def sector_split_candidates(arrays: dict[str, np.ndarray]) -> list[dict[str, Any
         if finite.size == 0 or not np.all(np.isclose(finite, np.rint(finite))):
             continue
         unique = np.unique(finite.astype(np.int64))
-        if unique.size >= 2 and set(unique.tolist()).issubset({1, 2, 3, 4, 5, 6}):
+        if unique.size >= 2 and set(unique.tolist()).issubset({0, 1, 2, 3, 4, 5, 6}):
             candidates.append({"name": name, "label": label_for(name)})
     return sorted(candidates, key=lambda item: sort_key(str(item["name"])))
 
@@ -2813,20 +2813,44 @@ function fillSectorSelect(selected) {{
 function splitFacets(splitName) {{
   const filter = payload.categoricalFilters.find(item => item.name === splitName);
   if (filter) {{
-    return filter.values.map((value, index) => ({{
+    const definitions = filter.values.map((value, index) => ({{
       value: Number(value),
-      label: filter.labels[index] || String(value),
+      label: isProtonSectorSplit(splitName) && Math.round(Number(value)) === 0
+        ? "CD proton (sector 0)"
+        : filter.labels[index] || String(value),
       shortLabel: shortFacetLabel(filter, value, index)
     }}));
+    return orderSplitFacets(splitName, definitions);
   }}
   const values = columns[splitName];
   if (!values) return [];
   const unique = Array.from(new Set(Array.from(values).filter(Number.isFinite).map(value => Math.round(value)))).sort((a, b) => a - b).slice(0, 12);
-  return unique.map(value => ({{value, label: String(value), shortLabel: String(value)}}));
+  return orderSplitFacets(splitName, unique.map(value => ({{
+    value,
+    label: isProtonSectorSplit(splitName) && value === 0 ? "CD proton (sector 0)" : String(value),
+    shortLabel: isProtonSectorSplit(splitName) && value === 0 ? "CD" : String(value)
+  }})));
+}}
+
+function isProtonSectorSplit(name) {{
+  const canonical = String(name || "").toLowerCase().replace(/^rec_/, "").replace(/^gen_/, "").replace(/_/g, "");
+  return canonical === "psector" || canonical === "protonsector";
+}}
+
+function orderSplitFacets(splitName, definitions) {{
+  if (!isProtonSectorSplit(splitName)) return definitions;
+  return definitions.slice().sort((left, right) => {{
+    const leftValue = Math.round(Number(left.value));
+    const rightValue = Math.round(Number(right.value));
+    if (leftValue === 0 && rightValue !== 0) return 1;
+    if (rightValue === 0 && leftValue !== 0) return -1;
+    return leftValue - rightValue;
+  }});
 }}
 
 function shortFacetLabel(filter, value, index) {{
   if (filter.name === SAMPLE_COLUMN) return `sample ${{Number(value) + 1}}`;
+  if (isProtonSectorSplit(filter.name) && Math.round(Number(value)) === 0) return "CD";
   if (filter.name.toLowerCase().includes("sector")) return `S${{Math.round(Number(value))}}`;
   return filter.labels[index] || String(value);
 }}
@@ -4034,7 +4058,7 @@ function draw1dFacets(panel, mask, splitName) {{
   const {{ctx, width, height}} = area;
   const c = colors();
   ctx.clearRect(0, 0, width, height);
-  const layout = facetLayout(area, facets.length);
+  const layout = facetLayout(area, facets.length, splitName, facets);
   const fitSummaries = [];
   for (let index = 0; index < facets.length; index++) {{
     const facet = facets[index];
@@ -4155,7 +4179,7 @@ function draw2dFacets(panel, mask, splitName) {{
   const area = plotArea(canvas, panel.colorScale ? (x2Name || y2Name ? 2 : 1) : 0);
   const {{ctx, width, height}} = area;
   ctx.clearRect(0, 0, width, height);
-  const layout = facetLayout(area, facets.length);
+  const layout = facetLayout(area, facets.length, splitName, facets);
   const fitSummaries = [];
   for (let index = 0; index < facets.length; index++) {{
     const facet = facets[index];
@@ -4223,8 +4247,24 @@ function draw2dFacets(panel, mask, splitName) {{
   setPanelStats(panel, totalSelected, sumXAll / totalSelected, sumYAll / totalSelected);
 }}
 
-function facetLayout(area, facetCount) {{
+function facetLayout(area, facetCount, splitName = "", facets = null) {{
   const count = Math.max(1, facetCount || 1);
+  const protonSectorValues = Array.isArray(facets) ? facets.map(facet => Math.round(Number(facet.value))) : [];
+  const centeredCdLayout = isProtonSectorSplit(splitName)
+    && count === 7
+    && [0, 1, 2, 3, 4, 5, 6].every(value => protonSectorValues.includes(value));
+  if (centeredCdLayout) {{
+    return {{
+      cols: 3,
+      rows: 3,
+      positions: [
+        {{row: 0, col: 0}}, {{row: 0, col: 1}}, {{row: 0, col: 2}},
+        {{row: 1, col: 0}}, {{row: 1, col: 1}}, {{row: 1, col: 2}},
+        {{row: 2, col: 1}}
+      ],
+      gapX: 16, gapY: 30, outerLeft: 8, outerRight: 8, outerTop: 4, outerBottom: 8
+    }};
+  }}
   const cols = count <= 2 ? count : area.width >= 900 ? 3 : 2;
   const rows = Math.ceil(count / cols);
   return {{cols, rows, gapX: 16, gapY: 30, outerLeft: 8, outerRight: 8, outerTop: 4, outerBottom: 8}};
@@ -4233,8 +4273,9 @@ function facetLayout(area, facetCount) {{
 function panelArea(area, layout, index, colorScaleSlots = 0) {{
   const cellW = (area.width - layout.outerLeft - layout.outerRight - (layout.cols - 1) * layout.gapX) / layout.cols;
   const cellH = (area.height - layout.outerTop - layout.outerBottom - (layout.rows - 1) * layout.gapY) / layout.rows;
-  const col = index % layout.cols;
-  const row = Math.floor(index / layout.cols);
+  const position = layout.positions ? layout.positions[index] : null;
+  const col = position ? position.col : index % layout.cols;
+  const row = position ? position.row : Math.floor(index / layout.cols);
   const cellLeft = layout.outerLeft + col * (cellW + layout.gapX);
   const cellTop = layout.outerTop + row * (cellH + layout.gapY);
   const miniLeft = 52, miniRight = colorScaleSlots > 1 ? 96 : colorScaleSlots > 0 ? 68 : 8, miniTop = 24, miniBottom = 40;

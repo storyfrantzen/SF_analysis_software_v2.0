@@ -65,6 +65,10 @@ limits to keep rare extreme tails from dominating the initial display; the
 events remain embedded and available through manually entered axis limits and
 constraints.
 
+Proton-sector split views distinguish FD sectors 1-6 from sector 0, which
+denotes CD protons. The FD facets occupy the first two three-column rows in
+sector order, and the CD facet is centered by itself in the third row.
+
 ## Source layout
 
 - `app.py` contains the current data adapters, payload builder, standalone HTML
