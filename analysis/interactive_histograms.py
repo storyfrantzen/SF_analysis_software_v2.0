@@ -1604,6 +1604,15 @@ canvas {{
   border-radius: 8px;
   background: var(--bg);
 }}
+.hover-overlay {{
+  position: absolute;
+  z-index: 2;
+  display: none;
+  pointer-events: none;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+}}
 .plot-grid {{
   display: grid;
   grid-template-columns: 1fr;
@@ -1941,6 +1950,7 @@ th:first-child, td:first-child {{ text-align: left; }}
         <div class="filter-badge" id="filterBadgeA"><strong></strong><span></span></div>
         <div class="hover-info" id="hoverInfoA">Hover over a bin to inspect it.</div>
         <canvas id="plotA" width="1200" height="780"></canvas>
+        <canvas class="hover-overlay" id="hoverOverlayA" aria-hidden="true"></canvas>
         <div class="color-scale-hover" id="colorScaleHoverAPrimary"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
         <div class="color-scale-hover" id="colorScaleHoverAOverlay"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
       </div>
@@ -1952,6 +1962,7 @@ th:first-child, td:first-child {{ text-align: left; }}
         <div class="filter-badge" id="filterBadgeB"><strong></strong><span></span></div>
         <div class="hover-info" id="hoverInfoB">Hover over a bin to inspect it.</div>
         <canvas id="plotB" width="1200" height="780"></canvas>
+        <canvas class="hover-overlay" id="hoverOverlayB" aria-hidden="true"></canvas>
         <div class="color-scale-hover" id="colorScaleHoverBPrimary"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
         <div class="color-scale-hover" id="colorScaleHoverBOverlay"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
       </div>
@@ -3065,6 +3076,7 @@ function attachEvents() {{
     el("plot" + key).addEventListener("mousemove", event => showHoverInfo(event, key));
     el("plot" + key).addEventListener("mouseleave", () => {{
       hoverElement(key).textContent = "Hover over a bin to inspect it.";
+      clearHoverOverlay(key);
       hideColorScaleMarker(key);
     }});
   }}
@@ -3342,6 +3354,7 @@ function update() {{
   updatePanelVisibility();
   updateFilterBadges();
   for (const key of visiblePanelKeys()) {{
+    clearHoverOverlay(key);
     hideColorScaleMarker(key);
     const panel = panels[key];
     if (!columns[panel.xvar]) continue;
@@ -3733,7 +3746,7 @@ function draw1dFacets(panel, mask, splitName) {{
   }}
   panel.lastPlot = {{
     mode: "1d-facet", area, facets, splitName, xName, x2Name, xMin, xMax, bins,
-    selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density
+    selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density, yMax: maxCount
   }};
   panel.fitSummary = panel.fitModel === "none" ? "No fit" : fitSummaries.join(" | ");
   setPanelStats(panel, totalSelected, sumXAll / totalSelected, NaN);
@@ -4287,8 +4300,107 @@ function hoverElement(key) {{
   return el("hoverInfo" + key);
 }}
 
+function hoverOverlayElement(key) {{
+  return el("hoverOverlay" + key);
+}}
+
 function setHoverText(key, text) {{
   hoverElement(key).textContent = text;
+}}
+
+function clearHoverOverlay(key) {{
+  const overlay = hoverOverlayElement(key);
+  if (!overlay) return;
+  const ctx = overlay.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
+  overlay.style.display = "none";
+}}
+
+function prepareHoverOverlay(key) {{
+  const canvas = el("plot" + key);
+  const overlay = hoverOverlayElement(key);
+  const pane = el("plotPane" + key);
+  if (!canvas || !overlay || !pane) return null;
+  const canvasRect = canvas.getBoundingClientRect();
+  if (canvasRect.width <= 0 || canvasRect.height <= 0) return null;
+  const paneRect = pane.getBoundingClientRect();
+  overlay.style.left = (canvasRect.left - paneRect.left) + "px";
+  overlay.style.top = (canvasRect.top - paneRect.top) + "px";
+  overlay.style.width = canvasRect.width + "px";
+  overlay.style.height = canvasRect.height + "px";
+  overlay.width = canvas.width;
+  overlay.height = canvas.height;
+  overlay.style.display = "block";
+  const ctx = overlay.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
+  ctx.setTransform(overlay.width / canvasRect.width, 0, 0, overlay.height / canvasRect.height, 0, 0);
+  return {{ctx, width: canvasRect.width, height: canvasRect.height}};
+}}
+
+function drawHoverCrosshair(key, area, xPixel, yPixel, xValue, yValue, yLabelText = null) {{
+  const overlay = prepareHoverOverlay(key);
+  if (!overlay) return;
+  const {{ctx, width, height}} = overlay;
+  const c = colors();
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  const x = clamp(xPixel, area.left, area.left + pw);
+  const y = clamp(yPixel, area.top, area.top + ph);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(area.left, area.top, pw, ph);
+  ctx.clip();
+  ctx.globalAlpha = 0.82;
+  ctx.strokeStyle = c.fg;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([5, 4]);
+  ctx.beginPath();
+  ctx.moveTo(x, area.top);
+  ctx.lineTo(x, area.top + ph);
+  ctx.moveTo(area.left, y);
+  ctx.lineTo(area.left + pw, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 0.95;
+  ctx.beginPath();
+  ctx.arc(x, y, 3, 0, Math.PI * 2);
+  ctx.fillStyle = c.fg;
+  ctx.fill();
+  ctx.restore();
+  drawHoverAxisLabel(ctx, fmt(xValue), x, area.top + ph + 7, "x", width, height);
+  drawHoverAxisLabel(ctx, yLabelText || fmt(yValue), area.left - 8, y, "y", width, height);
+}}
+
+function drawHoverAxisLabel(ctx, text, x, y, placement, width, height) {{
+  const c = colors();
+  const label = String(text);
+  ctx.save();
+  ctx.font = "11px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  ctx.textBaseline = "middle";
+  const padX = 5;
+  const boxH = 18;
+  const boxW = Math.max(28, ctx.measureText(label).width + padX * 2);
+  let left;
+  let top;
+  if (placement === "x") {{
+    left = clamp(x - boxW / 2, 2, width - boxW - 2);
+    top = clamp(y, 2, height - boxH - 2);
+  }} else {{
+    left = clamp(x - boxW, 2, width - boxW - 2);
+    top = clamp(y - boxH / 2, 2, height - boxH - 2);
+  }}
+  ctx.fillStyle = c.bg;
+  ctx.globalAlpha = 0.96;
+  ctx.fillRect(left, top, boxW, boxH);
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = c.border;
+  ctx.strokeRect(left, top, boxW, boxH);
+  ctx.fillStyle = c.fg;
+  ctx.textAlign = "center";
+  ctx.fillText(label, left + boxW / 2, top + boxH / 2);
+  ctx.restore();
 }}
 
 function hideColorScaleMarker(key) {{
@@ -4343,6 +4455,7 @@ function showHoverInfo(event, key) {{
   const ph = area.height - area.top - area.bottom;
   if (px < area.left || px > area.left + pw || py < area.top || py > area.top + ph) {{
     setHoverText(key, "Hover over a bin to inspect it.");
+    clearHoverOverlay(key);
     hideColorScaleMarker(key);
     return;
   }}
@@ -4355,6 +4468,10 @@ function showHoverInfo(event, key) {{
     const label = lastPlot.density ? "density" : "count";
     const overlayText = lastPlot.x2Name ? `; ${{byName[lastPlot.x2Name].label}} ${{label}}=${{fmt(overlayValue)}}; overlay selected=${{lastPlot.overlaySelected.toLocaleString()}}` : "";
     setHoverText(key, `Panel ${{key}}; ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=${{bin + 1}}/${{lastPlot.bins}}; selected=${{lastPlot.selected.toLocaleString()}}`);
+    const xCenter = (x0 + x1) / 2;
+    const xPixel = area.left + (bin + 0.5) / lastPlot.bins * pw;
+    const yPixel = area.top + ph - (lastPlot.yMax > 0 ? value / lastPlot.yMax * ph : 0);
+    drawHoverCrosshair(key, area, xPixel, yPixel, xCenter, value);
     hideColorScaleMarker(key);
     return;
   }}
@@ -4369,6 +4486,11 @@ function showHoverInfo(event, key) {{
   const label = lastPlot.density ? "density" : "count";
   const overlayText = lastPlot.overlayCounts ? `; ${{overlay2dLabel(lastPlot)}} ${{label}}=${{fmt(overlayValue)}}; overlay selected=${{lastPlot.overlaySelected.toLocaleString()}}` : "";
   setHoverText(key, `Panel ${{key}}; ${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=(${{xi + 1}}, ${{yi + 1}}); selected=${{lastPlot.selected.toLocaleString()}}`);
+  const xCenter = (x0 + x1) / 2;
+  const yCenter = (y0 + y1) / 2;
+  const xPixel = area.left + (xi + 0.5) / lastPlot.xBins * pw;
+  const yPixel = area.top + ph - (yi + 0.5) / lastPlot.yBins * ph;
+  drawHoverCrosshair(key, area, xPixel, yPixel, xCenter, yCenter);
   showColorScaleMarkers(key, lastPlot.colorScale, value, overlayValue);
 }}
 
@@ -4388,6 +4510,10 @@ function showFacetHover(px, py, key) {{
       const label = lastPlot.density ? "density" : "count";
       const overlayText = lastPlot.x2Name ? `; ${{byName[lastPlot.x2Name].label}} ${{label}}=${{fmt(overlayValue)}}; overlay split selected=${{facet.overlaySelected.toLocaleString()}}` : "";
       setHoverText(key, `Panel ${{key}}; ${{facet.label}}; ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=${{bin + 1}}/${{lastPlot.bins}}; split selected=${{facet.selected.toLocaleString()}}`);
+      const xCenter = (x0 + x1) / 2;
+      const xPixel = area.left + (bin + 0.5) / lastPlot.bins * pw;
+      const yPixel = area.top + ph - (lastPlot.yMax > 0 ? value / lastPlot.yMax * ph : 0);
+      drawHoverCrosshair(key, area, xPixel, yPixel, xCenter, value);
       hideColorScaleMarker(key);
       return;
     }}
@@ -4402,10 +4528,16 @@ function showFacetHover(px, py, key) {{
     const label = lastPlot.density ? "density" : "count";
     const overlayText = facet.overlayCounts ? `; ${{overlay2dLabel(lastPlot)}} ${{label}}=${{fmt(overlayValue)}}; overlay split selected=${{facet.overlaySelected.toLocaleString()}}` : "";
     setHoverText(key, `Panel ${{key}}; ${{facet.label}}; ${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=(${{xi + 1}}, ${{yi + 1}}); split selected=${{facet.selected.toLocaleString()}}`);
+    const xCenter = (x0 + x1) / 2;
+    const yCenter = (y0 + y1) / 2;
+    const xPixel = area.left + (xi + 0.5) / lastPlot.xBins * pw;
+    const yPixel = area.top + ph - (yi + 0.5) / lastPlot.yBins * ph;
+    drawHoverCrosshair(key, area, xPixel, yPixel, xCenter, yCenter);
     showColorScaleMarkers(key, facet.colorScale, value, overlayValue);
     return;
   }}
   setHoverText(key, "Hover over a bin to inspect it.");
+  clearHoverOverlay(key);
   hideColorScaleMarker(key);
 }}
 
