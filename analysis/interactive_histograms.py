@@ -1354,6 +1354,7 @@ def render_html(payload: dict[str, Any]) -> str:
   --border: color-mix(in srgb, CanvasText 20%, Canvas);
   --accent: Highlight;
   --accent-text: HighlightText;
+  --filter-alert: color-mix(in srgb, red 78%, CanvasText);
   --mark: color-mix(in srgb, Highlight 78%, CanvasText);
 }}
 * {{ box-sizing: border-box; }}
@@ -1632,7 +1633,7 @@ canvas {{
   margin: 6px 0 7px;
   padding: 5px 8px;
   border: 1px solid var(--border);
-  border-left: 4px solid var(--accent);
+  border-left: 4px solid var(--filter-alert);
   border-radius: 6px;
   background: var(--bg);
   color: var(--fg);
@@ -1820,8 +1821,8 @@ button.remote-entry {{
   min-height: 390px;
 }}
 .hover-info {{
-  min-height: 24px;
-  margin: -2px 0 8px;
+  display: none;
+  margin: 0 0 8px;
   color: var(--muted);
   font-size: 12px;
 }}
@@ -1981,7 +1982,7 @@ th:first-child, td:first-child {{ text-align: left; }}
         </div>
         <div class="quantity-banner" id="quantityBannerA"><span class="quantity-mode"></span><strong></strong><span class="quantity-detail"></span></div>
         <div class="filter-badge" id="filterBadgeA"><strong></strong><span></span></div>
-        <div class="hover-info" id="hoverInfoA">Hover over a bin to inspect it.</div>
+        <div class="hover-info" id="hoverInfoA"></div>
         <canvas id="plotA" width="1200" height="780"></canvas>
         <canvas class="hover-overlay" id="hoverOverlayA" aria-hidden="true"></canvas>
         <div class="color-scale-hover" id="colorScaleHoverAPrimary"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
@@ -1994,7 +1995,7 @@ th:first-child, td:first-child {{ text-align: left; }}
         </div>
         <div class="quantity-banner" id="quantityBannerB"><span class="quantity-mode"></span><strong></strong><span class="quantity-detail"></span></div>
         <div class="filter-badge" id="filterBadgeB"><strong></strong><span></span></div>
-        <div class="hover-info" id="hoverInfoB">Hover over a bin to inspect it.</div>
+        <div class="hover-info" id="hoverInfoB"></div>
         <canvas id="plotB" width="1200" height="780"></canvas>
         <canvas class="hover-overlay" id="hoverOverlayB" aria-hidden="true"></canvas>
         <div class="color-scale-hover" id="colorScaleHoverBPrimary"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
@@ -3109,7 +3110,7 @@ function attachEvents() {{
   for (const key of panelKeys) {{
     el("plot" + key).addEventListener("mousemove", event => showHoverInfo(event, key));
     el("plot" + key).addEventListener("mouseleave", () => {{
-      hoverElement(key).textContent = "Hover over a bin to inspect it.";
+      setHoverText(key, "");
       clearHoverOverlay(key);
       hideColorScaleMarker(key);
     }});
@@ -4374,7 +4375,10 @@ function hoverOverlayElement(key) {{
 }}
 
 function setHoverText(key, text) {{
-  hoverElement(key).textContent = text;
+  const node = hoverElement(key);
+  if (!node) return;
+  node.textContent = text || "";
+  node.style.display = text ? "block" : "none";
 }}
 
 function clearHoverOverlay(key) {{
@@ -4523,7 +4527,7 @@ function showHoverInfo(event, key) {{
   const pw = area.width - area.left - area.right;
   const ph = area.height - area.top - area.bottom;
   if (px < area.left || px > area.left + pw || py < area.top || py > area.top + ph) {{
-    setHoverText(key, "Hover over a bin to inspect it.");
+    setHoverText(key, "");
     clearHoverOverlay(key);
     hideColorScaleMarker(key);
     return;
@@ -4605,7 +4609,7 @@ function showFacetHover(px, py, key) {{
     showColorScaleMarkers(key, facet.colorScale, value, overlayValue);
     return;
   }}
-  setHoverText(key, "Hover over a bin to inspect it.");
+  setHoverText(key, "");
   clearHoverOverlay(key);
   hideColorScaleMarker(key);
 }}
