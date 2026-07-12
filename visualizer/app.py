@@ -2060,6 +2060,10 @@ th:first-child, td:first-child {{ text-align: left; }}
             <option value="poly4">Polynomial degree 4</option>
             <option value="poly5">Polynomial degree 5</option>
           </select></label>
+          <label>Weighting <select id="fitWeighting">
+            <option value="unweighted">Ordinary LS</option>
+            <option value="poisson">Poisson WLS (Pearson)</option>
+          </select></label>
         </div>
         <div class="fit-tools">
           <label class="chip"><input id="fitRangeClick" type="checkbox"> click endpoints</label>
@@ -2580,6 +2584,7 @@ function makePanel(key, xvar, yvar) {{
     fitModel: "none",
     signalModel: "none",
     backgroundModel: "none",
+    fitWeighting: "unweighted",
     fitRangeClick: false,
     fitRangeMin: NaN,
     fitRangeMax: NaN,
@@ -3098,7 +3103,7 @@ function renderTextFilters() {{
 }}
 
 function attachEvents() {{
-  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","signalModel","backgroundModel","fitRangeClick"].forEach(id => {{
+  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","signalModel","backgroundModel","fitWeighting","fitRangeClick"].forEach(id => {{
     el(id).addEventListener("input", () => {{ readControlsToPanel(); update(); }});
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
@@ -3225,6 +3230,11 @@ function syncControlsFromPanel() {{
   migratePanelFitSpec(panel);
   el("signalModel").value = panel.signalModel || "none";
   el("backgroundModel").value = panel.backgroundModel || "none";
+  el("fitWeighting").value = canonicalFitWeighting(panel.fitWeighting);
+  el("fitWeighting").disabled = panel.mode !== "1d";
+  el("fitWeighting").title = panel.mode === "1d"
+    ? "Choose the least-squares weighting for histogram count bins"
+    : "Poisson weighting applies only to 1D histogram count fits";
   el("fitRangeClick").checked = panel.fitRangeClick;
   el("fitRangeSummary").textContent = fitRangeSummaryText(panel);
   el("fitSummary").textContent = panel.fitSummary || "No fit";
@@ -3287,6 +3297,7 @@ function readControlsToPanel() {{
   panel.colorScale = el("colorScale").checked;
   panel.signalModel = canonicalSignalModel(el("signalModel").value);
   panel.backgroundModel = canonicalBackgroundModel(el("backgroundModel").value);
+  panel.fitWeighting = canonicalFitWeighting(el("fitWeighting").value);
   panel.fitModel = fitSpecKey(fitSpecFromPanel(panel));
   panel.fitRangeClick = el("fitRangeClick").checked;
   el("fitRangeSummary").textContent = fitRangeSummaryText(panel);
@@ -3298,6 +3309,14 @@ function canonicalFitModel(model) {{
   if (model === "quadratic") return "poly2";
   if (model === "constant") return "poly0";
   return model || "none";
+}}
+
+function canonicalFitWeighting(weighting) {{
+  return weighting === "poisson" ? "poisson" : "unweighted";
+}}
+
+function fitWeightingLabel(weighting) {{
+  return canonicalFitWeighting(weighting) === "poisson" ? "Poisson WLS" : "OLS";
 }}
 
 function fitModelInfo(model) {{
@@ -4291,7 +4310,11 @@ function fitSpecFromArgs(modelOrPanel, panel = null) {{
 function make1dFit(counts, xMin, xMax, modelOrPanel, panel = null) {{
   const ownerPanel = panel || (modelOrPanel && typeof modelOrPanel === "object" ? modelOrPanel : null);
   const spec = fitSpecFromArgs(modelOrPanel, panel);
+  const weighting = canonicalFitWeighting(ownerPanel ? ownerPanel.fitWeighting : "unweighted");
   if (spec.signal === "none" && spec.background === "none") return {{summary: "No fit"}};
+  if (weighting === "poisson" && ownerPanel && ownerPanel.density) {{
+    return {{summary: "Poisson WLS requires count bins; turn off density"}};
+  }}
   const xs = [];
   const ys = [];
   const binWidth = (xMax - xMin) / counts.length;
@@ -4308,8 +4331,8 @@ function make1dFit(counts, xMin, xMax, modelOrPanel, panel = null) {{
   const required = Math.max(backgroundTerms + (spec.signal === "none" ? 0 : 3), 2);
   if (xs.length < required) return {{summary: "Not enough bins for fit"}};
   const fit = spec.signal === "none"
-    ? backgroundOnlyFit(xs, ys, spec.background)
-    : signalBackgroundFit(xs, ys, spec.signal, spec.background);
+    ? backgroundOnlyFit(xs, ys, spec.background, weighting)
+    : signalBackgroundFit(xs, ys, spec.signal, spec.background, weighting);
   return fit || {{summary: "Fit failed"}};
 }}
 
@@ -4344,7 +4367,7 @@ function make2dFit(xs, ys, modelOrPanel) {{
   const info = fitModelInfo(spec.background);
   if (info.kind !== "polynomial") return {{summary: "Choose a B polynomial for 2D trend fits"}};
   if (xs.length < info.degree + 1) return {{summary: "Not enough selected points for fit"}};
-  return backgroundOnlyFit(xs, ys, spec.background) || {{summary: "Fit failed"}};
+  return backgroundOnlyFit(xs, ys, spec.background, "unweighted") || {{summary: "Fit failed"}};
 }}
 
 function drawFitResult(ctx, area, xMin, xMax, yMin, yMax, fit, panel) {{
@@ -4464,10 +4487,10 @@ function drawFitAnnotation(ctx, area, fit) {{
   ctx.restore();
 }}
 
-function backgroundOnlyFit(xs, ys, backgroundModel) {{
+function backgroundOnlyFit(xs, ys, backgroundModel, weighting = "unweighted") {{
   const info = fitModelInfo(backgroundModel);
   if (info.kind !== "polynomial") return null;
-  const fit = polynomialFit(xs, ys, info.degree);
+  const fit = polynomialFit(xs, ys, info.degree, weighting);
   if (!fit) return null;
   const label = info.degree === 0 ? "B constant" : `B poly deg ${{info.degree}}`;
   const coeffText = fit.coeff.slice(0, Math.min(fit.coeff.length, 3)).map((value, index) => `b${{index}}=${{fmt(value)}}`);
@@ -4475,15 +4498,15 @@ function backgroundOnlyFit(xs, ys, backgroundModel) {{
     ...fit,
     hasBackground: true,
     backgroundPredict: fit.predict,
-    summary: `${{label}}: chi2/ndf=${{fmt(fit.quality.reduced)}}; ${{coeffText.join(", ")}}`,
-    annotation: [label, `chi2/ndf=${{fmt(fit.quality.reduced)}}`, ...coeffText.slice(0, 2)]
+    summary: `${{fitWeightingLabel(weighting)}} ${{label}}: chi2/ndf=${{fmt(fit.quality.reduced)}}; ${{coeffText.join(", ")}}`,
+    annotation: [`${{fitWeightingLabel(weighting)}} ${{label}}`, `chi2/ndf=${{fmt(fit.quality.reduced)}}`, ...coeffText.slice(0, 2)]
   }};
 }}
 
-function signalBackgroundFit(xs, ys, signalModel, backgroundModel) {{
+function signalBackgroundFit(xs, ys, signalModel, backgroundModel, weighting = "unweighted") {{
   const signalInfo = fitModelInfo(signalModel);
   const backgroundInfo = fitModelInfo(backgroundModel);
-  if (signalInfo.kind !== "gaussian" && signalInfo.kind !== "crystalball") return backgroundOnlyFit(xs, ys, backgroundModel);
+  if (signalInfo.kind !== "gaussian" && signalInfo.kind !== "crystalball") return backgroundOnlyFit(xs, ys, backgroundModel, weighting);
   const backgroundDegree = backgroundInfo.kind === "polynomial" ? backgroundInfo.degree : -1;
   const seed = distributionSeed(xs, ys) || fallbackDistributionSeed(xs, ys);
   if (!seed) return null;
@@ -4493,16 +4516,16 @@ function signalBackgroundFit(xs, ys, signalModel, backgroundModel) {{
   const xScale = Math.max((xMax - xMin) / 2, 1.0e-12);
   let best = null;
   for (const candidate of signalShapeCandidates(signalInfo.kind, seed)) {{
-    const linear = solveSignalBackgroundLinearFit(xs, ys, candidate, backgroundDegree, xCenter, xScale);
+    const linear = solveSignalBackgroundLinearFit(xs, ys, candidate, backgroundDegree, xCenter, xScale, weighting);
     if (!linear || linear.signalAmplitude <= 0) continue;
     const parameterCount = linear.coeff.length + candidate.nonlinearParameters;
-    const quality = fitQuality(xs, ys, linear.predict, parameterCount);
+    const quality = fitQuality(xs, ys, linear.predict, parameterCount, weighting);
     if (!best || quality.reduced < best.quality.reduced) {{
       best = {{...linear, ...candidate, backgroundDegree, quality, parameterCount}};
     }}
   }}
   if (!best) return null;
-  return formatSignalBackgroundFit(best, signalInfo, backgroundInfo);
+  return formatSignalBackgroundFit(best, signalInfo, backgroundInfo, weighting);
 }}
 
 function signalShapeCandidates(kind, seed) {{
@@ -4556,23 +4579,20 @@ function signalShapeCandidates(kind, seed) {{
   return candidates;
 }}
 
-function solveSignalBackgroundLinearFit(xs, ys, candidate, backgroundDegree, xCenter, xScale) {{
+function solveSignalBackgroundLinearFit(xs, ys, candidate, backgroundDegree, xCenter, xScale, weighting = "unweighted") {{
   const backgroundTerms = backgroundDegree >= 0 ? backgroundDegree + 1 : 0;
   const signalIndex = backgroundTerms;
-  const termCount = backgroundTerms + 1;
-  const matrix = Array.from({{length: termCount}}, () => Array(termCount).fill(0));
-  const rhs = Array(termCount).fill(0);
+  const termsByPoint = [];
+  const fitYs = [];
   for (let i = 0; i < xs.length; i++) {{
     const signalValue = candidate.shape(xs[i]);
     if (!Number.isFinite(signalValue) || !Number.isFinite(ys[i])) continue;
     const terms = backgroundBasis(xs[i], backgroundDegree, xCenter, xScale);
     terms.push(signalValue);
-    for (let row = 0; row < termCount; row++) {{
-      rhs[row] += ys[i] * terms[row];
-      for (let col = 0; col < termCount; col++) matrix[row][col] += terms[row] * terms[col];
-    }}
+    termsByPoint.push(terms);
+    fitYs.push(ys[i]);
   }}
-  const coeff = solveLinearSystem(matrix, rhs);
+  const coeff = solveWeightedLinearTerms(termsByPoint, fitYs, weighting);
   if (!coeff || !coeff.every(Number.isFinite)) return null;
   const signalAmplitude = coeff[signalIndex];
   const backgroundPredict = x => {{
@@ -4592,7 +4612,7 @@ function backgroundBasis(x, degree, xCenter, xScale) {{
   return terms;
 }}
 
-function formatSignalBackgroundFit(fit, signalInfo, backgroundInfo) {{
+function formatSignalBackgroundFit(fit, signalInfo, backgroundInfo, weighting = "unweighted") {{
   const signalLabel = signalInfo.kind === "crystalball" ? "S Crystal Ball" : "S Gaussian";
   const backgroundLabel = backgroundInfo.kind === "polynomial"
     ? (backgroundInfo.degree === 0 ? "B constant" : `B poly deg ${{backgroundInfo.degree}}`)
@@ -4606,9 +4626,9 @@ function formatSignalBackgroundFit(fit, signalInfo, backgroundInfo) {{
   if (fit.kind === "crystalball") {{
     params.push(`alpha=${{fmt(fit.alpha)}}`, `n=${{fmt(fit.n)}}`);
   }}
-  const summary = `${{signalLabel}}${{tail}} + ${{backgroundLabel}}: ${{params.join(", ")}}, chi2/ndf=${{fmt(fit.quality.reduced)}}`;
+  const summary = `${{fitWeightingLabel(weighting)}} ${{signalLabel}}${{tail}} + ${{backgroundLabel}}: ${{params.join(", ")}}, chi2/ndf=${{fmt(fit.quality.reduced)}}`;
   const annotation = [
-    `${{signalLabel}} + ${{backgroundLabel}}`,
+    `${{fitWeightingLabel(weighting)}} ${{signalLabel}} + ${{backgroundLabel}}`,
     `mu=${{fmt(fit.mu)}}`,
     `sigma=${{fmt(fit.sigma)}}`,
     ...(fit.kind === "crystalball" ? [`alpha=${{fmt(fit.alpha)}}`, `n=${{fmt(fit.n)}}`] : []),
@@ -4617,35 +4637,34 @@ function formatSignalBackgroundFit(fit, signalInfo, backgroundInfo) {{
   return {{...fit, hasBackground: fit.backgroundDegree >= 0, summary, annotation}};
 }}
 
-function polynomialFit(xs, ys, degree) {{
+function polynomialFit(xs, ys, degree, weighting = "unweighted") {{
   const n = degree + 1;
   const xMin = Math.min(...xs);
   const xMax = Math.max(...xs);
   const xCenter = (xMin + xMax) / 2;
   const xScale = Math.max((xMax - xMin) / 2, 1.0e-12);
-  const matrix = Array.from({{length: n}}, () => Array(n).fill(0));
-  const rhs = Array(n).fill(0);
+  const termsByPoint = [];
+  const fitYs = [];
   for (let i = 0; i < xs.length; i++) {{
     const x = (xs[i] - xCenter) / xScale;
     const y = ys[i];
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
     const powers = [1];
-    for (let p = 1; p <= degree * 2; p++) powers[p] = powers[p - 1] * x;
-    for (let row = 0; row < n; row++) {{
-      rhs[row] += y * powers[row];
-      for (let col = 0; col < n; col++) matrix[row][col] += powers[row + col];
-    }}
+    for (let p = 1; p <= degree; p++) powers[p] = powers[p - 1] * x;
+    termsByPoint.push(powers);
+    fitYs.push(y);
   }}
-  const coeff = solveLinearSystem(matrix, rhs);
+  const coeff = solveWeightedLinearTerms(termsByPoint, fitYs, weighting);
   if (!coeff) return null;
   const predict = x => {{
     const scaled = (x - xCenter) / xScale;
     return coeff.reduce((sum, value, power) => sum + value * Math.pow(scaled, power), 0);
   }};
-  const quality = fitQuality(xs, ys, predict, n);
+  const quality = fitQuality(xs, ys, predict, n, weighting);
   const coeffText = coeff.slice(0, Math.min(coeff.length, 4)).map((value, index) => `c${{index}}=${{fmt(value)}}`);
   const suffix = coeff.length > 4 ? ", ..." : "";
-  const summary = `poly${{degree}}: chi2/ndf=${{fmt(quality.reduced)}}; ${{coeffText.join(", ")}}${{suffix}}`;
-  const annotation = [`poly deg ${{degree}}`, `chi2/ndf=${{fmt(quality.reduced)}}`, ...coeffText.slice(0, 2)];
+  const summary = `${{fitWeightingLabel(weighting)}} poly${{degree}}: chi2/ndf=${{fmt(quality.reduced)}}; ${{coeffText.join(", ")}}${{suffix}}`;
+  const annotation = [`${{fitWeightingLabel(weighting)}} poly deg ${{degree}}`, `chi2/ndf=${{fmt(quality.reduced)}}`, ...coeffText.slice(0, 2)];
   return {{predict, summary, annotation, coeff, quality, xCenter, xScale}};
 }}
 
@@ -4796,19 +4815,57 @@ function solveAmplitudeBaseline(shape, ys) {{
   return {{baseline, amplitude}};
 }}
 
-function fitQuality(xs, ys, predict, parameterCount) {{
+function solveWeightedLinearTerms(termsByPoint, ys, weighting = "unweighted") {{
+  if (!termsByPoint.length || termsByPoint.length !== ys.length) return null;
+  const mode = canonicalFitWeighting(weighting);
+  let weights = Array(ys.length).fill(1);
+  let coeff = solveLinearTerms(termsByPoint, ys, weights);
+  if (!coeff || mode !== "poisson") return coeff;
+  for (let iteration = 0; iteration < 8; iteration++) {{
+    weights = termsByPoint.map(terms => {{
+      const expected = terms.reduce((sum, term, index) => sum + term * coeff[index], 0);
+      return 1 / Math.max(expected, 1);
+    }});
+    const next = solveLinearTerms(termsByPoint, ys, weights);
+    if (!next) return null;
+    const change = next.reduce((largest, value, index) => Math.max(largest, Math.abs(value - coeff[index])), 0);
+    const scale = Math.max(1, ...next.map(Math.abs));
+    coeff = next;
+    if (change <= 1.0e-8 * scale) break;
+  }}
+  return coeff;
+}}
+
+function solveLinearTerms(termsByPoint, ys, weights) {{
+  const termCount = termsByPoint[0].length;
+  const matrix = Array.from({{length: termCount}}, () => Array(termCount).fill(0));
+  const rhs = Array(termCount).fill(0);
+  for (let i = 0; i < termsByPoint.length; i++) {{
+    const terms = termsByPoint[i];
+    const y = ys[i];
+    const weight = weights[i];
+    if (terms.length !== termCount || !Number.isFinite(y) || !Number.isFinite(weight) || weight <= 0) continue;
+    for (let row = 0; row < termCount; row++) {{
+      rhs[row] += weight * y * terms[row];
+      for (let col = 0; col < termCount; col++) matrix[row][col] += weight * terms[row] * terms[col];
+    }}
+  }}
+  return solveLinearSystem(matrix, rhs);
+}}
+
+function fitQuality(xs, ys, predict, parameterCount, weighting = "unweighted") {{
   let chi2 = 0;
   let used = 0;
   for (let i = 0; i < xs.length; i++) {{
     const expected = predict(xs[i]);
     const observed = ys[i];
     if (!Number.isFinite(expected) || !Number.isFinite(observed)) continue;
-    const variance = Math.max(Math.abs(expected), 1);
+    const variance = Math.max(expected, 1);
     chi2 += Math.pow(observed - expected, 2) / variance;
     used++;
   }}
   const ndf = Math.max(1, used - parameterCount);
-  return {{chi2, ndf, reduced: chi2 / ndf}};
+  return {{chi2, ndf, reduced: chi2 / ndf, weighting: canonicalFitWeighting(weighting)}};
 }}
 
 function solveLinearSystem(matrix, rhs) {{

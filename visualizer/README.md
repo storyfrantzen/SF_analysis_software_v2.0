@@ -32,6 +32,16 @@ The historical command remains supported:
 python3 analysis/interactive_histograms.py INPUT --output OUTPUT.html
 ```
 
+## Histogram fits
+
+The Fit panel supports ordinary least squares and Poisson-weighted least
+squares for 1D count histograms. `Poisson WLS (Pearson)` iteratively solves the
+normal equations with per-bin variance `max(expected count, 1)` and reports the
+Pearson chi-square per degree of freedom. It applies to polynomial backgrounds
+and Gaussian or Crystal Ball signal-plus-background fits, including split
+views. Poisson weighting is intentionally unavailable in density mode because
+normalized bin fractions are not Poisson counts.
+
 ## Source layout
 
 - `app.py` contains the current data adapters, payload builder, standalone HTML

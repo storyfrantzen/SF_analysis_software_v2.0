@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -54,6 +56,61 @@ class VisualizerCliTests(unittest.TestCase):
             [sys.executable, "analysis/interactive_histograms.py"], "legacy.html"
         )
         self.assertEqual(package_html, legacy_html)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for browser-fit tests")
+    def test_poisson_weighting_changes_the_fitted_objective(self) -> None:
+        html = self.run_visualizer(
+            [sys.executable, "-m", "visualizer"], "weighted.html"
+        )
+        script = html.rsplit("<script>", 1)[1].split("</script>", 1)[0]
+        self.assertTrue(script.rstrip().endswith("init();"))
+        script = script.rsplit("init();", 1)[0]
+        script += """
+const testXs = [0, 1, 2, 3, 4, 5];
+const testYs = [10, 12, 15, 20, 30, 60];
+const ordinary = polynomialFit(testXs, testYs, 1, "unweighted");
+const poisson = polynomialFit(testXs, testYs, 1, "poisson");
+const signalXs = [-3, -2, -1, 0, 1, 2, 3];
+const signalYs = [5, 7, 20, 45, 21, 8, 5];
+const signal = signalBackgroundFit(signalXs, signalYs, "gaussian", "poly0", "poisson");
+const densityPanel = {
+  signalModel: "none",
+  backgroundModel: "poly1",
+  fitWeighting: "poisson",
+  density: true,
+  fitRangeMin: NaN,
+  fitRangeMax: NaN
+};
+const densityFit = make1dFit(testYs, 0, 6, densityPanel);
+console.log(JSON.stringify({
+  ordinaryCoeff: ordinary.coeff,
+  poissonCoeff: poisson.coeff,
+  ordinaryPearson: ordinary.quality.reduced,
+  poissonPearson: poisson.quality.reduced,
+  poissonMode: poisson.quality.weighting,
+  signalMode: signal.quality.weighting,
+  signalAmplitude: signal.signalAmplitude,
+  densitySummary: densityFit.summary
+}));
+"""
+        script_path = self.directory / "weighted_fit_test.js"
+        script_path.write_text(script, encoding="utf-8")
+        completed = subprocess.run(
+            [shutil.which("node"), str(script_path)],
+            cwd=REPOSITORY_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout.strip())
+        self.assertEqual(result["poissonMode"], "poisson")
+        self.assertNotAlmostEqual(
+            result["ordinaryCoeff"][1], result["poissonCoeff"][1], places=6
+        )
+        self.assertLess(result["poissonPearson"], result["ordinaryPearson"])
+        self.assertEqual(result["signalMode"], "poisson")
+        self.assertGreater(result["signalAmplitude"], 0)
+        self.assertIn("requires count bins", result["densitySummary"])
 
 
 if __name__ == "__main__":

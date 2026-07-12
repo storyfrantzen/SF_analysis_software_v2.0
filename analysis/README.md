@@ -176,7 +176,9 @@ available for 2D views, and 1D split views get independent sector-by-sector
 fits with compact in-panel fit labels. Fit ranges can be selected by enabling
 `click endpoints` and clicking two X positions on the plot; the displayed
 histogram is unchanged while only the fit calculation and curve interval are
-restricted. Text
+restricted. One-dimensional count fits can use ordinary least squares or
+Poisson-weighted least squares with iterative Pearson weights; Poisson weighting
+is disabled for density-normalized histograms. Text
 filters appear only when the input contains string-valued columns. Selected ROOT
 inputs
 expose the richest set of reconstruction filters, including `pDet`, `passFiducial`,
