@@ -1550,8 +1550,37 @@ button.active {{
   grid-template-columns: 1fr;
   gap: 6px;
 }}
-.operation-grid .row {{ grid-template-columns: 1fr 1fr; }}
-.operation-grid button {{ width: 100%; }}
+.operation-builder {{
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(86px, 0.75fr) minmax(0, 1.3fr) auto;
+  gap: 6px;
+  align-items: end;
+}}
+.operation-builder label {{
+  margin: 0;
+  min-width: 0;
+}}
+.operation-builder button {{
+  white-space: nowrap;
+}}
+.operation-feedback {{
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 20px;
+}}
+.operation-preview {{
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}}
+.operation-feedback .subtle {{
+  flex: 0 1 auto;
+  text-align: right;
+}}
 .stats {{
   display: flex;
   gap: 10px;
@@ -1697,6 +1726,13 @@ th:first-child, td:first-child {{ text-align: left; }}
   main {{ grid-template-columns: 1fr; }}
   aside {{ border-right: 0; border-bottom: 1px solid var(--border); }}
   .control-deck {{ grid-template-columns: 1fr; }}
+  .operation-builder {{ grid-template-columns: 1fr; }}
+  .operation-builder button {{ width: 100%; }}
+  .operation-feedback {{
+    display: grid;
+    gap: 2px;
+  }}
+  .operation-feedback .subtle {{ text-align: left; }}
   #categoryFilters {{ column-width: auto; }}
   .plot-grid.compare {{ grid-template-columns: 1fr; }}
   canvas {{ min-height: 340px; height: 58vh; }}
@@ -1828,18 +1864,21 @@ th:first-child, td:first-child {{ text-align: left; }}
       <div class="control-panel">
         <h2>Derived Operations</h2>
         <div class="operation-grid">
-          <label>Left <select id="opLeft"></select></label>
-          <div class="row">
-            <label>Operation <select id="opKind">
+          <div class="operation-builder">
+            <label>Left <select id="opLeft"></select></label>
+            <label>Operator <select id="opKind">
               <option value="subtract">left - right</option>
               <option value="add">left + right</option>
               <option value="ratio">left / right</option>
               <option value="fractional">(left - right) / right</option>
             </select></label>
             <label>Right <select id="opRight"></select></label>
+            <button type="button" id="addDerived">Add</button>
           </div>
-          <button type="button" id="addDerived">Add variable</button>
-          <div class="subtle" id="opStatus"></div>
+          <div class="operation-feedback">
+            <div class="operation-preview" id="opPreview"></div>
+            <div class="subtle" id="opStatus"></div>
+          </div>
         </div>
       </div>
       <div class="control-panel">
@@ -1993,6 +2032,7 @@ function fillOperationSelects() {{
   const currentRight = right.value || matchingGeneratedName(currentLeft) || firstPresent(["gen_theta_deg", "gen_theta", payload.defaultX]);
   fillSelect(left, currentLeft);
   fillSelect(right, currentRight);
+  updateOperationPreview();
 }}
 
 function firstPresent(names) {{
@@ -2012,6 +2052,15 @@ function matchingGeneratedName(name) {{
     if (columns[candidate]) return candidate;
   }}
   return "";
+}}
+
+function updateOperationPreview() {{
+  const preview = el("opPreview");
+  if (!preview) return;
+  const leftName = el("opLeft").value;
+  const rightName = el("opRight").value;
+  const kind = el("opKind").value;
+  preview.textContent = leftName && rightName && kind ? derivedLabel(leftName, rightName, kind) : "";
 }}
 
 function addDerivedVariable() {{
@@ -2068,6 +2117,7 @@ function addDerivedVariable() {{
   currentPanel().xmin = min;
   currentPanel().xmax = max;
   el("opStatus").textContent = `Added ${{label}}`;
+  updateOperationPreview();
   syncControlsFromPanel();
   update();
 }}
@@ -2288,6 +2338,12 @@ function attachEvents() {{
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
   el("yvar").addEventListener("change", () => {{ setPanelVariable("y"); update(); }});
+  ["opLeft","opRight","opKind"].forEach(id => {{
+    el(id).addEventListener("change", () => {{
+      updateOperationPreview();
+      el("opStatus").textContent = "";
+    }});
+  }});
   el("addDerived").addEventListener("click", addDerivedVariable);
   el("addPanel").addEventListener("click", addPanelTab);
   el("splitView").addEventListener("input", () => {{
