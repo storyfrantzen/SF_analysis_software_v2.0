@@ -75,6 +75,12 @@ visible on every facet and use compact formatting without unnecessary trailing
 zeros. The sidebar uses a narrower desktop width so more of the window is
 available to the plot.
 
+The sidebar presents the active dataset in a framed identity card, gives the
+constraint quantity selector a full-width row, and uses content-sized buttons
+instead of stretching routine actions. Selected/embedded counts and active-axis
+means appear as compact badges in the plot toolbar so they remain close to the
+visualization without consuming a separate header row.
+
 ## Source layout
 
 - `app.py` contains the current data adapters, payload builder, standalone HTML

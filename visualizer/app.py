@@ -1429,7 +1429,37 @@ section {{
 h1 {{
   font-size: 16px;
   font-weight: 600;
-  margin: 0 0 4px;
+  margin: 1px 0 3px;
+  overflow-wrap: anywhere;
+}}
+.dataset-heading {{
+  position: relative;
+  margin-bottom: 12px;
+  padding: 9px 10px 9px 13px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  box-shadow: 0 3px 12px color-mix(in srgb, CanvasText 8%, transparent);
+}}
+.dataset-heading::before {{
+  content: "";
+  position: absolute;
+  inset: 7px auto 7px 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--mark);
+}}
+.dataset-kicker {{
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}}
+.dataset-heading #source {{
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }}
 h2 {{
   font-size: 12px;
@@ -1445,17 +1475,17 @@ select, input, button {{
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 5px;
-  padding: 5px 7px;
+  padding: 4px 6px;
   min-width: 0;
 }}
-button {{ cursor: pointer; }}
+button {{ cursor: pointer; width: auto; white-space: nowrap; }}
 button.active {{
   background: var(--accent);
   color: var(--accent-text);
   border-color: var(--accent);
 }}
 .segmented {{ display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }}
-.segmented button {{ flex: 1 1 72px; }}
+.segmented button {{ flex: 0 0 auto; min-width: 54px; padding-inline: 8px; }}
 .chips {{ display: flex; gap: 5px; flex-wrap: wrap; }}
 .chip {{
   display: inline-flex;
@@ -1587,11 +1617,12 @@ canvas.fit-range-picker {{
 }}
 .filter-row {{
   display: grid;
-  grid-template-columns: 1fr 82px 82px auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: 6px;
   margin: 6px 0;
   align-items: center;
 }}
+.filter-row > :first-child {{ grid-column: 1 / -1; min-width: 0; }}
 .filter-row input {{ width: 100%; }}
 .operation-grid {{
   display: grid;
@@ -1631,18 +1662,22 @@ canvas.fit-range-picker {{
 }}
 .stats {{
   display: flex;
-  gap: 10px;
+  gap: 4px;
   flex-wrap: wrap;
   align-items: center;
-  margin-bottom: 10px;
+  margin-left: auto;
 }}
 .stat {{
+  display: inline-flex;
+  gap: 4px;
+  align-items: baseline;
   border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 7px 9px;
-  min-width: 92px;
+  border-radius: 999px;
+  padding: 2px 6px;
+  min-width: 0;
 }}
-.stat strong {{ display: block; font-size: 16px; font-weight: 600; }}
+.stat .subtle {{ font-size: 10px; }}
+.stat strong {{ display: inline; font-size: 12px; font-weight: 650; }}
 canvas {{
   display: block;
   width: 100%;
@@ -1905,8 +1940,11 @@ th:first-child, td:first-child {{ text-align: left; }}
 <body>
 <main id="app">
   <aside>
-    <h1></h1>
-    <div class="subtle" id="source"></div>
+    <div class="dataset-heading">
+      <div class="dataset-kicker">Dataset</div>
+      <h1></h1>
+      <div class="subtle" id="source"></div>
+    </div>
     <h2>Plot</h2>
     <div class="segmented">
       <button type="button" id="mode1d">1D</button>
@@ -1949,7 +1987,7 @@ th:first-child, td:first-child {{ text-align: left; }}
     </div>
     <div class="constraints-panel">
       <h2>Constraints</h2>
-      <div class="filter-row">
+      <div class="filter-row constraint-builder">
         <select id="rangeVar"></select>
         <input id="rangeMin" type="number" step="any" placeholder="min">
         <input id="rangeMax" type="number" step="any" placeholder="max">
@@ -1975,13 +2013,6 @@ th:first-child, td:first-child {{ text-align: left; }}
     </div>
   </aside>
   <section>
-    <div class="stats">
-      <div class="stat"><span class="subtle">selected</span><strong id="selectedCount">0</strong></div>
-      <div class="stat"><span class="subtle">embedded</span><strong id="embeddedCount">0</strong></div>
-      <div class="stat"><span class="subtle">mean X</span><strong id="meanX">-</strong></div>
-      <div class="stat"><span class="subtle">mean Y</span><strong id="meanY">-</strong></div>
-      <div class="subtle" id="samplingNote"></div>
-    </div>
     <div class="plot-toolbar">
       <div class="plot-panel-controls">
         <div class="panel-tabs" id="panelTabs"></div>
@@ -2000,6 +2031,13 @@ th:first-child, td:first-child {{ text-align: left; }}
         <button type="button" id="resetFilters">Reset filters</button>
         <button type="button" id="resetRanges">Reset axes</button>
         <button type="button" id="savePng">Save PNG</button>
+      </div>
+      <div class="stats" aria-label="Active plot summary">
+        <div class="stat"><span class="subtle">selected</span><strong id="selectedCount">0</strong></div>
+        <div class="stat"><span class="subtle">embedded</span><strong id="embeddedCount">0</strong></div>
+        <div class="stat"><span class="subtle">mean X</span><strong id="meanX">-</strong></div>
+        <div class="stat"><span class="subtle">mean Y</span><strong id="meanY">-</strong></div>
+        <div class="subtle" id="samplingNote"></div>
       </div>
     </div>
     <div class="load-browser hidden" id="loadBrowser" role="dialog" aria-modal="true" aria-labelledby="loadBrowserTitle">
@@ -2583,6 +2621,7 @@ function updateDatasetStatus() {{
   el("source").textContent = loadedSamples.length > 1
     ? `${{loadedSamples[0].label}} + ${{loadedSamples.length - 1}} loaded`
     : payload.source;
+  el("source").title = el("source").textContent;
 }}
 
 function comparisonDefaultX() {{
@@ -2858,6 +2897,7 @@ function shortFacetLabel(filter, value, index) {{
 function init() {{
   document.querySelector("h1").textContent = payload.title;
   el("source").textContent = payload.source;
+  el("source").title = payload.source;
   el("embeddedCount").textContent = rowCount.toLocaleString();
   if (payload.downsample.sampled) {{
     el("samplingNote").textContent = `downsampled from ${{payload.downsample.originalRows.toLocaleString()}} rows`;

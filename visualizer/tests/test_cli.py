@@ -47,6 +47,11 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn('<option value="unbinned">Unbinned likelihood</option>', html)
         self.assertIn('id="fitScanDetail" type="range" min="1" max="5"', html)
         self.assertIn("grid-template-columns: minmax(220px, 270px)", html)
+        self.assertIn('<div class="dataset-heading">', html)
+        self.assertIn('<div class="filter-row constraint-builder">', html)
+        self.assertIn('<div class="stats" aria-label="Active plot summary">', html)
+        self.assertIn(".filter-row > :first-child { grid-column: 1 / -1;", html)
+        self.assertLess(html.index('class="plot-toolbar"'), html.index('aria-label="Active plot summary"'))
         self.assertIn("Rows embedded: 3", completed.stdout)
         return html
 
