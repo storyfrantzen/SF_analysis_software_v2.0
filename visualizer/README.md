@@ -45,10 +45,18 @@ fractions are not Poisson counts.
 `Unbinned likelihood` fits the individual selected values and treats the event
 count as fixed. It reports a signal fraction rather than absolute signal and
 background yields. Gaussian and Crystal Ball signals can be combined with
-positive Bernstein backgrounds selected through the existing background-degree
-control. The PDFs are normalized over the chosen fit range, and changing the
-histogram bin count affects only the drawing. Both Poisson WLS and unbinned
-likelihood fits operate independently in split views.
+polynomial backgrounds selected through the same constant/degree 1-5 control
+used by binned fits. For the unbinned likelihood, the polynomial is represented
+in a Bernstein basis with nonnegative mixture coefficients so it remains a
+valid probability density. The PDFs are normalized over the chosen fit range,
+and changing the histogram bin count affects only the drawing.
+
+An `Unbinned scan detail` slider controls the signal-shape search from 1
+(`fastest`) through 5 (`finest`). Higher settings scan more peak-position,
+width, and Crystal Ball tail candidates, retain more finalists, use a larger
+preview sample, and run more mixture-fit refinement iterations. The fit summary
+records the selected detail and number of scanned shapes. Both Poisson WLS and
+unbinned likelihood fits operate independently in split views.
 
 ## Source layout
 

@@ -181,7 +181,9 @@ Poisson-weighted least squares with iterative Pearson weights; Poisson weighting
 is disabled for density-normalized histograms. Conditional unbinned likelihood
 fits instead use the individual selected values, report a signal fraction, and
 use positive Bernstein background PDFs; histogram bins affect only their
-display. Text
+display. Their scan-detail slider trades execution speed for a denser search of
+signal position, width, and Crystal Ball tail shapes while retaining the same
+constant/polynomial degree 1-5 background choices as the binned fits. Text
 filters appear only when the input contains string-valued columns. Selected ROOT
 inputs
 expose the richest set of reconstruction filters, including `pDet`, `passFiducial`,

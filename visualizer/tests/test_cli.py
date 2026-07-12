@@ -43,6 +43,7 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn("const payload = ", html)
         self.assertIn("init();", html)
         self.assertIn('<option value="unbinned">Unbinned likelihood</option>', html)
+        self.assertIn('id="fitScanDetail" type="range" min="1" max="5"', html)
         self.assertIn("Rows embedded: 3", completed.stdout)
         return html
 
@@ -91,12 +92,23 @@ for (let i = 0; i < 80; i++) unbinnedValues.push(0.08 + 0.12 * (i + 0.5) / 80);
 const unbinnedSpec = {signal: "gaussian", background: "poly0"};
 const unbinnedPanel = {
   fitMethod: "unbinned",
+  fitScanDetail: 2,
   density: false,
   fitRangeMin: NaN,
   fitRangeMax: NaN
 };
 const unbinned40 = unbinnedLikelihoodFit(unbinnedValues, 0.08, 0.20, unbinnedSpec, unbinnedPanel, 40);
 const unbinned100 = unbinnedLikelihoodFit(unbinnedValues, 0.08, 0.20, unbinnedSpec, unbinnedPanel, 100);
+const unbinnedBackground = unbinnedLikelihoodFit(
+  unbinnedValues,
+  0.08,
+  0.20,
+  {signal: "none", background: "poly3"},
+  unbinnedPanel,
+  40
+);
+const coarseShapes = unbinnedSignalCandidates("gaussian", {mean: 0, sigma: 1}, 1).length;
+const fineShapes = unbinnedSignalCandidates("gaussian", {mean: 0, sigma: 1}, 5).length;
 console.log(JSON.stringify({
   ordinaryCoeff: ordinary.coeff,
   poissonCoeff: poisson.coeff,
@@ -109,8 +121,12 @@ console.log(JSON.stringify({
   unbinnedMethod: unbinned40.method,
   unbinnedFraction: unbinned40.signalFraction,
   unbinnedMean: unbinned40.mean,
+  unbinnedScanDetail: unbinned40.scanDetail,
+  coarseShapes,
+  fineShapes,
   unbinnedNll40: unbinned40.nll,
-  unbinnedNll100: unbinned100.nll
+  unbinnedNll100: unbinned100.nll,
+  unbinnedBackgroundDegree: unbinnedBackground.backgroundDegree
 }));
 """
         script_path = self.directory / "weighted_fit_test.js"
@@ -135,9 +151,12 @@ console.log(JSON.stringify({
         self.assertGreater(result["unbinnedFraction"], 0.4)
         self.assertLess(result["unbinnedFraction"], 0.95)
         self.assertAlmostEqual(result["unbinnedMean"], 0.135, delta=0.01)
+        self.assertEqual(result["unbinnedScanDetail"], 2)
+        self.assertGreater(result["fineShapes"], result["coarseShapes"])
         self.assertAlmostEqual(
             result["unbinnedNll40"], result["unbinnedNll100"], places=8
         )
+        self.assertEqual(result["unbinnedBackgroundDegree"], 3)
 
 
 if __name__ == "__main__":
