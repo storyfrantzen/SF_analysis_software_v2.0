@@ -178,7 +178,10 @@ fits with compact in-panel fit labels. Fit ranges can be selected by enabling
 histogram is unchanged while only the fit calculation and curve interval are
 restricted. One-dimensional count fits can use ordinary least squares or
 Poisson-weighted least squares with iterative Pearson weights; Poisson weighting
-is disabled for density-normalized histograms. Text
+is disabled for density-normalized histograms. Conditional unbinned likelihood
+fits instead use the individual selected values, report a signal fraction, and
+use positive Bernstein background PDFs; histogram bins affect only their
+display. Text
 filters appear only when the input contains string-valued columns. Selected ROOT
 inputs
 expose the richest set of reconstruction filters, including `pDet`, `passFiducial`,

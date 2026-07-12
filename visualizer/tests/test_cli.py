@@ -42,6 +42,7 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn("<title>Interactive histograms: events.npz</title>", html)
         self.assertIn("const payload = ", html)
         self.assertIn("init();", html)
+        self.assertIn('<option value="unbinned">Unbinned likelihood</option>', html)
         self.assertIn("Rows embedded: 3", completed.stdout)
         return html
 
@@ -58,7 +59,7 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertEqual(package_html, legacy_html)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for browser-fit tests")
-    def test_poisson_weighting_changes_the_fitted_objective(self) -> None:
+    def test_browser_fit_methods_execute_numerically(self) -> None:
         html = self.run_visualizer(
             [sys.executable, "-m", "visualizer"], "weighted.html"
         )
@@ -82,6 +83,20 @@ const densityPanel = {
   fitRangeMax: NaN
 };
 const densityFit = make1dFit(testYs, 0, 6, densityPanel);
+const unbinnedValues = [];
+for (let i = 0; i < 180; i++) {
+  unbinnedValues.push(0.135 + 0.007 * Math.sin(i * 2.399) + 0.0015 * Math.sin(i * 0.71));
+}
+for (let i = 0; i < 80; i++) unbinnedValues.push(0.08 + 0.12 * (i + 0.5) / 80);
+const unbinnedSpec = {signal: "gaussian", background: "poly0"};
+const unbinnedPanel = {
+  fitMethod: "unbinned",
+  density: false,
+  fitRangeMin: NaN,
+  fitRangeMax: NaN
+};
+const unbinned40 = unbinnedLikelihoodFit(unbinnedValues, 0.08, 0.20, unbinnedSpec, unbinnedPanel, 40);
+const unbinned100 = unbinnedLikelihoodFit(unbinnedValues, 0.08, 0.20, unbinnedSpec, unbinnedPanel, 100);
 console.log(JSON.stringify({
   ordinaryCoeff: ordinary.coeff,
   poissonCoeff: poisson.coeff,
@@ -90,7 +105,12 @@ console.log(JSON.stringify({
   poissonMode: poisson.quality.weighting,
   signalMode: signal.quality.weighting,
   signalAmplitude: signal.signalAmplitude,
-  densitySummary: densityFit.summary
+  densitySummary: densityFit.summary,
+  unbinnedMethod: unbinned40.method,
+  unbinnedFraction: unbinned40.signalFraction,
+  unbinnedMean: unbinned40.mean,
+  unbinnedNll40: unbinned40.nll,
+  unbinnedNll100: unbinned100.nll
 }));
 """
         script_path = self.directory / "weighted_fit_test.js"
@@ -111,6 +131,13 @@ console.log(JSON.stringify({
         self.assertEqual(result["signalMode"], "poisson")
         self.assertGreater(result["signalAmplitude"], 0)
         self.assertIn("requires count bins", result["densitySummary"])
+        self.assertEqual(result["unbinnedMethod"], "unbinned")
+        self.assertGreater(result["unbinnedFraction"], 0.4)
+        self.assertLess(result["unbinnedFraction"], 0.95)
+        self.assertAlmostEqual(result["unbinnedMean"], 0.135, delta=0.01)
+        self.assertAlmostEqual(
+            result["unbinnedNll40"], result["unbinnedNll100"], places=8
+        )
 
 
 if __name__ == "__main__":

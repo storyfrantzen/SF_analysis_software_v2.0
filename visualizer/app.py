@@ -2060,9 +2060,10 @@ th:first-child, td:first-child {{ text-align: left; }}
             <option value="poly4">Polynomial degree 4</option>
             <option value="poly5">Polynomial degree 5</option>
           </select></label>
-          <label>Weighting <select id="fitWeighting">
+          <label>Method <select id="fitMethod">
             <option value="unweighted">Ordinary LS</option>
             <option value="poisson">Poisson WLS (Pearson)</option>
+            <option value="unbinned">Unbinned likelihood</option>
           </select></label>
         </div>
         <div class="fit-tools">
@@ -2584,7 +2585,7 @@ function makePanel(key, xvar, yvar) {{
     fitModel: "none",
     signalModel: "none",
     backgroundModel: "none",
-    fitWeighting: "unweighted",
+    fitMethod: "unweighted",
     fitRangeClick: false,
     fitRangeMin: NaN,
     fitRangeMax: NaN,
@@ -3103,7 +3104,7 @@ function renderTextFilters() {{
 }}
 
 function attachEvents() {{
-  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","signalModel","backgroundModel","fitWeighting","fitRangeClick"].forEach(id => {{
+  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","signalModel","backgroundModel","fitMethod","fitRangeClick"].forEach(id => {{
     el(id).addEventListener("input", () => {{ readControlsToPanel(); update(); }});
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
@@ -3230,11 +3231,12 @@ function syncControlsFromPanel() {{
   migratePanelFitSpec(panel);
   el("signalModel").value = panel.signalModel || "none";
   el("backgroundModel").value = panel.backgroundModel || "none";
-  el("fitWeighting").value = canonicalFitWeighting(panel.fitWeighting);
-  el("fitWeighting").disabled = panel.mode !== "1d";
-  el("fitWeighting").title = panel.mode === "1d"
-    ? "Choose the least-squares weighting for histogram count bins"
-    : "Poisson weighting applies only to 1D histogram count fits";
+  if (panel.fitMethod === undefined) panel.fitMethod = canonicalFitMethod(panel.fitWeighting);
+  el("fitMethod").value = canonicalFitMethod(panel.fitMethod);
+  el("fitMethod").disabled = panel.mode !== "1d";
+  el("fitMethod").title = panel.mode === "1d"
+    ? "Choose a least-squares or unbinned fit method"
+    : "Fit-method selection applies only to 1D histograms";
   el("fitRangeClick").checked = panel.fitRangeClick;
   el("fitRangeSummary").textContent = fitRangeSummaryText(panel);
   el("fitSummary").textContent = panel.fitSummary || "No fit";
@@ -3297,7 +3299,7 @@ function readControlsToPanel() {{
   panel.colorScale = el("colorScale").checked;
   panel.signalModel = canonicalSignalModel(el("signalModel").value);
   panel.backgroundModel = canonicalBackgroundModel(el("backgroundModel").value);
-  panel.fitWeighting = canonicalFitWeighting(el("fitWeighting").value);
+  panel.fitMethod = canonicalFitMethod(el("fitMethod").value);
   panel.fitModel = fitSpecKey(fitSpecFromPanel(panel));
   panel.fitRangeClick = el("fitRangeClick").checked;
   el("fitRangeSummary").textContent = fitRangeSummaryText(panel);
@@ -3311,12 +3313,16 @@ function canonicalFitModel(model) {{
   return model || "none";
 }}
 
-function canonicalFitWeighting(weighting) {{
-  return weighting === "poisson" ? "poisson" : "unweighted";
+function canonicalFitMethod(method) {{
+  if (method === "poisson" || method === "unbinned") return method;
+  return "unweighted";
 }}
 
-function fitWeightingLabel(weighting) {{
-  return canonicalFitWeighting(weighting) === "poisson" ? "Poisson WLS" : "OLS";
+function fitMethodLabel(method) {{
+  const value = canonicalFitMethod(method);
+  if (value === "poisson") return "Poisson WLS";
+  if (value === "unbinned") return "Unbinned ML";
+  return "OLS";
 }}
 
 function fitModelInfo(model) {{
@@ -3747,6 +3753,7 @@ function draw1d(panel, mask) {{
   const xMax = panel.xmax;
   const counts = new Float64Array(bins);
   const overlayCounts = x2 ? new Float64Array(bins) : null;
+  const fitValues = canonicalFitMethod(panel.fitMethod) === "unbinned" && panelHasFit(panel) ? [] : null;
   let selected = 0, overlaySelected = 0, sumX = 0;
   for (let i = 0; i < rowCount; i++) {{
     const xv = x[i];
@@ -3754,6 +3761,7 @@ function draw1d(panel, mask) {{
     if (Number.isFinite(xv) && xv >= xMin && xv <= xMax) {{
       const bin = Math.min(bins - 1, Math.max(0, Math.floor((xv - xMin) / (xMax - xMin) * bins)));
       counts[bin] += 1;
+      if (fitValues) fitValues.push(xv);
       selected++;
       sumX += xv;
     }}
@@ -3800,7 +3808,7 @@ function draw1d(panel, mask) {{
   drawAxes(ctx, area, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks);
   if (x2Name) drawOverlayLegend(ctx, area, byName[xName].label, byName[x2Name].label);
   drawFitRangeIndicator(ctx, area, panel, xMin, xMax);
-  panel.fitSummary = draw1dFit(ctx, area, panel, counts, xMin, xMax, 0, maxCount);
+  panel.fitSummary = draw1dFit(ctx, area, panel, counts, xMin, xMax, 0, maxCount, fitValues);
   panel.lastPlot = {{
     mode: "1d", area, xName, x2Name, xMin, xMax, bins, counts, overlayCounts,
     selected, overlaySelected, density: panel.density, yMax: maxCount
@@ -3926,6 +3934,7 @@ function draw1dFacets(panel, mask, splitName) {{
   for (const definition of facetDefinitions) {{
     const counts = new Float64Array(bins);
     const overlayCounts = x2 ? new Float64Array(bins) : null;
+    const fitValues = canonicalFitMethod(panel.fitMethod) === "unbinned" && panelHasFit(panel) ? [] : null;
     let selected = 0, overlaySelected = 0, sumX = 0;
     for (let i = 0; i < rowCount; i++) {{
       const xv = x[i];
@@ -3933,6 +3942,7 @@ function draw1dFacets(panel, mask, splitName) {{
       if (Number.isFinite(xv) && xv >= xMin && xv <= xMax) {{
         const bin = Math.min(bins - 1, Math.max(0, Math.floor((xv - xMin) / (xMax - xMin) * bins)));
         counts[bin] += 1;
+        if (fitValues) fitValues.push(xv);
         selected++;
         sumX += xv;
       }}
@@ -3948,7 +3958,7 @@ function draw1dFacets(panel, mask, splitName) {{
     totalSelected += selected;
     totalOverlaySelected += overlaySelected;
     sumXAll += sumX;
-    facets.push({{value: definition.value, label: definition.label, shortLabel: definition.shortLabel, counts, overlayCounts, selected, overlaySelected}});
+    facets.push({{value: definition.value, label: definition.label, shortLabel: definition.shortLabel, counts, overlayCounts, fitValues, selected, overlaySelected}});
   }}
   if (panel.density) {{
     for (const facet of facets) {{
@@ -3996,7 +4006,7 @@ function draw1dFacets(panel, mask, splitName) {{
     drawFacetTitle(ctx, facetAreaInfo, `${{facet.label}} (${{facet.selected.toLocaleString()}})`);
     drawFitRangeIndicator(ctx, facetAreaInfo, panel, xMin, xMax);
     if (panelHasFit(panel)) {{
-      const fit = make1dFit(facet.counts, xMin, xMax, panel);
+      const fit = make1dFit(facet.counts, xMin, xMax, panel, null, facet.fitValues);
       if (fit.predict) {{
         drawFitResult(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, fit, panel);
         drawFitAnnotation(ctx, facetAreaInfo, fit);
@@ -4293,8 +4303,8 @@ function updateQuantityBanner(panel) {{
   banner.querySelector(".quantity-detail").textContent = panelOverlayQuantity(panel);
 }}
 
-function draw1dFit(ctx, area, panel, counts, xMin, xMax, yMin, yMax) {{
-  const fit = make1dFit(counts, xMin, xMax, panel);
+function draw1dFit(ctx, area, panel, counts, xMin, xMax, yMin, yMax, unbinnedValues = null) {{
+  const fit = make1dFit(counts, xMin, xMax, panel, null, unbinnedValues);
   if (!fit.predict) return fit.summary;
   drawFitResult(ctx, area, xMin, xMax, yMin, yMax, fit, panel);
   drawFitAnnotation(ctx, area, fit);
@@ -4307,12 +4317,16 @@ function fitSpecFromArgs(modelOrPanel, panel = null) {{
   return legacyFitSpec(modelOrPanel);
 }}
 
-function make1dFit(counts, xMin, xMax, modelOrPanel, panel = null) {{
+function make1dFit(counts, xMin, xMax, modelOrPanel, panel = null, unbinnedValues = null) {{
   const ownerPanel = panel || (modelOrPanel && typeof modelOrPanel === "object" ? modelOrPanel : null);
   const spec = fitSpecFromArgs(modelOrPanel, panel);
-  const weighting = canonicalFitWeighting(ownerPanel ? ownerPanel.fitWeighting : "unweighted");
+  const method = canonicalFitMethod(ownerPanel ? (ownerPanel.fitMethod ?? ownerPanel.fitWeighting) : "unweighted");
   if (spec.signal === "none" && spec.background === "none") return {{summary: "No fit"}};
-  if (weighting === "poisson" && ownerPanel && ownerPanel.density) {{
+  if (method === "unbinned") {{
+    if (!unbinnedValues) return {{summary: "Unbinned likelihood requires selected event values"}};
+    return unbinnedLikelihoodFit(unbinnedValues, xMin, xMax, spec, ownerPanel, counts.length);
+  }}
+  if (method === "poisson" && ownerPanel && ownerPanel.density) {{
     return {{summary: "Poisson WLS requires count bins; turn off density"}};
   }}
   const xs = [];
@@ -4331,14 +4345,15 @@ function make1dFit(counts, xMin, xMax, modelOrPanel, panel = null) {{
   const required = Math.max(backgroundTerms + (spec.signal === "none" ? 0 : 3), 2);
   if (xs.length < required) return {{summary: "Not enough bins for fit"}};
   const fit = spec.signal === "none"
-    ? backgroundOnlyFit(xs, ys, spec.background, weighting)
-    : signalBackgroundFit(xs, ys, spec.signal, spec.background, weighting);
+    ? backgroundOnlyFit(xs, ys, spec.background, method)
+    : signalBackgroundFit(xs, ys, spec.signal, spec.background, method);
   return fit || {{summary: "Fit failed"}};
 }}
 
 function draw2dFit(ctx, area, panel, mask, xValues, yValues, xMin, xMax, yMin, yMax) {{
   const spec = fitSpecFromPanel(panel);
   if (spec.signal === "none" && spec.background === "none") return "No fit";
+  if (canonicalFitMethod(panel.fitMethod) === "unbinned") return "Unbinned likelihood is available for 1D distributions";
   if (spec.signal !== "none") return `${{fitSpecLabel(spec)}} is available for 1D histograms; choose only B polynomial for 2D trend fits`;
   const info = fitModelInfo(spec.background);
   if (info.kind !== "polynomial") return "Choose a B polynomial for 2D trend fits";
@@ -4363,6 +4378,9 @@ function draw2dFit(ctx, area, panel, mask, xValues, yValues, xMin, xMax, yMin, y
 function make2dFit(xs, ys, modelOrPanel) {{
   const spec = fitSpecFromArgs(modelOrPanel);
   if (spec.signal === "none" && spec.background === "none") return {{summary: "No fit"}};
+  if (modelOrPanel && typeof modelOrPanel === "object" && canonicalFitMethod(modelOrPanel.fitMethod) === "unbinned") {{
+    return {{summary: "Unbinned likelihood is available for 1D distributions"}};
+  }}
   if (spec.signal !== "none") return {{summary: `${{fitSpecLabel(spec)}} is available for 1D histograms`}};
   const info = fitModelInfo(spec.background);
   if (info.kind !== "polynomial") return {{summary: "Choose a B polynomial for 2D trend fits"}};
@@ -4487,6 +4505,204 @@ function drawFitAnnotation(ctx, area, fit) {{
   ctx.restore();
 }}
 
+function unbinnedLikelihoodFit(rawValues, xMin, xMax, spec, panel, binCount) {{
+  const selectedBounds = fitRangeBounds(panel);
+  const fitMin = selectedBounds ? Math.max(xMin, selectedBounds[0]) : xMin;
+  const fitMax = selectedBounds ? Math.min(xMax, selectedBounds[1]) : xMax;
+  if (!Number.isFinite(fitMin) || !Number.isFinite(fitMax) || fitMax <= fitMin) {{
+    return {{summary: "Invalid unbinned fit range"}};
+  }}
+  const values = rawValues.filter(value => Number.isFinite(value) && value >= fitMin && value <= fitMax);
+  if (values.length < 5) return {{summary: "Not enough events for unbinned likelihood fit"}};
+  const backgroundInfo = fitModelInfo(spec.background);
+  const backgroundDegree = backgroundInfo.kind === "polynomial" ? backgroundInfo.degree : -1;
+  let candidates = [null];
+  if (spec.signal !== "none") {{
+    const seed = unbinnedDistributionSeed(values);
+    candidates = unbinnedSignalCandidates(spec.signal, seed);
+    if (!candidates.length) return {{summary: "Could not initialize unbinned signal model"}};
+  }}
+  const preview = deterministicFitSample(values, 20000);
+  const ranked = candidates
+    .map(candidate => fitUnbinnedMixture(preview, candidate, backgroundDegree, fitMin, fitMax, 12))
+    .filter(Boolean)
+    .sort((left, right) => left.nll - right.nll);
+  if (!ranked.length) return {{summary: "Unbinned likelihood fit failed"}};
+  let best = null;
+  for (const previewFit of ranked.slice(0, Math.min(3, ranked.length))) {{
+    const fit = fitUnbinnedMixture(values, previewFit.candidate, backgroundDegree, fitMin, fitMax, 30);
+    if (fit && (!best || fit.nll < best.nll)) best = fit;
+  }}
+  if (!best) return {{summary: "Unbinned likelihood fit failed"}};
+  return formatUnbinnedLikelihoodFit(best, spec, backgroundInfo, panel, (xMax - xMin) / Math.max(1, binCount), values.length);
+}}
+
+function deterministicFitSample(values, limit) {{
+  if (values.length <= limit) return values;
+  const sampled = [];
+  const step = values.length / limit;
+  for (let i = 0; i < limit; i++) sampled.push(values[Math.floor(i * step)]);
+  return sampled;
+}}
+
+function unbinnedDistributionSeed(values) {{
+  const sorted = values.slice().sort((left, right) => left - right);
+  const windowSize = clamp(Math.round(sorted.length * 0.2), Math.min(5, sorted.length), sorted.length);
+  let start = 0;
+  let smallestSpan = Infinity;
+  for (let i = 0; i + windowSize <= sorted.length; i++) {{
+    const span = sorted[i + windowSize - 1] - sorted[i];
+    if (span < smallestSpan) {{
+      smallestSpan = span;
+      start = i;
+    }}
+  }}
+  let mean = 0;
+  for (let i = start; i < start + windowSize; i++) mean += sorted[i];
+  mean /= windowSize;
+  let variance = 0;
+  for (let i = start; i < start + windowSize; i++) variance += Math.pow(sorted[i] - mean, 2);
+  const fullSpan = Math.max(sorted[sorted.length - 1] - sorted[0], 1.0e-9);
+  const sigma = Math.max(Math.sqrt(variance / windowSize), smallestSpan / 4, fullSpan / 1000);
+  return {{mean, sigma}};
+}}
+
+function unbinnedSignalCandidates(kind, seed) {{
+  const candidates = [];
+  const sigmaScales = [1.2, 1.8, 2.6, 3.6];
+  const muOffsets = [-0.7, 0, 0.7];
+  if (kind === "gaussian") {{
+    for (const sigmaScale of sigmaScales) {{
+      for (const muOffset of muOffsets) {{
+        const sigma = seed.sigma * sigmaScale;
+        const mu = seed.mean + muOffset * seed.sigma;
+        candidates.push({{kind, mu, sigma, shape: x => Math.exp(-0.5 * Math.pow((x - mu) / sigma, 2))}});
+      }}
+    }}
+  }} else if (kind === "crystalball") {{
+    for (const side of ["left", "right"]) {{
+      for (const sigmaScale of [1.5, 2.4, 3.4]) {{
+        for (const muOffset of muOffsets) {{
+          const sigma = seed.sigma * sigmaScale;
+          const mu = seed.mean + muOffset * seed.sigma;
+          const alpha = 1.5;
+          const n = 3;
+          candidates.push({{kind, mu, sigma, alpha, n, side, shape: x => crystalBallShape(x, mu, sigma, alpha, n, side)}});
+        }}
+      }}
+    }}
+  }}
+  return candidates.filter(candidate => Number.isFinite(candidate.mu) && Number.isFinite(candidate.sigma) && candidate.sigma > 0);
+}}
+
+function fitUnbinnedMixture(values, candidate, backgroundDegree, fitMin, fitMax, maxIterations) {{
+  const hasSignal = Boolean(candidate);
+  const backgroundComponents = backgroundDegree >= 0 ? backgroundDegree + 1 : 0;
+  const componentCount = (hasSignal ? 1 : 0) + backgroundComponents;
+  if (!componentCount) return null;
+  const signalNorm = hasSignal ? integratePositiveShape(candidate.shape, fitMin, fitMax) : NaN;
+  if (hasSignal && (!Number.isFinite(signalNorm) || signalNorm <= 0)) return null;
+  const pdfs = new Float64Array(values.length * componentCount);
+  for (let i = 0; i < values.length; i++) {{
+    let component = 0;
+    if (hasSignal) pdfs[i * componentCount + component++] = Math.max(candidate.shape(values[i]) / signalNorm, 1.0e-300);
+    for (let k = 0; k < backgroundComponents; k++) {{
+      pdfs[i * componentCount + component++] = Math.max(bernsteinPdf(values[i], k, backgroundDegree, fitMin, fitMax), 1.0e-300);
+    }}
+  }}
+  let weights;
+  if (hasSignal && backgroundComponents) {{
+    weights = [0.5, ...Array(backgroundComponents).fill(0.5 / backgroundComponents)];
+  }} else {{
+    weights = Array(componentCount).fill(1 / componentCount);
+  }}
+  for (let iteration = 0; iteration < maxIterations; iteration++) {{
+    const sums = Array(componentCount).fill(0);
+    for (let i = 0; i < values.length; i++) {{
+      let denominator = 0;
+      for (let component = 0; component < componentCount; component++) {{
+        denominator += weights[component] * pdfs[i * componentCount + component];
+      }}
+      denominator = Math.max(denominator, 1.0e-300);
+      for (let component = 0; component < componentCount; component++) {{
+        sums[component] += weights[component] * pdfs[i * componentCount + component] / denominator;
+      }}
+    }}
+    const next = sums.map(value => value / values.length);
+    const change = next.reduce((largest, value, index) => Math.max(largest, Math.abs(value - weights[index])), 0);
+    weights = next;
+    if (change < 1.0e-7) break;
+  }}
+  let nll = 0;
+  for (let i = 0; i < values.length; i++) {{
+    let density = 0;
+    for (let component = 0; component < componentCount; component++) density += weights[component] * pdfs[i * componentCount + component];
+    nll -= Math.log(Math.max(density, 1.0e-300));
+  }}
+  return {{candidate, backgroundDegree, fitMin, fitMax, signalNorm, weights, nll, componentCount}};
+}}
+
+function integratePositiveShape(shape, min, max) {{
+  const steps = 240;
+  const width = (max - min) / steps;
+  let sum = 0;
+  for (let i = 0; i < steps; i++) sum += Math.max(0, shape(min + (i + 0.5) * width));
+  return sum * width;
+}}
+
+function binomialCoefficient(n, k) {{
+  if (k < 0 || k > n) return 0;
+  let result = 1;
+  for (let i = 1; i <= Math.min(k, n - k); i++) result = result * (n - i + 1) / i;
+  return result;
+}}
+
+function bernsteinPdf(x, component, degree, min, max) {{
+  if (degree < 0 || x < min || x > max || max <= min) return 0;
+  const u = clamp((x - min) / (max - min), 0, 1);
+  return (degree + 1) * binomialCoefficient(degree, component) * Math.pow(u, component) * Math.pow(1 - u, degree - component) / (max - min);
+}}
+
+function formatUnbinnedLikelihoodFit(fit, spec, backgroundInfo, panel, displayBinWidth, eventCount) {{
+  const hasSignal = Boolean(fit.candidate);
+  const signalFraction = hasSignal ? fit.weights[0] : 0;
+  const backgroundOffset = hasSignal ? 1 : 0;
+  const backgroundWeights = fit.weights.slice(backgroundOffset);
+  const signalPdf = x => hasSignal && x >= fit.fitMin && x <= fit.fitMax
+    ? Math.max(0, fit.candidate.shape(x)) / fit.signalNorm
+    : 0;
+  const backgroundPdf = x => {{
+    if (fit.backgroundDegree < 0 || x < fit.fitMin || x > fit.fitMax) return 0;
+    return backgroundWeights.reduce((sum, weight, component) => sum + weight * bernsteinPdf(x, component, fit.backgroundDegree, fit.fitMin, fit.fitMax), 0);
+  }};
+  const displayScale = panel && panel.density ? displayBinWidth : eventCount * displayBinWidth;
+  const signalPredict = x => displayScale * signalFraction * signalPdf(x);
+  const backgroundPredict = x => displayScale * backgroundPdf(x);
+  const predict = x => signalPredict(x) + backgroundPredict(x);
+  const signalInfo = fit.candidate ? fitModelInfo(fit.candidate.kind) : null;
+  const backgroundLabel = backgroundInfo.kind === "polynomial"
+    ? `Bernstein degree ${{backgroundInfo.degree}}`
+    : "none";
+  const pieces = [];
+  if (hasSignal) pieces.push(`fS=${{fmt(signalFraction)}}`, `mu=${{fmt(fit.candidate.mu)}}`, `sigma=${{fmt(fit.candidate.sigma)}}`);
+  pieces.push(`NLL=${{fmt(fit.nll)}}`, `n=${{eventCount.toLocaleString()}}`);
+  const modelLabel = `${{hasSignal ? signalInfo.label : "No signal"}} + B ${{backgroundLabel}}`;
+  return {{
+    predict,
+    signalPredict,
+    backgroundPredict,
+    hasBackground: fit.backgroundDegree >= 0,
+    method: "unbinned",
+    signalFraction,
+    mean: hasSignal ? fit.candidate.mu : NaN,
+    sigma: hasSignal ? fit.candidate.sigma : NaN,
+    nll: fit.nll,
+    eventCount,
+    summary: `Unbinned ML ${{modelLabel}}: ${{pieces.join(", ")}}`,
+    annotation: [`Unbinned ML ${{modelLabel}}`, ...pieces.slice(0, 4)]
+  }};
+}}
+
 function backgroundOnlyFit(xs, ys, backgroundModel, weighting = "unweighted") {{
   const info = fitModelInfo(backgroundModel);
   if (info.kind !== "polynomial") return null;
@@ -4498,8 +4714,8 @@ function backgroundOnlyFit(xs, ys, backgroundModel, weighting = "unweighted") {{
     ...fit,
     hasBackground: true,
     backgroundPredict: fit.predict,
-    summary: `${{fitWeightingLabel(weighting)}} ${{label}}: chi2/ndf=${{fmt(fit.quality.reduced)}}; ${{coeffText.join(", ")}}`,
-    annotation: [`${{fitWeightingLabel(weighting)}} ${{label}}`, `chi2/ndf=${{fmt(fit.quality.reduced)}}`, ...coeffText.slice(0, 2)]
+    summary: `${{fitMethodLabel(weighting)}} ${{label}}: chi2/ndf=${{fmt(fit.quality.reduced)}}; ${{coeffText.join(", ")}}`,
+    annotation: [`${{fitMethodLabel(weighting)}} ${{label}}`, `chi2/ndf=${{fmt(fit.quality.reduced)}}`, ...coeffText.slice(0, 2)]
   }};
 }}
 
@@ -4626,9 +4842,9 @@ function formatSignalBackgroundFit(fit, signalInfo, backgroundInfo, weighting = 
   if (fit.kind === "crystalball") {{
     params.push(`alpha=${{fmt(fit.alpha)}}`, `n=${{fmt(fit.n)}}`);
   }}
-  const summary = `${{fitWeightingLabel(weighting)}} ${{signalLabel}}${{tail}} + ${{backgroundLabel}}: ${{params.join(", ")}}, chi2/ndf=${{fmt(fit.quality.reduced)}}`;
+  const summary = `${{fitMethodLabel(weighting)}} ${{signalLabel}}${{tail}} + ${{backgroundLabel}}: ${{params.join(", ")}}, chi2/ndf=${{fmt(fit.quality.reduced)}}`;
   const annotation = [
-    `${{fitWeightingLabel(weighting)}} ${{signalLabel}} + ${{backgroundLabel}}`,
+    `${{fitMethodLabel(weighting)}} ${{signalLabel}} + ${{backgroundLabel}}`,
     `mu=${{fmt(fit.mu)}}`,
     `sigma=${{fmt(fit.sigma)}}`,
     ...(fit.kind === "crystalball" ? [`alpha=${{fmt(fit.alpha)}}`, `n=${{fmt(fit.n)}}`] : []),
@@ -4663,8 +4879,8 @@ function polynomialFit(xs, ys, degree, weighting = "unweighted") {{
   const quality = fitQuality(xs, ys, predict, n, weighting);
   const coeffText = coeff.slice(0, Math.min(coeff.length, 4)).map((value, index) => `c${{index}}=${{fmt(value)}}`);
   const suffix = coeff.length > 4 ? ", ..." : "";
-  const summary = `${{fitWeightingLabel(weighting)}} poly${{degree}}: chi2/ndf=${{fmt(quality.reduced)}}; ${{coeffText.join(", ")}}${{suffix}}`;
-  const annotation = [`${{fitWeightingLabel(weighting)}} poly deg ${{degree}}`, `chi2/ndf=${{fmt(quality.reduced)}}`, ...coeffText.slice(0, 2)];
+  const summary = `${{fitMethodLabel(weighting)}} poly${{degree}}: chi2/ndf=${{fmt(quality.reduced)}}; ${{coeffText.join(", ")}}${{suffix}}`;
+  const annotation = [`${{fitMethodLabel(weighting)}} poly deg ${{degree}}`, `chi2/ndf=${{fmt(quality.reduced)}}`, ...coeffText.slice(0, 2)];
   return {{predict, summary, annotation, coeff, quality, xCenter, xScale}};
 }}
 
@@ -4817,7 +5033,7 @@ function solveAmplitudeBaseline(shape, ys) {{
 
 function solveWeightedLinearTerms(termsByPoint, ys, weighting = "unweighted") {{
   if (!termsByPoint.length || termsByPoint.length !== ys.length) return null;
-  const mode = canonicalFitWeighting(weighting);
+  const mode = canonicalFitMethod(weighting);
   let weights = Array(ys.length).fill(1);
   let coeff = solveLinearTerms(termsByPoint, ys, weights);
   if (!coeff || mode !== "poisson") return coeff;
@@ -4865,7 +5081,7 @@ function fitQuality(xs, ys, predict, parameterCount, weighting = "unweighted") {
     used++;
   }}
   const ndf = Math.max(1, used - parameterCount);
-  return {{chi2, ndf, reduced: chi2 / ndf, weighting: canonicalFitWeighting(weighting)}};
+  return {{chi2, ndf, reduced: chi2 / ndf, weighting: canonicalFitMethod(weighting)}};
 }}
 
 function solveLinearSystem(matrix, rhs) {{

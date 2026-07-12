@@ -34,13 +34,21 @@ python3 analysis/interactive_histograms.py INPUT --output OUTPUT.html
 
 ## Histogram fits
 
-The Fit panel supports ordinary least squares and Poisson-weighted least
-squares for 1D count histograms. `Poisson WLS (Pearson)` iteratively solves the
-normal equations with per-bin variance `max(expected count, 1)` and reports the
-Pearson chi-square per degree of freedom. It applies to polynomial backgrounds
-and Gaussian or Crystal Ball signal-plus-background fits, including split
-views. Poisson weighting is intentionally unavailable in density mode because
-normalized bin fractions are not Poisson counts.
+The Fit panel supports ordinary least squares, Poisson-weighted least squares,
+and conditional unbinned likelihood fits. `Poisson WLS (Pearson)` iteratively
+solves the normal equations with per-bin variance `max(expected count, 1)` and
+reports the Pearson chi-square per degree of freedom. It applies to polynomial
+backgrounds and Gaussian or Crystal Ball signal-plus-background fits. Poisson
+weighting is intentionally unavailable in density mode because normalized bin
+fractions are not Poisson counts.
+
+`Unbinned likelihood` fits the individual selected values and treats the event
+count as fixed. It reports a signal fraction rather than absolute signal and
+background yields. Gaussian and Crystal Ball signals can be combined with
+positive Bernstein backgrounds selected through the existing background-degree
+control. The PDFs are normalized over the chosen fit range, and changing the
+histogram bin count affects only the drawing. Both Poisson WLS and unbinned
+likelihood fits operate independently in split views.
 
 ## Source layout
 
