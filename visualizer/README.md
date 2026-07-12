@@ -76,10 +76,16 @@ zeros. The sidebar uses a narrower desktop width so more of the window is
 available to the plot.
 
 The sidebar presents the active dataset in a framed identity card, gives the
-constraint quantity selector a full-width row, and uses content-sized buttons
-instead of stretching routine actions. Selected/embedded counts and active-axis
-means appear as compact badges in the plot toolbar so they remain close to the
-visualization without consuming a separate header row.
+constraint quantity, minimum, maximum, and action a compact single-row layout,
+and uses content-sized buttons instead of stretching routine actions.
+Selected/embedded counts and active-axis means appear as compact badges in the
+plot toolbar so they remain close to the visualization without consuming a
+separate header row.
+
+Derived Operations and Fit use a dedicated responsive tool grid rather than
+competing for equal auto-sized columns. The derivation builder receives the
+wider workspace, Fit remains in a stable companion card, and text filters span
+the row beneath them. The cards stack when the viewport is too narrow.
 
 ## Source layout
 

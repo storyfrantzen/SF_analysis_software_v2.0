@@ -1426,6 +1426,23 @@ section {{
 .control-panel.wide {{
   grid-column: 1 / -1;
 }}
+.analysis-tools {{
+  grid-template-columns: minmax(500px, 1.7fr) minmax(280px, 1fr);
+  gap: 12px;
+}}
+.analysis-tools .control-panel {{
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}}
+.analysis-tools .control-panel > h2 {{
+  margin-top: 0;
+}}
+.analysis-tools .text-panel {{
+  grid-column: 1 / -1;
+}}
 h1 {{
   font-size: 16px;
   font-weight: 600;
@@ -1617,12 +1634,12 @@ canvas.fit-range-picker {{
 }}
 .filter-row {{
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-  gap: 6px;
+  grid-template-columns: minmax(74px, 1.3fr) minmax(48px, 0.7fr) minmax(48px, 0.7fr) auto;
+  gap: 4px;
   margin: 6px 0;
   align-items: center;
 }}
-.filter-row > :first-child {{ grid-column: 1 / -1; min-width: 0; }}
+.filter-row > :first-child {{ min-width: 0; overflow: hidden; text-overflow: ellipsis; }}
 .filter-row input {{ width: 100%; }}
 .operation-grid {{
   display: grid;
@@ -1920,6 +1937,10 @@ button.remote-entry {{
 table {{ border-collapse: collapse; width: 100%; font-size: 12px; }}
 th, td {{ border-bottom: 1px solid var(--border); padding: 5px 7px; text-align: right; white-space: nowrap; }}
 th:first-child, td:first-child {{ text-align: left; }}
+@media (max-width: 1050px) {{
+  .analysis-tools {{ grid-template-columns: 1fr; }}
+  .analysis-tools .text-panel {{ grid-column: 1; }}
+}}
 @media (max-width: 820px) {{
   main {{ grid-template-columns: 1fr; }}
   aside {{ border-right: 0; border-bottom: 1px solid var(--border); }}
@@ -2089,8 +2110,8 @@ th:first-child, td:first-child {{ text-align: left; }}
         <div class="color-scale-hover" id="colorScaleHoverBOverlay"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
       </div>
     </div>
-    <div class="control-deck">
-      <div class="control-panel">
+    <div class="control-deck analysis-tools">
+      <div class="control-panel derived-panel">
         <h2>Derived Operations</h2>
         <div class="operation-grid">
           <div class="operation-builder">
@@ -2110,7 +2131,7 @@ th:first-child, td:first-child {{ text-align: left; }}
           </div>
         </div>
       </div>
-      <div class="control-panel">
+      <div class="control-panel fit-panel">
         <h2>Fit</h2>
         <div class="fit-model-grid">
           <label>Signal S <select id="signalModel">
@@ -2145,7 +2166,7 @@ th:first-child, td:first-child {{ text-align: left; }}
         <div class="subtle" id="fitRangeSummary">Fit range: full X range</div>
         <div class="subtle" id="fitSummary">No fit</div>
       </div>
-      <div class="control-panel" id="textFilterPanel">
+      <div class="control-panel text-panel" id="textFilterPanel">
         <h2>Text Filters</h2>
         <div id="textFilters"></div>
       </div>

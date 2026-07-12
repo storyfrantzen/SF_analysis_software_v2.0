@@ -50,7 +50,11 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn('<div class="dataset-heading">', html)
         self.assertIn('<div class="filter-row constraint-builder">', html)
         self.assertIn('<div class="stats" aria-label="Active plot summary">', html)
-        self.assertIn(".filter-row > :first-child { grid-column: 1 / -1;", html)
+        self.assertIn("grid-template-columns: minmax(74px, 1.3fr)", html)
+        self.assertIn('<div class="control-deck analysis-tools">', html)
+        self.assertIn('<div class="control-panel derived-panel">', html)
+        self.assertIn('<div class="control-panel fit-panel">', html)
+        self.assertIn('<div class="control-panel text-panel" id="textFilterPanel">', html)
         self.assertLess(html.index('class="plot-toolbar"'), html.index('aria-label="Active plot summary"'))
         self.assertIn("Rows embedded: 3", completed.stdout)
         return html
