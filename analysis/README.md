@@ -165,9 +165,12 @@ next to the axis selectors add optional comparison X/Y quantities on the same
 axes with a distinct color map for direct within-panel comparisons. The
 derived-operations menu can add browser-side comparison variables such as
 `rec_theta_deg - gen_theta_deg`, ratios, fractional residuals, or sums, and the
-fit menu can overlay Gaussian, linear, or quadratic fits where applicable,
-including independent sector-by-sector fits in split views with compact
-in-panel fit labels. Text
+fit menu can overlay Gaussian, Crystal Ball, and polynomial degree 1-5 fits
+where applicable, including independent sector-by-sector fits in split views
+with compact in-panel fit labels. Fit ranges can be selected by enabling
+`click endpoints` and clicking two X positions on the plot; the displayed
+histogram is unchanged while only the fit calculation and curve interval are
+restricted. Text
 filters appear only when the input contains string-valued columns. Selected ROOT
 inputs
 expose the richest set of reconstruction filters, including `pDet`, `passFiducial`,

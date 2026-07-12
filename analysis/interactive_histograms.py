@@ -1438,6 +1438,19 @@ button.active {{
   background: var(--bg);
 }}
 .chip input {{ margin: 0; }}
+.fit-tools {{
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 8px 0 6px;
+}}
+.fit-tools button {{
+  flex: 0 0 auto;
+}}
+canvas.fit-range-picker {{
+  cursor: crosshair;
+}}
 .quick-category {{
   display: grid;
   gap: 6px;
@@ -2028,9 +2041,18 @@ th:first-child, td:first-child {{ text-align: left; }}
         <label>Model <select id="fitModel">
           <option value="none">none</option>
           <option value="gaussian">Gaussian</option>
-          <option value="linear">linear</option>
-          <option value="quadratic">quadratic</option>
+          <option value="crystalball">Crystal Ball</option>
+          <option value="poly1">Polynomial degree 1</option>
+          <option value="poly2">Polynomial degree 2</option>
+          <option value="poly3">Polynomial degree 3</option>
+          <option value="poly4">Polynomial degree 4</option>
+          <option value="poly5">Polynomial degree 5</option>
         </select></label>
+        <div class="fit-tools">
+          <label class="chip"><input id="fitRangeClick" type="checkbox"> click endpoints</label>
+          <button type="button" id="clearFitRange">Clear range</button>
+        </div>
+        <div class="subtle" id="fitRangeSummary">Fit range: full X range</div>
         <div class="subtle" id="fitSummary">No fit</div>
       </div>
       <div class="control-panel" id="textFilterPanel">
@@ -2543,6 +2565,9 @@ function makePanel(key, xvar, yvar) {{
     density: false,
     colorScale: false,
     fitModel: "none",
+    fitRangeClick: false,
+    fitRangeMin: NaN,
+    fitRangeMax: NaN,
     fitSummary: "No fit",
     lastPlot: null,
     stats: {{selected: 0, meanX: NaN, meanY: NaN}}
@@ -3058,7 +3083,7 @@ function renderTextFilters() {{
 }}
 
 function attachEvents() {{
-  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","fitModel"].forEach(id => {{
+  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","fitModel","fitRangeClick"].forEach(id => {{
     el(id).addEventListener("input", () => {{ readControlsToPanel(); update(); }});
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
@@ -3102,6 +3127,7 @@ function attachEvents() {{
   el("resetFilters").addEventListener("click", resetFilters);
   el("resetRanges").addEventListener("click", () => {{ resetAxisRanges(currentPanel()); syncControlsFromPanel(); update(); }});
   el("savePng").addEventListener("click", savePng);
+  el("clearFitRange").addEventListener("click", () => {{ clearFitRange(currentPanel()); syncControlsFromPanel(); update(); }});
   el("quickCategoryFilter").addEventListener("change", renderQuickCategory);
   el("quickCategoryAll").addEventListener("click", () => setCurrentCategoryValues(true));
   el("quickCategoryNone").addEventListener("click", () => setCurrentCategoryValues(false));
@@ -3109,6 +3135,7 @@ function attachEvents() {{
   document.querySelectorAll("input[data-text-filter]").forEach(input => input.addEventListener("input", update));
   for (const key of panelKeys) {{
     el("plot" + key).addEventListener("mousemove", event => showHoverInfo(event, key));
+    el("plot" + key).addEventListener("click", event => handleFitRangeClick(event, key));
     el("plot" + key).addEventListener("mouseleave", () => {{
       setHoverText(key, "");
       clearHoverOverlay(key);
@@ -3180,7 +3207,10 @@ function syncControlsFromPanel() {{
   el("logz").checked = panel.logz;
   el("density").checked = panel.density;
   el("colorScale").checked = panel.colorScale;
+  panel.fitModel = canonicalFitModel(panel.fitModel);
   el("fitModel").value = panel.fitModel || "none";
+  el("fitRangeClick").checked = panel.fitRangeClick;
+  el("fitRangeSummary").textContent = fitRangeSummaryText(panel);
   el("fitSummary").textContent = panel.fitSummary || "No fit";
   renderPanelTabs();
   el("mode1d").classList.toggle("active", panel.mode === "1d");
@@ -3195,6 +3225,7 @@ function syncControlsFromPanel() {{
   el("addYVar").style.display = panel.mode === "2d" && !panel.y2var ? "" : "none";
   el("yrange").style.display = panel.mode === "2d" ? "" : "none";
   el("ybins").closest("label").style.display = panel.mode === "2d" ? "" : "none";
+  updateFitRangePickerCursors();
 }}
 
 function addAdditionalVariable(axis) {{
@@ -3238,7 +3269,102 @@ function readControlsToPanel() {{
   panel.logz = el("logz").checked;
   panel.density = el("density").checked;
   panel.colorScale = el("colorScale").checked;
-  panel.fitModel = el("fitModel").value;
+  panel.fitModel = canonicalFitModel(el("fitModel").value);
+  panel.fitRangeClick = el("fitRangeClick").checked;
+  el("fitRangeSummary").textContent = fitRangeSummaryText(panel);
+  updateFitRangePickerCursors();
+}}
+
+function canonicalFitModel(model) {{
+  if (model === "linear") return "poly1";
+  if (model === "quadratic") return "poly2";
+  return model || "none";
+}}
+
+function fitModelInfo(model) {{
+  const value = canonicalFitModel(model);
+  if (value === "none") return {{kind: "none", label: "No fit"}};
+  if (value === "gaussian") return {{kind: "gaussian", label: "Gaussian", parameters: 4}};
+  if (value === "crystalball") return {{kind: "crystalball", label: "Crystal Ball", parameters: 6}};
+  const match = String(value).match(/^poly([1-5])$/);
+  if (match) {{
+    const degree = Number(match[1]);
+    return {{kind: "polynomial", degree, label: `Polynomial degree ${{degree}}`, parameters: degree + 1}};
+  }}
+  return {{kind: "none", label: "No fit"}};
+}}
+
+function clearFitRange(panel) {{
+  panel.fitRangeMin = NaN;
+  panel.fitRangeMax = NaN;
+}}
+
+function fitRangeBounds(panel) {{
+  const a = panel.fitRangeMin;
+  const b = panel.fitRangeMax;
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) return null;
+  return [Math.min(a, b), Math.max(a, b)];
+}}
+
+function fitRangeSummaryText(panel) {{
+  const bounds = fitRangeBounds(panel);
+  if (bounds) return `Fit range: ${{fmt(bounds[0])}} to ${{fmt(bounds[1])}}`;
+  if (Number.isFinite(panel.fitRangeMin)) return `Fit range start: ${{fmt(panel.fitRangeMin)}}; click a second endpoint`;
+  return "Fit range: full X range";
+}}
+
+function xInFitRange(panel, x) {{
+  const bounds = fitRangeBounds(panel);
+  return !bounds || (x >= bounds[0] && x <= bounds[1]);
+}}
+
+function updateFitRangePickerCursors() {{
+  for (const key of panelKeys) {{
+    const canvas = el("plot" + key);
+    if (!canvas) continue;
+    const panel = panels[key];
+    canvas.classList.toggle("fit-range-picker", Boolean(panel.fitRangeClick && canonicalFitModel(panel.fitModel) !== "none"));
+  }}
+}}
+
+function fitClickArea(lastPlot, px, py) {{
+  const areas = (lastPlot.mode === "1d-facet" || lastPlot.mode === "2d-facet")
+    ? lastPlot.facets.map(facet => facet.area)
+    : [lastPlot.area];
+  for (const area of areas) {{
+    const pw = area.width - area.left - area.right;
+    const ph = area.height - area.top - area.bottom;
+    if (px >= area.left && px <= area.left + pw && py >= area.top && py <= area.top + ph) return area;
+  }}
+  return null;
+}}
+
+function handleFitRangeClick(event, key) {{
+  const panel = panels[key];
+  const lastPlot = panel?.lastPlot;
+  if (!panel || !lastPlot || !panel.fitRangeClick || canonicalFitModel(panel.fitModel) === "none") return;
+  const rect = el("plot" + key).getBoundingClientRect();
+  const px = event.clientX - rect.left;
+  const py = event.clientY - rect.top;
+  const area = fitClickArea(lastPlot, px, py);
+  if (!area) return;
+  const pw = area.width - area.left - area.right;
+  const xValue = lastPlot.xMin + (px - area.left) / pw * (lastPlot.xMax - lastPlot.xMin);
+  if (!Number.isFinite(xValue)) return;
+  activePanel = key;
+  if (!Number.isFinite(panel.fitRangeMin) || Number.isFinite(panel.fitRangeMax)) {{
+    panel.fitRangeMin = xValue;
+    panel.fitRangeMax = NaN;
+  }} else {{
+    panel.fitRangeMax = xValue;
+    if (panel.fitRangeMin > panel.fitRangeMax) {{
+      const tmp = panel.fitRangeMin;
+      panel.fitRangeMin = panel.fitRangeMax;
+      panel.fitRangeMax = tmp;
+    }}
+  }}
+  syncControlsFromPanel();
+  update();
 }}
 
 function setMode(next) {{
@@ -3433,6 +3559,7 @@ function colors() {{
     muted: style.getPropertyValue("--muted").trim(),
     border: style.getPropertyValue("--border").trim(),
     mark: style.getPropertyValue("--mark").trim(),
+    alert: style.getPropertyValue("--filter-alert").trim(),
     bg: style.getPropertyValue("--bg").trim()
   }};
 }}
@@ -3576,6 +3703,7 @@ function draw1d(panel, mask) {{
   }}
   drawAxes(ctx, area, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks);
   if (x2Name) drawOverlayLegend(ctx, area, byName[xName].label, byName[x2Name].label);
+  drawFitRangeIndicator(ctx, area, panel, xMin, xMax);
   panel.fitSummary = draw1dFit(ctx, area, panel, counts, xMin, xMax, 0, maxCount);
   panel.lastPlot = {{
     mode: "1d", area, xName, x2Name, xMin, xMax, bins, counts, overlayCounts,
@@ -3677,6 +3805,7 @@ function draw2d(panel, mask) {{
   drawAxes(ctx, area, xMin, xMax, yMin, yMax, axisDisplayLabel(panel, "x", xAxisLabel), axisDisplayLabel(panel, "y", yAxisLabel), panel.xticks, panel.yticks);
   if (x2Name || y2Name) drawOverlayLegend(ctx, area, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
   const colorScale = panel.colorScale ? draw2dColorScale(ctx, area, maxCount, overlayCounts ? overlayMaxCount : 0, panel) : null;
+  drawFitRangeIndicator(ctx, area, panel, xMin, xMax);
   panel.fitSummary = draw2dFit(ctx, area, panel, mask, x, y, xMin, xMax, yMin, yMax);
   panel.lastPlot = {{
     mode: "2d", area, xName, x2Name, yName, y2Name, xMin, xMax, yMin, yMax,
@@ -3769,10 +3898,11 @@ function draw1dFacets(panel, mask, splitName) {{
     drawAxes(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks);
     if (x2Name && index === 0) drawOverlayLegend(ctx, facetAreaInfo, byName[xName].label, byName[x2Name].label);
     drawFacetTitle(ctx, facetAreaInfo, `${{facet.label}} (${{facet.selected.toLocaleString()}})`);
+    drawFitRangeIndicator(ctx, facetAreaInfo, panel, xMin, xMax);
     if (panel.fitModel !== "none") {{
-      const fit = make1dFit(facet.counts, xMin, xMax, panel.fitModel);
+      const fit = make1dFit(facet.counts, xMin, xMax, panel.fitModel, panel);
       if (fit.predict) {{
-        drawFitCurve(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, fit.predict);
+        drawFitCurve(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, fit.predict, fitRangeBounds(panel));
         drawFitAnnotation(ctx, facetAreaInfo, fit);
       }}
       fitSummaries.push(`${{facet.shortLabel}}: ${{fit.summary}}`);
@@ -3805,7 +3935,7 @@ function draw2dFacets(panel, mask, splitName) {{
   const yMax = panel.ymax;
   const facets = [];
   const facetDefinitions = splitFacets(splitName);
-  const collectFitPoints = panel.fitModel !== "none" && panel.fitModel !== "gaussian";
+  const collectFitPoints = fitModelInfo(panel.fitModel).kind === "polynomial";
   let totalSelected = 0, totalOverlaySelected = 0, sumXAll = 0, sumYAll = 0;
   for (const definition of facetDefinitions) {{
     const counts = new Float64Array(xBins * yBins);
@@ -3820,7 +3950,7 @@ function draw2dFacets(panel, mask, splitName) {{
         const xi = Math.min(xBins - 1, Math.max(0, Math.floor((xv - xMin) / (xMax - xMin) * xBins)));
         const yi = Math.min(yBins - 1, Math.max(0, Math.floor((yv - yMin) / (yMax - yMin) * yBins)));
         counts[yi * xBins + xi] += 1;
-        if (collectFitPoints) {{
+        if (collectFitPoints && xInFitRange(panel, xv)) {{
           fitXs.push(xv);
           fitYs.push(yv);
         }}
@@ -3903,10 +4033,11 @@ function draw2dFacets(panel, mask, splitName) {{
     if ((x2Name || y2Name) && index === 0) drawOverlayLegend(ctx, facetAreaInfo, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
     drawFacetTitle(ctx, facetAreaInfo, `${{facet.label}} (${{facet.selected.toLocaleString()}})`);
     if (panel.colorScale) facet.colorScale = draw2dColorScale(ctx, facetAreaInfo, facet.maxCount, facet.overlayCounts ? facet.overlayMaxCount : 0, panel);
+    drawFitRangeIndicator(ctx, facetAreaInfo, panel, xMin, xMax);
     if (collectFitPoints) {{
       const fit = make2dFit(facet.fitXs, facet.fitYs, panel.fitModel);
       if (fit.predict) {{
-        drawFitCurve(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, fit.predict);
+        drawFitCurve(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, fit.predict, fitRangeBounds(panel));
         drawFitAnnotation(ctx, facetAreaInfo, fit);
       }}
       fitSummaries.push(`${{facet.shortLabel}}: ${{fit.summary}}; n=${{facet.fitXs.length.toLocaleString()}}`);
@@ -3920,8 +4051,8 @@ function draw2dFacets(panel, mask, splitName) {{
   }};
   panel.fitSummary = panel.fitModel === "none"
     ? "No fit"
-    : panel.fitModel === "gaussian"
-      ? "Gaussian fit is available for 1D histograms"
+    : fitModelInfo(panel.fitModel).kind !== "polynomial"
+      ? `${{fitModelInfo(panel.fitModel).label}} fit is available for 1D histograms`
       : fitSummaries.join(" | ");
   setPanelStats(panel, totalSelected, sumXAll / totalSelected, sumYAll / totalSelected);
 }}
@@ -4073,32 +4204,41 @@ function updateQuantityBanner(panel) {{
 
 function draw1dFit(ctx, area, panel, counts, xMin, xMax, yMin, yMax) {{
   const model = panel.fitModel || "none";
-  const fit = make1dFit(counts, xMin, xMax, model);
+  const fit = make1dFit(counts, xMin, xMax, model, panel);
   if (!fit.predict) return fit.summary;
-  drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, fit.predict);
+  drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, fit.predict, fitRangeBounds(panel));
+  drawFitAnnotation(ctx, area, fit);
   return fit.summary;
 }}
 
-function make1dFit(counts, xMin, xMax, model) {{
-  if (model === "none") return {{summary: "No fit"}};
+function make1dFit(counts, xMin, xMax, model, panel = null) {{
+  const info = fitModelInfo(model);
+  if (info.kind === "none") return {{summary: "No fit"}};
   const xs = [];
   const ys = [];
   const binWidth = (xMax - xMin) / counts.length;
   for (let i = 0; i < counts.length; i++) {{
     const y = counts[i];
     if (!Number.isFinite(y)) continue;
-    xs.push(xMin + (i + 0.5) * binWidth);
+    const x = xMin + (i + 0.5) * binWidth;
+    if (panel && !xInFitRange(panel, x)) continue;
+    xs.push(x);
     ys.push(y);
   }}
-  if (xs.length < 3) return {{summary: "Not enough bins for fit"}};
+  const required = info.kind === "polynomial" ? info.degree + 1 : 4;
+  if (xs.length < required) return {{summary: "Not enough bins for fit"}};
   let fit = null;
-  if (model === "gaussian") fit = gaussianMomentFit(xs, ys);
-  else fit = polynomialFit(xs, ys, model === "quadratic" ? 2 : 1);
+  if (info.kind === "gaussian") fit = gaussianMomentFit(xs, ys);
+  else if (info.kind === "crystalball") fit = crystalBallFit(xs, ys);
+  else if (info.kind === "polynomial") fit = polynomialFit(xs, ys, info.degree);
   return fit || {{summary: "Fit failed"}};
 }}
 
 function draw2dFit(ctx, area, panel, mask, xValues, yValues, xMin, xMax, yMin, yMax) {{
   const model = panel.fitModel || "none";
+  const info = fitModelInfo(model);
+  if (info.kind === "none") return "No fit";
+  if (info.kind !== "polynomial") return `${{info.label}} fit is available for 1D histograms`;
   const xs = [];
   const ys = [];
   for (let i = 0; i < rowCount; i++) {{
@@ -4106,27 +4246,33 @@ function draw2dFit(ctx, area, panel, mask, xValues, yValues, xMin, xMax, yMin, y
     const y = yValues[i];
     if (!mask[i] || !Number.isFinite(x) || !Number.isFinite(y)) continue;
     if (x < xMin || x > xMax || y < yMin || y > yMax) continue;
+    if (!xInFitRange(panel, x)) continue;
     xs.push(x);
     ys.push(y);
   }}
   const fit = make2dFit(xs, ys, model);
   if (!fit.predict) return fit.summary;
-  drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, fit.predict);
+  drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, fit.predict, fitRangeBounds(panel));
+  drawFitAnnotation(ctx, area, fit);
   return `${{fit.summary}}; n=${{xs.length.toLocaleString()}}`;
 }}
 
 function make2dFit(xs, ys, model) {{
-  if (model === "none") return {{summary: "No fit"}};
-  if (model === "gaussian") return {{summary: "Gaussian fit is available for 1D histograms"}};
-  if (xs.length < (model === "quadratic" ? 3 : 2)) return {{summary: "Not enough selected points for fit"}};
-  const fit = polynomialFit(xs, ys, model === "quadratic" ? 2 : 1);
+  const info = fitModelInfo(model);
+  if (info.kind === "none") return {{summary: "No fit"}};
+  if (info.kind === "gaussian" || info.kind === "crystalball") return {{summary: `${{info.label}} fit is available for 1D histograms`}};
+  if (xs.length < info.degree + 1) return {{summary: "Not enough selected points for fit"}};
+  const fit = polynomialFit(xs, ys, info.degree);
   return fit || {{summary: "Fit failed"}};
 }}
 
-function drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, predict) {{
+function drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, predict, xBounds = null) {{
   const c = colors();
   const pw = area.width - area.left - area.right;
   const ph = area.height - area.top - area.bottom;
+  const drawMin = xBounds ? Math.max(xMin, xBounds[0]) : xMin;
+  const drawMax = xBounds ? Math.min(xMax, xBounds[1]) : xMax;
+  if (!Number.isFinite(drawMin) || !Number.isFinite(drawMax) || drawMax <= drawMin) return;
   ctx.save();
   ctx.strokeStyle = c.fg;
   ctx.lineWidth = 2;
@@ -4134,7 +4280,7 @@ function drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, predict) {{
   ctx.beginPath();
   let started = false;
   for (let step = 0; step <= 160; step++) {{
-    const x = xMin + (xMax - xMin) * step / 160;
+    const x = drawMin + (drawMax - drawMin) * step / 160;
     const y = predict(x);
     if (!Number.isFinite(y)) {{
       started = false;
@@ -4154,6 +4300,48 @@ function drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, predict) {{
     }}
   }}
   ctx.stroke();
+  ctx.restore();
+}}
+
+function drawFitRangeIndicator(ctx, area, panel, xMin, xMax) {{
+  if (!panel || !Number.isFinite(xMin) || !Number.isFinite(xMax) || xMax <= xMin) return;
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  const c = colors();
+  const toPixel = value => area.left + (value - xMin) / (xMax - xMin) * pw;
+  const bounds = fitRangeBounds(panel);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(area.left, area.top, pw, ph);
+  ctx.clip();
+  ctx.strokeStyle = c.alert || c.fg;
+  ctx.fillStyle = c.alert || c.fg;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 4]);
+  if (bounds) {{
+    const lo = Math.max(bounds[0], xMin);
+    const hi = Math.min(bounds[1], xMax);
+    if (hi >= lo) {{
+      const x0 = toPixel(lo);
+      const x1 = toPixel(hi);
+      ctx.globalAlpha = 0.08;
+      ctx.fillRect(x0, area.top, Math.max(1, x1 - x0), ph);
+      ctx.globalAlpha = 0.9;
+      ctx.beginPath();
+      ctx.moveTo(x0, area.top);
+      ctx.lineTo(x0, area.top + ph);
+      ctx.moveTo(x1, area.top);
+      ctx.lineTo(x1, area.top + ph);
+      ctx.stroke();
+    }}
+  }} else if (Number.isFinite(panel.fitRangeMin) && panel.fitRangeMin >= xMin && panel.fitRangeMin <= xMax) {{
+    const x = toPixel(panel.fitRangeMin);
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath();
+    ctx.moveTo(x, area.top);
+    ctx.lineTo(x, area.top + ph);
+    ctx.stroke();
+  }}
   ctx.restore();
 }}
 
@@ -4183,10 +4371,14 @@ function drawFitAnnotation(ctx, area, fit) {{
 
 function polynomialFit(xs, ys, degree) {{
   const n = degree + 1;
+  const xMin = Math.min(...xs);
+  const xMax = Math.max(...xs);
+  const xCenter = (xMin + xMax) / 2;
+  const xScale = Math.max((xMax - xMin) / 2, 1.0e-12);
   const matrix = Array.from({{length: n}}, () => Array(n).fill(0));
   const rhs = Array(n).fill(0);
   for (let i = 0; i < xs.length; i++) {{
-    const x = xs[i];
+    const x = (xs[i] - xCenter) / xScale;
     const y = ys[i];
     const powers = [1];
     for (let p = 1; p <= degree * 2; p++) powers[p] = powers[p - 1] * x;
@@ -4197,15 +4389,16 @@ function polynomialFit(xs, ys, degree) {{
   }}
   const coeff = solveLinearSystem(matrix, rhs);
   if (!coeff) return null;
-  const predict = x => coeff.reduce((sum, value, power) => sum + value * Math.pow(x, power), 0);
+  const predict = x => {{
+    const scaled = (x - xCenter) / xScale;
+    return coeff.reduce((sum, value, power) => sum + value * Math.pow(scaled, power), 0);
+  }};
   const quality = fitQuality(xs, ys, predict, n);
-  const summary = degree === 1
-    ? `linear: y=${{fmt(coeff[1])}}x + ${{fmt(coeff[0])}}; chi2/ndf=${{fmt(quality.reduced)}}`
-    : `quadratic: y=${{fmt(coeff[2])}}x^2 + ${{fmt(coeff[1])}}x + ${{fmt(coeff[0])}}; chi2/ndf=${{fmt(quality.reduced)}}`;
-  const annotation = degree === 1
-    ? [`m=${{fmt(coeff[1])}}`, `b=${{fmt(coeff[0])}}`, `chi2/ndf=${{fmt(quality.reduced)}}`]
-    : [`a=${{fmt(coeff[2])}}`, `b=${{fmt(coeff[1])}}`, `chi2/ndf=${{fmt(quality.reduced)}}`];
-  return {{predict, summary, annotation, coeff, quality}};
+  const coeffText = coeff.slice(0, Math.min(coeff.length, 4)).map((value, index) => `c${{index}}=${{fmt(value)}}`);
+  const suffix = coeff.length > 4 ? ", ..." : "";
+  const summary = `poly${{degree}}: chi2/ndf=${{fmt(quality.reduced)}}; ${{coeffText.join(", ")}}${{suffix}}`;
+  const annotation = [`poly deg ${{degree}}`, `chi2/ndf=${{fmt(quality.reduced)}}`, ...coeffText.slice(0, 2)];
+  return {{predict, summary, annotation, coeff, quality, xCenter, xScale}};
 }}
 
 function gaussianMomentFit(xs, ys) {{
@@ -4239,6 +4432,102 @@ function gaussianMomentFit(xs, ys) {{
     baseline,
     quality
   }};
+}}
+
+function crystalBallFit(xs, ys) {{
+  const seed = distributionSeed(xs, ys);
+  if (!seed) return null;
+  const alphaValues = [0.7, 0.9, 1.1, 1.4, 1.8, 2.3, 3.0];
+  const nValues = [1.4, 2, 3, 5, 8, 12];
+  const sigmaScales = [0.7, 0.9, 1.1, 1.4];
+  const muOffsets = [-0.35, 0, 0.35];
+  let best = null;
+  for (const side of ["left", "right"]) {{
+    for (const sigmaScale of sigmaScales) {{
+      const sigma = seed.sigma * sigmaScale;
+      if (!Number.isFinite(sigma) || sigma <= 0) continue;
+      for (const muOffset of muOffsets) {{
+        const mu = seed.mean + muOffset * seed.sigma;
+        for (const alpha of alphaValues) {{
+          for (const n of nValues) {{
+            const shape = xs.map(x => crystalBallShape(x, mu, sigma, alpha, n, side));
+            const linear = solveAmplitudeBaseline(shape, ys);
+            if (!linear || linear.amplitude <= 0) continue;
+            const predict = x => linear.baseline + linear.amplitude * crystalBallShape(x, mu, sigma, alpha, n, side);
+            const quality = fitQuality(xs, ys, predict, 6);
+            if (!best || quality.reduced < best.quality.reduced) {{
+              best = {{mu, sigma, alpha, n, side, amplitude: linear.amplitude, baseline: linear.baseline, predict, quality}};
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+  if (!best) return null;
+  const tail = best.side === "left" ? "left tail" : "right tail";
+  return {{
+    ...best,
+    summary: `Crystal Ball (${{tail}}): mu=${{fmt(best.mu)}}, sigma=${{fmt(best.sigma)}}, alpha=${{fmt(best.alpha)}}, n=${{fmt(best.n)}}, chi2/ndf=${{fmt(best.quality.reduced)}}`,
+    annotation: [`CB ${{tail}}`, `mu=${{fmt(best.mu)}}`, `sigma=${{fmt(best.sigma)}}`, `alpha=${{fmt(best.alpha)}}`, `n=${{fmt(best.n)}}`, `chi2/ndf=${{fmt(best.quality.reduced)}}`]
+  }};
+}}
+
+function distributionSeed(xs, ys) {{
+  const baseline = percentile(ys, 0.1);
+  let weightSum = 0, meanSum = 0, peak = -Infinity;
+  for (let i = 0; i < xs.length; i++) {{
+    const weight = Math.max(0, ys[i] - baseline);
+    weightSum += weight;
+    meanSum += weight * xs[i];
+    if (ys[i] > peak) peak = ys[i];
+  }}
+  if (weightSum <= 0) return null;
+  const mean = meanSum / weightSum;
+  let variance = 0;
+  for (let i = 0; i < xs.length; i++) {{
+    const weight = Math.max(0, ys[i] - baseline);
+    variance += weight * Math.pow(xs[i] - mean, 2);
+  }}
+  const sigma = Math.sqrt(variance / weightSum);
+  if (!Number.isFinite(sigma) || sigma <= 0) return null;
+  return {{baseline, mean, sigma, peak, amplitude: peak - baseline}};
+}}
+
+function percentile(values, fraction) {{
+  const finite = values.filter(Number.isFinite).slice().sort((a, b) => a - b);
+  if (!finite.length) return 0;
+  const index = clamp(Math.floor((finite.length - 1) * fraction), 0, finite.length - 1);
+  return finite[index];
+}}
+
+function crystalBallShape(x, mu, sigma, alpha, n, side) {{
+  const z0 = (x - mu) / sigma;
+  const z = side === "right" ? -z0 : z0;
+  const absAlpha = Math.max(Math.abs(alpha), 1.0e-6);
+  if (z > -absAlpha) return Math.exp(-0.5 * z * z);
+  const a = Math.pow(n / absAlpha, n) * Math.exp(-0.5 * absAlpha * absAlpha);
+  const b = n / absAlpha - absAlpha;
+  return a * Math.pow(Math.max(1.0e-9, b - z), -n);
+}}
+
+function solveAmplitudeBaseline(shape, ys) {{
+  let s00 = 0, s01 = 0, s11 = 0, t0 = 0, t1 = 0;
+  for (let i = 0; i < shape.length; i++) {{
+    const s = shape[i];
+    const y = ys[i];
+    if (!Number.isFinite(s) || !Number.isFinite(y)) continue;
+    s00 += 1;
+    s01 += s;
+    s11 += s * s;
+    t0 += y;
+    t1 += y * s;
+  }}
+  const det = s00 * s11 - s01 * s01;
+  if (Math.abs(det) < 1.0e-12) return null;
+  const baseline = (t0 * s11 - t1 * s01) / det;
+  const amplitude = (s00 * t1 - s01 * t0) / det;
+  if (!Number.isFinite(baseline) || !Number.isFinite(amplitude)) return null;
+  return {{baseline, amplitude}};
 }}
 
 function fitQuality(xs, ys, predict, parameterCount) {{
