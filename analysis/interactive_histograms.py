@@ -1462,8 +1462,8 @@ button.active {{
 .quick-category.collapsed #quickCategoryBody {{ display: none; }}
 .constraints-panel {{
   margin: 10px 0 12px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
 }}
 .constraints-panel h2 {{
   margin-top: 0;
