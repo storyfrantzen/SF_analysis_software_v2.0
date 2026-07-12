@@ -1783,6 +1783,38 @@ button.remote-entry {{
   font-size: 12px;
   text-align: right;
 }}
+.quantity-banner {{
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  margin: 0 0 7px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--mark);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--fg);
+}}
+.quantity-banner .quantity-mode {{
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}}
+.quantity-banner strong {{
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}}
+.quantity-banner .quantity-detail {{
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}}
 .plot-grid.compare canvas {{
   height: min(64vh, 660px);
   min-height: 390px;
@@ -1947,6 +1979,7 @@ th:first-child, td:first-child {{ text-align: left; }}
           <div class="plot-title" id="plotTitleA">Panel 1</div>
           <div class="plot-summary" id="panelSummaryA"></div>
         </div>
+        <div class="quantity-banner" id="quantityBannerA"><span class="quantity-mode"></span><strong></strong><span class="quantity-detail"></span></div>
         <div class="filter-badge" id="filterBadgeA"><strong></strong><span></span></div>
         <div class="hover-info" id="hoverInfoA">Hover over a bin to inspect it.</div>
         <canvas id="plotA" width="1200" height="780"></canvas>
@@ -1959,6 +1992,7 @@ th:first-child, td:first-child {{ text-align: left; }}
           <div class="plot-title" id="plotTitleB">Panel 2</div>
           <div class="plot-summary" id="panelSummaryB"></div>
         </div>
+        <div class="quantity-banner" id="quantityBannerB"><span class="quantity-mode"></span><strong></strong><span class="quantity-detail"></span></div>
         <div class="filter-badge" id="filterBadgeB"><strong></strong><span></span></div>
         <div class="hover-info" id="hoverInfoB">Hover over a bin to inspect it.</div>
         <canvas id="plotB" width="1200" height="780"></canvas>
@@ -4006,6 +4040,36 @@ function axisDisplayLabel(panel, axis, fallback) {{
   return label || fallback;
 }}
 
+function variableLabel(name) {{
+  return byName[name]?.label || name || "";
+}}
+
+function panelPrimaryQuantity(panel) {{
+  if (panel.mode === "1d") return variableLabel(panel.xvar);
+  return `${{variableLabel(panel.yvar)}} vs ${{variableLabel(panel.xvar)}}`;
+}}
+
+function panelOverlayQuantity(panel) {{
+  const details = [];
+  if (panel.mode === "1d") {{
+    if (panel.x2var && panel.x2var !== panel.xvar && byName[panel.x2var]) details.push(`overlay: ${{variableLabel(panel.x2var)}}`);
+  }} else {{
+    const x2Name = panel.x2var && panel.x2var !== panel.xvar && byName[panel.x2var] ? panel.x2var : panel.xvar;
+    const y2Name = panel.y2var && panel.y2var !== panel.yvar && byName[panel.y2var] ? panel.y2var : panel.yvar;
+    if (x2Name !== panel.xvar || y2Name !== panel.yvar) details.push(`overlay: ${{variableLabel(y2Name)}} vs ${{variableLabel(x2Name)}}`);
+  }}
+  if (panel.splitVar && byName[panel.splitVar]) details.push(`split by ${{variableLabel(panel.splitVar)}}`);
+  return details.join(" | ");
+}}
+
+function updateQuantityBanner(panel) {{
+  const banner = el("quantityBanner" + panel.key);
+  if (!banner) return;
+  banner.querySelector(".quantity-mode").textContent = panel.mode === "1d" ? "1D" : "2D";
+  banner.querySelector("strong").textContent = panelPrimaryQuantity(panel);
+  banner.querySelector(".quantity-detail").textContent = panelOverlayQuantity(panel);
+}}
+
 function draw1dFit(ctx, area, panel, counts, xMin, xMax, yMin, yMax) {{
   const model = panel.fitModel || "none";
   const fit = make1dFit(counts, xMin, xMax, model);
@@ -4220,7 +4284,12 @@ function savePng() {{
     key,
     canvas: el("plot" + key),
     title: panelLabels[key] || key,
-    summary: [el("panelSummary" + key).textContent || "", badge ? `Filters: ${{badge.count}} active - ${{badge.detail}}` : ""].filter(Boolean).join(" | ")
+    summary: [
+      panelPrimaryQuantity(panels[key]),
+      panelOverlayQuantity(panels[key]),
+      el("panelSummary" + key).textContent || "",
+      badge ? `Filters: ${{badge.count}} active - ${{badge.detail}}` : ""
+    ].filter(Boolean).join(" | ")
   }}));
   if (!plots.length) return;
   const horizontal = plots.length > 1;
@@ -4584,6 +4653,7 @@ function histogramMax(...arrays) {{
 
 function setPanelStats(panel, selected, meanX, meanY) {{
   panel.stats = {{selected, meanX, meanY}};
+  updateQuantityBanner(panel);
   const overlayLabel = panel.mode === "1d" && panel.x2var && panel.x2var !== panel.xvar && byName[panel.x2var]
       ? ` + ${{byName[panel.x2var].label}}`
       : "";
