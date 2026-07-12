@@ -1407,7 +1407,6 @@ aside {{
 section {{
   padding: 12px;
   min-width: 0;
-  container: plot-section / inline-size;
 }}
 .control-deck {{
   display: grid;
@@ -1428,7 +1427,7 @@ section {{
   grid-column: 1 / -1;
 }}
 .analysis-tools {{
-  grid-template-columns: minmax(480px, 1.7fr) minmax(280px, 1fr);
+  grid-template-columns: 1fr;
   gap: 12px;
 }}
 .analysis-tools .control-panel {{
@@ -1442,8 +1441,11 @@ section {{
   margin-top: 0;
 }}
 .analysis-tools .text-panel {{
-  grid-column: 1 / -1;
+  grid-column: 1;
 }}
+.analysis-tools .fit-panel {{ order: 1; }}
+.analysis-tools .derived-panel {{ order: 2; }}
+.analysis-tools .text-panel {{ order: 3; }}
 h1 {{
   font-size: 16px;
   font-weight: 600;
@@ -1704,8 +1706,9 @@ canvas.fit-range-picker {{
   justify-content: flex-end;
   align-items: center;
   min-height: 28px;
-  margin: -2px 0 6px;
+  margin: 0 0 6px;
 }}
+.canvas-toolbar-slot:empty {{ display: none; }}
 .display-tile .chip {{
   border: 0;
   border-radius: 4px;
@@ -1940,7 +1943,7 @@ button.remote-entry {{
 }}
 .hover-info {{
   display: none;
-  margin: 0 0 8px;
+  margin: 6px 0 0;
   color: var(--muted);
   font-size: 12px;
 }}
@@ -1954,10 +1957,6 @@ button.remote-entry {{
 table {{ border-collapse: collapse; width: 100%; font-size: 12px; }}
 th, td {{ border-bottom: 1px solid var(--border); padding: 5px 7px; text-align: right; white-space: nowrap; }}
 th:first-child, td:first-child {{ text-align: left; }}
-@container plot-section (max-width: 800px) {{
-  .analysis-tools {{ grid-template-columns: 1fr; }}
-  .analysis-tools .text-panel {{ grid-column: 1; }}
-}}
 @media (max-width: 820px) {{
   main {{ grid-template-columns: 1fr; }}
   aside {{ border-right: 0; border-bottom: 1px solid var(--border); }}
@@ -2094,7 +2093,7 @@ th:first-child, td:first-child {{ text-align: left; }}
         <div class="remote-file-list" id="remoteFileList"></div>
       </div>
     </div>
-    <div class="canvas-toolbar" aria-label="Display options">
+    <div class="canvas-toolbar" id="canvasToolbar" aria-label="Display options">
       <div class="toolbar-tile display-tile">
         <label class="chip"><input id="logz" type="checkbox"> log color</label>
         <label class="chip"><input id="density" type="checkbox"> density</label>
@@ -2109,11 +2108,12 @@ th:first-child, td:first-child {{ text-align: left; }}
         </div>
         <div class="quantity-banner" id="quantityBannerA"><span class="quantity-mode"></span><strong></strong><span class="quantity-detail"></span></div>
         <div class="filter-badge" id="filterBadgeA"><strong></strong><span></span></div>
-        <div class="hover-info" id="hoverInfoA"></div>
+        <div class="canvas-toolbar-slot" id="canvasToolbarSlotA"></div>
         <canvas id="plotA" width="1200" height="780"></canvas>
         <canvas class="hover-overlay" id="hoverOverlayA" aria-hidden="true"></canvas>
         <div class="color-scale-hover" id="colorScaleHoverAPrimary"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
         <div class="color-scale-hover" id="colorScaleHoverAOverlay"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
+        <div class="hover-info" id="hoverInfoA"></div>
       </div>
       <div class="plot-pane hidden" id="plotPaneB">
         <div class="plot-head">
@@ -2122,11 +2122,12 @@ th:first-child, td:first-child {{ text-align: left; }}
         </div>
         <div class="quantity-banner" id="quantityBannerB"><span class="quantity-mode"></span><strong></strong><span class="quantity-detail"></span></div>
         <div class="filter-badge" id="filterBadgeB"><strong></strong><span></span></div>
-        <div class="hover-info" id="hoverInfoB"></div>
+        <div class="canvas-toolbar-slot" id="canvasToolbarSlotB"></div>
         <canvas id="plotB" width="1200" height="780"></canvas>
         <canvas class="hover-overlay" id="hoverOverlayB" aria-hidden="true"></canvas>
         <div class="color-scale-hover" id="colorScaleHoverBPrimary"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
         <div class="color-scale-hover" id="colorScaleHoverBOverlay"><span class="scale-slider"></span><span class="scale-name"></span><span class="scale-value"></span></div>
+        <div class="hover-info" id="hoverInfoB"></div>
       </div>
     </div>
     <div class="control-deck analysis-tools">
@@ -3800,6 +3801,11 @@ function visiblePanelKeys() {{
 function updatePanelVisibility() {{
   const visible = visiblePanelKeys();
   el("plotGrid").classList.toggle("compare", visible.length > 1);
+  const canvasToolbar = el("canvasToolbar");
+  const toolbarSlot = el("canvasToolbarSlot" + activePanel);
+  if (canvasToolbar && toolbarSlot && canvasToolbar.parentElement !== toolbarSlot) {{
+    toolbarSlot.appendChild(canvasToolbar);
+  }}
   for (const key of panelKeys) {{
     el("plotPane" + key).classList.toggle("hidden", !visible.includes(key));
   }}

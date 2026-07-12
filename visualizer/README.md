@@ -81,15 +81,12 @@ and uses content-sized buttons instead of stretching routine actions.
 Selected and embedded counts share one compact toolbar tile, while active-axis
 means are hidden from the default interface. Reset/export actions share a
 separate tile. Log color, density, and color-scale controls sit in a small
-display tile immediately above the canvas rather than adding noise to the main
-toolbar.
+display tile beneath the active panel title and immediately above its canvas.
+Hover coordinates and bin values appear beneath the canvas.
 
-Derived Operations and Fit use a dedicated responsive tool grid rather than
-competing for equal auto-sized columns. The derivation builder receives the
-wider workspace, Fit remains in a stable companion card, and text filters span
-the row beneath them. The two primary cards automatically stack whenever the
-plot section cannot provide enough horizontal room, independent of the overall
-viewport width or sidebar allocation.
+Fit, Derived Operations, and Text Filters use distinct full-width cards. Fit is
+presented first, Derived Operations is stacked beneath it, and Text Filters
+remain last so the two analysis workflows never compete horizontally.
 
 ## Source layout
 
