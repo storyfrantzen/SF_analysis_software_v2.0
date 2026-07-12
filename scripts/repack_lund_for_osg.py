@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 import sys
 
@@ -49,6 +50,20 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Validate and count input events without writing repacked files",
     )
+    root.add_argument(
+        "--fixed-lines-per-event",
+        type=int,
+        help=(
+            "Use a faster path for LUND samples with a fixed number of lines per event. "
+            "AAO 4-particle output uses 5 lines per event."
+        ),
+    )
+    root.add_argument(
+        "--progress-files",
+        type=int,
+        default=100,
+        help="Print progress every N input files; use 0 to disable",
+    )
     return root
 
 
@@ -58,6 +73,8 @@ def main() -> int:
         raise SystemExit("--events-per-file must be positive")
     if args.jobs_per_submission <= 0:
         raise SystemExit("--jobs-per-submission must be positive")
+    if args.fixed_lines_per_event is not None and args.fixed_lines_per_event <= 0:
+        raise SystemExit("--fixed-lines-per-event must be positive")
     input_files = sorted(path for path in args.input_dir.glob(args.glob) if path.is_file())
     if not input_files:
         raise SystemExit(f"No input files matched {args.input_dir / args.glob}")
@@ -68,13 +85,25 @@ def main() -> int:
         )
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    stats = repack_lund_files(
-        input_files,
-        args.output_dir,
-        events_per_file=args.events_per_file,
-        prefix=args.prefix,
-        dry_run=args.dry_run,
-    )
+    if args.fixed_lines_per_event is None:
+        stats = repack_lund_files(
+            input_files,
+            args.output_dir,
+            events_per_file=args.events_per_file,
+            prefix=args.prefix,
+            dry_run=args.dry_run,
+            progress_files=args.progress_files,
+        )
+    else:
+        stats = repack_fixed_line_lund_files(
+            input_files,
+            args.output_dir,
+            events_per_file=args.events_per_file,
+            lines_per_event=args.fixed_lines_per_event,
+            prefix=args.prefix,
+            dry_run=args.dry_run,
+            progress_files=args.progress_files,
+        )
     stats.input_files = len(input_files)
     if not args.dry_run:
         write_manifests(
@@ -94,6 +123,7 @@ def repack_lund_files(
     events_per_file: int,
     prefix: str,
     dry_run: bool,
+    progress_files: int = 0,
 ) -> RepackStats:
     if not dry_run:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -102,7 +132,8 @@ def repack_lund_files(
     events_in_output = 0
     output_index = 0
     try:
-        for input_file in input_files:
+        total_files = len(input_files)
+        for file_index, input_file in enumerate(input_files, start=1):
             with input_file.open("r", encoding="utf-8") as handle:
                 while True:
                     event = read_lund_event(handle, input_file)
@@ -124,12 +155,124 @@ def repack_lund_files(
                             output.close()
                             output = None
                         events_in_output = 0
+            print_progress(file_index, total_files, stats, progress_files, events_per_file)
         if dry_run:
             stats.output_files = (stats.events + events_per_file - 1) // events_per_file
     finally:
         if output is not None:
             output.close()
     return stats
+
+
+def repack_fixed_line_lund_files(
+    input_files: list[Path],
+    output_dir: Path,
+    *,
+    events_per_file: int,
+    lines_per_event: int,
+    prefix: str,
+    dry_run: bool,
+    progress_files: int = 0,
+) -> RepackStats:
+    if dry_run:
+        return count_fixed_line_lund_files(
+            input_files,
+            events_per_file=events_per_file,
+            lines_per_event=lines_per_event,
+            progress_files=progress_files,
+        )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stats = RepackStats()
+    output = None
+    events_in_output = 0
+    output_index = 0
+    total_files = len(input_files)
+    try:
+        for file_index, input_file in enumerate(input_files, start=1):
+            with input_file.open("rb") as handle:
+                while True:
+                    if events_in_output == 0:
+                        output_index += 1
+                        output_path = output_dir / f"{prefix}_{output_index:06d}.lund"
+                        output = output_path.open("wb")
+                        stats.output_files = output_index
+                    lines_needed = (events_per_file - events_in_output) * lines_per_event
+                    lines = list(islice(handle, lines_needed))
+                    if not lines:
+                        break
+                    if len(lines) % lines_per_event != 0:
+                        raise ValueError(
+                            f"{input_file} ended after {len(lines)} lines in a fixed-line block; "
+                            f"expected a multiple of {lines_per_event}"
+                        )
+                    assert output is not None
+                    output.writelines(lines)
+                    events = len(lines) // lines_per_event
+                    stats.events += events
+                    stats.lines += len(lines)
+                    events_in_output += events
+                    if events_in_output >= events_per_file:
+                        output.close()
+                        output = None
+                        events_in_output = 0
+            print_progress(file_index, total_files, stats, progress_files, events_per_file)
+    finally:
+        if output is not None:
+            output.close()
+    return stats
+
+
+def count_fixed_line_lund_files(
+    input_files: list[Path],
+    *,
+    events_per_file: int,
+    lines_per_event: int,
+    progress_files: int = 0,
+) -> RepackStats:
+    stats = RepackStats()
+    total_files = len(input_files)
+    for file_index, input_file in enumerate(input_files, start=1):
+        lines = count_lines(input_file)
+        if lines % lines_per_event != 0:
+            raise ValueError(
+                f"{input_file} has {lines} lines, which is not divisible by "
+                f"--fixed-lines-per-event={lines_per_event}"
+            )
+        stats.lines += lines
+        stats.events += lines // lines_per_event
+        print_progress(file_index, total_files, stats, progress_files, events_per_file)
+    stats.output_files = (stats.events + events_per_file - 1) // events_per_file
+    return stats
+
+
+def count_lines(path: Path, chunk_size: int = 16 * 1024 * 1024) -> int:
+    count = 0
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            count += chunk.count(b"\n")
+    return count
+
+
+def print_progress(
+    file_index: int,
+    total_files: int,
+    stats: RepackStats,
+    progress_files: int,
+    events_per_file: int,
+) -> None:
+    if progress_files <= 0:
+        return
+    if file_index % progress_files != 0 and file_index != total_files:
+        return
+    print(
+        f"[PROGRESS] files={file_index}/{total_files} events={stats.events} "
+        f"output_chunks~={(stats.events + events_per_file - 1) // events_per_file}",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def read_lund_event(handle, input_file: Path) -> list[str] | None:
