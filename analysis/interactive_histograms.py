@@ -1445,6 +1445,11 @@ button.active {{
   align-items: center;
   margin: 8px 0 6px;
 }}
+.fit-model-grid {{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}}
 .fit-tools button {{
   flex: 0 0 auto;
 }}
@@ -2040,16 +2045,22 @@ th:first-child, td:first-child {{ text-align: left; }}
       </div>
       <div class="control-panel">
         <h2>Fit</h2>
-        <label>Model <select id="fitModel">
-          <option value="none">none</option>
-          <option value="gaussian">Gaussian</option>
-          <option value="crystalball">Crystal Ball</option>
-          <option value="poly1">Polynomial degree 1</option>
-          <option value="poly2">Polynomial degree 2</option>
-          <option value="poly3">Polynomial degree 3</option>
-          <option value="poly4">Polynomial degree 4</option>
-          <option value="poly5">Polynomial degree 5</option>
-        </select></label>
+        <div class="fit-model-grid">
+          <label>Signal S <select id="signalModel">
+            <option value="none">none</option>
+            <option value="gaussian">Gaussian</option>
+            <option value="crystalball">Crystal Ball</option>
+          </select></label>
+          <label>Background B <select id="backgroundModel">
+            <option value="none">none</option>
+            <option value="poly0">constant</option>
+            <option value="poly1">Polynomial degree 1</option>
+            <option value="poly2">Polynomial degree 2</option>
+            <option value="poly3">Polynomial degree 3</option>
+            <option value="poly4">Polynomial degree 4</option>
+            <option value="poly5">Polynomial degree 5</option>
+          </select></label>
+        </div>
         <div class="fit-tools">
           <label class="chip"><input id="fitRangeClick" type="checkbox"> click endpoints</label>
           <button type="button" id="clearFitRange">Clear range</button>
@@ -2567,6 +2578,8 @@ function makePanel(key, xvar, yvar) {{
     density: false,
     colorScale: false,
     fitModel: "none",
+    signalModel: "none",
+    backgroundModel: "none",
     fitRangeClick: false,
     fitRangeMin: NaN,
     fitRangeMax: NaN,
@@ -3085,7 +3098,7 @@ function renderTextFilters() {{
 }}
 
 function attachEvents() {{
-  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","fitModel","fitRangeClick"].forEach(id => {{
+  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","signalModel","backgroundModel","fitRangeClick"].forEach(id => {{
     el(id).addEventListener("input", () => {{ readControlsToPanel(); update(); }});
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
@@ -3209,8 +3222,9 @@ function syncControlsFromPanel() {{
   el("logz").checked = panel.logz;
   el("density").checked = panel.density;
   el("colorScale").checked = panel.colorScale;
-  panel.fitModel = canonicalFitModel(panel.fitModel);
-  el("fitModel").value = panel.fitModel || "none";
+  migratePanelFitSpec(panel);
+  el("signalModel").value = panel.signalModel || "none";
+  el("backgroundModel").value = panel.backgroundModel || "none";
   el("fitRangeClick").checked = panel.fitRangeClick;
   el("fitRangeSummary").textContent = fitRangeSummaryText(panel);
   el("fitSummary").textContent = panel.fitSummary || "No fit";
@@ -3271,7 +3285,9 @@ function readControlsToPanel() {{
   panel.logz = el("logz").checked;
   panel.density = el("density").checked;
   panel.colorScale = el("colorScale").checked;
-  panel.fitModel = canonicalFitModel(el("fitModel").value);
+  panel.signalModel = canonicalSignalModel(el("signalModel").value);
+  panel.backgroundModel = canonicalBackgroundModel(el("backgroundModel").value);
+  panel.fitModel = fitSpecKey(fitSpecFromPanel(panel));
   panel.fitRangeClick = el("fitRangeClick").checked;
   el("fitRangeSummary").textContent = fitRangeSummaryText(panel);
   updateFitRangePickerCursors();
@@ -3280,6 +3296,7 @@ function readControlsToPanel() {{
 function canonicalFitModel(model) {{
   if (model === "linear") return "poly1";
   if (model === "quadratic") return "poly2";
+  if (model === "constant") return "poly0";
   return model || "none";
 }}
 
@@ -3288,12 +3305,70 @@ function fitModelInfo(model) {{
   if (value === "none") return {{kind: "none", label: "No fit"}};
   if (value === "gaussian") return {{kind: "gaussian", label: "Gaussian", parameters: 4}};
   if (value === "crystalball") return {{kind: "crystalball", label: "Crystal Ball", parameters: 6}};
-  const match = String(value).match(/^poly([1-5])$/);
+  const match = String(value).match(/^poly([0-5])$/);
   if (match) {{
     const degree = Number(match[1]);
-    return {{kind: "polynomial", degree, label: `Polynomial degree ${{degree}}`, parameters: degree + 1}};
+    const label = degree === 0 ? "constant" : `Polynomial degree ${{degree}}`;
+    return {{kind: "polynomial", degree, label, parameters: degree + 1}};
   }}
   return {{kind: "none", label: "No fit"}};
+}}
+
+function canonicalSignalModel(model) {{
+  const value = canonicalFitModel(model);
+  return value === "gaussian" || value === "crystalball" ? value : "none";
+}}
+
+function canonicalBackgroundModel(model) {{
+  const value = canonicalFitModel(model);
+  return fitModelInfo(value).kind === "polynomial" ? value : "none";
+}}
+
+function legacyFitSpec(model) {{
+  const value = canonicalFitModel(model);
+  const info = fitModelInfo(value);
+  if (info.kind === "gaussian" || info.kind === "crystalball") return {{signal: value, background: "none"}};
+  if (info.kind === "polynomial") return {{signal: "none", background: value}};
+  return {{signal: "none", background: "none"}};
+}}
+
+function fitSpecFromPanel(panel, fallbackModel = null) {{
+  if (!panel) return legacyFitSpec(fallbackModel);
+  migratePanelFitSpec(panel);
+  return {{
+    signal: canonicalSignalModel(panel.signalModel),
+    background: canonicalBackgroundModel(panel.backgroundModel)
+  }};
+}}
+
+function fitSpecKey(spec) {{
+  return spec.signal === "none" && spec.background === "none"
+    ? "none"
+    : `S:${{spec.signal}}|B:${{spec.background}}`;
+}}
+
+function migratePanelFitSpec(panel) {{
+  if (!panel) return;
+  if (panel.signalModel === undefined || panel.backgroundModel === undefined) {{
+    const legacy = legacyFitSpec(panel.fitModel);
+    if (panel.signalModel === undefined) panel.signalModel = legacy.signal;
+    if (panel.backgroundModel === undefined) panel.backgroundModel = legacy.background;
+  }}
+  panel.signalModel = canonicalSignalModel(panel.signalModel);
+  panel.backgroundModel = canonicalBackgroundModel(panel.backgroundModel);
+  panel.fitModel = fitSpecKey({{signal: panel.signalModel, background: panel.backgroundModel}});
+}}
+
+function panelHasFit(panel) {{
+  const spec = fitSpecFromPanel(panel);
+  return spec.signal !== "none" || spec.background !== "none";
+}}
+
+function fitSpecLabel(spec) {{
+  const parts = [];
+  if (spec.signal !== "none") parts.push(`S=${{fitModelInfo(spec.signal).label}}`);
+  if (spec.background !== "none") parts.push(`B=${{fitModelInfo(spec.background).label}}`);
+  return parts.length ? parts.join(" + ") : "No fit";
 }}
 
 function clearFitRange(panel) {{
@@ -3325,7 +3400,7 @@ function updateFitRangePickerCursors() {{
     const canvas = el("plot" + key);
     if (!canvas) continue;
     const panel = panels[key];
-    canvas.classList.toggle("fit-range-picker", Boolean(panel.fitRangeClick && canonicalFitModel(panel.fitModel) !== "none"));
+    canvas.classList.toggle("fit-range-picker", Boolean(panel.fitRangeClick && panelHasFit(panel)));
   }}
 }}
 
@@ -3344,7 +3419,7 @@ function fitClickArea(lastPlot, px, py) {{
 function handleFitRangeClick(event, key) {{
   const panel = panels[key];
   const lastPlot = panel?.lastPlot;
-  if (!panel || !lastPlot || !panel.fitRangeClick || canonicalFitModel(panel.fitModel) === "none") return;
+  if (!panel || !lastPlot || !panel.fitRangeClick || !panelHasFit(panel)) return;
   const rect = el("plot" + key).getBoundingClientRect();
   const px = event.clientX - rect.left;
   const py = event.clientY - rect.top;
@@ -3901,10 +3976,10 @@ function draw1dFacets(panel, mask, splitName) {{
     if (x2Name && index === 0) drawOverlayLegend(ctx, facetAreaInfo, byName[xName].label, byName[x2Name].label);
     drawFacetTitle(ctx, facetAreaInfo, `${{facet.label}} (${{facet.selected.toLocaleString()}})`);
     drawFitRangeIndicator(ctx, facetAreaInfo, panel, xMin, xMax);
-    if (panel.fitModel !== "none") {{
-      const fit = make1dFit(facet.counts, xMin, xMax, panel.fitModel, panel);
+    if (panelHasFit(panel)) {{
+      const fit = make1dFit(facet.counts, xMin, xMax, panel);
       if (fit.predict) {{
-        drawFitCurve(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, fit.predict, fitRangeBounds(panel));
+        drawFitResult(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, fit, panel);
         drawFitAnnotation(ctx, facetAreaInfo, fit);
       }}
       fitSummaries.push(`${{facet.shortLabel}}: ${{fit.summary}}`);
@@ -3915,7 +3990,7 @@ function draw1dFacets(panel, mask, splitName) {{
     mode: "1d-facet", area, facets, splitName, xName, x2Name, xMin, xMax, bins,
     selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density, yMax: maxCount
   }};
-  panel.fitSummary = panel.fitModel === "none" ? "No fit" : fitSummaries.join(" | ");
+  panel.fitSummary = panelHasFit(panel) ? fitSummaries.join(" | ") : "No fit";
   setPanelStats(panel, totalSelected, sumXAll / totalSelected, NaN);
 }}
 
@@ -3937,7 +4012,8 @@ function draw2dFacets(panel, mask, splitName) {{
   const yMax = panel.ymax;
   const facets = [];
   const facetDefinitions = splitFacets(splitName);
-  const collectFitPoints = fitModelInfo(panel.fitModel).kind === "polynomial";
+  const fitSpec = fitSpecFromPanel(panel);
+  const collectFitPoints = fitSpec.signal === "none" && fitModelInfo(fitSpec.background).kind === "polynomial";
   let totalSelected = 0, totalOverlaySelected = 0, sumXAll = 0, sumYAll = 0;
   for (const definition of facetDefinitions) {{
     const counts = new Float64Array(xBins * yBins);
@@ -4037,9 +4113,9 @@ function draw2dFacets(panel, mask, splitName) {{
     if (panel.colorScale) facet.colorScale = draw2dColorScale(ctx, facetAreaInfo, facet.maxCount, facet.overlayCounts ? facet.overlayMaxCount : 0, panel);
     drawFitRangeIndicator(ctx, facetAreaInfo, panel, xMin, xMax);
     if (collectFitPoints) {{
-      const fit = make2dFit(facet.fitXs, facet.fitYs, panel.fitModel);
+      const fit = make2dFit(facet.fitXs, facet.fitYs, panel);
       if (fit.predict) {{
-        drawFitCurve(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, fit.predict, fitRangeBounds(panel));
+        drawFitResult(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, fit, panel);
         drawFitAnnotation(ctx, facetAreaInfo, fit);
       }}
       fitSummaries.push(`${{facet.shortLabel}}: ${{fit.summary}}; n=${{facet.fitXs.length.toLocaleString()}}`);
@@ -4051,10 +4127,10 @@ function draw2dFacets(panel, mask, splitName) {{
     xBins, yBins, selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density,
     logz: panel.logz
   }};
-  panel.fitSummary = panel.fitModel === "none"
+  panel.fitSummary = !panelHasFit(panel)
     ? "No fit"
-    : fitModelInfo(panel.fitModel).kind !== "polynomial"
-      ? `${{fitModelInfo(panel.fitModel).label}} fit is available for 1D histograms`
+    : !collectFitPoints
+      ? `${{fitSpecLabel(fitSpec)}} is available for 1D histograms; choose only B polynomial for 2D trend fits`
       : fitSummaries.join(" | ");
   setPanelStats(panel, totalSelected, sumXAll / totalSelected, sumYAll / totalSelected);
 }}
@@ -4205,17 +4281,23 @@ function updateQuantityBanner(panel) {{
 }}
 
 function draw1dFit(ctx, area, panel, counts, xMin, xMax, yMin, yMax) {{
-  const model = panel.fitModel || "none";
-  const fit = make1dFit(counts, xMin, xMax, model, panel);
+  const fit = make1dFit(counts, xMin, xMax, panel);
   if (!fit.predict) return fit.summary;
-  drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, fit.predict, fitRangeBounds(panel));
+  drawFitResult(ctx, area, xMin, xMax, yMin, yMax, fit, panel);
   drawFitAnnotation(ctx, area, fit);
   return fit.summary;
 }}
 
-function make1dFit(counts, xMin, xMax, model, panel = null) {{
-  const info = fitModelInfo(model);
-  if (info.kind === "none") return {{summary: "No fit"}};
+function fitSpecFromArgs(modelOrPanel, panel = null) {{
+  if (panel) return fitSpecFromPanel(panel);
+  if (modelOrPanel && typeof modelOrPanel === "object") return fitSpecFromPanel(modelOrPanel);
+  return legacyFitSpec(modelOrPanel);
+}}
+
+function make1dFit(counts, xMin, xMax, modelOrPanel, panel = null) {{
+  const ownerPanel = panel || (modelOrPanel && typeof modelOrPanel === "object" ? modelOrPanel : null);
+  const spec = fitSpecFromArgs(modelOrPanel, panel);
+  if (spec.signal === "none" && spec.background === "none") return {{summary: "No fit"}};
   const xs = [];
   const ys = [];
   const binWidth = (xMax - xMin) / counts.length;
@@ -4223,24 +4305,26 @@ function make1dFit(counts, xMin, xMax, model, panel = null) {{
     const y = counts[i];
     if (!Number.isFinite(y)) continue;
     const x = xMin + (i + 0.5) * binWidth;
-    if (panel && !xInFitRange(panel, x)) continue;
+    if (ownerPanel && !xInFitRange(ownerPanel, x)) continue;
     xs.push(x);
     ys.push(y);
   }}
-  const required = info.kind === "polynomial" ? info.degree + 1 : 4;
+  const backgroundInfo = fitModelInfo(spec.background);
+  const backgroundTerms = backgroundInfo.kind === "polynomial" ? backgroundInfo.degree + 1 : 0;
+  const required = Math.max(backgroundTerms + (spec.signal === "none" ? 0 : 3), 2);
   if (xs.length < required) return {{summary: "Not enough bins for fit"}};
-  let fit = null;
-  if (info.kind === "gaussian") fit = gaussianMomentFit(xs, ys);
-  else if (info.kind === "crystalball") fit = crystalBallFit(xs, ys);
-  else if (info.kind === "polynomial") fit = polynomialFit(xs, ys, info.degree);
+  const fit = spec.signal === "none"
+    ? backgroundOnlyFit(xs, ys, spec.background)
+    : signalBackgroundFit(xs, ys, spec.signal, spec.background);
   return fit || {{summary: "Fit failed"}};
 }}
 
 function draw2dFit(ctx, area, panel, mask, xValues, yValues, xMin, xMax, yMin, yMax) {{
-  const model = panel.fitModel || "none";
-  const info = fitModelInfo(model);
-  if (info.kind === "none") return "No fit";
-  if (info.kind !== "polynomial") return `${{info.label}} fit is available for 1D histograms`;
+  const spec = fitSpecFromPanel(panel);
+  if (spec.signal === "none" && spec.background === "none") return "No fit";
+  if (spec.signal !== "none") return `${{fitSpecLabel(spec)}} is available for 1D histograms; choose only B polynomial for 2D trend fits`;
+  const info = fitModelInfo(spec.background);
+  if (info.kind !== "polynomial") return "Choose a B polynomial for 2D trend fits";
   const xs = [];
   const ys = [];
   for (let i = 0; i < rowCount; i++) {{
@@ -4252,33 +4336,48 @@ function draw2dFit(ctx, area, panel, mask, xValues, yValues, xMin, xMax, yMin, y
     xs.push(x);
     ys.push(y);
   }}
-  const fit = make2dFit(xs, ys, model);
+  const fit = make2dFit(xs, ys, panel);
   if (!fit.predict) return fit.summary;
-  drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, fit.predict, fitRangeBounds(panel));
+  drawFitResult(ctx, area, xMin, xMax, yMin, yMax, fit, panel);
   drawFitAnnotation(ctx, area, fit);
   return `${{fit.summary}}; n=${{xs.length.toLocaleString()}}`;
 }}
 
-function make2dFit(xs, ys, model) {{
-  const info = fitModelInfo(model);
-  if (info.kind === "none") return {{summary: "No fit"}};
-  if (info.kind === "gaussian" || info.kind === "crystalball") return {{summary: `${{info.label}} fit is available for 1D histograms`}};
+function make2dFit(xs, ys, modelOrPanel) {{
+  const spec = fitSpecFromArgs(modelOrPanel);
+  if (spec.signal === "none" && spec.background === "none") return {{summary: "No fit"}};
+  if (spec.signal !== "none") return {{summary: `${{fitSpecLabel(spec)}} is available for 1D histograms`}};
+  const info = fitModelInfo(spec.background);
+  if (info.kind !== "polynomial") return {{summary: "Choose a B polynomial for 2D trend fits"}};
   if (xs.length < info.degree + 1) return {{summary: "Not enough selected points for fit"}};
-  const fit = polynomialFit(xs, ys, info.degree);
-  return fit || {{summary: "Fit failed"}};
+  return backgroundOnlyFit(xs, ys, spec.background) || {{summary: "Fit failed"}};
 }}
 
-function drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, predict, xBounds = null) {{
+function drawFitResult(ctx, area, xMin, xMax, yMin, yMax, fit, panel) {{
   const c = colors();
+  const bounds = fitRangeBounds(panel);
+  if (fit.backgroundPredict && fit.signalPredict && fit.hasBackground) {{
+    drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, fit.backgroundPredict, bounds, {{strokeStyle: c.alert, lineDash: [2, 3], lineWidth: 1.5, alpha: 0.95}});
+  }}
+  if (fit.signalPredict && fit.hasBackground) {{
+    drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, fit.signalPredict, bounds, {{strokeStyle: c.mark, lineDash: [], lineWidth: 1.6, alpha: 0.95}});
+  }}
+  drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, fit.predict, bounds, {{strokeStyle: c.fg, lineDash: [7, 4], lineWidth: 2}});
+}}
+
+function drawFitCurve(ctx, area, xMin, xMax, yMin, yMax, predict, xBounds = null, options = null) {{
+  const c = colors();
+  const style = options || {{}};
   const pw = area.width - area.left - area.right;
   const ph = area.height - area.top - area.bottom;
   const drawMin = xBounds ? Math.max(xMin, xBounds[0]) : xMin;
   const drawMax = xBounds ? Math.min(xMax, xBounds[1]) : xMax;
   if (!Number.isFinite(drawMin) || !Number.isFinite(drawMax) || drawMax <= drawMin) return;
   ctx.save();
-  ctx.strokeStyle = c.fg;
-  ctx.lineWidth = 2;
-  ctx.setLineDash([7, 4]);
+  ctx.strokeStyle = style.strokeStyle || c.fg;
+  ctx.lineWidth = style.lineWidth || 2;
+  ctx.globalAlpha = style.alpha === undefined ? 1 : style.alpha;
+  ctx.setLineDash(style.lineDash || [7, 4]);
   ctx.beginPath();
   let started = false;
   for (let step = 0; step <= 160; step++) {{
@@ -4354,7 +4453,7 @@ function drawFitAnnotation(ctx, area, fit) {{
   const x = area.left + 6;
   const y = area.top + 8;
   const lineHeight = 12;
-  const width = Math.min(130, Math.max(70, ...lines.map(line => line.length * 5.8)) + 8);
+  const width = Math.min(190, Math.max(82, ...lines.map(line => line.length * 5.8)) + 8);
   const height = lineHeight * lines.length + 7;
   ctx.save();
   ctx.globalAlpha = 0.88;
@@ -4369,6 +4468,159 @@ function drawFitAnnotation(ctx, area, fit) {{
   ctx.textBaseline = "top";
   lines.forEach((line, index) => ctx.fillText(line, x, y + index * lineHeight));
   ctx.restore();
+}}
+
+function backgroundOnlyFit(xs, ys, backgroundModel) {{
+  const info = fitModelInfo(backgroundModel);
+  if (info.kind !== "polynomial") return null;
+  const fit = polynomialFit(xs, ys, info.degree);
+  if (!fit) return null;
+  const label = info.degree === 0 ? "B constant" : `B poly deg ${{info.degree}}`;
+  const coeffText = fit.coeff.slice(0, Math.min(fit.coeff.length, 3)).map((value, index) => `b${{index}}=${{fmt(value)}}`);
+  return {{
+    ...fit,
+    hasBackground: true,
+    backgroundPredict: fit.predict,
+    summary: `${{label}}: chi2/ndf=${{fmt(fit.quality.reduced)}}; ${{coeffText.join(", ")}}`,
+    annotation: [label, `chi2/ndf=${{fmt(fit.quality.reduced)}}`, ...coeffText.slice(0, 2)]
+  }};
+}}
+
+function signalBackgroundFit(xs, ys, signalModel, backgroundModel) {{
+  const signalInfo = fitModelInfo(signalModel);
+  const backgroundInfo = fitModelInfo(backgroundModel);
+  if (signalInfo.kind !== "gaussian" && signalInfo.kind !== "crystalball") return backgroundOnlyFit(xs, ys, backgroundModel);
+  const backgroundDegree = backgroundInfo.kind === "polynomial" ? backgroundInfo.degree : -1;
+  const seed = distributionSeed(xs, ys) || fallbackDistributionSeed(xs, ys);
+  if (!seed) return null;
+  const xMin = Math.min(...xs);
+  const xMax = Math.max(...xs);
+  const xCenter = (xMin + xMax) / 2;
+  const xScale = Math.max((xMax - xMin) / 2, 1.0e-12);
+  let best = null;
+  for (const candidate of signalShapeCandidates(signalInfo.kind, seed)) {{
+    const linear = solveSignalBackgroundLinearFit(xs, ys, candidate, backgroundDegree, xCenter, xScale);
+    if (!linear || linear.signalAmplitude <= 0) continue;
+    const parameterCount = linear.coeff.length + candidate.nonlinearParameters;
+    const quality = fitQuality(xs, ys, linear.predict, parameterCount);
+    if (!best || quality.reduced < best.quality.reduced) {{
+      best = {{...linear, ...candidate, backgroundDegree, quality, parameterCount}};
+    }}
+  }}
+  if (!best) return null;
+  return formatSignalBackgroundFit(best, signalInfo, backgroundInfo);
+}}
+
+function signalShapeCandidates(kind, seed) {{
+  const candidates = [];
+  if (kind === "gaussian") {{
+    const sigmaScales = [0.45, 0.65, 0.85, 1.0, 1.2, 1.5, 2.0];
+    const muOffsets = [-1.0, -0.5, 0, 0.5, 1.0];
+    for (const sigmaScale of sigmaScales) {{
+      const sigma = seed.sigma * sigmaScale;
+      if (!Number.isFinite(sigma) || sigma <= 0) continue;
+      for (const muOffset of muOffsets) {{
+        const mu = seed.mean + muOffset * seed.sigma;
+        candidates.push({{
+          kind,
+          mu,
+          sigma,
+          nonlinearParameters: 2,
+          shape: x => Math.exp(-0.5 * Math.pow((x - mu) / sigma, 2))
+        }});
+      }}
+    }}
+  }} else if (kind === "crystalball") {{
+    const alphaValues = [0.7, 0.9, 1.1, 1.4, 1.8, 2.3, 3.0];
+    const nValues = [1.4, 2, 3, 5, 8, 12];
+    const sigmaScales = [0.65, 0.85, 1.05, 1.3, 1.65];
+    const muOffsets = [-0.6, -0.25, 0, 0.25, 0.6];
+    for (const side of ["left", "right"]) {{
+      for (const sigmaScale of sigmaScales) {{
+        const sigma = seed.sigma * sigmaScale;
+        if (!Number.isFinite(sigma) || sigma <= 0) continue;
+        for (const muOffset of muOffsets) {{
+          const mu = seed.mean + muOffset * seed.sigma;
+          for (const alpha of alphaValues) {{
+            for (const n of nValues) {{
+              candidates.push({{
+                kind,
+                mu,
+                sigma,
+                alpha,
+                n,
+                side,
+                nonlinearParameters: 4,
+                shape: x => crystalBallShape(x, mu, sigma, alpha, n, side)
+              }});
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+  return candidates;
+}}
+
+function solveSignalBackgroundLinearFit(xs, ys, candidate, backgroundDegree, xCenter, xScale) {{
+  const backgroundTerms = backgroundDegree >= 0 ? backgroundDegree + 1 : 0;
+  const signalIndex = backgroundTerms;
+  const termCount = backgroundTerms + 1;
+  const matrix = Array.from({{length: termCount}}, () => Array(termCount).fill(0));
+  const rhs = Array(termCount).fill(0);
+  for (let i = 0; i < xs.length; i++) {{
+    const signalValue = candidate.shape(xs[i]);
+    if (!Number.isFinite(signalValue) || !Number.isFinite(ys[i])) continue;
+    const terms = backgroundBasis(xs[i], backgroundDegree, xCenter, xScale);
+    terms.push(signalValue);
+    for (let row = 0; row < termCount; row++) {{
+      rhs[row] += ys[i] * terms[row];
+      for (let col = 0; col < termCount; col++) matrix[row][col] += terms[row] * terms[col];
+    }}
+  }}
+  const coeff = solveLinearSystem(matrix, rhs);
+  if (!coeff || !coeff.every(Number.isFinite)) return null;
+  const signalAmplitude = coeff[signalIndex];
+  const backgroundPredict = x => {{
+    const terms = backgroundBasis(x, backgroundDegree, xCenter, xScale);
+    return terms.reduce((sum, term, index) => sum + coeff[index] * term, 0);
+  }};
+  const signalPredict = x => signalAmplitude * candidate.shape(x);
+  const predict = x => backgroundPredict(x) + signalPredict(x);
+  return {{coeff, signalAmplitude, backgroundPredict, signalPredict, predict, xCenter, xScale}};
+}}
+
+function backgroundBasis(x, degree, xCenter, xScale) {{
+  if (degree < 0) return [];
+  const scaled = (x - xCenter) / xScale;
+  const terms = [1];
+  for (let power = 1; power <= degree; power++) terms.push(terms[power - 1] * scaled);
+  return terms;
+}}
+
+function formatSignalBackgroundFit(fit, signalInfo, backgroundInfo) {{
+  const signalLabel = signalInfo.kind === "crystalball" ? "S Crystal Ball" : "S Gaussian";
+  const backgroundLabel = backgroundInfo.kind === "polynomial"
+    ? (backgroundInfo.degree === 0 ? "B constant" : `B poly deg ${{backgroundInfo.degree}}`)
+    : "B none";
+  const tail = fit.kind === "crystalball" ? (fit.side === "left" ? ", left tail" : ", right tail") : "";
+  const params = [
+    `mu=${{fmt(fit.mu)}}`,
+    `sigma=${{fmt(fit.sigma)}}`,
+    `A=${{fmt(fit.signalAmplitude)}}`
+  ];
+  if (fit.kind === "crystalball") {{
+    params.push(`alpha=${{fmt(fit.alpha)}}`, `n=${{fmt(fit.n)}}`);
+  }}
+  const summary = `${{signalLabel}}${{tail}} + ${{backgroundLabel}}: ${{params.join(", ")}}, chi2/ndf=${{fmt(fit.quality.reduced)}}`;
+  const annotation = [
+    `${{signalLabel}} + ${{backgroundLabel}}`,
+    `mu=${{fmt(fit.mu)}}`,
+    `sigma=${{fmt(fit.sigma)}}`,
+    ...(fit.kind === "crystalball" ? [`alpha=${{fmt(fit.alpha)}}`, `n=${{fmt(fit.n)}}`] : []),
+    `chi2/ndf=${{fmt(fit.quality.reduced)}}`
+  ];
+  return {{...fit, hasBackground: fit.backgroundDegree >= 0, summary, annotation}};
 }}
 
 function polynomialFit(xs, ys, degree) {{
@@ -4493,6 +4745,24 @@ function distributionSeed(xs, ys) {{
   const sigma = Math.sqrt(variance / weightSum);
   if (!Number.isFinite(sigma) || sigma <= 0) return null;
   return {{baseline, mean, sigma, peak, amplitude: peak - baseline}};
+}}
+
+function fallbackDistributionSeed(xs, ys) {{
+  if (!xs.length) return null;
+  let peakIndex = 0;
+  for (let i = 1; i < ys.length; i++) {{
+    if (ys[i] > ys[peakIndex]) peakIndex = i;
+  }}
+  const xMin = Math.min(...xs);
+  const xMax = Math.max(...xs);
+  const span = Math.max(xMax - xMin, 1.0e-6);
+  return {{
+    baseline: Math.min(...ys),
+    mean: xs[peakIndex],
+    sigma: span / 6,
+    peak: ys[peakIndex],
+    amplitude: ys[peakIndex] - Math.min(...ys)
+  }};
 }}
 
 function percentile(values, fraction) {{
