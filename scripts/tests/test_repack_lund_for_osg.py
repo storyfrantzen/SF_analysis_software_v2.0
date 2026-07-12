@@ -102,6 +102,30 @@ class RepackLundForOsgTests(unittest.TestCase):
             self.assertEqual(stats.output_files, 2)
             self.assertFalse(output_dir.exists())
 
+    def test_fixed_line_repack_does_not_write_empty_trailing_chunk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            input_dir.mkdir()
+            source = input_dir / "source.lund"
+            source.write_text(event(1, "a") + event(1, "b") + event(1, "c") + event(1, "d"), encoding="utf-8")
+
+            stats = repack_fixed_line_lund_files(
+                [source],
+                output_dir,
+                events_per_file=2,
+                lines_per_event=2,
+                prefix="fixed",
+                dry_run=False,
+            )
+
+            chunks = sorted(output_dir.glob("fixed_*.lund"))
+            self.assertEqual(stats.events, 4)
+            self.assertEqual(stats.output_files, 2)
+            self.assertEqual(len(chunks), 2)
+            self.assertTrue(all(path.stat().st_size > 0 for path in chunks))
+
 
 if __name__ == "__main__":
     unittest.main()

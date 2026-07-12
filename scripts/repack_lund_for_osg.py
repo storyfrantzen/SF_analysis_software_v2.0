@@ -51,6 +51,11 @@ def parser() -> argparse.ArgumentParser:
         help="Validate and count input events without writing repacked files",
     )
     root.add_argument(
+        "--manifest-only",
+        action="store_true",
+        help="Only rebuild manifest lists from existing output chunks in output_dir",
+    )
+    root.add_argument(
         "--fixed-lines-per-event",
         type=int,
         help=(
@@ -75,6 +80,16 @@ def main() -> int:
         raise SystemExit("--jobs-per-submission must be positive")
     if args.fixed_lines_per_event is not None and args.fixed_lines_per_event <= 0:
         raise SystemExit("--fixed-lines-per-event must be positive")
+    if args.manifest_only:
+        manifests = write_manifests(
+            args.output_dir,
+            prefix=args.prefix,
+            jobs_per_submission=args.jobs_per_submission,
+            relative_paths=args.relative_manifest_paths,
+        )
+        chunks = sorted(args.output_dir.glob(f"{args.prefix}_*.lund"))
+        print(f"Rebuilt {manifests} manifest files for {len(chunks)} chunks under {args.output_dir}")
+        return 0
     input_files = sorted(path for path in args.input_dir.glob(args.glob) if path.is_file())
     if not input_files:
         raise SystemExit(f"No input files matched {args.input_dir / args.glob}")
@@ -191,11 +206,6 @@ def repack_fixed_line_lund_files(
         for file_index, input_file in enumerate(input_files, start=1):
             with input_file.open("rb") as handle:
                 while True:
-                    if events_in_output == 0:
-                        output_index += 1
-                        output_path = output_dir / f"{prefix}_{output_index:06d}.lund"
-                        output = output_path.open("wb")
-                        stats.output_files = output_index
                     lines_needed = (events_per_file - events_in_output) * lines_per_event
                     lines = list(islice(handle, lines_needed))
                     if not lines:
@@ -205,6 +215,11 @@ def repack_fixed_line_lund_files(
                             f"{input_file} ended after {len(lines)} lines in a fixed-line block; "
                             f"expected a multiple of {lines_per_event}"
                         )
+                    if output is None:
+                        output_index += 1
+                        output_path = output_dir / f"{prefix}_{output_index:06d}.lund"
+                        output = output_path.open("wb")
+                        stats.output_files = output_index
                     assert output is not None
                     output.writelines(lines)
                     events = len(lines) // lines_per_event
@@ -303,17 +318,22 @@ def write_manifests(
     prefix: str,
     jobs_per_submission: int,
     relative_paths: bool,
-) -> None:
+) -> int:
     chunks = sorted(output_dir.glob(f"{prefix}_*.lund"))
     manifest_dir = output_dir / "manifests"
     manifest_dir.mkdir(parents=True, exist_ok=True)
+    for old_manifest in manifest_dir.glob(f"{prefix}_submission_*.list"):
+        old_manifest.unlink()
+    count = 0
     for index, start in enumerate(range(0, len(chunks), jobs_per_submission), start=1):
+        count += 1
         manifest = manifest_dir / f"{prefix}_submission_{index:03d}.list"
         group = chunks[start : start + jobs_per_submission]
         with manifest.open("w", encoding="utf-8") as handle:
             for path in group:
                 item = path.name if relative_paths else str(path.resolve())
                 handle.write(f"{item}\n")
+    return count
 
 
 def print_summary(stats: RepackStats, args: argparse.Namespace) -> None:
