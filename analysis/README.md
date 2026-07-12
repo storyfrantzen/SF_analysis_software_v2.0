@@ -129,11 +129,13 @@ scripts/serve_visualizer.sh results/selected_data_histograms.html
 ```
 
 Run `scripts/serve_visualizer.sh` with no path to serve a click-enabled listing
-of `results/`. To compare multiple event samples in one browser session, first
-generate an HTML visualizer for each input file, open one of them, then use the
-top `Load File(s)` button to add the other generated visualizer HTML files. The
-loaded events are appended in the browser and tagged with a `Sample` category,
-which can be used in `Filter topology`, `Split by`, or the full category list.
+of `results/`, or `scripts/serve_visualizer.sh .` to serve the working tree. To
+compare multiple event samples in one browser session, first generate an HTML
+visualizer for each input file, open one of them from the served directory, then
+use the top `Load File(s)` button to browse the same farm-side HTTP directory
+tree and add the other generated visualizer HTML files. The loaded events are
+appended in the browser and tagged with a `Sample` category, which can be used
+in `Filter topology`, `Split by`, or the full category list.
 The browser discovers stored scalar quantities, adds common derived views such
 as degree versions of angular branches and non-duplicated signed/unsigned `t`
 aliases, computes `t_min` and `t'` from existing `Q2`, `xB`, and `t` branches

@@ -1686,6 +1686,78 @@ canvas {{
 .plot-actions button {{
   flex: 0 0 auto;
 }}
+.load-browser {{
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(0,0,0,0.24);
+}}
+.load-browser.hidden {{
+  display: none;
+}}
+.load-browser-panel {{
+  width: min(760px, 96vw);
+  max-height: min(720px, 90vh);
+  display: grid;
+  grid-template-rows: auto auto auto minmax(180px, 1fr);
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 18px 52px rgba(0,0,0,0.22);
+}}
+.load-browser-head, .load-browser-actions {{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}}
+.load-browser-head strong {{
+  display: block;
+  margin-bottom: 2px;
+}}
+.remote-file-list {{
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px;
+  background: var(--panel);
+}}
+.remote-entry {{
+  width: 100%;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  color: var(--fg);
+}}
+.remote-entry:hover {{
+  background: var(--chip);
+}}
+button.remote-entry {{
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}}
+.remote-entry input {{
+  width: auto;
+}}
+.remote-entry span {{
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}}
 .plot-head {{
   display: flex;
   justify-content: space-between;
@@ -1839,6 +1911,27 @@ th:first-child, td:first-child {{ text-align: left; }}
         <button type="button" id="savePng">Save PNG</button>
       </div>
     </div>
+    <div class="load-browser hidden" id="loadBrowser" role="dialog" aria-modal="true" aria-labelledby="loadBrowserTitle">
+      <div class="load-browser-panel">
+        <div class="load-browser-head">
+          <div>
+            <strong id="loadBrowserTitle">Load Farm-Side Visualizer HTML</strong>
+            <div class="subtle" id="loadBrowserPath"></div>
+          </div>
+          <button type="button" id="closeLoadBrowser">Close</button>
+        </div>
+        <div class="load-browser-actions">
+          <div class="plot-actions">
+            <button type="button" id="loadBrowserRoot">Root</button>
+            <button type="button" id="loadBrowserUp">Up</button>
+            <button type="button" id="loadBrowserRefresh">Refresh</button>
+          </div>
+          <button type="button" id="loadSelectedRemote">Load selected</button>
+        </div>
+        <div class="subtle" id="loadBrowserMessage"></div>
+        <div class="remote-file-list" id="remoteFileList"></div>
+      </div>
+    </div>
     <div class="plot-grid" id="plotGrid">
       <div class="plot-pane" id="plotPaneA">
         <div class="plot-head">
@@ -1928,6 +2021,8 @@ const byName = Object.fromEntries(variables.map(v => [v.name, v]));
 const integerVariables = new Set(variables.filter(v => v.integer).map(v => v.name));
 const SAMPLE_COLUMN = "__sampleId";
 const loadedSamples = [{{id: 0, label: sampleLabel(payload.source || "sample 1"), rows: rowCount}}];
+let remoteDirectoryUrl = null;
+const remoteSelections = new Map();
 const panelKeys = ["A", "B"];
 const panelLabels = {{A: "Panel 1", B: "Panel 2"}};
 let enabledPanels = ["A"];
@@ -2018,6 +2113,207 @@ function readTextFile(file) {{
     reader.onerror = () => reject(reader.error || new Error("Could not read file."));
     reader.readAsText(file);
   }});
+}}
+
+function canFetchRemoteFiles() {{
+  return window.location.protocol === "http:" || window.location.protocol === "https:";
+}}
+
+function remoteRootUrl() {{
+  return new URL("/", window.location.href);
+}}
+
+function normalizeDirectoryUrl(url) {{
+  const normalized = new URL(url, window.location.href);
+  normalized.hash = "";
+  normalized.search = "";
+  if (!normalized.pathname.endsWith("/")) {{
+    normalized.pathname = normalized.pathname.replace(/[^/]*$/, "");
+  }}
+  return normalized;
+}}
+
+function cleanRemoteLabel(label) {{
+  return String(label || "").replace(/\\/$/, "") || "/";
+}}
+
+function safeDecodeRemote(value) {{
+  try {{
+    return decodeURIComponent(String(value || ""));
+  }} catch (error) {{
+    return String(value || "");
+  }}
+}}
+
+function sameRemoteFile(url, href) {{
+  const other = new URL(href, window.location.href);
+  return url.origin === other.origin && url.pathname === other.pathname;
+}}
+
+function remoteFileName(url) {{
+  const parts = safeDecodeRemote(new URL(url, window.location.href).pathname).split("/").filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : "visualizer.html";
+}}
+
+function parseRemoteDirectoryListing(html, baseUrl) {{
+  const documentView = new DOMParser().parseFromString(String(html), "text/html");
+  const entries = [];
+  const seen = new Set();
+  for (const link of documentView.querySelectorAll("a")) {{
+    const href = link.getAttribute("href");
+    if (!href || href.startsWith("#") || href.startsWith("?")) continue;
+    let url;
+    try {{
+      url = new URL(href, baseUrl);
+    }} catch (error) {{
+      continue;
+    }}
+    url.hash = "";
+    if (url.origin !== window.location.origin) continue;
+    const text = safeDecodeRemote(link.textContent.trim() || "");
+    const isParent = href === "../" || text === "../";
+    const isDirectory = isParent || href.endsWith("/") || url.pathname.endsWith("/");
+    const isHtml = /\\.html?$/i.test(url.pathname);
+    if (!isDirectory && !isHtml) continue;
+    if (!isParent && isHtml && sameRemoteFile(url, window.location.href)) continue;
+    const key = url.href;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    entries.push({{
+      url,
+      label: isParent ? ".." : cleanRemoteLabel(text || remoteFileName(url)),
+      type: isDirectory ? "directory" : "file",
+      parent: isParent
+    }});
+  }}
+  entries.sort((left, right) => {{
+    if (left.parent !== right.parent) return left.parent ? -1 : 1;
+    if (left.type !== right.type) return left.type === "directory" ? -1 : 1;
+    return left.label.localeCompare(right.label);
+  }});
+  return entries;
+}}
+
+function remoteDirectoryLabel(url) {{
+  const decoded = safeDecodeRemote(url.pathname || "/");
+  return decoded || "/";
+}}
+
+function updateRemoteSelectionMessage() {{
+  const count = remoteSelections.size;
+  el("loadBrowserMessage").textContent = count
+    ? `${{count}} selected`
+    : "Select generated visualizer HTML files from the served farm directory.";
+}}
+
+function renderRemoteDirectory(entries) {{
+  const target = el("remoteFileList");
+  target.innerHTML = "";
+  if (!entries.length) {{
+    target.textContent = "No subdirectories or generated visualizer HTML files found here.";
+    updateRemoteSelectionMessage();
+    return;
+  }}
+  for (const entry of entries) {{
+    if (entry.type === "directory") {{
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "remote-entry";
+      const label = document.createElement("span");
+      label.textContent = entry.parent ? "../" : `${{entry.label}}/`;
+      button.appendChild(label);
+      button.addEventListener("click", () => showRemoteDirectory(entry.url));
+      target.appendChild(button);
+    }} else {{
+      const label = document.createElement("label");
+      label.className = "remote-entry";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = remoteSelections.has(entry.url.href);
+      checkbox.addEventListener("input", () => {{
+        if (checkbox.checked) {{
+          remoteSelections.set(entry.url.href, {{url: entry.url.href, label: entry.label}});
+        }} else {{
+          remoteSelections.delete(entry.url.href);
+        }}
+        updateRemoteSelectionMessage();
+      }});
+      const text = document.createElement("span");
+      text.textContent = entry.label;
+      label.append(checkbox, text);
+      target.appendChild(label);
+    }}
+  }}
+  updateRemoteSelectionMessage();
+}}
+
+async function showRemoteDirectory(url) {{
+  remoteDirectoryUrl = normalizeDirectoryUrl(url);
+  el("loadBrowserPath").textContent = remoteDirectoryLabel(remoteDirectoryUrl);
+  el("remoteFileList").innerHTML = "";
+  el("loadBrowserMessage").textContent = "Loading directory...";
+  try {{
+    const response = await fetch(remoteDirectoryUrl.href, {{cache: "no-store"}});
+    if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+    const html = await response.text();
+    renderRemoteDirectory(parseRemoteDirectoryListing(html, remoteDirectoryUrl));
+  }} catch (error) {{
+    el("loadBrowserMessage").textContent = `Could not read directory: ${{error.message || error}}`;
+  }}
+}}
+
+async function openRemoteLoadBrowser() {{
+  if (!canFetchRemoteFiles()) {{
+    el("datasetStatus").textContent = "Serve the visualizer over HTTP to browse farm-side files.";
+    el("loadFileInput").click();
+    return;
+  }}
+  remoteSelections.clear();
+  el("loadBrowser").classList.remove("hidden");
+  await showRemoteDirectory(remoteRootUrl());
+}}
+
+function closeRemoteLoadBrowser() {{
+  el("loadBrowser").classList.add("hidden");
+}}
+
+function goRemoteParentDirectory() {{
+  if (!remoteDirectoryUrl) return;
+  showRemoteDirectory(new URL("../", remoteDirectoryUrl));
+}}
+
+async function loadSelectedRemoteFiles() {{
+  const selected = Array.from(remoteSelections.values());
+  if (!selected.length) {{
+    el("loadBrowserMessage").textContent = "Select one or more generated visualizer HTML files first.";
+    return;
+  }}
+  const status = el("datasetStatus");
+  let loaded = 0;
+  for (const item of selected) {{
+    try {{
+      status.textContent = `Loading ${{item.label}}...`;
+      el("loadBrowserMessage").textContent = `Loading ${{item.label}}...`;
+      const response = await fetch(item.url, {{cache: "no-store"}});
+      if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+      const html = await response.text();
+      const nextPayload = parseVisualizerPayload(html);
+      const decoded = decodePayloadColumns(nextPayload);
+      mergeVisualizerPayload(nextPayload, decoded, item.label || remoteFileName(item.url));
+      loaded++;
+    }} catch (error) {{
+      const message = `Could not load ${{item.label}}: ${{error.message || error}}`;
+      status.textContent = message;
+      el("loadBrowserMessage").textContent = message;
+      console.error(error);
+      break;
+    }}
+  }}
+  if (loaded) {{
+    remoteSelections.clear();
+    closeRemoteLoadBrowser();
+    finishLoadedVisualizers(loaded);
+  }}
 }}
 
 function payloadRowCount(nextPayload, decoded) {{
@@ -2142,8 +2438,12 @@ async function loadVisualizerFiles(files) {{
       break;
     }}
   }}
+  finishLoadedVisualizers(loaded);
+}}
+
+function finishLoadedVisualizers(loaded) {{
   if (loaded) {{
-    status.textContent = `${{loadedSamples.length}} samples, ${{rowCount.toLocaleString()}} rows`;
+    el("datasetStatus").textContent = `${{loadedSamples.length}} samples, ${{rowCount.toLocaleString()}} rows`;
     for (const panel of Object.values(panels)) resetAxisRanges(panel);
     fillSelect(el("rangeVar"), payload.defaultX);
     fillOperationSelects();
@@ -2717,11 +3017,21 @@ function attachEvents() {{
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
   el("yvar").addEventListener("change", () => {{ setPanelVariable("y"); update(); }});
-  el("loadFiles").addEventListener("click", () => el("loadFileInput").click());
+  el("loadFiles").addEventListener("click", openRemoteLoadBrowser);
   el("loadFileInput").addEventListener("change", event => {{
     loadVisualizerFiles(event.target.files);
     event.target.value = "";
   }});
+  el("closeLoadBrowser").addEventListener("click", closeRemoteLoadBrowser);
+  el("loadBrowser").addEventListener("click", event => {{
+    if (event.target === el("loadBrowser")) closeRemoteLoadBrowser();
+  }});
+  el("loadBrowserRoot").addEventListener("click", () => showRemoteDirectory(remoteRootUrl()));
+  el("loadBrowserUp").addEventListener("click", goRemoteParentDirectory);
+  el("loadBrowserRefresh").addEventListener("click", () => {{
+    if (remoteDirectoryUrl) showRemoteDirectory(remoteDirectoryUrl);
+  }});
+  el("loadSelectedRemote").addEventListener("click", loadSelectedRemoteFiles);
   ["opLeft","opRight","opKind"].forEach(id => {{
     el(id).addEventListener("change", () => {{
       updateOperationPreview();
