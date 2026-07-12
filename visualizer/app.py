@@ -1407,6 +1407,7 @@ aside {{
 section {{
   padding: 12px;
   min-width: 0;
+  container: plot-section / inline-size;
 }}
 .control-deck {{
   display: grid;
@@ -1427,7 +1428,7 @@ section {{
   grid-column: 1 / -1;
 }}
 .analysis-tools {{
-  grid-template-columns: minmax(500px, 1.7fr) minmax(280px, 1fr);
+  grid-template-columns: minmax(480px, 1.7fr) minmax(280px, 1fr);
   gap: 12px;
 }}
 .analysis-tools .control-panel {{
@@ -1473,11 +1474,7 @@ h1 {{
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }}
-.dataset-heading #source {{
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}}
+.dataset-heading #source {{ display: none; }}
 h2 {{
   font-size: 12px;
   font-weight: 600;
@@ -1677,24 +1674,44 @@ canvas.fit-range-picker {{
   flex: 0 1 auto;
   text-align: right;
 }}
-.stats {{
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
+.toolbar-tile {{
+  display: inline-flex;
   align-items: center;
-  margin-left: auto;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 3px;
+  background: var(--panel);
 }}
-.stat {{
+.action-tile button {{
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+}}
+.action-tile button + button {{ border-left: 1px solid var(--border); border-radius: 0 4px 4px 0; }}
+.count-tile {{ margin-left: auto; gap: 0; }}
+.count-stat {{
   display: inline-flex;
   gap: 4px;
   align-items: baseline;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 2px 6px;
-  min-width: 0;
+  padding: 2px 7px;
 }}
-.stat .subtle {{ font-size: 10px; }}
-.stat strong {{ display: inline; font-size: 12px; font-weight: 650; }}
+.count-stat + .count-stat {{ border-left: 1px solid var(--border); }}
+.count-stat .subtle {{ font-size: 10px; }}
+.count-stat strong {{ font-size: 12px; font-weight: 650; }}
+.canvas-toolbar {{
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-height: 28px;
+  margin: -2px 0 6px;
+}}
+.display-tile .chip {{
+  border: 0;
+  border-radius: 4px;
+  padding: 2px 6px;
+  background: transparent;
+}}
 canvas {{
   display: block;
   width: 100%;
@@ -1778,8 +1795,8 @@ canvas {{
 }}
 .plot-toolbar {{
   display: flex;
-  justify-content: space-between;
-  gap: 10px;
+  justify-content: flex-start;
+  gap: 6px;
   flex-wrap: wrap;
   align-items: center;
   margin-bottom: 10px;
@@ -1937,7 +1954,7 @@ button.remote-entry {{
 table {{ border-collapse: collapse; width: 100%; font-size: 12px; }}
 th, td {{ border-bottom: 1px solid var(--border); padding: 5px 7px; text-align: right; white-space: nowrap; }}
 th:first-child, td:first-child {{ text-align: left; }}
-@media (max-width: 1050px) {{
+@container plot-section (max-width: 800px) {{
   .analysis-tools {{ grid-template-columns: 1fr; }}
   .analysis-tools .text-panel {{ grid-column: 1; }}
 }}
@@ -1964,7 +1981,7 @@ th:first-child, td:first-child {{ text-align: left; }}
     <div class="dataset-heading">
       <div class="dataset-kicker">Dataset</div>
       <h1></h1>
-      <div class="subtle" id="source"></div>
+      <div class="subtle" id="source" hidden></div>
     </div>
     <h2>Plot</h2>
     <div class="segmented">
@@ -2043,23 +2060,18 @@ th:first-child, td:first-child {{ text-align: left; }}
         <span class="subtle" id="datasetStatus"></span>
         <label class="chip"><input id="splitView" type="checkbox"> split view</label>
       </div>
-      <div class="chips">
-        <label class="chip"><input id="logz" type="checkbox"> log color</label>
-        <label class="chip"><input id="density" type="checkbox"> density</label>
-        <label class="chip" id="colorScaleChip"><input id="colorScale" type="checkbox"> color scale</label>
-      </div>
-      <div class="plot-actions">
+      <div class="toolbar-tile action-tile" aria-label="Plot actions">
         <button type="button" id="resetFilters">Reset filters</button>
         <button type="button" id="resetRanges">Reset axes</button>
         <button type="button" id="savePng">Save PNG</button>
       </div>
-      <div class="stats" aria-label="Active plot summary">
-        <div class="stat"><span class="subtle">selected</span><strong id="selectedCount">0</strong></div>
-        <div class="stat"><span class="subtle">embedded</span><strong id="embeddedCount">0</strong></div>
-        <div class="stat"><span class="subtle">mean X</span><strong id="meanX">-</strong></div>
-        <div class="stat"><span class="subtle">mean Y</span><strong id="meanY">-</strong></div>
+      <div class="toolbar-tile count-tile" aria-label="Event counts">
+        <div class="count-stat"><span class="subtle">selected</span><strong id="selectedCount">0</strong></div>
+        <div class="count-stat"><span class="subtle">embedded</span><strong id="embeddedCount">0</strong></div>
         <div class="subtle" id="samplingNote"></div>
       </div>
+      <span id="meanX" hidden>-</span>
+      <span id="meanY" hidden>-</span>
     </div>
     <div class="load-browser hidden" id="loadBrowser" role="dialog" aria-modal="true" aria-labelledby="loadBrowserTitle">
       <div class="load-browser-panel">
@@ -2080,6 +2092,13 @@ th:first-child, td:first-child {{ text-align: left; }}
         </div>
         <div class="subtle" id="loadBrowserMessage"></div>
         <div class="remote-file-list" id="remoteFileList"></div>
+      </div>
+    </div>
+    <div class="canvas-toolbar" aria-label="Display options">
+      <div class="toolbar-tile display-tile">
+        <label class="chip"><input id="logz" type="checkbox"> log color</label>
+        <label class="chip"><input id="density" type="checkbox"> density</label>
+        <label class="chip" id="colorScaleChip"><input id="colorScale" type="checkbox"> color scale</label>
       </div>
     </div>
     <div class="plot-grid" id="plotGrid">
@@ -2643,6 +2662,7 @@ function updateDatasetStatus() {{
     ? `${{loadedSamples[0].label}} + ${{loadedSamples.length - 1}} loaded`
     : payload.source;
   el("source").title = el("source").textContent;
+  document.querySelector(".dataset-heading").title = el("source").textContent;
 }}
 
 function comparisonDefaultX() {{
@@ -2919,6 +2939,7 @@ function init() {{
   document.querySelector("h1").textContent = payload.title;
   el("source").textContent = payload.source;
   el("source").title = payload.source;
+  document.querySelector(".dataset-heading").title = payload.source;
   el("embeddedCount").textContent = rowCount.toLocaleString();
   if (payload.downsample.sampled) {{
     el("samplingNote").textContent = `downsampled from ${{payload.downsample.originalRows.toLocaleString()}} rows`;

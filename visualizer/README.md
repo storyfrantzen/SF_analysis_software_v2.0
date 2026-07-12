@@ -75,17 +75,21 @@ visible on every facet and use compact formatting without unnecessary trailing
 zeros. The sidebar uses a narrower desktop width so more of the window is
 available to the plot.
 
-The sidebar presents the active dataset in a framed identity card, gives the
+The sidebar presents the active dataset once in a framed identity card, gives the
 constraint quantity, minimum, maximum, and action a compact single-row layout,
 and uses content-sized buttons instead of stretching routine actions.
-Selected/embedded counts and active-axis means appear as compact badges in the
-plot toolbar so they remain close to the visualization without consuming a
-separate header row.
+Selected and embedded counts share one compact toolbar tile, while active-axis
+means are hidden from the default interface. Reset/export actions share a
+separate tile. Log color, density, and color-scale controls sit in a small
+display tile immediately above the canvas rather than adding noise to the main
+toolbar.
 
 Derived Operations and Fit use a dedicated responsive tool grid rather than
 competing for equal auto-sized columns. The derivation builder receives the
 wider workspace, Fit remains in a stable companion card, and text filters span
-the row beneath them. The cards stack when the viewport is too narrow.
+the row beneath them. The two primary cards automatically stack whenever the
+plot section cannot provide enough horizontal room, independent of the overall
+viewport width or sidebar allocation.
 
 ## Source layout
 
