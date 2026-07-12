@@ -165,6 +165,7 @@ GEN_OBJECT_FIELDS = (
 )
 
 REDUNDANT_COLUMNS = (
+    ("minus_t", "t"),
     ("electronIdx", "eIdx"),
     ("electronDet", "eDet"),
     ("eSector", "electronSector"),
@@ -779,6 +780,7 @@ def build_payload(
                     "mean": float(np.mean(finite)),
                     "finite": int(finite.size),
                     "integer": bool(is_integer_category(name)),
+                    "group": variable_group_label(name),
                 }
             )
             encoded_columns[name] = encode_float32(numeric)
@@ -840,74 +842,233 @@ def is_wrapped_phi_degree_column(name: str) -> bool:
     return name.endswith("_deg") and is_wrapped_phi_column_name(name[:-4])
 
 
-def sort_key(name: str) -> tuple[int, str]:
-    preferred = (
-        "run",
-        "runNum",
-        "rec_runNum",
-        "gen_runNum",
-        "Q2",
-        "rec_Q2",
-        "gen_Q2",
-        "xB",
-        "rec_xB",
-        "gen_xB",
-        "t",
-        "t_pi0",
-        "minus_t",
-        "rec_minus_t",
-        "rec_minus_t_pi0",
-        "gen_minus_t",
-        "protonTheta_deg",
-        "gen_protonTheta_deg",
-        "electronTheta_deg",
-        "gen_electronTheta_deg",
-        "pi0_theta_deg",
-        "gen_pi0Theta_deg",
-        "gen_gamma1Theta_deg",
-        "gen_gamma2Theta_deg",
-        "trentoPhi_deg",
-        "rec_trento_phi_deg",
-        "gen_trento_phi_deg",
-        "rec_theta_deg",
-        "gen_theta_deg",
-        "rec_phi_deg",
-        "gen_phi_deg",
-        "gen_electronP",
-        "gen_protonP",
-        "gen_gamma1P",
-        "gen_gamma2P",
-        "gen_pi0P",
-        "electronSamplingFraction",
-        "electronSamplingFractionECAL",
-        "electronSamplingFractionPCAL",
-        "electronSamplingFractionECIN",
-        "electronSamplingFractionECOUT",
-        "passSamplingFraction",
-        "rec_electronSamplingFraction",
-        "rec_electronSamplingFractionECAL",
-        "rec_electronSamplingFractionPCAL",
-        "rec_electronSamplingFractionECIN",
-        "rec_electronSamplingFractionECOUT",
-        "rec_passFiducial",
-        "rec_passSamplingFraction",
-        "rec_passExclusivity",
-        "electronSector",
-        "pSector",
-        "g1Sector",
-        "g2Sector",
-        "eIdx",
-        "pIdx",
-        "g1Idx",
-        "g2Idx",
-        "rec_trento_phi",
-        "gen_trento_phi",
-        "m_gg",
-        "rec_m_gg",
-        "pT_miss",
-        "rec_pT_miss",
+def sort_key(name: str) -> tuple[int, int, int, str, str]:
+    return (
+        variable_group_rank(name),
+        quantity_sort_rank(name),
+        source_sort_rank(name),
+        label_for(name).lower(),
+        name.lower(),
     )
-    return (preferred.index(name) if name in preferred else len(preferred), name)
+
+
+def variable_group_rank(name: str) -> int:
+    lowered = name.lower()
+    canonical = canonical_variable_name(name)
+    if lowered.startswith("derived_"):
+        return 13
+    if is_event_variable(name):
+        return 0
+    if is_global_kinematic_variable(name):
+        return 1
+    if (
+        is_pass_flag(name)
+        or lowered in {"rec_selected", "rec_not_selected"}
+        or canonical in {"passtopology", "failedcuts", "selected", "notselected"}
+    ):
+        return 2
+    particle_rank = particle_variable_group_rank(name)
+    if particle_rank is not None:
+        return particle_rank
+    if is_mass_or_exclusivity_variable(name):
+        return 9
+    if lowered.startswith("rec_"):
+        return 10
+    if lowered.startswith("gen_"):
+        return 11
+    if is_detector_geometry_variable(name):
+        return 12
+    return 14
+
+
+def variable_group_label(name: str) -> str:
+    labels = {
+        0: "Event",
+        1: "Kinematics",
+        2: "Selections",
+        3: "Electron",
+        4: "Proton",
+        5: "Gamma 1",
+        6: "Gamma 2",
+        7: "Gamma",
+        8: "Pi0",
+        9: "Masses / Exclusivity",
+        10: "REC particle",
+        11: "GEN particle",
+        12: "Detector / Geometry",
+        13: "Derived",
+    }
+    return labels.get(variable_group_rank(name), "Other")
+
+
+def canonical_variable_name(name: str) -> str:
+    lowered = name.lower()
+    for prefix in ("rec_", "gen_"):
+        if lowered.startswith(prefix):
+            lowered = lowered[len(prefix):]
+            break
+    return lowered.replace("_", "")
+
+
+def particle_variable_group_rank(name: str) -> int | None:
+    canonical = canonical_variable_name(name)
+    if canonical.startswith("electron") or canonical in {"edet", "esector", "eidx"}:
+        return 3
+    if canonical.startswith("proton") or canonical in {"pdet", "psector", "pidx"}:
+        return 4
+    if canonical.startswith("gamma1") or canonical.startswith("g1"):
+        return 5
+    if canonical.startswith("gamma2") or canonical.startswith("g2"):
+        return 6
+    if canonical.startswith("gamma"):
+        return 7
+    if canonical.startswith("pi0"):
+        return 8
+    return None
+
+
+def is_event_variable(name: str) -> bool:
+    lowered = name.lower()
+    canonical = canonical_variable_name(name)
+    if is_run_number_column(name) or canonical in {"sourcefileid", "sourceeventindex", "eventnum"}:
+        return True
+    if lowered.startswith(("rec_", "gen_")):
+        return False
+    return canonical in {
+        "helicity",
+        "charge",
+    }
+
+
+def is_global_kinematic_variable(name: str) -> bool:
+    canonical = canonical_variable_name(name)
+    return canonical in {
+        "q2",
+        "nu",
+        "xb",
+        "y",
+        "w",
+        "t",
+        "signedt",
+        "minust",
+        "tpi0",
+        "minustpi0",
+        "trentophi",
+        "trentophideg",
+    }
+
+
+def is_mass_or_exclusivity_variable(name: str) -> bool:
+    canonical = canonical_variable_name(name)
+    return (
+        canonical.startswith("m2")
+        or canonical.startswith("mgg")
+        or "miss" in canonical
+        or canonical in {"thetaeg1", "thetaeg2", "thetag1g2"}
+    )
+
+
+def is_detector_geometry_variable(name: str) -> bool:
+    canonical = canonical_variable_name(name)
+    return (
+        canonical.endswith("det")
+        or canonical.endswith("detector")
+        or "sector" in canonical
+        or canonical.startswith(("xdc", "ydc", "edge", "xft", "yft", "xpcal", "ypcal"))
+        or canonical.startswith(("upcal", "vpcal", "wpcal", "uecin", "vecin", "wecin", "uecout", "vecout", "wecout"))
+    )
+
+
+def source_sort_rank(name: str) -> int:
+    lowered = name.lower()
+    if lowered.startswith("rec_"):
+        return 1
+    if lowered.startswith("gen_"):
+        return 2
+    return 0
+
+
+def quantity_sort_rank(name: str) -> int:
+    canonical = canonical_variable_name(name)
+    core = particle_quantity_core(canonical)
+    exact_order = {
+        "sourcefileid": 0,
+        "run": 1,
+        "runnum": 1,
+        "eventnum": 2,
+        "sourceeventindex": 3,
+        "helicity": 4,
+        "charge": 5,
+        "passtopology": 10,
+        "passfiducial": 11,
+        "passsamplingfraction": 12,
+        "passexclusivity": 13,
+        "recselected": 14,
+        "selected": 14,
+        "recnotselected": 15,
+        "notselected": 15,
+        "failedcuts": 16,
+        "q2": 20,
+        "nu": 21,
+        "xb": 22,
+        "y": 23,
+        "w": 24,
+        "t": 25,
+        "minust": 25,
+        "tpi0": 26,
+        "minustpi0": 26,
+        "signedt": 27,
+        "trentophi": 28,
+        "trentophideg": 28,
+        "mgg": 40,
+        "m2miss": 41,
+        "m2epx": 42,
+        "m2epi0x": 43,
+        "meggx": 44,
+        "emiss": 45,
+        "ptmiss": 46,
+        "thetaeg1": 47,
+        "thetaeg2": 48,
+        "thetag1g2": 49,
+    }
+    if canonical in exact_order:
+        return exact_order[canonical]
+    if core in exact_order:
+        return exact_order[core]
+    if core in {"pid", "particleidx", "idx", "index"}:
+        return 100
+    if core in {"matchedgenidx", "matchangledeg"}:
+        return 101
+    if core in {"charge", "status", "det", "detector", "sector"}:
+        return 102
+    if core in {"p", "praw"}:
+        return 110
+    if core in {"px", "py", "pz"}:
+        return 111
+    if core in {"theta", "thetadeg", "thetaraw", "thetarawdeg"}:
+        return 120
+    if core in {"phi", "phideg", "phiraw", "phirawdeg"}:
+        return 121
+    if core.startswith("delta"):
+        return 122
+    if core in {"beta", "chi2pid"}:
+        return 130
+    if core.startswith("e") or "samplingfraction" in core:
+        return 140
+    if core in {"vx", "vy", "vz", "time"}:
+        return 150
+    if core.startswith(("x", "y", "u", "v", "w", "edge")):
+        return 160
+    return 900
+
+
+def particle_quantity_core(canonical: str) -> str:
+    for prefix in ("electron", "proton", "gamma1", "gamma2", "gamma", "pi0", "g1", "g2"):
+        if canonical.startswith(prefix):
+            return canonical[len(prefix):]
+    if canonical in {"edet", "esector", "eidx", "pdet", "psector", "pidx"}:
+        return canonical[1:]
+    return canonical
 
 
 def numeric_array(values: np.ndarray) -> np.ndarray:
@@ -1682,22 +1843,40 @@ function currentPanel() {{
 
 function fillSelect(select, selected) {{
   select.innerHTML = "";
+  let currentGroup = "";
+  let groupNode = null;
   for (const variable of variables) {{
+    const group = variable.group || "Other";
+    if (group !== currentGroup) {{
+      currentGroup = group;
+      groupNode = document.createElement("optgroup");
+      groupNode.label = group;
+      select.appendChild(groupNode);
+    }}
     const option = document.createElement("option");
     option.value = variable.name;
     option.textContent = variable.label;
-    select.appendChild(option);
+    groupNode.appendChild(option);
   }}
   select.value = selected;
 }}
 
 function fillOverlaySelect(select, selected) {{
   select.innerHTML = "";
+  let currentGroup = "";
+  let groupNode = null;
   for (const variable of variables) {{
+    const group = variable.group || "Other";
+    if (group !== currentGroup) {{
+      currentGroup = group;
+      groupNode = document.createElement("optgroup");
+      groupNode.label = group;
+      select.appendChild(groupNode);
+    }}
     const option = document.createElement("option");
     option.value = variable.name;
     option.textContent = variable.label;
-    select.appendChild(option);
+    groupNode.appendChild(option);
   }}
   select.value = selected && byName[selected] ? selected : "";
 }}
@@ -1772,7 +1951,7 @@ function addDerivedVariable() {{
   const label = derivedLabel(leftName, rightName, kind);
   const name = uniqueDerivedName(label);
   columns[name] = values;
-  const variable = {{name, label, min, max, mean: sum / finite, finite}};
+  const variable = {{name, label, min, max, mean: sum / finite, finite, group: "Derived"}};
   variables.push(variable);
   byName[name] = variable;
   fillSelect(el("rangeVar"), name);

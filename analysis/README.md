@@ -131,11 +131,12 @@ scripts/serve_visualizer.sh results/selected_data_histograms.html
 Run `scripts/serve_visualizer.sh` with no path to serve a click-enabled listing
 of `results/`.
 The browser discovers stored scalar quantities, adds common derived views such
-as degree versions of angular branches and signed/unsigned `t` aliases, and
-supports 1D histograms, 2D histograms, detector/pass-flag toggles, text filters,
-numeric constraints, and optional panel tabs that can be viewed
+as degree versions of angular branches and non-duplicated signed/unsigned `t`
+aliases, and supports 1D histograms, 2D histograms, detector/pass-flag toggles,
+text filters, numeric constraints, and optional panel tabs that can be viewed
 independently or side by side under the same filters from the toolbar above the
-plot. Axis tick-count
+plot. Quantity selectors are grouped by event, kinematic, particle, selection,
+and detector/exclusivity category instead of a flat alphabetical list. Axis tick-count
 sliders adjust every displayed axis, optional presentation labels can override
 the displayed X/Y axis labels per panel, and the visible display can be saved as
 a PNG. 2D views can optionally draw color scales beside the histogram, including
