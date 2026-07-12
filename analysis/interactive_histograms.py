@@ -1063,7 +1063,7 @@ def is_mass_or_exclusivity_variable(name: str) -> bool:
         canonical.startswith("m2")
         or canonical.startswith("mgg")
         or "miss" in canonical
-        or canonical in {"thetaeg1", "thetaeg2", "thetag1g2"}
+        or canonical in {"meggx", "thetaeg1", "thetaeg2", "thetag1g2"}
     )
 
 
@@ -4230,12 +4230,6 @@ function drawColorBar(ctx, x, y, width, height, maxValue, colorFn, logScale, lab
   ctx.fillText(fmt(maxValue), x + width + 4, y + 3);
   ctx.fillText(fmt(mid), x + width + 4, y + height / 2);
   ctx.fillText("0", x + width + 4, y + height - 3);
-  ctx.save();
-  ctx.translate(x + width / 2, y + height + 34);
-  ctx.rotate(-Math.PI / 2);
-  ctx.textAlign = "center";
-  ctx.fillText(label, 0, 0);
-  ctx.restore();
   return {{x, y, width, height, maxValue, logScale, label}};
 }}
 
