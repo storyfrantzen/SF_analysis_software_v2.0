@@ -1800,8 +1800,10 @@ button.remote-entry {{
 .quantity-banner {{
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 9px;
   flex-wrap: wrap;
+  text-align: center;
   margin: 0 0 7px;
   padding: 6px 9px;
   border: 1px solid var(--border);
