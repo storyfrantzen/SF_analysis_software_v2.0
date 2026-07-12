@@ -118,15 +118,19 @@ standalone histogram browser from either compact NPZ samples or selected ROOT
 trees:
 
 ```bash
-python3 analysis/interactive_histograms.py data_events.npz \
+python3 -m visualizer data_events.npz \
   --output results/data_histograms.html
 
-python3 analysis/interactive_histograms.py selected_data.root \
+python3 -m visualizer selected_data.root \
   --format root --output results/selected_data_histograms.html \
   --dictionary build/libROOTBranchesDict.so
 
 scripts/serve_visualizer.sh results/selected_data_histograms.html
 ```
+
+The visualizer now lives in the top-level `visualizer/` package. The historical
+`analysis/interactive_histograms.py` command remains as a compatibility wrapper.
+See `visualizer/README.md` for its source layout and visualizer-specific tests.
 
 Run `scripts/serve_visualizer.sh` with no path to serve a click-enabled listing
 of `results/`, or `scripts/serve_visualizer.sh .` to serve the working tree. To

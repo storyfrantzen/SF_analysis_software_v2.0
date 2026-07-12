@@ -136,6 +136,7 @@ See `docs/analysis_pipeline.md` for the recommended modular layout.
 - `src/post/`, `include/post/` - ROOT post-processing cuts and candidate selection
 - `scripts/` - calibration and analysis helper scripts
 - `analysis/` - event-sample adapters and the maintained EPPI0 numerical pipeline
+- `visualizer/` - standalone interactive cut-study and extraction visualizer
 - `vendor/` - vendored header-only dependencies
 - `configs/processing/` - hipo-to-ROOT conversion configs
 - `configs/post/` - ROOT post-processing configs
