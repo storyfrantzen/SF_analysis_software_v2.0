@@ -15,6 +15,10 @@ from typing import Any
 import numpy as np
 
 
+M_PROTON_GEV = 0.9382720813
+M_PI0_GEV = 0.1349768
+
+
 ROOT_VECTOR_BRANCHES = (
     "selectedRoles",
     "selectedIdx",
@@ -203,6 +207,17 @@ DISPLAY_NAMES = {
     "rec_minus_t_pi0": "REC pi0 -t",
     "gen_minus_t": "GEN -t",
     "signed_t": "t",
+    "t_min": "-t_min",
+    "signed_t_min": "t_min",
+    "t_prime": "t'",
+    "t_pi0_prime": "pi0 t'",
+    "rec_t_min": "REC -t_min",
+    "rec_signed_t_min": "REC t_min",
+    "rec_t_prime": "REC t'",
+    "rec_t_pi0_prime": "REC pi0 t'",
+    "gen_t_min": "GEN -t_min",
+    "gen_signed_t_min": "GEN t_min",
+    "gen_t_prime": "GEN t'",
     "trentoPhi": "phi",
     "trentoPhi_deg": "phi deg",
     "rec_trento_phi": "REC phi",
@@ -623,6 +638,9 @@ def add_derived_quantities(arrays: dict[str, Any]) -> dict[str, Any]:
         if source in derived and target not in derived:
             values = np.asarray(derived[source], dtype=float)
             derived[target] = values if source == "t" else -values
+    add_tmin_quantities(derived, "", "t", "t_pi0")
+    add_tmin_quantities(derived, "rec_", "rec_minus_t", "rec_minus_t_pi0")
+    add_tmin_quantities(derived, "gen_", "gen_minus_t")
     for source in list(derived):
         lower = source.lower()
         if ("theta" in lower or "phi" in lower) and not source.endswith("_deg"):
@@ -641,6 +659,71 @@ def add_derived_quantities(arrays: dict[str, Any]) -> dict[str, Any]:
     add_sampling_fraction_quantities(derived, "")
     add_sampling_fraction_quantities(derived, "rec_")
     return derived
+
+
+def add_tmin_quantities(
+    arrays: dict[str, Any],
+    prefix: str,
+    minus_t_name: str,
+    pi0_minus_t_name: str | None = None,
+) -> None:
+    q2_name = f"{prefix}Q2"
+    xb_name = f"{prefix}xB"
+    if q2_name not in arrays or xb_name not in arrays:
+        return
+    t_min = positive_t_min(np.asarray(arrays[q2_name], dtype=float), np.asarray(arrays[xb_name], dtype=float))
+    if not np.count_nonzero(np.isfinite(t_min)):
+        return
+    arrays.setdefault(f"{prefix}t_min", t_min)
+    arrays.setdefault(f"{prefix}signed_t_min", -t_min)
+    if minus_t_name in arrays:
+        arrays.setdefault(f"{prefix}t_prime", np.asarray(arrays[minus_t_name], dtype=float) - t_min)
+    if pi0_minus_t_name and pi0_minus_t_name in arrays:
+        arrays.setdefault(f"{prefix}t_pi0_prime", np.asarray(arrays[pi0_minus_t_name], dtype=float) - t_min)
+
+
+def positive_t_min(q2: np.ndarray, xb: np.ndarray) -> np.ndarray:
+    q2 = np.asarray(q2, dtype=float)
+    xb = np.asarray(xb, dtype=float)
+    result = np.full_like(q2, np.nan, dtype=float)
+    valid = np.isfinite(q2) & np.isfinite(xb) & (q2 > 0.0) & (xb > 0.0) & (xb < 1.0)
+    if not np.any(valid):
+        return result
+
+    mp2 = M_PROTON_GEV * M_PROTON_GEV
+    mpi2 = M_PI0_GEV * M_PI0_GEV
+    with np.errstate(divide="ignore", invalid="ignore"):
+        w2 = mp2 + q2 * (1.0 / xb - 1.0)
+    valid &= np.isfinite(w2) & (w2 > (M_PROTON_GEV + M_PI0_GEV) ** 2)
+    if not np.any(valid):
+        return result
+
+    w = np.sqrt(w2[valid])
+    q2_valid = q2[valid]
+    w2_valid = w2[valid]
+    q0_cm = (w2_valid - mp2 - q2_valid) / (2.0 * w)
+    q_cm2 = q0_cm * q0_cm + q2_valid
+    pi0_energy_cm = (w2_valid + mpi2 - mp2) / (2.0 * w)
+    pi0_p_cm2 = kallen(w2_valid, mpi2, mp2) / (4.0 * w2_valid)
+    physical = np.isfinite(q_cm2) & np.isfinite(pi0_p_cm2) & (q_cm2 > 0.0) & (pi0_p_cm2 > 0.0)
+    valid_indices = np.flatnonzero(valid)
+    if not np.any(physical):
+        return result
+
+    q_cm = np.sqrt(q_cm2[physical])
+    pi0_p_cm = np.sqrt(pi0_p_cm2[physical])
+    q0_cm = q0_cm[physical]
+    pi0_energy_cm = pi0_energy_cm[physical]
+    q2_physical = q2_valid[physical]
+    t_forward = mpi2 - q2_physical - 2.0 * q0_cm * pi0_energy_cm + 2.0 * q_cm * pi0_p_cm
+    t_backward = mpi2 - q2_physical - 2.0 * q0_cm * pi0_energy_cm - 2.0 * q_cm * pi0_p_cm
+    signed_t_min = np.maximum(t_forward, t_backward)
+    result[valid_indices[physical]] = -signed_t_min
+    return result
+
+
+def kallen(x: np.ndarray, y: float, z: float) -> np.ndarray:
+    return x * x + y * y + z * z - 2.0 * x * y - 2.0 * x * z - 2.0 * y * z
 
 
 def add_sampling_fraction_quantities(arrays: dict[str, Any], prefix: str) -> None:
@@ -951,8 +1034,12 @@ def is_global_kinematic_variable(name: str) -> bool:
         "t",
         "signedt",
         "minust",
+        "tmin",
+        "signedtmin",
+        "tprime",
         "tpi0",
         "minustpi0",
+        "tpi0prime",
         "trentophi",
         "trentophideg",
     }
@@ -1015,11 +1102,15 @@ def quantity_sort_rank(name: str) -> int:
         "w": 24,
         "t": 25,
         "minust": 25,
-        "tpi0": 26,
-        "minustpi0": 26,
-        "signedt": 27,
-        "trentophi": 28,
-        "trentophideg": 28,
+        "tmin": 26,
+        "signedtmin": 27,
+        "tprime": 28,
+        "tpi0": 29,
+        "minustpi0": 29,
+        "tpi0prime": 30,
+        "signedt": 31,
+        "trentophi": 32,
+        "trentophideg": 32,
         "mgg": 40,
         "m2miss": 41,
         "m2epx": 42,

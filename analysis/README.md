@@ -132,8 +132,9 @@ Run `scripts/serve_visualizer.sh` with no path to serve a click-enabled listing
 of `results/`.
 The browser discovers stored scalar quantities, adds common derived views such
 as degree versions of angular branches and non-duplicated signed/unsigned `t`
-aliases, and supports 1D histograms, 2D histograms, detector/pass-flag toggles,
-text filters, numeric constraints, and optional panel tabs that can be viewed
+aliases, computes `t_min` and `t'` from existing `Q2`, `xB`, and `t` branches
+where available, and supports 1D histograms, 2D histograms, detector/pass-flag
+toggles, text filters, numeric constraints, and optional panel tabs that can be viewed
 independently or side by side under the same filters from the toolbar above the
 plot. Quantity dropdowns show visible category headings for event, kinematic,
 particle, selection, and detector/exclusivity groups instead of a flat
