@@ -46,6 +46,7 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn("init();", html)
         self.assertIn('<option value="unbinned">Unbinned likelihood</option>', html)
         self.assertIn('id="fitScanDetail" type="range" min="1" max="5"', html)
+        self.assertIn("grid-template-columns: minmax(220px, 270px)", html)
         self.assertIn("Rows embedded: 3", completed.stdout)
         return html
 
@@ -137,6 +138,7 @@ const protonFacets = orderSplitFacets(
   [0, 1, 2, 3, 4, 5, 6].map(value => ({value, label: String(value), shortLabel: String(value)}))
 );
 const protonLayout = facetLayout({width: 1200}, protonFacets.length, "pSector", protonFacets);
+const protonAxisVisibility = protonFacets.map((_, index) => facetAxisVisibility(protonLayout, index, protonFacets.length));
 console.log(JSON.stringify({
   ordinaryCoeff: ordinary.coeff,
   poissonCoeff: poisson.coeff,
@@ -156,7 +158,9 @@ console.log(JSON.stringify({
   unbinnedNll100: unbinned100.nll,
   unbinnedBackgroundDegree: unbinnedBackground.backgroundDegree,
   protonFacetValues: protonFacets.map(facet => facet.value),
-  protonFacetPositions: protonLayout.positions
+  protonFacetPositions: protonLayout.positions,
+  protonAxisVisibility,
+  compactTick: formatAxisTick(0.090000)
 }));
 """
         script_path = self.directory / "weighted_fit_test.js"
@@ -198,6 +202,19 @@ console.log(JSON.stringify({
                 {"row": 1, "col": 1},
                 {"row": 1, "col": 2},
                 {"row": 2, "col": 1},
+            ],
+        )
+        self.assertEqual(result["compactTick"], "0.09")
+        self.assertEqual(
+            result["protonAxisVisibility"],
+            [
+                {"showX": False, "showY": True},
+                {"showX": False, "showY": False},
+                {"showX": False, "showY": False},
+                {"showX": True, "showY": True},
+                {"showX": False, "showY": False},
+                {"showX": True, "showY": False},
+                {"showX": True, "showY": True},
             ],
         )
 

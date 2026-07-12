@@ -1395,17 +1395,17 @@ body {{
 }}
 main {{
   display: grid;
-  grid-template-columns: minmax(250px, 320px) 1fr;
+  grid-template-columns: minmax(220px, 270px) minmax(0, 1fr);
   min-height: 100vh;
 }}
 aside {{
   border-right: 1px solid var(--border);
-  padding: 14px;
+  padding: 10px;
   background: var(--panel);
   overflow: auto;
 }}
 section {{
-  padding: 14px;
+  padding: 12px;
   min-width: 0;
 }}
 .control-deck {{
@@ -3775,7 +3775,20 @@ function truncateText(text, maxChars) {{
   return text.length <= maxChars ? text : text.slice(0, Math.max(0, maxChars - 3)) + "...";
 }}
 
-function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel, xTickCount, yTickCount) {{
+function formatAxisTick(value) {{
+  if (!Number.isFinite(value)) return "";
+  if (value === 0) return "0";
+  const magnitude = Math.abs(value);
+  if (magnitude >= 1.0e6 || magnitude < 1.0e-4) {{
+    return value.toExponential(3).replace(/\\.0+(?=e)/, "").replace(/(\\.\\d*?)0+(?=e)/, "$1");
+  }}
+  return String(Number(value.toPrecision(6)));
+}}
+
+function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel, xTickCount, yTickCount, options = null) {{
+  const visibility = options || {{}};
+  const showX = visibility.showX !== false;
+  const showY = visibility.showY !== false;
   const c = colors();
   const pw = area.width - area.left - area.right;
   const ph = area.height - area.top - area.bottom;
@@ -3791,8 +3804,10 @@ function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel, xTickCount,
     ctx.moveTo(x, area.top);
     ctx.lineTo(x, area.top + ph + 5);
     ctx.stroke();
-    ctx.textAlign = "center";
-    ctx.fillText(fmt(tick), x, area.top + ph + 20);
+    if (showX) {{
+      ctx.textAlign = "center";
+      ctx.fillText(formatAxisTick(tick), x, area.top + ph + 20);
+    }}
   }}
   for (const tick of niceTicks(yMin, yMax, yTickCount)) {{
     const y = area.top + ph - (tick - yMin) / (yMax - yMin) * ph;
@@ -3800,8 +3815,10 @@ function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel, xTickCount,
     ctx.moveTo(area.left - 5, y);
     ctx.lineTo(area.left + pw, y);
     ctx.stroke();
-    ctx.textAlign = "right";
-    ctx.fillText(fmt(tick), area.left - 8, y);
+    if (showY) {{
+      ctx.textAlign = "right";
+      ctx.fillText(formatAxisTick(tick), area.left - 8, y);
+    }}
   }}
 
   ctx.strokeStyle = c.fg;
@@ -3813,12 +3830,14 @@ function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel, xTickCount,
   ctx.fillStyle = c.muted;
   ctx.textBaseline = "alphabetic";
   ctx.textAlign = "center";
-  ctx.fillText(xLabel, area.left + pw / 2, area.height - 14);
-  ctx.save();
-  ctx.translate(16, area.top + ph / 2);
-  ctx.rotate(-Math.PI / 2);
-  ctx.fillText(yLabel, 0, 0);
-  ctx.restore();
+  if (showX) ctx.fillText(xLabel, area.left + pw / 2, area.top + ph + 38);
+  if (showY) {{
+    ctx.save();
+    ctx.translate(area.left - 40, area.top + ph / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText(yLabel, 0, 0);
+    ctx.restore();
+  }}
 }}
 
 function draw1d(panel, mask) {{
@@ -4084,7 +4103,8 @@ function draw1dFacets(panel, mask, splitName) {{
       }}
       ctx.restore();
     }}
-    drawAxes(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks);
+    const axisVisibility = facetAxisVisibility(layout, index, facets.length);
+    drawAxes(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks, axisVisibility);
     if (x2Name && index === 0) drawOverlayLegend(ctx, facetAreaInfo, byName[xName].label, byName[x2Name].label);
     drawFacetTitle(ctx, facetAreaInfo, `${{facet.label}} (${{facet.selected.toLocaleString()}})`);
     drawFitRangeIndicator(ctx, facetAreaInfo, panel, xMin, xMax);
@@ -4219,7 +4239,8 @@ function draw2dFacets(panel, mask, splitName) {{
     }}
     const xAxisLabel = x2Name ? `${{byName[xName].label}} / ${{byName[x2Name].label}}` : byName[xName].label;
     const yAxisLabel = y2Name ? `${{byName[yName].label}} / ${{byName[y2Name].label}}` : byName[yName].label;
-    drawAxes(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, axisDisplayLabel(panel, "x", xAxisLabel), axisDisplayLabel(panel, "y", yAxisLabel), panel.xticks, panel.yticks);
+    const axisVisibility = facetAxisVisibility(layout, index, facets.length);
+    drawAxes(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, axisDisplayLabel(panel, "x", xAxisLabel), axisDisplayLabel(panel, "y", yAxisLabel), panel.xticks, panel.yticks, axisVisibility);
     if ((x2Name || y2Name) && index === 0) drawOverlayLegend(ctx, facetAreaInfo, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
     drawFacetTitle(ctx, facetAreaInfo, `${{facet.label}} (${{facet.selected.toLocaleString()}})`);
     if (panel.colorScale) facet.colorScale = draw2dColorScale(ctx, facetAreaInfo, facet.maxCount, facet.overlayCounts ? facet.overlayMaxCount : 0, panel);
@@ -4257,6 +4278,7 @@ function facetLayout(area, facetCount, splitName = "", facets = null) {{
     return {{
       cols: 3,
       rows: 3,
+      centeredCd: true,
       positions: [
         {{row: 0, col: 0}}, {{row: 0, col: 1}}, {{row: 0, col: 2}},
         {{row: 1, col: 0}}, {{row: 1, col: 1}}, {{row: 1, col: 2}},
@@ -4288,6 +4310,23 @@ function panelArea(area, layout, index, colorScaleSlots = 0) {{
     top: cellTop + miniTop,
     bottom: area.height - (cellTop + cellH - miniBottom)
   }};
+}}
+
+function facetAxisVisibility(layout, index, facetCount) {{
+  const position = layout.positions ? layout.positions[index] : {{row: Math.floor(index / layout.cols), col: index % layout.cols}};
+  let hasFacetBelow = false;
+  for (let other = 0; other < facetCount; other++) {{
+    if (other === index) continue;
+    const otherPosition = layout.positions
+      ? layout.positions[other]
+      : {{row: Math.floor(other / layout.cols), col: other % layout.cols}};
+    if (otherPosition.col === position.col && otherPosition.row > position.row) {{
+      hasFacetBelow = true;
+      break;
+    }}
+  }}
+  const centeredCdAxis = Boolean(layout.centeredCd && position.row === layout.rows - 1 && position.col === 1);
+  return {{showX: !hasFacetBelow, showY: position.col === 0 || centeredCdAxis}};
 }}
 
 function drawFacetTitle(ctx, area, title) {{
