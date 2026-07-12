@@ -770,7 +770,19 @@ def normalize_visual_columns(arrays: dict[str, Any]) -> dict[str, Any]:
             continue
         if is_angle_column_name(name) and f"{name}_deg" in normalized:
             normalized.pop(name)
+    if has_split_gamma_quantities(normalized):
+        for name in list(normalized):
+            if is_generic_gamma_quantity(name):
+                normalized.pop(name)
     return normalized
+
+
+def has_split_gamma_quantities(arrays: dict[str, Any]) -> bool:
+    return any(name.startswith(("gamma1", "gamma2", "g1", "g2")) for name in arrays)
+
+
+def is_generic_gamma_quantity(name: str) -> bool:
+    return bool(re.fullmatch(r"gamma(?:Idx|Index|P|Theta|Theta_deg|Phi|Phi_deg|Det|Sector)", name))
 
 
 def is_angle_column_name(name: str) -> bool:

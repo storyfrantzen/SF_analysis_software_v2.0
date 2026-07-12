@@ -170,6 +170,8 @@ such as `protonTheta`, so plots like `theta_p` vs `-t` can be explored directly.
 Newly post-processed selected files also expose selected-particle indices and
 sectors, including `pIdx`, `g1Idx`, `g2Idx`, `pSector`, `g1Sector`, and
 `g2Sector`, so proton and photon selections can be filtered like the electron.
+When split photon quantities are available, the visualizer hides the generic
+first-photon `gamma` aliases in favor of explicit `gamma1` and `gamma2` groups.
 The `passSamplingFraction` flag is labeled as a cut result; selected ROOT inputs
 also derive total and PCAL/ECIN/ECOUT electron sampling fractions from the stored
 calorimeter energies divided by `electronP`.
