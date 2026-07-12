@@ -1841,12 +1841,12 @@ function currentPanel() {{
   return panels[activePanel];
 }}
 
-function fillSelect(select, selected) {{
+function appendGroupedOptions(select, items, valueFor, labelFor, groupFor) {{
   select.innerHTML = "";
   let currentGroup = "";
   let groupNode = null;
-  for (const variable of variables) {{
-    const group = variable.group || "Other";
+  for (const item of items) {{
+    const group = groupFor(item) || "Other";
     if (group !== currentGroup) {{
       currentGroup = group;
       groupNode = document.createElement("optgroup");
@@ -1854,30 +1854,27 @@ function fillSelect(select, selected) {{
       select.appendChild(groupNode);
     }}
     const option = document.createElement("option");
-    option.value = variable.name;
-    option.textContent = variable.label;
+    const label = labelFor(item);
+    option.value = valueFor(item);
+    option.textContent = label;
+    option.title = `${{group}}: ${{label}}`;
     groupNode.appendChild(option);
   }}
+}}
+
+function fillSelect(select, selected) {{
+  appendGroupedOptions(
+    select,
+    variables,
+    variable => variable.name,
+    variable => variable.label,
+    variable => variable.group,
+  );
   select.value = selected;
 }}
 
 function fillOverlaySelect(select, selected) {{
-  select.innerHTML = "";
-  let currentGroup = "";
-  let groupNode = null;
-  for (const variable of variables) {{
-    const group = variable.group || "Other";
-    if (group !== currentGroup) {{
-      currentGroup = group;
-      groupNode = document.createElement("optgroup");
-      groupNode.label = group;
-      select.appendChild(groupNode);
-    }}
-    const option = document.createElement("option");
-    option.value = variable.name;
-    option.textContent = variable.label;
-    groupNode.appendChild(option);
-  }}
+  fillSelect(select, selected);
   select.value = selected && byName[selected] ? selected : "";
 }}
 
@@ -2081,22 +2078,13 @@ function renderQuickCategoryOptions() {{
   }}
   block.style.display = "";
   const previous = select.value;
-  select.innerHTML = "";
-  let currentGroup = "";
-  let groupNode = null;
-  for (const filter of payload.categoricalFilters) {{
-    const group = filter.group || "Other";
-    if (group !== currentGroup) {{
-      currentGroup = group;
-      groupNode = document.createElement("optgroup");
-      groupNode.label = group;
-      select.appendChild(groupNode);
-    }}
-    const option = document.createElement("option");
-    option.value = filter.name;
-    option.textContent = filter.label;
-    groupNode.appendChild(option);
-  }}
+  appendGroupedOptions(
+    select,
+    payload.categoricalFilters,
+    filter => filter.name,
+    filter => filter.label,
+    filter => filter.group,
+  );
   select.value = payload.categoricalFilters.some(filter => filter.name === previous)
     ? previous
     : payload.categoricalFilters[0].name;

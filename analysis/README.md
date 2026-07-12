@@ -135,8 +135,9 @@ as degree versions of angular branches and non-duplicated signed/unsigned `t`
 aliases, and supports 1D histograms, 2D histograms, detector/pass-flag toggles,
 text filters, numeric constraints, and optional panel tabs that can be viewed
 independently or side by side under the same filters from the toolbar above the
-plot. Quantity selectors are grouped by event, kinematic, particle, selection,
-and detector/exclusivity category instead of a flat alphabetical list. Axis tick-count
+plot. Quantity dropdowns show visible category headings for event, kinematic,
+particle, selection, and detector/exclusivity groups instead of a flat
+alphabetical list. Axis tick-count
 sliders adjust every displayed axis, optional presentation labels can override
 the displayed X/Y axis labels per panel, and the visible display can be saved as
 a PNG. 2D views can optionally draw color scales beside the histogram, including
