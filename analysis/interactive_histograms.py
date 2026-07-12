@@ -1769,7 +1769,7 @@ th:first-child, td:first-child {{ text-align: left; }}
       <label><span>X label</span><input id="xAxisLabel" type="text" placeholder="auto"></label>
       <label><span>Y label</span><input id="yAxisLabel" type="text" placeholder="auto"></label>
     </div>
-    <label id="splitLabel">Split by sector <select id="splitVar"></select></label>
+    <label id="splitLabel">Split by <select id="splitVar"></select></label>
     <div class="quick-category" id="quickCategoryBlock">
       <div class="quick-category-head">
         <label>Filter topology <select id="quickCategoryFilter"></select></label>
@@ -1823,6 +1823,9 @@ th:first-child, td:first-child {{ text-align: left; }}
       <div class="plot-panel-controls">
         <div class="panel-tabs" id="panelTabs"></div>
         <button type="button" id="addPanel">+ panel</button>
+        <button type="button" id="loadFiles">Load File(s)</button>
+        <input id="loadFileInput" type="file" accept=".html,text/html" multiple hidden>
+        <span class="subtle" id="datasetStatus"></span>
         <label class="chip"><input id="splitView" type="checkbox"> split view</label>
       </div>
       <div class="chips">
@@ -1909,7 +1912,7 @@ th:first-child, td:first-child {{ text-align: left; }}
 const payload = {payload_json};
 const columns = {{}};
 const textColumns = {{}};
-const rowCount = payload.rowCount;
+let rowCount = payload.rowCount;
 for (const [name, value] of Object.entries(payload.columns)) {{
   if (value && value.dtype === "float32") {{
     const binary = atob(value.data);
@@ -1923,6 +1926,8 @@ for (const [name, value] of Object.entries(payload.columns)) {{
 const variables = payload.variables;
 const byName = Object.fromEntries(variables.map(v => [v.name, v]));
 const integerVariables = new Set(variables.filter(v => v.integer).map(v => v.name));
+const SAMPLE_COLUMN = "__sampleId";
+const loadedSamples = [{{id: 0, label: sampleLabel(payload.source || "sample 1"), rows: rowCount}}];
 const panelKeys = ["A", "B"];
 const panelLabels = {{A: "Panel 1", B: "Panel 2"}};
 let enabledPanels = ["A"];
@@ -1940,6 +1945,225 @@ const el = id => document.getElementById(id);
 const fmt = value => Number.isFinite(value) ? (Math.abs(value) >= 1000 || Math.abs(value) < 0.01 ? value.toExponential(3) : value.toPrecision(4)) : "-";
 const fmtColumn = (name, value) => integerVariables.has(name) && Number.isFinite(value) ? String(Math.round(value)) : fmt(value);
 const fmtTickTarget = value => Number.isInteger(value) ? String(value) : value.toFixed(1);
+
+function sampleLabel(source) {{
+  const clean = String(source || "").split(/[\\\\/]/).pop() || "sample";
+  return clean.replace(/\\.html?$/i, "") || clean;
+}}
+
+function ensureSampleColumn() {{
+  if (!columns[SAMPLE_COLUMN]) {{
+    columns[SAMPLE_COLUMN] = filledFloat32(rowCount, 0);
+  }}
+  if (!byName[SAMPLE_COLUMN]) {{
+    const variable = {{
+      name: SAMPLE_COLUMN,
+      label: "Sample",
+      min: 0,
+      max: 0,
+      mean: 0,
+      finite: rowCount,
+      integer: true,
+      group: "Samples"
+    }};
+    variables.unshift(variable);
+    byName[SAMPLE_COLUMN] = variable;
+    integerVariables.add(SAMPLE_COLUMN);
+  }}
+}}
+
+function filledFloat32(length, value) {{
+  const array = new Float32Array(length);
+  array.fill(value);
+  return array;
+}}
+
+function concatFloat32(left, right) {{
+  const merged = new Float32Array(left.length + right.length);
+  merged.set(left, 0);
+  merged.set(right, left.length);
+  return merged;
+}}
+
+function concatText(left, right) {{
+  return Array.from(left || []).concat(Array.from(right || []));
+}}
+
+function decodePayloadColumns(nextPayload) {{
+  const numeric = {{}};
+  const text = {{}};
+  for (const [name, value] of Object.entries(nextPayload.columns || {{}})) {{
+    if (value && value.dtype === "float32") {{
+      const binary = atob(value.data);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      numeric[name] = new Float32Array(bytes.buffer);
+    }} else if (Array.isArray(value)) {{
+      text[name] = value.map(item => String(item));
+    }}
+  }}
+  return {{numeric, text}};
+}}
+
+function parseVisualizerPayload(html) {{
+  const match = String(html).match(/const payload = (.*?);\\nconst columns/s);
+  if (!match) throw new Error("No embedded visualizer payload found.");
+  return JSON.parse(match[1]);
+}}
+
+function readTextFile(file) {{
+  return new Promise((resolve, reject) => {{
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("Could not read file."));
+    reader.readAsText(file);
+  }});
+}}
+
+function payloadRowCount(nextPayload, decoded) {{
+  if (Number.isFinite(nextPayload.rowCount) && nextPayload.rowCount > 0) return Number(nextPayload.rowCount);
+  const numericColumn = Object.values(decoded.numeric)[0];
+  if (numericColumn) return numericColumn.length;
+  const textColumn = Object.values(decoded.text)[0];
+  return textColumn ? textColumn.length : 0;
+}}
+
+function ensureVariableFromPayload(name, nextPayload) {{
+  if (byName[name]) return;
+  const source = (nextPayload.variables || []).find(variable => variable.name === name) || {{}};
+  const variable = {{
+    name,
+    label: source.label || name,
+    min: Number.isFinite(source.min) ? source.min : NaN,
+    max: Number.isFinite(source.max) ? source.max : NaN,
+    mean: Number.isFinite(source.mean) ? source.mean : NaN,
+    finite: Number.isFinite(source.finite) ? source.finite : 0,
+    integer: Boolean(source.integer),
+    group: source.group || "Other"
+  }};
+  variables.push(variable);
+  byName[name] = variable;
+  if (variable.integer) integerVariables.add(name);
+}}
+
+function refreshVariableStats() {{
+  for (const variable of variables) {{
+    const values = columns[variable.name];
+    if (!values) continue;
+    let finite = 0, sum = 0, min = Infinity, max = -Infinity;
+    for (const value of values) {{
+      if (!Number.isFinite(value)) continue;
+      finite++;
+      sum += value;
+      if (value < min) min = value;
+      if (value > max) max = value;
+    }}
+    variable.finite = finite;
+    variable.mean = finite ? sum / finite : NaN;
+    variable.min = finite ? min : NaN;
+    variable.max = finite ? max : NaN;
+  }}
+}}
+
+function mergeTextFilters(nextPayload, decoded) {{
+  if (!payload.textFilters) payload.textFilters = [];
+  const incomingFilters = nextPayload.textFilters || [];
+  for (const [name, values] of Object.entries(decoded.text)) {{
+    const incoming = incomingFilters.find(filter => filter.name === name) || {{}};
+    let filter = payload.textFilters.find(item => item.name === name);
+    if (!filter) {{
+      filter = {{name, label: incoming.label || name, values: []}};
+      payload.textFilters.push(filter);
+    }}
+    const merged = new Set([...(filter.values || []), ...values.filter(value => value).slice(0, 40)]);
+    filter.values = Array.from(merged).sort().slice(0, 40);
+  }}
+  payload.textFilters.sort((left, right) => (left.label || left.name).localeCompare(right.label || right.name));
+}}
+
+function mergeVisualizerPayload(nextPayload, decoded, fileName) {{
+  ensureSampleColumn();
+  const addedRows = payloadRowCount(nextPayload, decoded);
+  if (!addedRows) throw new Error("Loaded payload has no rows.");
+  const oldRows = rowCount;
+  const sampleId = loadedSamples.length;
+  loadedSamples.push({{id: sampleId, label: sampleLabel(fileName || nextPayload.source || `sample ${{sampleId + 1}}`), rows: addedRows}});
+
+  for (const [name] of Object.entries(decoded.numeric)) {{
+    ensureVariableFromPayload(name, nextPayload);
+  }}
+
+  const existingNumeric = Object.keys(columns);
+  for (const name of existingNumeric) {{
+    const addition = name === SAMPLE_COLUMN
+      ? filledFloat32(addedRows, sampleId)
+      : decoded.numeric[name] || filledFloat32(addedRows, NaN);
+    columns[name] = concatFloat32(columns[name], addition);
+  }}
+  for (const [name, values] of Object.entries(decoded.numeric)) {{
+    if (existingNumeric.includes(name)) continue;
+    columns[name] = concatFloat32(filledFloat32(oldRows, NaN), values);
+  }}
+
+  const existingText = Object.keys(textColumns);
+  for (const name of existingText) {{
+    textColumns[name] = concatText(textColumns[name], decoded.text[name] || Array(addedRows).fill(""));
+  }}
+  for (const [name, values] of Object.entries(decoded.text)) {{
+    if (existingText.includes(name)) continue;
+    textColumns[name] = concatText(Array(oldRows).fill(""), values);
+  }}
+
+  rowCount += addedRows;
+  payload.rowCount = rowCount;
+  refreshVariableStats();
+  mergeTextFilters(nextPayload, decoded);
+  rebuildCategoricalFilters(true);
+  rebuildSplitOptions();
+  updateDatasetStatus();
+}}
+
+async function loadVisualizerFiles(files) {{
+  const chosen = Array.from(files || []);
+  if (!chosen.length) return;
+  const status = el("datasetStatus");
+  let loaded = 0;
+  for (const file of chosen) {{
+    try {{
+      status.textContent = `Loading ${{file.name}}...`;
+      const html = await readTextFile(file);
+      const nextPayload = parseVisualizerPayload(html);
+      const decoded = decodePayloadColumns(nextPayload);
+      mergeVisualizerPayload(nextPayload, decoded, file.name);
+      loaded++;
+    }} catch (error) {{
+      status.textContent = `Could not load ${{file.name}}: ${{error.message || error}}`;
+      console.error(error);
+      break;
+    }}
+  }}
+  if (loaded) {{
+    status.textContent = `${{loadedSamples.length}} samples, ${{rowCount.toLocaleString()}} rows`;
+    for (const panel of Object.values(panels)) resetAxisRanges(panel);
+    fillSelect(el("rangeVar"), payload.defaultX);
+    fillOperationSelects();
+    renderCategoryFilters();
+    renderQuickCategoryOptions();
+    renderQuickCategory();
+    renderTextFilters();
+    syncControlsFromPanel();
+    update();
+  }}
+}}
+
+function updateDatasetStatus() {{
+  const status = el("datasetStatus");
+  if (status) status.textContent = `${{loadedSamples.length}} sample${{loadedSamples.length === 1 ? "" : "s"}}`;
+  el("embeddedCount").textContent = rowCount.toLocaleString();
+  el("source").textContent = loadedSamples.length > 1
+    ? `${{loadedSamples[0].label}} + ${{loadedSamples.length - 1}} loaded`
+    : payload.source;
+}}
 
 function comparisonDefaultX() {{
   for (const name of ["rec_minus_t_pi0", "t_pi0", "gen_minus_t", payload.defaultX]) {{
@@ -2159,6 +2383,27 @@ function fillSectorSelect(selected) {{
   label.style.display = (payload.sectorSplits || []).length ? "" : "none";
 }}
 
+function splitFacets(splitName) {{
+  const filter = payload.categoricalFilters.find(item => item.name === splitName);
+  if (filter) {{
+    return filter.values.map((value, index) => ({{
+      value: Number(value),
+      label: filter.labels[index] || String(value),
+      shortLabel: shortFacetLabel(filter, value, index)
+    }}));
+  }}
+  const values = columns[splitName];
+  if (!values) return [];
+  const unique = Array.from(new Set(Array.from(values).filter(Number.isFinite).map(value => Math.round(value)))).sort((a, b) => a - b).slice(0, 12);
+  return unique.map(value => ({{value, label: String(value), shortLabel: String(value)}}));
+}}
+
+function shortFacetLabel(filter, value, index) {{
+  if (filter.name === SAMPLE_COLUMN) return `sample ${{Number(value) + 1}}`;
+  if (filter.name.toLowerCase().includes("sector")) return `S${{Math.round(Number(value))}}`;
+  return filter.labels[index] || String(value);
+}}
+
 function init() {{
   document.querySelector("h1").textContent = payload.title;
   el("source").textContent = payload.source;
@@ -2166,6 +2411,10 @@ function init() {{
   if (payload.downsample.sampled) {{
     el("samplingNote").textContent = `downsampled from ${{payload.downsample.originalRows.toLocaleString()}} rows`;
   }}
+  ensureSampleColumn();
+  rebuildCategoricalFilters(false);
+  rebuildSplitOptions();
+  updateDatasetStatus();
   fillSelect(el("rangeVar"), payload.defaultX);
   fillOperationSelects();
   initializeCategoryState();
@@ -2185,6 +2434,136 @@ function initializeCategoryState() {{
       categoryState[filter.name] = new Set(filter.values.map(value => Number(value)));
     }}
   }}
+}}
+
+function rebuildCategoricalFilters(preserveSelections = true) {{
+  const previous = {{}};
+  const previousValues = {{}};
+  if (preserveSelections) {{
+    for (const filter of payload.categoricalFilters || []) {{
+      previousValues[filter.name] = new Set(filter.values.map(value => Number(value)));
+    }}
+    for (const [name, values] of Object.entries(categoryState)) {{
+      previous[name] = new Set(values);
+    }}
+  }}
+  const filters = [];
+  for (const variable of variables) {{
+    const values = columns[variable.name];
+    if (!values) continue;
+    const filter = categoricalFilterFromColumn(variable, values);
+    if (filter) filters.push(filter);
+  }}
+  filters.sort(compareCategoricalFilters);
+  payload.categoricalFilters = filters;
+  for (const filter of filters) {{
+    const prior = previous[filter.name];
+    const knownValues = previousValues[filter.name];
+    const next = new Set();
+    for (const value of filter.values) {{
+      const numeric = Number(value);
+      if (!prior || prior.has(numeric) || !knownValues || !knownValues.has(numeric)) next.add(numeric);
+    }}
+    categoryState[filter.name] = next;
+  }}
+  for (const name of Object.keys(categoryState)) {{
+    if (!filters.some(filter => filter.name === name)) delete categoryState[name];
+  }}
+}}
+
+function categoricalFilterFromColumn(variable, values) {{
+  const finite = [];
+  for (const value of values) if (Number.isFinite(value)) finite.push(value);
+  if (!finite.length) return null;
+  const integers = finite.every(value => Math.abs(value - Math.round(value)) < 1.0e-6);
+  const unique = Array.from(new Set(finite.map(value => integers ? Math.round(value) : value))).sort((a, b) => a - b);
+  const maxCategories = variable.name === SAMPLE_COLUMN ? 100 : isRunNumberName(variable.name) ? 500 : isIndexName(variable.name) ? 40 : 12;
+  const categorical = variable.name === SAMPLE_COLUMN || integers || isPassFlagName(variable.name) || variable.name.endsWith("Det") || isIndexName(variable.name) || isRunNumberName(variable.name);
+  if (unique.length <= 1 || unique.length > maxCategories || !categorical) return null;
+  return {{
+    name: variable.name,
+    label: variable.label || variable.name,
+    group: categoricalGroup(variable.name, variable.group),
+    values: unique,
+    labels: unique.map(value => categoryValueLabel(variable.name, value))
+  }};
+}}
+
+function compareCategoricalFilters(left, right) {{
+  return categoricalGroupRank(left.group) - categoricalGroupRank(right.group)
+    || categoricalKindRank(left.name) - categoricalKindRank(right.name)
+    || left.label.localeCompare(right.label)
+    || left.name.localeCompare(right.name);
+}}
+
+function categoricalGroup(name, variableGroup) {{
+  if (name === SAMPLE_COLUMN) return "Samples";
+  return variableGroup || "Other";
+}}
+
+function categoricalGroupRank(group) {{
+  const order = ["Samples", "Event", "Selections", "Electron", "Proton", "Gamma 1", "Gamma 2", "Gamma", "Pi0", "Sectors", "Detectors", "Indices", "Kinematics", "Masses / Exclusivity", "REC particle", "GEN particle", "Detector / Geometry", "Derived", "Other"];
+  const index = order.indexOf(group || "Other");
+  return index >= 0 ? index : order.length;
+}}
+
+function categoricalKindRank(name) {{
+  if (name === SAMPLE_COLUMN) return 0;
+  if (isRunNumberName(name)) return 1;
+  const canonical = name.toLowerCase().replace(/^rec_/, "").replace(/^gen_/, "").replace(/_/g, "");
+  if (canonical.endsWith("det") || canonical.endsWith("detector")) return 2;
+  if (canonical.includes("sector")) return 3;
+  if (isIndexName(name)) return 4;
+  if (isPassFlagName(name)) return 5;
+  return 6;
+}}
+
+function categoryValueLabel(name, value) {{
+  if (name === SAMPLE_COLUMN) {{
+    const sample = loadedSamples.find(item => item.id === Number(value));
+    return sample ? sample.label : `sample ${{Number(value) + 1}}`;
+  }}
+  if (isRunNumberName(name)) return String(Math.round(value));
+  if (["pDet", "rec_proton_detector", "protonDet", "protonDetector"].includes(name)) {{
+    return {{1: "FD", 2: "CD", 0: "FT", "-999": "missing"}}[String(Math.round(value))] || String(value);
+  }}
+  if (name.toLowerCase().includes("sector")) {{
+    const sector = Math.round(value);
+    return sector < 0 ? "missing" : `sector ${{sector}}`;
+  }}
+  if (isPassFlagName(name) || name === "rec_selected" || name === "rec_not_selected") {{
+    const flag = Math.round(value);
+    if (flag === 1) return "pass";
+    if (flag === 0) return "fail";
+    return "missing";
+  }}
+  return String(value);
+}}
+
+function isPassFlagName(name) {{
+  return name.startsWith("pass") || name.startsWith("rec_pass");
+}}
+
+function isIndexName(name) {{
+  return name.endsWith("Idx") || name.endsWith("Index");
+}}
+
+function isRunNumberName(name) {{
+  return ["run", "runNum", "rec_runNum", "gen_runNum"].includes(name) || name.toLowerCase().endsWith("runnum");
+}}
+
+function rebuildSplitOptions() {{
+  const splits = [];
+  const addSplit = filter => {{
+    if (filter && columns[filter.name] && !splits.some(split => split.name === filter.name)) {{
+      splits.push({{name: filter.name, label: filter.label}});
+    }}
+  }};
+  addSplit(payload.categoricalFilters.find(filter => filter.name === SAMPLE_COLUMN));
+  for (const filter of payload.categoricalFilters) {{
+    if (filter.name.toLowerCase().includes("sector")) addSplit(filter);
+  }}
+  payload.sectorSplits = splits;
 }}
 
 function renderCategoryFilters() {{
@@ -2338,6 +2717,11 @@ function attachEvents() {{
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
   el("yvar").addEventListener("change", () => {{ setPanelVariable("y"); update(); }});
+  el("loadFiles").addEventListener("click", () => el("loadFileInput").click());
+  el("loadFileInput").addEventListener("change", event => {{
+    loadVisualizerFiles(event.target.files);
+    event.target.value = "";
+  }});
   ["opLeft","opRight","opKind"].forEach(id => {{
     el(id).addEventListener("change", () => {{
       updateOperationPreview();
@@ -2954,14 +3338,15 @@ function draw1dFacets(panel, mask, splitName) {{
   const xMin = panel.xmin;
   const xMax = panel.xmax;
   const facets = [];
+  const facetDefinitions = splitFacets(splitName);
   let totalSelected = 0, totalOverlaySelected = 0, sumXAll = 0;
-  for (let sector = 1; sector <= 6; sector++) {{
+  for (const definition of facetDefinitions) {{
     const counts = new Float64Array(bins);
     const overlayCounts = x2 ? new Float64Array(bins) : null;
     let selected = 0, overlaySelected = 0, sumX = 0;
     for (let i = 0; i < rowCount; i++) {{
       const xv = x[i];
-      if (!mask[i] || Math.round(split[i]) !== sector || xMax <= xMin) continue;
+      if (!mask[i] || Math.round(split[i]) !== definition.value || xMax <= xMin) continue;
       if (Number.isFinite(xv) && xv >= xMin && xv <= xMax) {{
         const bin = Math.min(bins - 1, Math.max(0, Math.floor((xv - xMin) / (xMax - xMin) * bins)));
         counts[bin] += 1;
@@ -2980,7 +3365,7 @@ function draw1dFacets(panel, mask, splitName) {{
     totalSelected += selected;
     totalOverlaySelected += overlaySelected;
     sumXAll += sumX;
-    facets.push({{sector, counts, overlayCounts, selected, overlaySelected}});
+    facets.push({{value: definition.value, label: definition.label, shortLabel: definition.shortLabel, counts, overlayCounts, selected, overlaySelected}});
   }}
   if (panel.density) {{
     for (const facet of facets) {{
@@ -2997,7 +3382,7 @@ function draw1dFacets(panel, mask, splitName) {{
   const {{ctx, width, height}} = area;
   const c = colors();
   ctx.clearRect(0, 0, width, height);
-  const layout = facetLayout(area);
+  const layout = facetLayout(area, facets.length);
   const fitSummaries = [];
   for (let index = 0; index < facets.length; index++) {{
     const facet = facets[index];
@@ -3025,14 +3410,14 @@ function draw1dFacets(panel, mask, splitName) {{
     }}
     drawAxes(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks);
     if (x2Name && index === 0) drawOverlayLegend(ctx, facetAreaInfo, byName[xName].label, byName[x2Name].label);
-    drawFacetTitle(ctx, facetAreaInfo, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
+    drawFacetTitle(ctx, facetAreaInfo, `${{facet.label}} (${{facet.selected.toLocaleString()}})`);
     if (panel.fitModel !== "none") {{
       const fit = make1dFit(facet.counts, xMin, xMax, panel.fitModel);
       if (fit.predict) {{
         drawFitCurve(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, fit.predict);
         drawFitAnnotation(ctx, facetAreaInfo, fit);
       }}
-      fitSummaries.push(`S${{facet.sector}}: ${{fit.summary}}`);
+      fitSummaries.push(`${{facet.shortLabel}}: ${{fit.summary}}`);
     }}
     facet.area = facetAreaInfo;
   }}
@@ -3061,9 +3446,10 @@ function draw2dFacets(panel, mask, splitName) {{
   const yMin = panel.ymin;
   const yMax = panel.ymax;
   const facets = [];
+  const facetDefinitions = splitFacets(splitName);
   const collectFitPoints = panel.fitModel !== "none" && panel.fitModel !== "gaussian";
   let totalSelected = 0, totalOverlaySelected = 0, sumXAll = 0, sumYAll = 0;
-  for (let sector = 1; sector <= 6; sector++) {{
+  for (const definition of facetDefinitions) {{
     const counts = new Float64Array(xBins * yBins);
     const overlayCounts = (x2 || y2) ? new Float64Array(xBins * yBins) : null;
     const fitXs = collectFitPoints ? [] : null;
@@ -3071,7 +3457,7 @@ function draw2dFacets(panel, mask, splitName) {{
     let selected = 0, overlaySelected = 0, sumX = 0, sumY = 0;
     for (let i = 0; i < rowCount; i++) {{
       const xv = x[i], yv = y[i];
-      if (!mask[i] || Math.round(split[i]) !== sector || xMax <= xMin || yMax <= yMin) continue;
+      if (!mask[i] || Math.round(split[i]) !== definition.value || xMax <= xMin || yMax <= yMin) continue;
       if (Number.isFinite(xv) && xv >= xMin && xv <= xMax && Number.isFinite(yv) && yv >= yMin && yv <= yMax) {{
         const xi = Math.min(xBins - 1, Math.max(0, Math.floor((xv - xMin) / (xMax - xMin) * xBins)));
         const yi = Math.min(yBins - 1, Math.max(0, Math.floor((yv - yMin) / (yMax - yMin) * yBins)));
@@ -3099,7 +3485,7 @@ function draw2dFacets(panel, mask, splitName) {{
     totalOverlaySelected += overlaySelected;
     sumXAll += sumX;
     sumYAll += sumY;
-    facets.push({{sector, counts, overlayCounts, selected, overlaySelected, fitXs, fitYs, maxCount: 1, overlayMaxCount: 0, colorScale: null}});
+    facets.push({{value: definition.value, label: definition.label, shortLabel: definition.shortLabel, counts, overlayCounts, selected, overlaySelected, fitXs, fitYs, maxCount: 1, overlayMaxCount: 0, colorScale: null}});
   }}
   if (panel.density) {{
     for (const facet of facets) {{
@@ -3115,7 +3501,7 @@ function draw2dFacets(panel, mask, splitName) {{
   const area = plotArea(canvas, panel.colorScale ? (x2Name || y2Name ? 2 : 1) : 0);
   const {{ctx, width, height}} = area;
   ctx.clearRect(0, 0, width, height);
-  const layout = facetLayout(area);
+  const layout = facetLayout(area, facets.length);
   const fitSummaries = [];
   for (let index = 0; index < facets.length; index++) {{
     const facet = facets[index];
@@ -3157,7 +3543,7 @@ function draw2dFacets(panel, mask, splitName) {{
     const yAxisLabel = y2Name ? `${{byName[yName].label}} / ${{byName[y2Name].label}}` : byName[yName].label;
     drawAxes(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, axisDisplayLabel(panel, "x", xAxisLabel), axisDisplayLabel(panel, "y", yAxisLabel), panel.xticks, panel.yticks);
     if ((x2Name || y2Name) && index === 0) drawOverlayLegend(ctx, facetAreaInfo, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
-    drawFacetTitle(ctx, facetAreaInfo, `Sector ${{facet.sector}} (${{facet.selected.toLocaleString()}})`);
+    drawFacetTitle(ctx, facetAreaInfo, `${{facet.label}} (${{facet.selected.toLocaleString()}})`);
     if (panel.colorScale) facet.colorScale = draw2dColorScale(ctx, facetAreaInfo, facet.maxCount, facet.overlayCounts ? facet.overlayMaxCount : 0, panel);
     if (collectFitPoints) {{
       const fit = make2dFit(facet.fitXs, facet.fitYs, panel.fitModel);
@@ -3165,7 +3551,7 @@ function draw2dFacets(panel, mask, splitName) {{
         drawFitCurve(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, fit.predict);
         drawFitAnnotation(ctx, facetAreaInfo, fit);
       }}
-      fitSummaries.push(`S${{facet.sector}}: ${{fit.summary}}; n=${{facet.fitXs.length.toLocaleString()}}`);
+      fitSummaries.push(`${{facet.shortLabel}}: ${{fit.summary}}; n=${{facet.fitXs.length.toLocaleString()}}`);
     }}
     facet.area = facetAreaInfo;
   }}
@@ -3182,9 +3568,10 @@ function draw2dFacets(panel, mask, splitName) {{
   setPanelStats(panel, totalSelected, sumXAll / totalSelected, sumYAll / totalSelected);
 }}
 
-function facetLayout(area) {{
-  const cols = area.width >= 900 ? 3 : 2;
-  const rows = Math.ceil(6 / cols);
+function facetLayout(area, facetCount) {{
+  const count = Math.max(1, facetCount || 1);
+  const cols = count <= 2 ? count : area.width >= 900 ? 3 : 2;
+  const rows = Math.ceil(count / cols);
   return {{cols, rows, gapX: 16, gapY: 30, outerLeft: 8, outerRight: 8, outerTop: 4, outerBottom: 8}};
 }}
 
@@ -3689,8 +4076,8 @@ function showFacetHover(px, py, key) {{
       const value = facet.counts[bin];
       const overlayValue = facet.overlayCounts ? facet.overlayCounts[bin] : NaN;
       const label = lastPlot.density ? "density" : "count";
-      const overlayText = lastPlot.x2Name ? `; ${{byName[lastPlot.x2Name].label}} ${{label}}=${{fmt(overlayValue)}}; overlay sector selected=${{facet.overlaySelected.toLocaleString()}}` : "";
-      setHoverText(key, `Panel ${{key}}; sector ${{facet.sector}}; ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=${{bin + 1}}/${{lastPlot.bins}}; sector selected=${{facet.selected.toLocaleString()}}`);
+      const overlayText = lastPlot.x2Name ? `; ${{byName[lastPlot.x2Name].label}} ${{label}}=${{fmt(overlayValue)}}; overlay split selected=${{facet.overlaySelected.toLocaleString()}}` : "";
+      setHoverText(key, `Panel ${{key}}; ${{facet.label}}; ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=${{bin + 1}}/${{lastPlot.bins}}; split selected=${{facet.selected.toLocaleString()}}`);
       hideColorScaleMarker(key);
       return;
     }}
@@ -3703,8 +4090,8 @@ function showFacetHover(px, py, key) {{
     const value = facet.counts[yi * lastPlot.xBins + xi];
     const overlayValue = facet.overlayCounts ? facet.overlayCounts[yi * lastPlot.xBins + xi] : NaN;
     const label = lastPlot.density ? "density" : "count";
-    const overlayText = facet.overlayCounts ? `; ${{overlay2dLabel(lastPlot)}} ${{label}}=${{fmt(overlayValue)}}; overlay sector selected=${{facet.overlaySelected.toLocaleString()}}` : "";
-    setHoverText(key, `Panel ${{key}}; sector ${{facet.sector}}; ${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=(${{xi + 1}}, ${{yi + 1}}); sector selected=${{facet.selected.toLocaleString()}}`);
+    const overlayText = facet.overlayCounts ? `; ${{overlay2dLabel(lastPlot)}} ${{label}}=${{fmt(overlayValue)}}; overlay split selected=${{facet.overlaySelected.toLocaleString()}}` : "";
+    setHoverText(key, `Panel ${{key}}; ${{facet.label}}; ${{byName[lastPlot.yName].label}} [${{fmt(y0)}}, ${{fmt(y1)}}), ${{byName[lastPlot.xName].label}} [${{fmt(x0)}}, ${{fmt(x1)}}): ${{label}}=${{fmt(value)}}${{overlayText}}; bin=(${{xi + 1}}, ${{yi + 1}}); split selected=${{facet.selected.toLocaleString()}}`);
     showColorScaleMarkers(key, facet.colorScale, value, overlayValue);
     return;
   }}
