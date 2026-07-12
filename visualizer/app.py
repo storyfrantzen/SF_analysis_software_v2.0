@@ -3787,8 +3787,10 @@ function formatAxisTick(value) {{
 
 function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel, xTickCount, yTickCount, options = null) {{
   const visibility = options || {{}};
-  const showX = visibility.showX !== false;
-  const showY = visibility.showY !== false;
+  const showXTickLabels = visibility.showXTickLabels !== false;
+  const showYTickLabels = visibility.showYTickLabels !== false;
+  const showXLabel = visibility.showXLabel !== false;
+  const showYLabel = visibility.showYLabel !== false;
   const c = colors();
   const pw = area.width - area.left - area.right;
   const ph = area.height - area.top - area.bottom;
@@ -3804,7 +3806,7 @@ function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel, xTickCount,
     ctx.moveTo(x, area.top);
     ctx.lineTo(x, area.top + ph + 5);
     ctx.stroke();
-    if (showX) {{
+    if (showXTickLabels) {{
       ctx.textAlign = "center";
       ctx.fillText(formatAxisTick(tick), x, area.top + ph + 20);
     }}
@@ -3815,7 +3817,7 @@ function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel, xTickCount,
     ctx.moveTo(area.left - 5, y);
     ctx.lineTo(area.left + pw, y);
     ctx.stroke();
-    if (showY) {{
+    if (showYTickLabels) {{
       ctx.textAlign = "right";
       ctx.fillText(formatAxisTick(tick), area.left - 8, y);
     }}
@@ -3830,8 +3832,8 @@ function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel, xTickCount,
   ctx.fillStyle = c.muted;
   ctx.textBaseline = "alphabetic";
   ctx.textAlign = "center";
-  if (showX) ctx.fillText(xLabel, area.left + pw / 2, area.top + ph + 38);
-  if (showY) {{
+  if (showXLabel) ctx.fillText(xLabel, area.left + pw / 2, area.top + ph + 38);
+  if (showYLabel) {{
     ctx.save();
     ctx.translate(area.left - 40, area.top + ph / 2);
     ctx.rotate(-Math.PI / 2);
@@ -4326,7 +4328,12 @@ function facetAxisVisibility(layout, index, facetCount) {{
     }}
   }}
   const centeredCdAxis = Boolean(layout.centeredCd && position.row === layout.rows - 1 && position.col === 1);
-  return {{showX: !hasFacetBelow, showY: position.col === 0 || centeredCdAxis}};
+  return {{
+    showXTickLabels: true,
+    showYTickLabels: true,
+    showXLabel: !hasFacetBelow,
+    showYLabel: position.col === 0 || centeredCdAxis
+  }};
 }}
 
 function drawFacetTitle(ctx, area, title) {{

@@ -68,11 +68,12 @@ constraints.
 Proton-sector split views distinguish FD sectors 1-6 from sector 0, which
 denotes CD protons. The FD facets occupy the first two three-column rows in
 sector order, and the CD facet is centered by itself in the third row.
-Repeated facet-axis titles and tick labels are suppressed on interior panels;
-the bottommost panel in each column and the leftmost panel in each row retain
-the relevant labels, while the centered CD panel retains both axes. Numeric
-ticks use compact formatting without unnecessary trailing zeros. The sidebar
-uses a narrower desktop width so more of the window is available to the plot.
+Repeated facet-axis titles are suppressed on interior panels; the bottommost
+panel in each column and the leftmost panel in each row retain the relevant
+titles, while the centered CD panel retains both. Numeric tick values remain
+visible on every facet and use compact formatting without unnecessary trailing
+zeros. The sidebar uses a narrower desktop width so more of the window is
+available to the plot.
 
 ## Source layout
 

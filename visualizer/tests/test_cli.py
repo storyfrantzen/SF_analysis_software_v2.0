@@ -208,13 +208,13 @@ console.log(JSON.stringify({
         self.assertEqual(
             result["protonAxisVisibility"],
             [
-                {"showX": False, "showY": True},
-                {"showX": False, "showY": False},
-                {"showX": False, "showY": False},
-                {"showX": True, "showY": True},
-                {"showX": False, "showY": False},
-                {"showX": True, "showY": False},
-                {"showX": True, "showY": True},
+                {"showXTickLabels": True, "showYTickLabels": True, "showXLabel": False, "showYLabel": True},
+                {"showXTickLabels": True, "showYTickLabels": True, "showXLabel": False, "showYLabel": False},
+                {"showXTickLabels": True, "showYTickLabels": True, "showXLabel": False, "showYLabel": False},
+                {"showXTickLabels": True, "showYTickLabels": True, "showXLabel": True, "showYLabel": True},
+                {"showXTickLabels": True, "showYTickLabels": True, "showXLabel": False, "showYLabel": False},
+                {"showXTickLabels": True, "showYTickLabels": True, "showXLabel": True, "showYLabel": False},
+                {"showXTickLabels": True, "showYTickLabels": True, "showXLabel": True, "showYLabel": True},
             ],
         )
 
