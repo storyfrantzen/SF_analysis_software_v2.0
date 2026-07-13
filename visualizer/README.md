@@ -111,8 +111,11 @@ tick-density controls form one panel-specific tile beneath the active quantity
 title. They use two aligned X/Y rows, with the vertical label pair immediately
 to the right of the tick-density pair. One-dimensional plots pin Y ticks and Y
 label to the same columns used in two-dimensional mode even while the Y-range
-controls are hidden. The display tile
-for log color, density, and color scale sits immediately to its right, followed
+controls are hidden. The display tile includes a panel-specific `plot X:Y`
+slider from 0.75:1 to 2.5:1; lower values make the canvas taller to reduce
+horizontal stretching, and profiles inherit the source panel's ratio. Log color,
+density, and color scale share that tile, which sits immediately to the right of
+the axis settings and is followed
 by the reset/export tile. All three tiles span the full title width as one
 flush, spaced group above the canvas, with responsive wrapping when a pane is
 too narrow. Hover

@@ -1961,6 +1961,20 @@ canvas.fit-range-picker {{
   padding: 2px 6px;
   background: transparent;
 }}
+.canvas-toolbar .display-tile {{
+  display: grid;
+  grid-template-columns: repeat(3, max-content);
+  align-content: center;
+  gap: 3px 6px;
+}}
+.display-tile .aspect-control {{
+  grid-column: 1 / -1;
+  gap: 1px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+}}
+.display-tile .aspect-control input {{ width: 100%; padding-inline: 0; }}
 canvas {{
   display: block;
   width: 100%;
@@ -2442,6 +2456,7 @@ th:first-child, td:first-child {{ text-align: left; }}
         <label class="chip" id="logzChip"><input id="logz" type="checkbox"> log color</label>
         <label class="chip"><input id="density" type="checkbox"> density</label>
         <label class="chip" id="colorScaleChip"><input id="colorScale" type="checkbox"> color scale</label>
+        <label class="aspect-control"><span>plot X:Y <span id="plotAspectValue">1.5:1</span></span><input id="plotAspect" type="range" min="0.75" max="2.5" step="0.05" value="1.5"></label>
       </div>
       <div class="toolbar-tile action-tile" aria-label="Plot actions">
         <button type="button" id="resetFilters">Reset filters</button>
@@ -2613,6 +2628,8 @@ const el = id => document.getElementById(id);
 const fmt = value => Number.isFinite(value) ? (Math.abs(value) >= 1000 || Math.abs(value) < 0.01 ? value.toExponential(3) : value.toPrecision(4)) : "-";
 const fmtColumn = (name, value) => integerVariables.has(name) && Number.isFinite(value) ? String(Math.round(value)) : fmt(value);
 const fmtTickTarget = value => Number.isInteger(value) ? String(value) : value.toFixed(1);
+const canonicalPlotAspect = value => clamp(Number(value) || 1.5, 0.75, 2.5);
+const plotAspectLabel = value => `${{Number(canonicalPlotAspect(value).toFixed(2))}}:1`;
 
 function sampleLabel(source) {{
   const clean = String(source || "").split(/[\\\\/]/).pop() || "sample";
@@ -3083,6 +3100,7 @@ function makePanel(key, xvar, yvar) {{
     logz: true,
     density: false,
     colorScale: true,
+    plotAspect: 1.5,
     fitModel: "none",
     signalModel: "none",
     backgroundModel: "none",
@@ -3786,7 +3804,7 @@ function renderActiveFilterControls() {{
 }}
 
 function attachEvents() {{
-  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","sliceBins","sliceEdges","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","signalModel","backgroundModel","fitMethod","fitScanDetail","fitRangeClick"].forEach(id => {{
+  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","sliceBins","sliceEdges","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","plotAspect","signalModel","backgroundModel","fitMethod","fitScanDetail","fitRangeClick"].forEach(id => {{
     el(id).addEventListener("input", () => {{ readControlsToPanel(); update(); }});
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
@@ -4017,6 +4035,9 @@ function syncControlsFromPanel() {{
   el("logz").checked = panel.logz;
   el("density").checked = panel.density;
   el("colorScale").checked = panel.colorScale;
+  panel.plotAspect = canonicalPlotAspect(panel.plotAspect);
+  el("plotAspect").value = panel.plotAspect;
+  el("plotAspectValue").textContent = plotAspectLabel(panel.plotAspect);
   migratePanelFitSpec(panel);
   el("signalModel").value = panel.signalModel || "none";
   el("backgroundModel").value = panel.backgroundModel || "none";
@@ -4095,6 +4116,8 @@ function readControlsToPanel() {{
   panel.logz = el("logz").checked;
   panel.density = el("density").checked;
   panel.colorScale = el("colorScale").checked;
+  panel.plotAspect = canonicalPlotAspect(el("plotAspect").value);
+  el("plotAspectValue").textContent = plotAspectLabel(panel.plotAspect);
   panel.signalModel = canonicalSignalModel(el("signalModel").value);
   panel.backgroundModel = canonicalBackgroundModel(el("backgroundModel").value);
   panel.fitMethod = canonicalFitMethod(el("fitMethod").value);
@@ -4734,7 +4757,8 @@ function configureProfilePanel(target, source, hit, axis) {{
     yLabel: source.yLabel,
     xticks: source.xticks,
     yticks: source.yticks,
-    density: source.density
+    density: source.density,
+    plotAspect: source.plotAspect
   }};
   const variableName = profileX ? hit.xName : hit.yName;
   const sliceName = profileX ? hit.yName : hit.xName;
@@ -4756,6 +4780,7 @@ function configureProfilePanel(target, source, hit, axis) {{
   target.xmin = profileX ? hit.xMin : hit.yMin;
   target.xmax = profileX ? hit.xMax : hit.yMax;
   target.density = sourceSettings.density;
+  target.plotAspect = canonicalPlotAspect(sourceSettings.plotAspect);
   target.fitModel = "none";
   target.signalModel = "none";
   target.backgroundModel = "none";
@@ -5203,14 +5228,22 @@ function plotArea(canvas, showColorScale = false) {{
   const colorScaleSlots = typeof showColorScale === "number" ? showColorScale : showColorScale ? 1 : 0;
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
-  canvas.width = Math.max(400, Math.floor(rect.width * dpr));
-  canvas.height = Math.max(320, Math.floor(rect.height * dpr));
+  canvas.width = Math.max(240, Math.floor(rect.width * dpr));
+  canvas.height = Math.max(180, Math.floor(rect.height * dpr));
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const width = canvas.width / dpr;
   const height = canvas.height / dpr;
   const right = colorScaleSlots > 1 ? 112 : colorScaleSlots > 0 ? 82 : 22;
   return {{ctx, width, height, left: 76, right, top: 18, bottom: 62}};
+}}
+
+function preparePanelCanvas(panel) {{
+  const canvas = el("plot" + panel.key);
+  const width = canvas.getBoundingClientRect().width;
+  const aspect = canonicalPlotAspect(panel.plotAspect);
+  canvas.style.minHeight = "0";
+  canvas.style.height = `${{clamp(width / aspect, 180, 1400)}}px`;
 }}
 
 function colors() {{
@@ -5442,7 +5475,7 @@ function draw1d(panel, mask) {{
     draw1dFacets(panel, mask, splitName);
     return;
   }}
-  el("plot" + panel.key).style.height = "";
+  preparePanelCanvas(panel);
   const xName = panel.xvar;
   const x2Name = panel.x2var && panel.x2var !== xName && columns[panel.x2var] ? panel.x2var : "";
   const x = columns[xName];
@@ -5523,7 +5556,7 @@ function draw2d(panel, mask) {{
     draw2dFacets(panel, mask, splitName);
     return;
   }}
-  el("plot" + panel.key).style.height = "";
+  preparePanelCanvas(panel);
   const xName = panel.xvar;
   const yName = panel.yvar;
   const x2Name = panel.x2var && panel.x2var !== xName && columns[panel.x2var] ? panel.x2var : "";
@@ -5679,7 +5712,7 @@ function draw1dFacets(panel, mask, splitName) {{
     ...(ghost?.facets || []).map(f => f.counts)
   );
   const canvas = el("plot" + panel.key);
-  prepareFacetCanvas(canvas, facets.length, splitName, facets);
+  prepareFacetCanvas(canvas, panel, facets.length, splitName, facets);
   const area = plotArea(canvas);
   const {{ctx, width, height}} = area;
   const c = colors();
@@ -5807,7 +5840,7 @@ function draw2dFacets(panel, mask, splitName) {{
   }}
   const ghost = compatibleGhost(panel, "2d-facet", {{xName, yName, splitName, splitSignature}});
   const canvas = el("plot" + panel.key);
-  prepareFacetCanvas(canvas, facets.length, splitName, facets);
+  prepareFacetCanvas(canvas, panel, facets.length, splitName, facets);
   const area = plotArea(canvas, panel.colorScale ? (x2Name || y2Name ? 2 : 1) : 0);
   const {{ctx, width, height}} = area;
   ctx.clearRect(0, 0, width, height);
@@ -5907,7 +5940,7 @@ function facetLayout(area, facetCount, splitName = "", facets = null) {{
   return {{cols, rows, gapX: 16, gapY: 30, outerLeft: 8, outerRight: 8, outerTop: 4, outerBottom: 8}};
 }}
 
-function prepareFacetCanvas(canvas, facetCount, splitName = "", facets = null) {{
+function prepareFacetCanvas(canvas, panel, facetCount, splitName = "", facets = null) {{
   const count = Math.max(1, facetCount || 1);
   const protonValues = Array.isArray(facets) ? facets.map(facet => Math.round(Number(facet.value))) : [];
   const centeredCd = isProtonSectorSplit(splitName)
@@ -5916,7 +5949,12 @@ function prepareFacetCanvas(canvas, facetCount, splitName = "", facets = null) {
   const width = canvas.getBoundingClientRect().width;
   const columns = centeredCd ? 3 : count <= 2 ? count : width >= 900 ? 3 : 2;
   const rows = centeredCd ? 3 : Math.ceil(count / Math.max(1, columns));
-  canvas.style.height = `${{clamp(rows * 215 + 20, 420, 2800)}}px`;
+  const gapWidth = Math.max(0, columns - 1) * 16;
+  const cellWidth = Math.max(120, (width - gapWidth - 16) / Math.max(1, columns));
+  const plotWidth = Math.max(80, cellWidth - 60);
+  const cellHeight = plotWidth / canonicalPlotAspect(panel.plotAspect) + 64;
+  canvas.style.minHeight = "0";
+  canvas.style.height = `${{clamp(rows * cellHeight + Math.max(0, rows - 1) * 30 + 12, 320, 2800)}}px`;
 }}
 
 function panelArea(area, layout, index, colorScaleSlots = 0) {{
