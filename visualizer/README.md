@@ -108,7 +108,8 @@ Sample, selected-event, and embedded-event counts form a compact three-column
 toolbar tile in that order, while active-axis means are hidden from the default
 interface. Custom axis labels, bin counts, display minima and maxima, and
 tick-density controls form one panel-specific tile beneath the active quantity
-title. The display tile
+title. They use two aligned X/Y rows, with the vertical label pair immediately
+to the right of the tick-density pair. The display tile
 for log color, density, and color scale sits immediately to its right, followed
 by the reset/export tile. All three tiles are spaced and centered as a group
 above the canvas, with responsive wrapping when a pane is too narrow. Hover

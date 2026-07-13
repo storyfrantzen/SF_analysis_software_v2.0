@@ -1846,7 +1846,7 @@ canvas.fit-range-picker {{
 .count-stat strong {{ font-size: 12px; font-weight: 650; }}
 .canvas-toolbar {{
   display: grid;
-  grid-template-columns: minmax(390px, 1.55fr) repeat(2, minmax(220px, 1fr));
+  grid-template-columns: minmax(470px, 1.7fr) repeat(2, minmax(220px, 1fr));
   align-items: stretch;
   gap: 10px;
   width: min(100%, 1000px);
@@ -1862,7 +1862,7 @@ canvas.fit-range-picker {{
 }}
 .canvas-toolbar .axis-tile {{
   display: grid;
-  grid-template-columns: repeat(4, minmax(70px, 1fr));
+  grid-template-columns: repeat(5, minmax(70px, 1fr));
   gap: 4px 6px;
   padding: 6px;
 }}
@@ -1880,7 +1880,6 @@ canvas.fit-range-picker {{
 .axis-tile input[type="range"] {{
   padding-inline: 0;
 }}
-.axis-tile .axis-label-control {{ grid-column: span 2; }}
 .axis-range-pair {{ display: contents; }}
 .canvas-toolbar-slot {{
   width: 100%;
@@ -2359,13 +2358,13 @@ th:first-child, td:first-child {{ text-align: left; }}
         <label><span>X min</span><input id="xmin" type="number" step="any"></label>
         <label><span>X max</span><input id="xmax" type="number" step="any"></label>
         <label><span>X ticks <span id="xtickValue"></span></span><input id="xticks" type="range" min="1" max="40" step="0.5" value="6"></label>
+        <label class="axis-label-control"><span>X label</span><input id="xAxisLabel" type="text" placeholder="auto"></label>
         <label><span>Y bins</span><input id="ybins" type="number" min="5" max="300" value="80"></label>
         <span class="axis-range-pair" id="yrange">
           <label><span>Y min</span><input id="ymin" type="number" step="any"></label>
           <label><span>Y max</span><input id="ymax" type="number" step="any"></label>
         </span>
         <label><span>Y ticks <span id="ytickValue"></span></span><input id="yticks" type="range" min="1" max="40" step="0.5" value="6"></label>
-        <label class="axis-label-control"><span>X label</span><input id="xAxisLabel" type="text" placeholder="auto"></label>
         <label class="axis-label-control"><span>Y label</span><input id="yAxisLabel" type="text" placeholder="auto"></label>
       </div>
       <div class="toolbar-tile display-tile" aria-label="Display options">
