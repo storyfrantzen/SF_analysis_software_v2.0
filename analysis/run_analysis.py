@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
@@ -27,6 +28,31 @@ from eppi0.radiative_correction import compute_radiative_correction
 from eppi0.root_response import build_response_from_root
 from eppi0.harmonics import fit_grid
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes, subtract_feed_in
+
+
+C_RAD_DIAGNOSTIC_PLOT_RANGE = (0.0, 2.0)
+
+
+@dataclass(frozen=True)
+class GeneratorNormalizationRecord:
+    path: Path
+    sig_sum: float
+    events: float | None = None
+    ntries: float | None = None
+    sig_int: float | None = None
+    nevent: float | None = None
+    mcall_max: float | None = None
+    sigr_max: float | None = None
+    generator: str = ""
+    units: str = ""
+
+
+@dataclass(frozen=True)
+class GeneratorNormalizationSummary:
+    integrated_cross_section: float | None
+    records: tuple[GeneratorNormalizationRecord, ...] = ()
+    method: str = "none"
+    source: str = "none"
 
 
 def _npz_string(data, key: str, default: str) -> str:
@@ -90,6 +116,11 @@ def parser() -> argparse.ArgumentParser:
     radcorr.add_argument("--output", type=Path, required=True)
     radcorr.add_argument("--chunk-size", type=int, default=200_000)
     radcorr.add_argument("--max-events", type=int)
+    radcorr.add_argument(
+        "--max-files",
+        type=int,
+        help="Use at most this many LUND files from each input for quick smoke tests",
+    )
     radcorr.add_argument("--min-counts", type=int, default=5)
     radcorr.add_argument(
         "--progress-chunks",
@@ -131,6 +162,11 @@ def parser() -> argparse.ArgumentParser:
         "--radiative-normalization-file",
         type=Path,
         help="Radiative generator .norm or .sum file containing sig_sum",
+    )
+    radcorr.add_argument(
+        "--max-normalization-files",
+        type=int,
+        help="Use at most this many .norm/.sum sidecars from each normalization directory",
     )
 
     radcorr_plots = commands.add_parser(
@@ -240,6 +276,16 @@ def parser() -> argparse.ArgumentParser:
     acceptance = commands.add_parser("acceptance-plots", help="Plot acceptance diagnostics from response metadata")
     acceptance.add_argument("response_meta", type=Path)
     acceptance.add_argument("--output-dir", type=Path, required=True)
+    acceptance.add_argument(
+        "--response-matrix",
+        type=Path,
+        help="Optional response_matrix.npz used to add migration diagnostics from the response diagonal",
+    )
+    acceptance.add_argument(
+        "--include-purity",
+        action="store_true",
+        help="Include P_i purity in the overlaid acceptance histograms and phi PDF",
+    )
     acceptance.add_argument("--minimum-acceptance", type=float, default=0.005)
     acceptance.add_argument(
         "--phi-min-passing-bins",
@@ -247,6 +293,20 @@ def parser() -> argparse.ArgumentParser:
         default=1,
         help="Minimum number of above-threshold phi bins required to include a 3D bin in the phi PDF",
     )
+    response_plots = commands.add_parser(
+        "response-plots",
+        help="Visualize the sparse IBU response matrix and migration by kinematic variable",
+    )
+    response_plots.add_argument("response_matrix", type=Path)
+    response_plots.add_argument("response_meta", type=Path)
+    response_plots.add_argument("--output", type=Path, required=True)
+    response_plots.add_argument(
+        "--max-points",
+        type=int,
+        default=500_000,
+        help="Maximum nonzero entries to draw in the global sparse response image",
+    )
+    response_plots.add_argument("--seed", type=int, default=12345)
     return root
 
 
@@ -406,9 +466,24 @@ def command_unfold(args: argparse.Namespace) -> None:
         factor = binning.flatten_values(correction["C_rad"])
         factor_uncertainty = binning.flatten_values(correction["delta_C"])
         radiative_reliable = binning.flatten_values(correction["reliable"]).astype(bool)
-        radiative_valid = radiative_reliable & (efficiency > minimum_acceptance)
-        corrected_yield = np.where(radiative_valid, unfolded * factor, 0.0)
-        radiative_sigma = unfolded * factor_uncertainty
+        radiative_valid = (
+            radiative_reliable
+            & (efficiency > minimum_acceptance)
+            & np.isfinite(factor)
+            & (factor > 0.0)
+        )
+        corrected_yield = np.divide(
+            unfolded,
+            factor,
+            out=np.zeros_like(unfolded),
+            where=radiative_valid,
+        )
+        radiative_sigma = np.divide(
+            unfolded * factor_uncertainty,
+            factor * factor,
+            out=np.zeros_like(unfolded),
+            where=radiative_valid,
+        )
         corrected_uncertainty = np.where(
             radiative_valid, np.hypot(sigma_total, radiative_sigma), 0.0
         )
@@ -457,15 +532,17 @@ def command_unfold(args: argparse.Namespace) -> None:
 def command_radiative_correction(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     binning = from_config(args.config)
-    born_integrated_cross_section = _resolve_integrated_cross_section(
+    born_normalization = _resolve_normalization_summary(
         args.born_integrated_cross_section,
         args.born_normalization_file,
         "born",
+        max_files=args.max_normalization_files,
     )
-    radiative_integrated_cross_section = _resolve_integrated_cross_section(
+    radiative_normalization = _resolve_normalization_summary(
         args.radiative_integrated_cross_section,
         args.radiative_normalization_file,
         "radiative",
+        max_files=args.max_normalization_files,
     )
     result = compute_radiative_correction(
         args.born,
@@ -474,10 +551,11 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         beam_energy=float(config["beam_energy"]),
         chunk_size=args.chunk_size,
         max_events=args.max_events,
+        max_files=args.max_files,
         min_counts=args.min_counts,
         normalization_ratio=args.normalization_ratio,
-        born_integrated_cross_section=born_integrated_cross_section,
-        radiative_integrated_cross_section=radiative_integrated_cross_section,
+        born_integrated_cross_section=born_normalization.integrated_cross_section,
+        radiative_integrated_cross_section=radiative_normalization.integrated_cross_section,
         progress_chunks=args.progress_chunks,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -508,6 +586,11 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
             else result.radiative_integrated_cross_section
         ),
         min_counts=args.min_counts,
+        max_events=-1 if args.max_events is None else args.max_events,
+        max_files=-1 if args.max_files is None else args.max_files,
+        max_normalization_files=(
+            -1 if args.max_normalization_files is None else args.max_normalization_files
+        ),
         beam_energy=float(config["beam_energy"]),
         q2_edges=binning.q2_edges,
         xb_edges=binning.xb_edges,
@@ -532,6 +615,8 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
             result.radiative.generated_eprime_min, result.radiative.generated_eprime_max,
         ]),
         phi_convention="electron-proton trento plane",
+        **_normalization_npz_fields("born", born_normalization),
+        **_normalization_npz_fields("radiative", radiative_normalization),
     )
     if args.diagnostic_pdf:
         pages = _plot_radiative_correction_diagnostics(
@@ -586,6 +671,8 @@ def _resolve_integrated_cross_section(
     value: float | None,
     path: Path | None,
     label: str,
+    *,
+    max_files: int | None = None,
 ) -> float | None:
     if value is not None and path is not None:
         raise ValueError(
@@ -594,45 +681,118 @@ def _resolve_integrated_cross_section(
         )
     if path is None:
         return value
-    return _read_generator_integrated_cross_section(path)
+    return _read_generator_integrated_cross_section(path, max_files=max_files)
 
 
-def _read_generator_integrated_cross_section(path: Path) -> float:
+def _resolve_normalization_summary(
+    value: float | None,
+    path: Path | None,
+    label: str,
+    *,
+    max_files: int | None = None,
+) -> GeneratorNormalizationSummary:
+    if value is not None and path is not None:
+        raise ValueError(
+            f"Use either --{label}-integrated-cross-section or "
+            f"--{label}-normalization-file, not both"
+        )
+    if path is not None:
+        return _read_generator_normalization_summary(path, max_files=max_files)
+    if value is None:
+        return GeneratorNormalizationSummary(None)
+    value = _positive_finite_float(str(value), f"{label}_integrated_cross_section", Path("<manual>"))
+    return GeneratorNormalizationSummary(
+        value,
+        method="manual",
+        source="manual",
+    )
+
+
+def _read_generator_integrated_cross_section(path: Path, *, max_files: int | None = None) -> float:
+    summary = _read_generator_normalization_summary(path, max_files=max_files)
+    if summary.integrated_cross_section is None:
+        raise ValueError(f"No integrated cross section found in {path}")
+    return summary.integrated_cross_section
+
+
+def _read_generator_normalization_summary(
+    path: Path,
+    *,
+    max_files: int | None = None,
+) -> GeneratorNormalizationSummary:
+    if max_files is not None and max_files <= 0:
+        raise ValueError("--max-normalization-files must be positive when provided")
     if path.is_dir():
-        norm_files = [
-            item for item in sorted(path.rglob("*"))
-            if item.is_file() and item.suffix.lower() == ".norm"
-        ]
-        sum_files = [
-            item for item in sorted(path.rglob("*"))
-            if item.is_file() and item.suffix.lower() == ".sum"
-        ]
+        norm_files = _normalization_sidecar_files(path, ".norm", max_files=max_files)
+        sum_files = [] if norm_files else _normalization_sidecar_files(path, ".sum", max_files=max_files)
         files = norm_files or sum_files
         if not files:
             raise ValueError(f"No .norm or .sum files found under {path}")
         records = [_read_generator_normalization_record(item) for item in files]
-        values = np.array([value for value, _weight in records], dtype=float)
-        weights = [weight for _value, weight in records]
+        values = np.array([record.sig_sum for record in records], dtype=float)
+        weights = [record.events for record in records]
         have_weight = [weight is not None for weight in weights]
         if all(have_weight):
-            return float(np.average(values, weights=np.array(weights, dtype=float)))
+            return GeneratorNormalizationSummary(
+                float(np.average(values, weights=np.array(weights, dtype=float))),
+                records=tuple(records),
+                method="events_weighted_mean_sig_sum",
+                source=".norm_directory" if norm_files else ".sum_directory",
+            )
         if any(have_weight):
             raise ValueError(
                 f"Mixed weighted and unweighted normalization files under {path}; "
                 "use a directory containing only .norm files with events metadata "
                 "or only legacy .sum files"
             )
-        return float(np.mean(values))
+        return GeneratorNormalizationSummary(
+            float(np.mean(values)),
+            records=tuple(records),
+            method="unweighted_mean_sig_sum",
+            source=".norm_directory" if norm_files else ".sum_directory",
+        )
 
-    value, _weight = _read_generator_normalization_record(path)
-    return value
+    record = _read_generator_normalization_record(path)
+    return GeneratorNormalizationSummary(
+        record.sig_sum,
+        records=(record,),
+        method="single_file_sig_sum",
+        source=path.suffix.lower() or "file",
+    )
 
 
-def _read_generator_normalization_record(path: Path) -> tuple[float, float | None]:
+def _normalization_sidecar_files(path: Path, suffix: str, *, max_files: int | None) -> list[Path]:
+    pattern = f"*{suffix}"
+    if max_files is None:
+        return [
+            item for item in sorted(path.rglob(pattern))
+            if item.is_file() and item.suffix.lower() == suffix
+        ]
+
+    files: list[Path] = []
+    for item in path.rglob(pattern):
+        if item.is_file() and item.suffix.lower() == suffix:
+            files.append(item)
+            if len(files) >= max_files:
+                break
+    return files
+
+
+def _read_generator_normalization_record(path: Path) -> GeneratorNormalizationRecord:
     text = path.read_text(encoding="utf-8", errors="replace")
-    value = _parse_generator_integrated_cross_section(text, path)
-    weight = _parse_generator_events(text, path)
-    return value, weight
+    fields = _parse_generator_key_values(text)
+    return GeneratorNormalizationRecord(
+        path=path,
+        sig_sum=_parse_generator_integrated_cross_section(text, path),
+        events=_optional_positive_generator_float(fields, "events", path),
+        ntries=_optional_positive_generator_float(fields, "ntries", path),
+        sig_int=_optional_positive_generator_float(fields, "sig_int", path),
+        nevent=_optional_positive_generator_float(fields, "nevent", path),
+        mcall_max=_optional_positive_generator_float(fields, "mcall_max", path),
+        sigr_max=_optional_positive_generator_float(fields, "sigr_max", path),
+        generator=fields.get("generator", ""),
+        units=fields.get("integrated_cross_section_units", ""),
+    )
 
 
 def _parse_generator_integrated_cross_section(text: str, path: Path) -> float:
@@ -654,6 +814,24 @@ def _parse_generator_integrated_cross_section(text: str, path: Path) -> float:
     raise ValueError(f"Could not find sig_sum integrated cross section in {path}")
 
 
+def _parse_generator_key_values(text: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for match in re.finditer(r"(?im)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$", text):
+        fields[match.group(1).lower()] = match.group(2).strip()
+    return fields
+
+
+def _optional_positive_generator_float(
+    fields: dict[str, str],
+    key: str,
+    path: Path,
+) -> float | None:
+    value = fields.get(key)
+    if value is None:
+        return None
+    return _positive_finite_float(value, key, path)
+
+
 def _parse_generator_events(text: str, path: Path) -> float | None:
     number = r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][-+]?\d+)?)"
     event_match = re.search(r"(?im)^\s*events\s*=\s*" + number + r"\s*$", text)
@@ -667,6 +845,38 @@ def _positive_finite_float(value: str, label: str, path: Path) -> float:
     if not np.isfinite(parsed) or parsed <= 0.0:
         raise ValueError(f"{label} in {path} must be positive and finite")
     return parsed
+
+
+def _normalization_npz_fields(
+    label: str,
+    summary: GeneratorNormalizationSummary,
+) -> dict[str, np.ndarray]:
+    records = summary.records
+
+    def floats(name: str) -> np.ndarray:
+        return np.asarray(
+            [
+                getattr(record, name) if getattr(record, name) is not None else np.nan
+                for record in records
+            ],
+            dtype=float,
+        )
+
+    return {
+        f"{label}_normalization_source": np.asarray(summary.source),
+        f"{label}_normalization_method": np.asarray(summary.method),
+        f"{label}_normalization_record_count": np.asarray(len(records), dtype=np.int64),
+        f"{label}_normalization_files": np.asarray([str(record.path) for record in records]),
+        f"{label}_normalization_generators": np.asarray([record.generator for record in records]),
+        f"{label}_normalization_units": np.asarray([record.units for record in records]),
+        f"{label}_normalization_sig_sum": floats("sig_sum"),
+        f"{label}_normalization_sig_int": floats("sig_int"),
+        f"{label}_normalization_events": floats("events"),
+        f"{label}_normalization_ntries": floats("ntries"),
+        f"{label}_normalization_nevent": floats("nevent"),
+        f"{label}_normalization_mcall_max": floats("mcall_max"),
+        f"{label}_normalization_sigr_max": floats("sigr_max"),
+    }
 
 
 def command_radiative_correction_plots(args: argparse.Namespace) -> None:
@@ -772,7 +982,10 @@ def _plot_radiative_correction_diagnostics(
         _plot_radcorr_histograms(pdf, c_rad, delta_c, reliable)
         pages += 1
 
-        _plot_radcorr_reliable_fraction_heatmap(pdf, reliable, q2_edges, xb_edges)
+        _plot_radcorr_q2_xb_projection(pdf, c_rad, reliable, q2_edges, xb_edges)
+        pages += 1
+
+        _plot_radcorr_t_phi_projection(pdf, c_rad, reliable, t_edges, phi_edges)
         pages += 1
 
         for iq2 in range(c_rad.shape[0]):
@@ -944,9 +1157,17 @@ def _plot_radcorr_histograms(pdf, c_rad, delta_c, reliable) -> None:
     good = reliable & np.isfinite(c_rad) & np.isfinite(delta_c)
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.8))
     if np.any(good):
-        axes[0].hist(c_rad[good], bins=80, histtype="stepfilled", color="#4c78a8", alpha=0.75)
+        axes[0].hist(
+            c_rad[good],
+            bins=80,
+            range=C_RAD_DIAGNOSTIC_PLOT_RANGE,
+            histtype="stepfilled",
+            color="#4c78a8",
+            alpha=0.75,
+        )
         axes[1].hist(delta_c[good], bins=80, histtype="stepfilled", color="#f58518", alpha=0.75)
     axes[0].axvline(1.0, color="black", linestyle="--", linewidth=1.0)
+    axes[0].set_xlim(*C_RAD_DIAGNOSTIC_PLOT_RANGE)
     axes[0].set_xlabel("C_rad")
     axes[0].set_ylabel("Reliable phi bins")
     axes[0].set_title("C_rad distribution")
@@ -959,28 +1180,151 @@ def _plot_radcorr_histograms(pdf, c_rad, delta_c, reliable) -> None:
     plt.close(fig)
 
 
-def _plot_radcorr_reliable_fraction_heatmap(pdf, reliable, q2_edges, xb_edges) -> None:
+def _plot_radcorr_q2_xb_projection(pdf, c_rad, reliable, q2_edges, xb_edges) -> None:
+    median = _nanmedian_where(c_rad, reliable, axis=(2, 3))
+    fraction = np.mean(reliable, axis=(2, 3))
+    _plot_radcorr_projection_page(
+        pdf,
+        median,
+        fraction,
+        x_edges=xb_edges,
+        y_edges=q2_edges,
+        x_label="xB",
+        y_label="Q2 [GeV^2]",
+        title="Radiative correction coverage in Q2 and xB",
+    )
+
+
+def _plot_radcorr_t_phi_projection(pdf, c_rad, reliable, t_edges, phi_edges) -> None:
+    median = _nanmedian_where(c_rad, reliable, axis=(0, 1))
+    fraction = np.mean(reliable, axis=(0, 1))
+    _plot_radcorr_projection_page(
+        pdf,
+        median,
+        fraction,
+        x_edges=phi_edges,
+        y_edges=t_edges,
+        x_label="phi [deg]",
+        y_label="-t [GeV^2]",
+        title="Radiative correction coverage in phi and -t",
+    )
+
+
+def _plot_radcorr_projection_page(
+    pdf,
+    median_c_rad,
+    reliable_fraction,
+    *,
+    x_edges,
+    y_edges,
+    x_label: str,
+    y_label: str,
+    title: str,
+) -> None:
     _prepare_matplotlib_cache()
     import matplotlib.pyplot as plt
 
-    fraction = np.mean(reliable, axis=(2, 3))
-    fig, ax = plt.subplots(figsize=(9, 6))
-    image = ax.imshow(
-        fraction,
-        origin="lower",
-        aspect="auto",
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.8), constrained_layout=True)
+    c_image = axes[0].pcolormesh(
+        x_edges,
+        y_edges,
+        median_c_rad,
+        vmin=C_RAD_DIAGNOSTIC_PLOT_RANGE[0],
+        vmax=C_RAD_DIAGNOSTIC_PLOT_RANGE[1],
+        cmap="viridis",
+        shading="flat",
+    )
+    fig.colorbar(c_image, ax=axes[0], label="Median reliable C_rad (clipped 0-2)")
+    axes[0].set_aspect("auto")
+    axes[0].set_title("Median C_rad")
+    axes[0].set_xlabel(x_label)
+    axes[0].set_ylabel(y_label)
+    _annotate_radcorr_projection(
+        axes[0],
+        median_c_rad,
+        x_edges,
+        y_edges,
+        value_kind="c_rad",
+    )
+
+    f_image = axes[1].pcolormesh(
+        x_edges,
+        y_edges,
+        reliable_fraction,
         vmin=0.0,
         vmax=1.0,
-        extent=[xb_edges[0], xb_edges[-1], q2_edges[0], q2_edges[-1]],
-        cmap="viridis",
+        cmap="magma",
+        shading="flat",
     )
-    fig.colorbar(image, ax=ax, label="Reliable fraction across -t and phi")
-    ax.set_xlabel("xB")
-    ax.set_ylabel("Q2 [GeV^2]")
-    ax.set_title("Reliable-bin coverage by Q2 and xB")
-    fig.tight_layout()
+    fig.colorbar(f_image, ax=axes[1], label="Reliable fraction")
+    axes[1].set_aspect("auto")
+    axes[1].set_title("Reliable-bin fraction")
+    axes[1].set_xlabel(x_label)
+    axes[1].set_ylabel(y_label)
+    _annotate_radcorr_projection(
+        axes[1],
+        reliable_fraction,
+        x_edges,
+        y_edges,
+        value_kind="fraction",
+    )
+
+    fig.suptitle(title)
     pdf.savefig(fig)
     plt.close(fig)
+
+
+def _annotate_radcorr_projection(ax, values, x_edges, y_edges, *, value_kind: str) -> None:
+    values = np.asarray(values, dtype=float)
+    x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+    rows, cols = values.shape
+    fontsize = 6.5 if rows * cols <= 100 else 4.8
+    for iy, ix in np.ndindex(values.shape):
+        value = values[iy, ix]
+        if not np.isfinite(value) or value <= 0.0:
+            continue
+        label = _format_projection_value(value, value_kind)
+        color = _projection_text_color(value, value_kind)
+        ax.text(
+            x_centers[ix],
+            y_centers[iy],
+            label,
+            ha="center",
+            va="center",
+            fontsize=fontsize,
+            color=color,
+        )
+
+
+def _format_projection_value(value: float, value_kind: str) -> str:
+    if value_kind == "fraction":
+        return f"{value:.2f}"
+    if abs(value) < 10.0:
+        return f"{value:.2f}"
+    if abs(value) < 100.0:
+        return f"{value:.1f}"
+    return f"{value:.0f}"
+
+
+def _projection_text_color(value: float, value_kind: str) -> str:
+    if not np.isfinite(value):
+        return "#555555"
+    if value_kind == "fraction":
+        return "white" if value < 0.55 else "black"
+    clipped = min(max(value, C_RAD_DIAGNOSTIC_PLOT_RANGE[0]), C_RAD_DIAGNOSTIC_PLOT_RANGE[1])
+    midpoint = 0.5 * sum(C_RAD_DIAGNOSTIC_PLOT_RANGE)
+    return "white" if clipped < midpoint else "black"
+
+
+def _nanmedian_where(values, mask, axis):
+    import warnings
+
+    masked = np.where(mask & np.isfinite(values), values, np.nan)
+    with np.errstate(all="ignore"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            return np.nanmedian(masked, axis=axis)
 
 
 def _plot_radcorr_phi_page(
@@ -1523,6 +1867,7 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
     metadata = np.load(args.response_meta, allow_pickle=False)
     efficiency = np.asarray(metadata["efficiency"], dtype=float)
     truth = np.asarray(metadata["truth_total"], dtype=float)
+    reconstructed = np.asarray(metadata["reconstructed_total"], dtype=float)
     q2_edges = np.asarray(metadata["q2_edges"], dtype=float)
     xb_edges = np.asarray(metadata["xb_edges"], dtype=float)
     t_edges = np.asarray(metadata["t_edges"], dtype=float)
@@ -1533,22 +1878,56 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
         t_edges.size - 1,
         phi_edges.size - 1,
     )
-    if efficiency.size != int(np.prod(shape)) or truth.size != efficiency.size:
+    if (
+        efficiency.size != int(np.prod(shape))
+        or truth.size != efficiency.size
+        or reconstructed.size != efficiency.size
+    ):
         raise ValueError("response metadata arrays do not match bin-edge dimensions")
+
+    response_matrix = args.response_matrix
+    if response_matrix is None:
+        candidate = args.response_meta.parent / "response_matrix.npz"
+        response_matrix = candidate if candidate.exists() else None
+    same_bin_efficiency = _response_diagonal(response_matrix, efficiency.size) if response_matrix else None
 
     eff4 = _unflatten_response(efficiency, shape)
     truth4 = _unflatten_response(truth, shape)
+    rec4 = _unflatten_response(reconstructed, shape)
+    acceptance4 = np.divide(
+        rec4,
+        truth4,
+        out=np.zeros_like(rec4),
+        where=truth4 > 0,
+    )
+    same_bin4 = (
+        _unflatten_response(same_bin_efficiency, shape)
+        if same_bin_efficiency is not None else None
+    )
+    purity4 = None
+    if args.include_purity and same_bin4 is not None:
+        same_counts4 = same_bin4 * truth4
+        purity4 = np.divide(
+            same_counts4,
+            rec4,
+            out=np.zeros_like(same_counts4),
+            where=rec4 > 0,
+        )
     populated = truth4 > 0
     zero = populated & (eff4 == 0)
     low = populated & (eff4 > 0) & (eff4 < args.minimum_acceptance)
     passing = populated & (eff4 >= args.minimum_acceptance)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    populated_eff = eff4[populated]
-    positive_eff = populated_eff[populated_eff > 0]
     _plot_acceptance_histograms(
-        populated_eff,
-        positive_eff,
+        {
+            "A_i bin-by-bin acceptance": acceptance4[populated],
+            "epsilon_i IBU total efficiency": eff4[populated],
+            **({
+                "E_i same-bin efficiency": same_bin4[populated],
+            } if same_bin4 is not None else {}),
+            **({"P_i purity": purity4[populated]} if purity4 is not None else {}),
+        },
         args.minimum_acceptance,
         args.output_dir,
     )
@@ -1603,6 +1982,9 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
     phi_pages = _plot_acceptance_vs_phi(
         eff4,
         truth4,
+        acceptance4,
+        purity4,
+        same_bin4,
         q2_edges,
         xb_edges,
         t_edges,
@@ -1618,7 +2000,91 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
     print(f"Positive sub-threshold bins: {int(low.sum())}")
     print(f"Passing bins: {int(passing.sum())}")
     print(f"3D phi pages: {phi_pages}")
+    if response_matrix:
+        print(f"Migration diagnostic source: {response_matrix}")
+        if not args.include_purity:
+            print("Purity overlay: disabled; pass --include-purity to show P_i")
+    else:
+        print("Migration diagnostic source: unavailable; pass --response-matrix to include E_i/P_i")
     print(f"Wrote acceptance plots under {args.output_dir}")
+
+
+def command_response_plots(args: argparse.Namespace) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    metadata = np.load(args.response_meta, allow_pickle=False)
+    matrix = load_npz(args.response_matrix).tocsr()
+    q2_edges = np.asarray(metadata["q2_edges"], dtype=float)
+    xb_edges = np.asarray(metadata["xb_edges"], dtype=float)
+    t_edges = np.asarray(metadata["t_edges"], dtype=float)
+    phi_edges = np.asarray(metadata["phi_edges"], dtype=float)
+    shape = (
+        q2_edges.size - 1,
+        xb_edges.size - 1,
+        t_edges.size - 1,
+        phi_edges.size - 1,
+    )
+    number_of_bins = int(np.prod(shape))
+    if matrix.shape[0] != number_of_bins or matrix.shape[1] < number_of_bins:
+        raise ValueError(
+            f"response matrix shape {matrix.shape} does not match {number_of_bins} analysis bins"
+        )
+    core = matrix[:, :number_of_bins].tocoo()
+    efficiency = np.asarray(metadata["efficiency"], dtype=float)
+    truth = np.asarray(metadata["truth_total"], dtype=float)
+    if efficiency.size != number_of_bins or truth.size != number_of_bins:
+        raise ValueError("response metadata arrays do not match bin-edge dimensions")
+
+    rec_indices = _flat_indices_for_shape(core.row, shape)
+    truth_indices = _flat_indices_for_shape(core.col, shape)
+    migration = _response_migration_diagnostics(
+        core,
+        rec_indices,
+        truth_indices,
+        shape,
+        efficiency,
+    )
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with PdfPages(args.output) as pdf:
+        _plot_response_summary_page(
+            pdf,
+            args.response_matrix,
+            args.response_meta,
+            matrix,
+            core,
+            efficiency,
+            truth,
+        )
+        _plot_response_sparse_global_page(pdf, core, number_of_bins, args.max_points, args.seed)
+        _plot_response_variable_matrices_page(pdf, migration["collapsed_matrices"], shape)
+        _plot_response_variable_histograms_page(
+            pdf,
+            efficiency,
+            migration["same_bin_probability"],
+            migration["different_probability"],
+            migration["mean_abs_delta"],
+        )
+        _plot_response_projection_page(
+            pdf,
+            migration["different_probability"],
+            shape,
+            q2_edges,
+            xb_edges,
+            projection="q2_xb",
+        )
+        _plot_response_projection_page(
+            pdf,
+            migration["different_probability"],
+            shape,
+            t_edges,
+            phi_edges,
+            projection="t_phi",
+        )
+
+    print(f"Wrote response diagnostics PDF: {args.output}")
 
 
 def _load_mask(path: Path, expected: int) -> np.ndarray:
@@ -1633,6 +2099,336 @@ def _unflatten_response(values: np.ndarray, shape: tuple[int, int, int, int]) ->
     return values.reshape(nxb, nq2, nphi, nt).transpose(1, 0, 3, 2)
 
 
+def _response_diagonal(response_matrix: Path, number_of_bins: int) -> np.ndarray:
+    matrix = load_npz(response_matrix).tocsr()
+    if matrix.shape[0] != number_of_bins or matrix.shape[1] < number_of_bins:
+        raise ValueError(
+            f"response matrix shape {matrix.shape} does not match {number_of_bins} analysis bins"
+        )
+    return matrix[:, :number_of_bins].diagonal()
+
+
+RESPONSE_VARIABLES = ("Q2", "xB", "-t", "phi")
+RESPONSE_LABEL_CELL_LIMIT = 180
+
+
+def _flat_indices_for_shape(flat: np.ndarray, shape: tuple[int, int, int, int]) -> tuple[np.ndarray, ...]:
+    nq2, nxb, nt, nphi = shape
+    flat = np.asarray(flat, dtype=np.int64)
+    it = flat % nt
+    tmp = flat // nt
+    iphi = tmp % nphi
+    tmp = tmp // nphi
+    iq2 = tmp % nq2
+    ixb = tmp // nq2
+    return iq2, ixb, it, iphi
+
+
+def _response_migration_diagnostics(
+    core,
+    rec_indices: tuple[np.ndarray, ...],
+    truth_indices: tuple[np.ndarray, ...],
+    shape: tuple[int, int, int, int],
+    efficiency: np.ndarray,
+) -> dict[str, np.ndarray | list[np.ndarray]]:
+    number_of_bins = int(np.prod(shape))
+    data = np.asarray(core.data, dtype=float)
+    columns = np.asarray(core.col, dtype=np.int64)
+
+    same_all = np.ones(data.size, dtype=bool)
+    for rec, truth in zip(rec_indices, truth_indices):
+        same_all &= rec == truth
+    same_bin_probability = np.bincount(
+        columns[same_all],
+        weights=data[same_all],
+        minlength=number_of_bins,
+    ).astype(float)
+
+    different_probability = np.zeros((4, number_of_bins), dtype=float)
+    mean_abs_delta = np.zeros((4, number_of_bins), dtype=float)
+    collapsed_matrices: list[np.ndarray] = []
+    for ivar, (rec, truth) in enumerate(zip(rec_indices, truth_indices)):
+        delta = np.abs(rec - truth).astype(float)
+        different = delta > 0
+        different_probability[ivar] = np.bincount(
+            columns[different],
+            weights=data[different],
+            minlength=number_of_bins,
+        ).astype(float)
+        delta_sum = np.bincount(columns, weights=data * delta, minlength=number_of_bins).astype(float)
+        mean_abs_delta[ivar] = np.divide(
+            delta_sum,
+            efficiency,
+            out=np.zeros(number_of_bins, dtype=float),
+            where=efficiency > 0,
+        )
+        size = shape[ivar]
+        collapsed = np.zeros((size, size), dtype=float)
+        np.add.at(collapsed, (rec, truth), data)
+        truth_totals = collapsed.sum(axis=0)
+        collapsed = np.divide(
+            collapsed,
+            truth_totals[np.newaxis, :],
+            out=np.zeros_like(collapsed),
+            where=truth_totals[np.newaxis, :] > 0,
+        )
+        collapsed_matrices.append(collapsed)
+
+    return {
+        "same_bin_probability": same_bin_probability,
+        "different_probability": different_probability,
+        "mean_abs_delta": mean_abs_delta,
+        "collapsed_matrices": collapsed_matrices,
+    }
+
+
+def _positive_heatmap_scale(values: np.ndarray, percentile: float = 95.0) -> float:
+    positive = np.asarray(values, dtype=float)
+    positive = positive[np.isfinite(positive) & (positive > 0.0)]
+    if positive.size == 0:
+        return 1.0
+    vmax = float(np.nanpercentile(positive, percentile))
+    if not np.isfinite(vmax) or vmax <= 0.0:
+        vmax = float(np.nanmax(positive))
+    return max(vmax, 1.0e-12)
+
+
+def _heatmap_label(value: float) -> str:
+    if value >= 0.1:
+        return f"{value:.2f}"
+    if value >= 0.01:
+        return f"{value:.3f}"
+    return f"{value:.1e}"
+
+
+def _annotate_heatmap_cells(
+    ax,
+    values: np.ndarray,
+    x_centers: np.ndarray,
+    y_centers: np.ndarray,
+    *,
+    max_cells: int = RESPONSE_LABEL_CELL_LIMIT,
+) -> None:
+    if values.size > max_cells:
+        return
+    for iy, y in enumerate(y_centers):
+        for ix, x in enumerate(x_centers):
+            value = float(values[iy, ix])
+            if not np.isfinite(value) or value <= 0.0:
+                continue
+            ax.text(
+                x,
+                y,
+                _heatmap_label(value),
+                ha="center",
+                va="center",
+                fontsize=6,
+                color="white" if value < 0.55 else "black",
+            )
+
+
+def _plot_response_summary_page(
+    pdf,
+    response_matrix: Path,
+    response_meta: Path,
+    matrix,
+    core,
+    efficiency: np.ndarray,
+    truth: np.ndarray,
+) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    populated = truth > 0
+    lines = [
+        "Response-matrix diagnostics",
+        "",
+        f"Response matrix: {response_matrix}",
+        f"Response metadata: {response_meta}",
+        f"Matrix shape: {matrix.shape}",
+        f"Core nonzero entries: {core.nnz}",
+        f"Analysis bins: {efficiency.size}",
+        f"Truth-populated bins: {int(np.count_nonzero(populated))}",
+        f"Mean efficiency, populated: {np.nanmean(efficiency[populated]) if np.any(populated) else np.nan:.8g}",
+        f"Median efficiency, populated: {np.nanmedian(efficiency[populated]) if np.any(populated) else np.nan:.8g}",
+        f"Max efficiency: {np.nanmax(efficiency) if efficiency.size else np.nan:.8g}",
+        "",
+        "Rows are reconstructed bins; columns are truth bins.",
+        "Each core column sums to the IBU reconstruction efficiency for that truth bin.",
+        "Collapsed variable matrices are column-normalized within the reconstructed sample.",
+    ]
+    fig = plt.figure(figsize=(11, 8.5))
+    fig.text(0.06, 0.94, "\n".join(lines), va="top", ha="left", family="monospace", fontsize=11)
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _plot_response_sparse_global_page(pdf, core, number_of_bins: int, max_points: int, seed: int) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    if max_points <= 0:
+        raise ValueError("--max-points must be positive")
+    rng = np.random.default_rng(seed)
+    rows = np.asarray(core.row)
+    cols = np.asarray(core.col)
+    values = np.asarray(core.data, dtype=float)
+    if values.size > max_points:
+        choice = rng.choice(values.size, size=max_points, replace=False)
+        rows = rows[choice]
+        cols = cols[choice]
+        values = values[choice]
+        sampled = True
+    else:
+        sampled = False
+    colors = np.log10(np.clip(values, 1.0e-12, None))
+    fig, ax = plt.subplots(figsize=(8.5, 8.0))
+    scatter = ax.scatter(cols, rows, c=colors, s=0.15, marker="s", linewidths=0, cmap="viridis")
+    fig.colorbar(scatter, ax=ax, label="log10 R[reco, truth]")
+    ax.plot([0, number_of_bins], [0, number_of_bins], color="white", linewidth=0.6, alpha=0.7)
+    ax.set_xlim(0, number_of_bins)
+    ax.set_ylim(number_of_bins, 0)
+    ax.set_xlabel("Truth flat bin")
+    ax.set_ylabel("Reconstructed flat bin")
+    title = "Sparse global response matrix"
+    if sampled:
+        title += f" ({max_points:g} sampled nonzeros)"
+    ax.set_title(title)
+    fig.tight_layout()
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _plot_response_variable_matrices_page(pdf, matrices: list[np.ndarray], shape: tuple[int, ...]) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(2, 2, figsize=(11, 8.5), constrained_layout=True)
+    for ax, label, matrix, size in zip(axes.ravel(), RESPONSE_VARIABLES, matrices, shape):
+        shown = np.where(matrix > 0, matrix, np.nan)
+        image = ax.imshow(shown, origin="lower", aspect="auto", vmin=0.0, vmax=1.0, cmap="viridis")
+        fig.colorbar(image, ax=ax, label="P(reco bin | truth bin, reconstructed)")
+        _annotate_heatmap_cells(
+            ax,
+            matrix,
+            np.arange(matrix.shape[1]),
+            np.arange(matrix.shape[0]),
+            max_cells=RESPONSE_LABEL_CELL_LIMIT,
+        )
+        ax.plot([-0.5, size - 0.5], [-0.5, size - 0.5], color="white", linewidth=0.8, alpha=0.8)
+        ax.set_xlabel(f"Truth {label} bin")
+        ax.set_ylabel(f"Reco {label} bin")
+        ax.set_title(f"Collapsed migration in {label}")
+    fig.suptitle("Variable-wise collapsed response matrices")
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _plot_response_variable_histograms_page(
+    pdf,
+    efficiency: np.ndarray,
+    same_bin_probability: np.ndarray,
+    different_probability: np.ndarray,
+    mean_abs_delta: np.ndarray,
+) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    populated = efficiency > 0
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.8), constrained_layout=True)
+    axes[0].hist(efficiency[populated], bins=80, histtype="step", linewidth=1.5, label="epsilon total")
+    axes[0].hist(
+        same_bin_probability[populated],
+        bins=80,
+        histtype="step",
+        linewidth=1.5,
+        label="same 4D bin",
+    )
+    for ivar, label in enumerate(RESPONSE_VARIABLES):
+        axes[0].hist(
+            different_probability[ivar, populated],
+            bins=80,
+            histtype="step",
+            linewidth=1.2,
+            label=f"different {label}",
+        )
+    axes[0].set_xlabel("Unconditional response probability per truth bin")
+    axes[0].set_ylabel("Truth bins")
+    axes[0].set_title("Migration probability distributions")
+    axes[0].legend(fontsize="x-small")
+    axes[0].grid(True, alpha=0.25)
+
+    means = [
+        np.nanmean(mean_abs_delta[ivar, populated])
+        if np.any(populated) else np.nan
+        for ivar in range(len(RESPONSE_VARIABLES))
+    ]
+    axes[1].bar(RESPONSE_VARIABLES, means, color="#4c78a8")
+    axes[1].set_ylabel("Mean |reco index - truth index| among reconstructed")
+    axes[1].set_title("Average migration distance by variable")
+    axes[1].grid(True, axis="y", alpha=0.25)
+    for index, value in enumerate(means):
+        axes[1].text(index, value, f"{value:.3g}", ha="center", va="bottom", fontsize=9)
+
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _plot_response_projection_page(
+    pdf,
+    different_probability: np.ndarray,
+    shape: tuple[int, int, int, int],
+    y_edges: np.ndarray,
+    x_edges: np.ndarray,
+    *,
+    projection: str,
+) -> None:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    if projection == "q2_xb":
+        title = "Median per-truth-bin migration probability in Q2 and xB"
+        x_label, y_label = "xB", "Q2 [GeV^2]"
+        axes_to_reduce = (2, 3)
+    elif projection == "t_phi":
+        title = "Median per-truth-bin migration probability in phi and -t"
+        x_label, y_label = "phi [deg]", "-t [GeV^2]"
+        axes_to_reduce = (0, 1)
+    else:
+        raise ValueError(f"unknown response projection: {projection}")
+
+    fig, axes = plt.subplots(2, 2, figsize=(11, 8.5), constrained_layout=True)
+    for ax, label, values in zip(axes.ravel(), RESPONSE_VARIABLES, different_probability):
+        values4 = _unflatten_response(values, shape)
+        projected = _nanmedian_where(values4, values4 > 0.0, axis=axes_to_reduce)
+        vmax = _positive_heatmap_scale(projected)
+        cmap = plt.get_cmap("magma").copy()
+        cmap.set_bad("#eeeeee")
+        image = ax.pcolormesh(
+            x_edges,
+            y_edges,
+            np.ma.masked_invalid(projected),
+            vmin=0.0,
+            vmax=vmax,
+            cmap=cmap,
+            shading="flat",
+        )
+        fig.colorbar(image, ax=ax, label=f"P(reco {label} != truth {label})")
+        _annotate_heatmap_cells(
+            ax,
+            projected,
+            0.5 * (x_edges[:-1] + x_edges[1:]),
+            0.5 * (y_edges[:-1] + y_edges[1:]),
+            max_cells=RESPONSE_LABEL_CELL_LIMIT,
+        )
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(y_label)
+        ax.set_title(f"Migration in {label} (scale max {vmax:.3g})")
+    fig.suptitle(title)
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
 def _edge_labels(edges: np.ndarray) -> list[str]:
     return [f"{lo:g}-{hi:g}" for lo, hi in zip(edges[:-1], edges[1:])]
 
@@ -1644,36 +2440,51 @@ def _pass_fraction(populated: np.ndarray, passing: np.ndarray, axes: tuple[int, 
 
 
 def _plot_acceptance_histograms(
-    populated_eff: np.ndarray,
-    positive_eff: np.ndarray,
+    values_by_label: dict[str, np.ndarray],
     minimum_acceptance: float,
     output_dir: Path,
 ) -> None:
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(populated_eff, bins=100, histtype="step", linewidth=1.5)
+    for label, values in values_by_label.items():
+        finite = np.asarray(values, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        if finite.size == 0:
+            continue
+        ax.hist(finite, bins=100, histtype="step", linewidth=1.5, label=label)
     ax.axvline(minimum_acceptance, color="red", linestyle="--",
                label=f"minimum_acceptance = {minimum_acceptance:g}")
-    ax.set_xlabel("Acceptance / efficiency")
+    ax.set_xlabel("Acceptance-like quantity")
     ax.set_ylabel("Number of 4D bins")
-    ax.set_title("Acceptance over truth-populated 4D bins")
+    ax.set_title("Acceptance diagnostics over truth-populated 4D bins")
     ax.legend()
     fig.tight_layout()
     fig.savefig(output_dir / "acceptance_hist.png", dpi=200)
     plt.close(fig)
 
-    if positive_eff.size == 0:
+    positive_sets = {}
+    for label, values in values_by_label.items():
+        finite = np.asarray(values, dtype=float)
+        finite = finite[np.isfinite(finite) & (finite > 0)]
+        if finite.size > 0:
+            positive_sets[label] = finite
+    if not positive_sets:
+        return
+    positive_min = min(values.min() for values in positive_sets.values())
+    positive_max = max(values.max() for values in positive_sets.values())
+    if positive_min <= 0 or positive_max <= positive_min:
         return
     fig, ax = plt.subplots(figsize=(8, 5))
-    bins = np.logspace(np.log10(positive_eff.min()), np.log10(positive_eff.max()), 100)
-    ax.hist(positive_eff, bins=bins, histtype="step", linewidth=1.5)
+    bins = np.logspace(np.log10(positive_min), np.log10(positive_max), 100)
+    for label, values in positive_sets.items():
+        ax.hist(values, bins=bins, histtype="step", linewidth=1.5, label=label)
     ax.axvline(minimum_acceptance, color="red", linestyle="--",
                label=f"minimum_acceptance = {minimum_acceptance:g}")
     ax.set_xscale("log")
-    ax.set_xlabel("Acceptance / efficiency")
+    ax.set_xlabel("Acceptance-like quantity")
     ax.set_ylabel("Number of 4D bins")
-    ax.set_title("Acceptance over positive-acceptance 4D bins")
+    ax.set_title("Positive acceptance diagnostics over truth-populated 4D bins")
     ax.legend()
     fig.tight_layout()
     fig.savefig(output_dir / "acceptance_hist_log.png", dpi=200)
@@ -2140,6 +2951,9 @@ def _plot_heatmap(
 def _plot_acceptance_vs_phi(
     efficiency: np.ndarray,
     truth: np.ndarray,
+    acceptance: np.ndarray,
+    purity: np.ndarray | None,
+    same_bin_efficiency: np.ndarray | None,
     q2_edges: np.ndarray,
     xb_edges: np.ndarray,
     t_edges: np.ndarray,
@@ -2157,7 +2971,10 @@ def _plot_acceptance_vs_phi(
     csv_lines = [
         "iq2,q2_low,q2_high,ixb,xb_low,xb_high,it,t_low,t_high,"
         "truth_phi_bins,passing_phi_bins,zero_phi_bins,low_phi_bins,"
-        "truth_sum,rec_sum,mean_positive_acceptance,max_acceptance"
+        "truth_sum,epsilon_rec_sum,mean_positive_A,max_A,"
+        "mean_positive_epsilon,max_epsilon,max_epsilon_stat_error,"
+        "median_epsilon_relative_stat_error,mean_positive_P,max_P,"
+        "mean_positive_E,max_E"
     ]
 
     with PdfPages(pdf_path) as pdf:
@@ -2166,6 +2983,12 @@ def _plot_acceptance_vs_phi(
                 for it in range(efficiency.shape[2]):
                     eff_phi = efficiency[iq2, ixb, it, :]
                     truth_phi = truth[iq2, ixb, it, :]
+                    acceptance_phi = acceptance[iq2, ixb, it, :]
+                    purity_phi = purity[iq2, ixb, it, :] if purity is not None else None
+                    same_bin_phi = (
+                        same_bin_efficiency[iq2, ixb, it, :]
+                        if same_bin_efficiency is not None else None
+                    )
                     populated = truth_phi > 0
                     passing = populated & (eff_phi >= minimum_acceptance)
                     if np.count_nonzero(passing) < min_passing_bins:
@@ -2175,6 +2998,28 @@ def _plot_acceptance_vs_phi(
                     low = populated & (eff_phi > 0) & (eff_phi < minimum_acceptance)
                     positive = populated & (eff_phi > 0)
                     rec_phi = eff_phi * truth_phi
+                    variance = np.divide(
+                        eff_phi * (1.0 - eff_phi),
+                        truth_phi,
+                        out=np.zeros_like(eff_phi),
+                        where=truth_phi > 0,
+                    )
+                    stat_error = np.sqrt(np.maximum(variance, 0.0))
+                    relative_stat_error = np.divide(
+                        stat_error,
+                        eff_phi,
+                        out=np.full_like(stat_error, np.nan),
+                        where=eff_phi > 0,
+                    )
+                    positive_acceptance = populated & (acceptance_phi > 0)
+                    positive_purity = (
+                        populated & (purity_phi > 0)
+                        if purity_phi is not None else np.zeros_like(populated, dtype=bool)
+                    )
+                    positive_same_bin = (
+                        populated & (same_bin_phi > 0)
+                        if same_bin_phi is not None else np.zeros_like(populated, dtype=bool)
+                    )
 
                     csv_lines.append(
                         ",".join(
@@ -2195,23 +3040,103 @@ def _plot_acceptance_vs_phi(
                                 int(low.sum()),
                                 float(truth_phi[populated].sum()),
                                 float(rec_phi[populated].sum()),
+                                float(np.nanmean(acceptance_phi[positive_acceptance]))
+                                if np.any(positive_acceptance) else np.nan,
+                                float(np.nanmax(acceptance_phi[populated]))
+                                if np.any(populated) else np.nan,
                                 float(np.nanmean(eff_phi[positive])) if np.any(positive) else np.nan,
                                 float(np.nanmax(eff_phi[populated])) if np.any(populated) else np.nan,
+                                float(np.nanmax(stat_error[populated])) if np.any(populated) else np.nan,
+                                float(np.nanmedian(relative_stat_error[positive]))
+                                if np.any(positive) else np.nan,
+                                float(np.nanmean(purity_phi[positive_purity]))
+                                if purity_phi is not None and np.any(positive_purity) else np.nan,
+                                float(np.nanmax(purity_phi[populated]))
+                                if purity_phi is not None and np.any(populated) else np.nan,
+                                float(np.nanmean(same_bin_phi[positive_same_bin]))
+                                if same_bin_phi is not None and np.any(positive_same_bin) else np.nan,
+                                float(np.nanmax(same_bin_phi[populated]))
+                                if same_bin_phi is not None and np.any(populated) else np.nan,
                             )
                         )
                     )
 
                     fig, ax = plt.subplots(figsize=(8, 5))
                     if np.any(zero):
-                        ax.scatter(phi_centers[zero], eff_phi[zero], color="#9aa0a6",
-                                   label="zero", zorder=3)
+                        ax.errorbar(
+                            phi_centers[zero],
+                            eff_phi[zero],
+                            yerr=stat_error[zero],
+                            fmt="o",
+                            color="#9aa0a6",
+                            ecolor="#9aa0a6",
+                            elinewidth=0.9,
+                            capsize=2,
+                            label="zero",
+                            zorder=3,
+                        )
                     if np.any(low):
-                        ax.scatter(phi_centers[low], eff_phi[low], color="#d95f02",
-                                   label="positive < threshold", zorder=4)
-                    ax.scatter(phi_centers[passing], eff_phi[passing], color="#1b9e77",
-                               label=">= threshold", zorder=5)
-                    ax.plot(phi_centers[populated], eff_phi[populated],
-                            color="#4c78a8", linewidth=1.0, alpha=0.7)
+                        ax.errorbar(
+                            phi_centers[low],
+                            eff_phi[low],
+                            yerr=stat_error[low],
+                            fmt="o",
+                            color="#d95f02",
+                            ecolor="#d95f02",
+                            elinewidth=0.9,
+                            capsize=2,
+                            label="positive < threshold",
+                            zorder=4,
+                        )
+                    ax.errorbar(
+                        phi_centers[passing],
+                        eff_phi[passing],
+                        yerr=stat_error[passing],
+                        fmt="o",
+                        color="#1b9e77",
+                        ecolor="#1b9e77",
+                        elinewidth=0.9,
+                        capsize=2,
+                        label=">= threshold",
+                        zorder=5,
+                    )
+                    ax.plot(
+                        phi_centers[populated],
+                        eff_phi[populated],
+                        color="#4c78a8",
+                        linewidth=1.1,
+                        alpha=0.8,
+                        label="epsilon_i total IBU efficiency",
+                    )
+                    ax.plot(
+                        phi_centers[populated],
+                        acceptance_phi[populated],
+                        color="#7b3294",
+                        linestyle="--",
+                        linewidth=1.2,
+                        alpha=0.85,
+                        label="A_i bin-by-bin acceptance",
+                    )
+                    if purity_phi is not None:
+                        ax.plot(
+                            phi_centers[populated],
+                            purity_phi[populated],
+                            color="#f58518",
+                            linestyle="-.",
+                            linewidth=1.2,
+                            alpha=0.9,
+                            label="P_i purity",
+                        )
+                    if same_bin_phi is not None:
+                        ax.plot(
+                            phi_centers[populated],
+                            same_bin_phi[populated],
+                            color="#222222",
+                            linestyle=":",
+                            linewidth=1.4,
+                            alpha=0.9,
+                            label="E_i same-bin efficiency",
+                        )
                     ax.axhline(
                         minimum_acceptance,
                         color="red",
@@ -2222,9 +3147,9 @@ def _plot_acceptance_vs_phi(
                     ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
                     ax.set_ylim(bottom=0.0)
                     ax.set_xlabel("phi bin center [deg]")
-                    ax.set_ylabel("Acceptance / efficiency")
+                    ax.set_ylabel("Migration/acceptance diagnostic")
                     ax.set_title(
-                        "Acceptance vs phi\n"
+                        "Acceptance diagnostics vs phi\n"
                         f"Q2 {q2_edges[iq2]:g}-{q2_edges[iq2 + 1]:g}, "
                         f"xB {xb_edges[ixb]:g}-{xb_edges[ixb + 1]:g}, "
                         f"-t {t_edges[it]:g}-{t_edges[it + 1]:g}"
@@ -2266,6 +3191,8 @@ def main() -> int:
         command_cross_section_plots(args)
     elif args.command == "acceptance-plots":
         command_acceptance_plots(args)
+    elif args.command == "response-plots":
+        command_response_plots(args)
     return 0
 
 

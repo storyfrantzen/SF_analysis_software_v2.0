@@ -27,6 +27,21 @@ struct GeneratedEventBranches {
     double W = NAN;
     double minusT = NAN;
     double trentoPhi = NAN;
+    double electronP = NAN;
+    double electronTheta = NAN;
+    double electronPhi = NAN;
+    double protonP = NAN;
+    double protonTheta = NAN;
+    double protonPhi = NAN;
+    double gamma1P = NAN;
+    double gamma1Theta = NAN;
+    double gamma1Phi = NAN;
+    double gamma2P = NAN;
+    double gamma2Theta = NAN;
+    double gamma2Phi = NAN;
+    double pi0P = NAN;
+    double pi0Theta = NAN;
+    double pi0Phi = NAN;
 
     void reset();
     void registerBranches(TTree& tree);

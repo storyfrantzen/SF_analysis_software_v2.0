@@ -4,11 +4,14 @@
 #include <vector>
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdint>
 #include <cctype>
 #include <cmath>
+#include <exception>
 #include <iomanip>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <unordered_map>
 
@@ -43,6 +46,97 @@ struct HipoOpenCheck {
     bool ok = true;
     std::string detail;
 };
+
+namespace {
+
+bool isRichDetectorSchemaWarning(const std::string& line) {
+    return line.find("hipo::schema getEntryOrder") != std::string::npos &&
+           line.find("item :detector not found") != std::string::npos &&
+           line.find("bank RICH::Particle") != std::string::npos;
+}
+
+void replayWithoutRichDetectorSchemaWarning(FILE* capture, std::ostream& destination) {
+    std::rewind(capture);
+    char buffer[4096];
+    bool skipFileLine = false;
+    while (std::fgets(buffer, sizeof(buffer), capture) != nullptr) {
+        const std::string line(buffer);
+        if (isRichDetectorSchemaWarning(line)) {
+            skipFileLine = true;
+            continue;
+        }
+        if (skipFileLine && line.rfind("for file ", 0) == 0) {
+            skipFileLine = false;
+            continue;
+        }
+        skipFileLine = false;
+        destination << line;
+    }
+    destination.flush();
+}
+
+// CLAS12ROOT constructs every known bank when a file is opened. Its RICH bank
+// inherits a helper that probes for a nonexistent "detector" item, producing a
+// harmless two-line warning for every file. Capture constructor diagnostics and
+// remove only that exact warning; all other stdout/stderr output is replayed.
+template <typename Callable>
+void withoutRichDetectorSchemaWarning(Callable&& callable) {
+    std::cout.flush();
+    std::cerr.flush();
+    std::fflush(nullptr);
+
+    FILE* stdoutCapture = std::tmpfile();
+    FILE* stderrCapture = std::tmpfile();
+    const int savedStdout = dup(STDOUT_FILENO);
+    const int savedStderr = dup(STDERR_FILENO);
+    if (stdoutCapture == nullptr || stderrCapture == nullptr ||
+        savedStdout < 0 || savedStderr < 0) {
+        if (stdoutCapture != nullptr) std::fclose(stdoutCapture);
+        if (stderrCapture != nullptr) std::fclose(stderrCapture);
+        if (savedStdout >= 0) close(savedStdout);
+        if (savedStderr >= 0) close(savedStderr);
+        callable();
+        return;
+    }
+
+    const bool redirected =
+        dup2(fileno(stdoutCapture), STDOUT_FILENO) >= 0 &&
+        dup2(fileno(stderrCapture), STDERR_FILENO) >= 0;
+    if (!redirected) {
+        dup2(savedStdout, STDOUT_FILENO);
+        dup2(savedStderr, STDERR_FILENO);
+        close(savedStdout);
+        close(savedStderr);
+        std::fclose(stdoutCapture);
+        std::fclose(stderrCapture);
+        callable();
+        return;
+    }
+
+    std::exception_ptr failure;
+    try {
+        callable();
+    } catch (...) {
+        failure = std::current_exception();
+    }
+
+    std::cout.flush();
+    std::cerr.flush();
+    std::fflush(nullptr);
+    dup2(savedStdout, STDOUT_FILENO);
+    dup2(savedStderr, STDERR_FILENO);
+    close(savedStdout);
+    close(savedStderr);
+
+    replayWithoutRichDetectorSchemaWarning(stdoutCapture, std::cout);
+    replayWithoutRichDetectorSchemaWarning(stderrCapture, std::cerr);
+    std::fclose(stdoutCapture);
+    std::fclose(stderrCapture);
+
+    if (failure) std::rethrow_exception(failure);
+}
+
+}  // namespace
 
 std::uint64_t stableSourceFileId(const std::string& fileName) {
     // Stable FNV-1a hash; unlike std::hash this is reproducible across systems.
@@ -90,7 +184,8 @@ HipoOpenCheck checkHipoOpenInChild(const std::string& hipoPath) {
         }
 
         try {
-            clas12::clas12reader c12(hipoPath);
+            std::optional<clas12::clas12reader> reader;
+            withoutRichDetectorSchemaWarning([&]() { reader.emplace(hipoPath); });
         } catch (...) {
             _exit(2);
         }
@@ -445,7 +540,9 @@ int main(int argc, char** argv) {
             }
         }
 
-        clas12::clas12reader c12(hipoPath);
+        std::optional<clas12::clas12reader> reader;
+        withoutRichDetectorSchemaWarning([&]() { reader.emplace(hipoPath); });
+        auto& c12 = *reader;
         std::uint64_t sourceEventIndex = 0;
 
         const auto maybePrintProgress = [&]() {

@@ -9,16 +9,17 @@ import tempfile
 import unittest
 
 import numpy as np
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, eye, save_npz
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from eppi0.binning import AnalysisBinning, legacy_binning
+from eppi0.binning import AnalysisBinning, from_config, legacy_binning
 from eppi0.bin_centering import compute_bin_centering, physical_mask
 from eppi0.cross_section import integrated_luminosity_fb, virtual_photon_flux
 from eppi0.event_sample import (
     build_generated_sample,
+    generated_particle_columns,
     generated_sample_from_tree,
     join_reconstructed,
 )
@@ -32,7 +33,15 @@ from eppi0.radiative_correction import (
     support_status_codes,
 )
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
-from run_analysis import command_bin_centering_merge, _read_generator_integrated_cross_section
+from run_analysis import (
+    command_unfold,
+    command_response_plots,
+    command_bin_centering_merge,
+    _normalization_npz_fields,
+    _read_generator_integrated_cross_section,
+    _read_generator_normalization_summary,
+)
+from build_event_sample import reconstructed_columns
 
 
 class BinningTests(unittest.TestCase):
@@ -95,6 +104,45 @@ class ResponseTests(unittest.TestCase):
         np.testing.assert_allclose(counted.efficiency, dense.efficiency)
         self.assertAlmostEqual(counted.feed_in_fraction, dense.feed_in_fraction)
         np.testing.assert_allclose(counted.feed_in_shape, dense.feed_in_shape)
+
+    def test_response_plots_writes_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            matrix_path = tmpdir / "response_matrix.npz"
+            meta_path = tmpdir / "response_meta.npz"
+            output_path = tmpdir / "response_plots.pdf"
+            save_npz(
+                matrix_path,
+                csr_matrix(
+                    np.array(
+                        [
+                            [0.8, 0.2],
+                            [0.1, 0.7],
+                        ]
+                    )
+                ),
+            )
+            np.savez_compressed(
+                meta_path,
+                efficiency=np.array([0.9, 0.9]),
+                truth_total=np.array([100.0, 100.0]),
+                reconstructed_total=np.array([90.0, 90.0]),
+                q2_edges=np.array([1.0, 2.0]),
+                xb_edges=np.array([0.1, 0.2, 0.3]),
+                t_edges=np.array([0.1, 0.2]),
+                phi_edges=np.array([0.0, 360.0]),
+            )
+            args = argparse.Namespace(
+                response_matrix=matrix_path,
+                response_meta=meta_path,
+                output=output_path,
+                max_points=1000,
+                seed=12345,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_response_plots(args)
+            self.assertTrue(output_path.is_file())
+            self.assertGreater(output_path.stat().st_size, 0)
 
 
 class EventSampleTests(unittest.TestCase):
@@ -173,6 +221,68 @@ class EventSampleTests(unittest.TestCase):
         self.assertTrue(np.isnan(joined["rec_Q2"][1]))
         np.testing.assert_allclose(joined["gen_weight"], [1.0, 1.0])
 
+    def test_reconstructed_columns_keep_extra_selected_scalars(self) -> None:
+        rec = {
+            "runNum": np.array([11, 11]),
+            "eventNum": np.array([10, 11]),
+            "sourceFileId": np.array([1001, 1001], dtype=np.uint64),
+            "sourceEventIndex": np.array([0, 1], dtype=np.uint64),
+            "Q2": np.array([1.5, 1.6]),
+            "t": np.array([0.3, 0.4]),
+            "passSamplingFraction": np.array([1, 0]),
+            "electronP": np.array([3.0, 3.2]),
+        }
+        values = reconstructed_columns(rec, list(rec))
+        self.assertNotIn("rec_runNum", values)
+        self.assertNotIn("rec_sourceFileId", values)
+        np.testing.assert_allclose(values["rec_Q2"], [1.5, 1.6])
+        np.testing.assert_allclose(values["rec_minus_t"], [0.3, 0.4])
+        np.testing.assert_array_equal(values["rec_passSamplingFraction"], [1, 0])
+        np.testing.assert_allclose(values["rec_electronP"], [3.0, 3.2])
+
+    def test_generated_particle_columns_align_to_generated_events(self) -> None:
+        run = np.full(8, 11)
+        event = np.array([10, 10, 10, 10, 11, 11, 11, 11])
+        pid = np.array([11, 2212, 22, 22, 11, 2212, 111, 22])
+        momentum = np.array([4.0, 1.0, 0.8, 0.7, 4.1, 1.1, 1.0, 0.05])
+        theta = np.array([0.25, 0.6, 0.3, 0.4, 0.26, 0.62, 0.35, 0.1])
+        phi = np.array([0.1, 2.0, 1.0, 1.2, 0.2, 2.1, 1.1, -0.5])
+        columns = generated_particle_columns(
+            run,
+            event,
+            pid,
+            momentum,
+            theta,
+            phi,
+            np.array([11, 11, 11]),
+            np.array([10, 11, 12]),
+        )
+        np.testing.assert_allclose(columns["gen_electronP"], [4.0, 4.1, np.nan])
+        np.testing.assert_allclose(columns["gen_protonTheta"], [0.6, 0.62, np.nan])
+        np.testing.assert_allclose(columns["gen_gamma1P"], [0.8, 0.05, np.nan])
+        np.testing.assert_allclose(columns["gen_gamma2P"], [0.7, np.nan, np.nan])
+        np.testing.assert_allclose(columns["gen_pi0P"][1], 1.0)
+        self.assertTrue(np.isfinite(columns["gen_pi0P"][0]))
+
+    def test_generated_particle_columns_use_source_keys_when_available(self) -> None:
+        run = np.array([11, 11])
+        event = np.array([10, 10])
+        columns = generated_particle_columns(
+            run,
+            event,
+            np.array([11, 11]),
+            np.array([4.0, 5.0]),
+            np.array([0.2, 0.3]),
+            np.array([1.0, 1.1]),
+            np.array([11, 11]),
+            np.array([10, 10]),
+            source_file_id=np.array([1001, 1002], dtype=np.uint64),
+            source_event_index=np.array([0, 0], dtype=np.uint64),
+            target_source_file_id=np.array([1002, 1001], dtype=np.uint64),
+            target_source_event_index=np.array([0, 0], dtype=np.uint64),
+        )
+        np.testing.assert_allclose(columns["gen_electronP"], [5.0, 4.0])
+
 
 class ExclusivityTests(unittest.TestCase):
     def test_global_cut_table_can_be_reused(self) -> None:
@@ -210,6 +320,64 @@ class UnfoldingTests(unittest.TestCase):
         np.testing.assert_allclose(first[0], second[0])
         np.testing.assert_allclose(first[1], second[1])
 
+    def test_unfold_divides_by_radiative_correction(self) -> None:
+        config = Path("configs/analysis/rgk/6.535.json")
+        binning = from_config(config)
+        flat = int(binning.coordinates_to_flat(
+            np.asarray([1.2]),
+            np.asarray([0.12]),
+            np.asarray([0.2]),
+            np.asarray([0.1]),
+        )[0])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            data_path = tmpdir / "data.npz"
+            matrix_path = tmpdir / "response.npz"
+            meta_path = tmpdir / "response_meta.npz"
+            correction_path = tmpdir / "C_rad.npz"
+            output_path = tmpdir / "unfolding.npz"
+            np.savez_compressed(
+                data_path,
+                rec_Q2=np.asarray([1.2]),
+                rec_xB=np.asarray([0.12]),
+                rec_minus_t=np.asarray([0.2]),
+                rec_trento_phi=np.asarray([0.1]),
+                rec_selected=np.asarray([True]),
+            )
+            save_npz(matrix_path, eye(binning.size, format="csr"))
+            np.savez_compressed(
+                meta_path,
+                efficiency=np.ones(binning.size),
+                feed_in_fraction=0.0,
+                feed_in_shape=np.zeros(binning.size),
+                response_variance_sum=np.zeros(binning.size),
+            )
+            c_rad_flat = np.ones(binning.size)
+            c_rad_flat[flat] = 2.0
+            np.savez_compressed(
+                correction_path,
+                C_rad=binning.unflatten(c_rad_flat),
+                delta_C=np.zeros(binning.shape),
+                reliable=np.ones(binning.shape, dtype=bool),
+            )
+            args = argparse.Namespace(
+                data=data_path,
+                response_matrix=matrix_path,
+                response_meta=meta_path,
+                config=config,
+                output=output_path,
+                selection_mask=None,
+                iterations=0,
+                bootstrap=0,
+                seed=12345,
+                radiative_correction=correction_path,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_unfold(args)
+            result = np.load(output_path, allow_pickle=False)
+        self.assertEqual(result["unfolded"][flat], 1.0)
+        self.assertEqual(result["corrected_yield"][flat], 0.5)
+
 
 class RadiativeCorrectionTests(unittest.TestCase):
     def test_lund_histogram_streams_into_configured_bins(self) -> None:
@@ -230,12 +398,20 @@ class RadiativeCorrectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
             (tmpdir / "job.log").write_text("not a LUND file\n", encoding="utf-8")
+            (tmpdir / "input.inp").write_text(_lund_event(pi0=False), encoding="utf-8")
             path = tmpdir / "events.lund"
             path.write_text(_lund_event(pi0=False), encoding="utf-8")
             self.assertEqual(_lund_files(tmpdir), [path])
             result = histogram_lund(tmpdir, bins, beam_energy=6.535, chunk_size=1)
         self.assertEqual(result.files, 1)
         self.assertEqual(result.topology_events, 1)
+
+    def test_lund_discovery_trusts_nonempty_lund_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            path = tmpdir / "events.lund"
+            path.write_text("metadata preamble\nnot a standard header\n", encoding="utf-8")
+            self.assertEqual(_lund_files(tmpdir), [path])
 
     def test_radiative_correction_keeps_native_4d_shape(self) -> None:
         bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
@@ -279,8 +455,8 @@ class RadiativeCorrectionTests(unittest.TestCase):
                 born_integrated_cross_section=2.0,
                 radiative_integrated_cross_section=1.0,
             )
-        np.testing.assert_allclose(result.c_rad[result.reliable], [2.0])
-        self.assertEqual(result.normalization_ratio, 2.0)
+        np.testing.assert_allclose(result.c_rad[result.reliable], [0.5])
+        self.assertEqual(result.normalization_ratio, 0.5)
 
     def test_generator_integrated_cross_section_parser_reads_norm_and_sum(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -296,12 +472,41 @@ class RadiativeCorrectionTests(unittest.TestCase):
             nested = Path(tmp) / "norms"
             nested.mkdir()
             (nested / "job1.norm").write_text(
-                "sig_sum=2.0\nevents=100\n", encoding="utf-8"
+                "\n".join([
+                    "generator=aao_norad",
+                    "integrated_cross_section_units=micro-barns",
+                    "sig_int=1.5",
+                    "sig_sum=2.0",
+                    "events=100",
+                    "ntries=1000",
+                    "nevent=100",
+                    "mcall_max=500",
+                    "sigr_max=3.0",
+                    "",
+                ]),
+                encoding="utf-8",
             )
             (nested / "job2.norm").write_text(
                 "sig_sum=4.0\nevents=300\n", encoding="utf-8"
             )
             self.assertEqual(_read_generator_integrated_cross_section(nested), 3.5)
+            summary = _read_generator_normalization_summary(nested)
+            self.assertEqual(summary.integrated_cross_section, 3.5)
+            self.assertEqual(summary.method, "events_weighted_mean_sig_sum")
+            self.assertEqual(len(summary.records), 2)
+            self.assertEqual(summary.records[0].generator, "aao_norad")
+            self.assertEqual(summary.records[0].units, "micro-barns")
+            self.assertEqual(summary.records[0].sig_int, 1.5)
+            self.assertEqual(summary.records[0].ntries, 1000)
+            npz_fields = _normalization_npz_fields("born", summary)
+            np.testing.assert_allclose(npz_fields["born_normalization_sig_sum"], [2.0, 4.0])
+            np.testing.assert_allclose(npz_fields["born_normalization_events"], [100.0, 300.0])
+            np.testing.assert_allclose(
+                npz_fields["born_normalization_ntries"],
+                [1000.0, np.nan],
+                equal_nan=True,
+            )
+            self.assertEqual(npz_fields["born_normalization_generators"][0], "aao_norad")
 
             legacy = Path(tmp) / "legacy"
             legacy.mkdir()

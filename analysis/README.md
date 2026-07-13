@@ -113,6 +113,142 @@ and restart their event numbers.
 `export_selected_data.py` creates the compact data artifact and carries the
 converter's accumulated charge into the pipeline.
 
+For interactive cut studies and quick detector/topology comparisons, build a
+standalone histogram browser from either compact NPZ samples or selected ROOT
+trees:
+
+```bash
+python3 -m visualizer data_events.npz \
+  --output results/data_histograms.html
+
+python3 -m visualizer selected_data.root \
+  --format root --output results/selected_data_histograms.html \
+  --dictionary build/libROOTBranchesDict.so
+
+scripts/serve_visualizer.sh results/selected_data_histograms.html
+```
+
+The visualizer now lives in the top-level `visualizer/` package. The historical
+`analysis/interactive_histograms.py` command remains as a compatibility wrapper.
+See `visualizer/README.md` for its source layout and visualizer-specific tests.
+
+Run `scripts/serve_visualizer.sh` with no path to serve a click-enabled listing
+of `results/`, or `scripts/serve_visualizer.sh .` to serve the working tree. To
+compare multiple event samples in one browser session, first generate an HTML
+visualizer for each input file, open one of them from the served directory, then
+use the top `Load File(s)` button to browse the same farm-side HTTP directory
+tree and add the other generated visualizer HTML files. The loaded events are
+appended in the browser and tagged with a `Sample` category, which can be used
+in `Filter topology`, `Split by`, or the full category list.
+The browser discovers stored scalar quantities, adds common derived views such
+as degree versions of angular branches and non-duplicated signed/unsigned `t`
+aliases, computes `t_min` and `t'` from existing `Q2`, `xB`, and `t` branches
+where available, and supports 1D histograms, 2D histograms, detector/pass-flag
+toggles, text filters, numeric constraints, and optional panel tabs that can be viewed
+independently or side by side under the same filters from the toolbar above the
+plot. Quantity dropdowns show visible category headings for event, kinematic,
+particle, selection, and detector/exclusivity groups instead of a flat
+alphabetical list. Axis tick-count
+sliders adjust every displayed axis, optional presentation labels can override
+the displayed X/Y axis labels per panel, and the visible display can be saved as
+a PNG. 2D views can optionally draw color scales beside the histogram, including
+per-sector scales in split views and hover markers showing hovered-bin values
+on primary and overlay scales. Category
+filters also have a collapsible `Filter topology` selector near the split
+control, with numeric `Constraints` placed directly underneath it for quick
+filtering. The full category list is kept as the final compact reference section
+below the plot, after derived operations, fit controls, reset buttons, PNG
+export, and the preview table. Active filters are also flagged
+above each plot with a compact badge listing the number of active filter
+dimensions and a short summary. Common display/actions such as log
+color, density, reset, and PNG export sit above the plot. Density mode
+normalizes bin contents while auto-scaling the vertical and color ranges to the
+normalized peak, so the display does not collapse when densities are below one.
+Compact `+` buttons
+next to the axis selectors add optional comparison X/Y quantities on the same
+axes with a distinct color map for direct within-panel comparisons. The
+derived-operations menu can add browser-side comparison variables such as
+`rec_theta_deg - gen_theta_deg`, ratios, fractional residuals, or sums, and the
+fit menu can overlay a signal model `S` plus a background model `B`, with
+Gaussian or Crystal Ball signal shapes and constant or polynomial degree 1-5
+backgrounds where applicable. Background-only polynomial trend fits remain
+available for 2D views, and 1D split views get independent sector-by-sector
+fits with compact in-panel fit labels. Fit ranges can be selected by enabling
+`click endpoints` and clicking two X positions on the plot; the displayed
+histogram is unchanged while only the fit calculation and curve interval are
+restricted. One-dimensional count fits can use ordinary least squares or
+Poisson-weighted least squares with iterative Pearson weights; Poisson weighting
+is disabled for density-normalized histograms. Conditional unbinned likelihood
+fits instead use the individual selected values, report a signal fraction, and
+use positive Bernstein background PDFs; histogram bins affect only their
+display. Their scan-detail slider trades execution speed for a denser search of
+signal position, width, and Crystal Ball tail shapes while retaining the same
+constant/polynomial degree 1-5 background choices as the binned fits. Text
+filters appear only when the input contains string-valued columns. Selected ROOT
+inputs
+expose the richest set of reconstruction filters, including `pDet`, `passFiducial`,
+`passSamplingFraction`, `passExclusivity`, and selected-particle kinematics
+such as `protonTheta`, so its correlation with `-t` can be explored directly.
+Diagnostic post-processing outputs also provide `evaluatedCuts` and
+`failedCuts`. The visualizer expands them into numeric `passCut_*` quantities,
+with `1` for pass, `0` for failure, and `NAN` when that cut was not evaluated
+for a row.
+Newly post-processed selected files also expose selected-particle indices and
+sectors, including `pIdx`, `g1Idx`, `g2Idx`, `pSector`, `g1Sector`, and
+`g2Sector`, so proton and photon selections can be filtered like the electron.
+When split photon quantities are available, the visualizer hides the generic
+first-photon `gamma` aliases in favor of explicit `gamma1` and `gamma2` groups.
+The `passSamplingFraction` flag is labeled as a cut result; selected ROOT inputs
+also derive total and PCAL/ECIN/ECOUT electron sampling fractions from the stored
+calorimeter energies divided by `electronP`.
+Joined generated/reconstructed event samples made by `build_event_sample.py`
+carry every scalar branch from the selected reconstructed tree with a `rec_`
+prefix, so MC acceptance visualizers expose the same reconstructed filters and
+kinematic branches as the selected data visualizers after the `.npz` and HTML
+are regenerated. Newly converted MC files store complete per-particle GEN/LUND
+kinematics in `GeneratedEvents`; `build_event_sample.py` carries those columns,
+including `gen_electronP`, `gen_protonTheta`, `gen_gamma1Phi`, `gen_gamma2P`,
+and `gen_pi0P`, so generated-vs-reconstructed residuals can be built directly
+in the visualizer. Older converter ROOT files fall back to the available
+`Events.gen` rows, which may be less complete.
+The dictionary is optional for ordinary selected `Events` trees; if the named
+dictionary is missing, the script continues with ROOT's built-in scalar and STL
+branch readers.
+The selected tree's default `t` branch remains the proton-based positive `-t`,
+computed from the reconstructed recoil proton. New post-processed files also
+store `t_pi0`, the positive `-t` computed from the reconstructed pi0 side,
+for event-by-event comparison.
+
+`acceptance-plots` visualizes four related response diagnostics. For bin `i`,
+with `N_same,i = N(rec i and gen i)`, they are:
+
+- `A_i = N_rec,i / N_gen,i`, the simple bin-by-bin acceptance;
+- `P_i = N_same,i / N_rec,i`, the bin purity;
+- `E_i = N_same,i / N_gen,i`, the same-bin efficiency;
+- `epsilon_i = sum_j R[j,i]`, the total truth-bin efficiency used by IBU.
+
+The default phi overlay includes `A_i`, `E_i`, and `epsilon_i`. Add
+`--include-purity` to include `P_i`, whose scale can differ substantially from
+the other three diagnostics.
+
+The full unfolding still uses the migration matrix `R[j,i]`, not any one of
+these scalar diagnostics alone.
+
+To inspect that sparse IBU response matrix directly, use:
+
+```bash
+python3 analysis/run_analysis.py response-plots \
+  results/response/response_matrix.npz results/response/response_meta.npz \
+  --output results/response/response_diagnostics.pdf
+```
+
+This PDF includes a sparse global image of `R[reco, truth]`, collapsed migration
+matrices for `Q2`, `xB`, `-t`, and phi, migration-probability histograms, and
+projection heatmaps showing which kinematic variables drive migration in
+`(xB,Q2)` and `(phi,-t)` space. Coarse heatmaps include nonzero in-cell values,
+and the projection pages use adaptive color scales so small migration
+probabilities remain visible.
+
 The compact tree path does not require `--beam-energy`, because generated
 kinematics were calculated by the converter. For a legacy particle-level input,
 the adapter requires `--beam-energy` to reconstruct those quantities:
@@ -205,16 +341,27 @@ sidecar includes event counts, and fall back to an unweighted mean for legacy
 `.sum`-only directories. Use
 `--born-integrated-cross-section` and `--radiative-integrated-cross-section`
 when entering the values manually. The resulting global factor is
-`(Sigma_born / Sigma_rad) * (N_rad / N_born)`, so the per-bin ratio is normalized
-as a cross-section ratio rather than a raw event-density ratio. The artifact also
-stores support diagnostics: per-bin born/radiative counts, overlap and status
-masks, generated `Q2`/`Eprime` ranges, and the integrated cross sections used for
-each sample. Regenerate the diagnostic report later without rereading LUND files:
+`(Sigma_rad / Sigma_born) * (N_born / N_rad)`, so the stored `C_rad` is the
+radiative-to-Born cross-section ratio rather than a raw event-density ratio.
+`unfold --radiative-correction` divides unfolded yields by this factor. The
+artifact also stores support diagnostics: per-bin born/radiative counts, overlap
+and status masks, generated `Q2`/`Eprime` ranges, and the integrated cross
+sections used for each sample. When sidecars are supplied, the artifact also
+preserves the
+normalization records used to get those cross sections: sidecar paths,
+combination method, `sig_sum`, `sig_int`, `events`, `ntries`, `nevent`,
+`mcall_max`, `sigr_max`, generator name, and units. Regenerate the diagnostic
+report later without rereading LUND files:
 
 ```bash
 python3 analysis/run_analysis.py radiative-correction-plots results/C_rad.npz \
   --output results/C_rad_diagnostics.pdf --csv results/C_rad_diagnostics.csv
 ```
+
+The PDF includes summary/support pages, a clipped `0<C_rad<2` summary
+histogram, projection heatmaps of median reliable `C_rad` and reliable-bin
+fraction in `(xB,Q2)` and `(phi,-t)`, and then detailed per-`(Q2,xB,-t)` phi
+pages.
 
 ## Bin-centering correction
 
@@ -250,7 +397,19 @@ python3 analysis/run_analysis.py bin-centering-merge \
 ```
 
 Repeat with larger `--N` values, for example `N=2,4,6,8`, and compare the
-merged `C_BC` artifacts to assess convergence.
+merged `C_BC` artifacts to assess convergence. To summarize and visualize a
+scan after merging all requested `C_BC_N*.npz` files:
+
+```bash
+python3 scripts/plot_bin_centering_convergence.py results/bin_centering_convergence/rgk_6.535 \
+  --n-values 2 4 6 8 \
+  --reference-N 8
+```
+
+The script writes a Markdown summary, pairwise statistics CSV, worst-bin CSV,
+and a PNG showing reliable-bin growth, relative-difference histograms/CDFs,
+adjacent-`N` convergence, and where the largest tail sits in phi and kinematic
+bin index.
 
 ## Legacy behavior intentionally corrected
 

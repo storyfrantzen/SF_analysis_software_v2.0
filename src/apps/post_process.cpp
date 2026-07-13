@@ -59,6 +59,35 @@ void addCsvFailures(const std::string& failedCuts, ProcessingStats& stats) {
     }
 }
 
+void appendUnique(std::vector<std::string>& destination,
+                  const std::vector<std::string>& source) {
+    for (const auto& name : source) {
+        if (name.empty()) continue;
+        if (std::find(destination.begin(), destination.end(), name) == destination.end()) {
+            destination.push_back(name);
+        }
+    }
+}
+
+std::string joinCsv(const std::vector<std::string>& names) {
+    std::ostringstream out;
+    for (size_t i = 0; i < names.size(); ++i) {
+        if (i > 0) out << ",";
+        out << names[i];
+    }
+    return out.str();
+}
+
+std::vector<std::string> splitCsv(const std::string& value) {
+    std::vector<std::string> names;
+    std::istringstream stream(value);
+    std::string name;
+    while (std::getline(stream, name, ',')) {
+        if (!name.empty()) names.push_back(name);
+    }
+    return names;
+}
+
 double fraction(long long numerator, long long denominator) {
     if (denominator <= 0) return 0.0;
     return static_cast<double>(numerator) / static_cast<double>(denominator);
@@ -115,6 +144,7 @@ struct CandidateOutput {
     std::vector<int> selectedIdx;
     std::vector<int> selectedPid;
     std::vector<int> selectedDet;
+    std::vector<int> selectedSector;
     std::vector<double> selectedP;
     std::vector<double> selectedTheta;
     std::vector<double> selectedPhi;
@@ -139,9 +169,18 @@ struct CandidateOutput {
     int eppi0_pDet = -999;
     int eppi0_g1Det = -999;
     int eppi0_g2Det = -999;
+    int eppi0_eSector = -999;
+    int eppi0_pSector = -999;
+    int eppi0_g1Sector = -999;
+    int eppi0_g2Sector = -999;
     int eppi0_passFiducial = 0;
+    int eppi0_electronPassFiducial = 0;
+    int eppi0_protonPassFiducial = 0;
+    int eppi0_gamma1PassFiducial = 0;
+    int eppi0_gamma2PassFiducial = 0;
     int eppi0_passSamplingFraction = 0;
     int eppi0_passExclusivity = 0;
+    std::string eppi0_evaluatedCuts;
     std::string eppi0_failedCuts;
     double Q2 = NAN;
     double nu = NAN;
@@ -149,6 +188,7 @@ struct CandidateOutput {
     double y = NAN;
     double W = NAN;
     double t = NAN;
+    double t_pi0 = NAN;
     double trentoPhi = NAN;
 
     double pi0_p = NAN;
@@ -181,6 +221,7 @@ struct CandidateOutput {
         tree.Branch("selectedIdx", &selectedIdx);
         tree.Branch("selectedPid", &selectedPid);
         tree.Branch("selectedDet", &selectedDet);
+        tree.Branch("selectedSector", &selectedSector);
         tree.Branch("selectedP", &selectedP);
         tree.Branch("selectedTheta", &selectedTheta);
         tree.Branch("selectedPhi", &selectedPhi);
@@ -207,13 +248,27 @@ struct CandidateOutput {
         tree.Branch("pDet", &eppi0_pDet, "pDet/I");
         tree.Branch("g1Det", &eppi0_g1Det, "g1Det/I");
         tree.Branch("g2Det", &eppi0_g2Det, "g2Det/I");
+        tree.Branch("eSector", &eppi0_eSector, "eSector/I");
+        tree.Branch("pSector", &eppi0_pSector, "pSector/I");
+        tree.Branch("g1Sector", &eppi0_g1Sector, "g1Sector/I");
+        tree.Branch("g2Sector", &eppi0_g2Sector, "g2Sector/I");
         tree.Branch("passFiducial", &eppi0_passFiducial, "passFiducial/I");
+        tree.Branch("electronPassFiducial", &eppi0_electronPassFiducial,
+                    "electronPassFiducial/I");
+        tree.Branch("protonPassFiducial", &eppi0_protonPassFiducial,
+                    "protonPassFiducial/I");
+        tree.Branch("gamma1PassFiducial", &eppi0_gamma1PassFiducial,
+                    "gamma1PassFiducial/I");
+        tree.Branch("gamma2PassFiducial", &eppi0_gamma2PassFiducial,
+                    "gamma2PassFiducial/I");
         tree.Branch("passSamplingFraction", &eppi0_passSamplingFraction, "passSamplingFraction/I");
         tree.Branch("passExclusivity", &eppi0_passExclusivity, "passExclusivity/I");
+        tree.Branch("evaluatedCuts", &eppi0_evaluatedCuts);
         tree.Branch("failedCuts", &eppi0_failedCuts);
         tree.Branch("y", &y, "y/D");
         tree.Branch("W", &W, "W/D");
         tree.Branch("t", &t, "t/D");
+        tree.Branch("t_pi0", &t_pi0, "t_pi0/D");
         tree.Branch("trentoPhi", &trentoPhi, "trentoPhi/D");
         tree.Branch("pi0_p", &pi0_p, "pi0_p/D");
         tree.Branch("pi0_theta", &pi0_theta, "pi0_theta/D");
@@ -257,6 +312,7 @@ void fillSelectedParticleBranches(const Selection& selection,
             out.selectedIdx.push_back(particle->particleIdx);
             out.selectedPid.push_back(particle->pid);
             out.selectedDet.push_back(particle->det);
+            out.selectedSector.push_back(particle->sector);
             out.selectedP.push_back(particle->p);
             out.selectedTheta.push_back(particle->theta);
             out.selectedPhi.push_back(particle->phi);
@@ -296,10 +352,9 @@ void fillDISBranches(const Selection& selection,
 bool evaluateCompositeRank(const Selection& selection,
                            const PostCutConfig& cfg,
                            double& rank,
-                           std::string& failedCut) {
+                           CutDecision& decision) {
     rank = 0.0;
     bool usedComposite = false;
-    failedCut.clear();
 
     for (const auto& composite : cfg.channel.composites) {
         if (composite.type != "pairMass" || composite.daughters.size() != 2) continue;
@@ -324,10 +379,11 @@ bool evaluateCompositeRank(const Selection& selection,
         const TLorentzVector lvRight = Kinematics::particle(*right);
         const double mass = (lvLeft + lvRight).M();
         const double delta = std::abs(mass - composite.mass);
-        if (std::isfinite(composite.window) && delta > composite.window) {
-            failedCut = composite.role + ".mass_window";
-            return false;
-        }
+        const bool passesWindow = !std::isfinite(composite.window) || delta <= composite.window;
+        const std::string cutName = composite.role + ".mass_window";
+        if (composite.mode == "tag") decision.tag(passesWindow, cutName);
+        else decision.require(passesWindow, cutName);
+        if (!decision.pass) return false;
         rank += delta;
         usedComposite = true;
     }
@@ -403,19 +459,29 @@ void runEppi0Logic(const Selection& selection,
     out.eppi0_pDet = p.det;
     out.eppi0_g1Det = g1.det;
     out.eppi0_g2Det = g2.det;
+    out.eppi0_eSector = e.sector;
+    out.eppi0_pSector = p.sector;
+    out.eppi0_g1Sector = g1.sector;
+    out.eppi0_g2Sector = g2.sector;
     const CutDecision fiducial = cuts.evaluateFiducial(e);
-    CutDecision fiducialP = cuts.evaluateFiducial(p);
-    CutDecision fiducialG1 = cuts.evaluateFiducial(g1);
-    CutDecision fiducialG2 = cuts.evaluateFiducial(g2);
-    fiducialP.merge(fiducialG1);
-    fiducialP.merge(fiducialG2);
-    fiducialP.merge(fiducial);
-    out.eppi0_passFiducial = fiducialP.pass;
+    const CutDecision fiducialP = cuts.evaluateFiducial(p);
+    const CutDecision fiducialG1 = cuts.evaluateFiducial(g1);
+    const CutDecision fiducialG2 = cuts.evaluateFiducial(g2);
+    out.eppi0_electronPassFiducial = fiducial.pass;
+    out.eppi0_protonPassFiducial = fiducialP.pass;
+    out.eppi0_gamma1PassFiducial = fiducialG1.pass;
+    out.eppi0_gamma2PassFiducial = fiducialG2.pass;
+    CutDecision combinedFiducial = fiducialP;
+    combinedFiducial.merge(fiducialG1);
+    combinedFiducial.merge(fiducialG2);
+    combinedFiducial.merge(fiducial);
+    out.eppi0_passFiducial = combinedFiducial.pass;
     out.eppi0_passSamplingFraction = cuts.evaluateSamplingFraction(e).pass;
 
     out.y = dis.y;
     out.W = dis.W;
     out.t = -1.0 * (target - lvP).M2();
+    out.t_pi0 = -1.0 * (beam - lvE - lvPi0).M2();
     out.trentoPhi = Kinematics::trentoPhi(beam, lvE, lvP);
     out.pi0_p = lvPi0.P();
     out.pi0_theta = lvPi0.Theta();
@@ -440,6 +506,7 @@ void runEppi0Logic(const Selection& selection,
         out.pi0_thetaX * 180.0 / kPi
     });
     out.eppi0_passExclusivity = exclusivity.pass;
+    out.eppi0_evaluatedCuts = joinCsv(exclusivity.evaluated);
     out.eppi0_failedCuts = exclusivity.failedCsv();
 }
 
@@ -464,6 +531,8 @@ bool processEvent(const EventRows& rows,
     CandidateOutput best;
     bool found = false;
     Selection selection;
+    std::vector<std::string> taggedCuts;
+    std::vector<std::string> taggedFailures;
 
     const auto alreadySelected = [&](const RecBranches* candidate) {
         for (const auto& [_, particles] : selection) {
@@ -486,15 +555,23 @@ bool processEvent(const EventRows& rows,
     visitRole = [&](size_t roleIndex) {
         if (roleIndex >= cfg.channel.particles.size()) {
             double rank = 0.0;
-            std::string failedCompositeCut;
-            if (!evaluateCompositeRank(selection, cfg, rank, failedCompositeCut)) {
+            CutDecision compositeDecision;
+            if (!evaluateCompositeRank(selection, cfg, rank, compositeDecision)) {
                 ++stats.compositeFailures;
-                ++stats.cutFailures[failedCompositeCut.empty() ? "composite" : failedCompositeCut];
+                stats.addFailures(compositeDecision);
                 return;
             }
 
             CandidateOutput candidate;
             buildCandidateOutput(rows, selection, cuts, candidate);
+            std::vector<std::string> candidateTaggedCuts = taggedCuts;
+            std::vector<std::string> candidateTaggedFailures = taggedFailures;
+            appendUnique(candidateTaggedCuts, compositeDecision.tagged);
+            appendUnique(candidateTaggedFailures, compositeDecision.taggedFailed);
+            appendUnique(candidateTaggedCuts, splitCsv(candidate.eppi0_evaluatedCuts));
+            appendUnique(candidateTaggedFailures, splitCsv(candidate.eppi0_failedCuts));
+            candidate.eppi0_evaluatedCuts = joinCsv(candidateTaggedCuts);
+            candidate.eppi0_failedCuts = joinCsv(candidateTaggedFailures);
             if (runEppi0 && !candidate.eppi0_passExclusivity && !cfg.saveFailedCandidates) {
                 ++stats.exclusivityFailures;
                 addCsvFailures(candidate.eppi0_failedCuts, stats);
@@ -531,9 +608,15 @@ bool processEvent(const EventRows& rows,
                     continue;
                 }
 
+                const size_t taggedCutCount = taggedCuts.size();
+                const size_t taggedFailureCount = taggedFailures.size();
+                appendUnique(taggedCuts, decision.tagged);
+                appendUnique(taggedFailures, decision.taggedFailed);
                 chosen.push_back(candidate);
                 chooseParticle(i + 1);
                 chosen.pop_back();
+                taggedCuts.resize(taggedCutCount);
+                taggedFailures.resize(taggedFailureCount);
             }
         };
 
@@ -586,6 +669,7 @@ int main(int argc, char** argv) {
               << "[INFO] Input rows  : " << nEntries << "\n"
               << "[INFO] Output file : " << cfg.outputFile << "\n"
               << "[INFO] Output tree : " << cfg.outputTree << "\n"
+              << "[INFO] Output mode : " << cfg.outputMode << "\n"
               << "[INFO] Beam energy : " << cfg.beamEnergy << " GeV\n"
               << "[INFO] Torus       : " << cfg.torus << "\n"
               << "[INFO] Progress    : "
@@ -595,11 +679,97 @@ int main(int argc, char** argv) {
 
     EventBranches* event = nullptr;
     RecBranches* rec = nullptr;
+    GenBranches* gen = nullptr;
     inTree->SetBranchAddress("event", &event);
     inTree->SetBranchAddress("rec", &rec);
+    const bool hasGenBranch = inTree->GetBranch("gen") != nullptr;
+    if (hasGenBranch) inTree->SetBranchAddress("gen", &gen);
 
     TFile output(cfg.outputFile.c_str(), "RECREATE");
     TTree outTree(cfg.outputTree.c_str(), cfg.outputTree.c_str());
+
+    if (cfg.outputMode == "matchedRows") {
+        if (cfg.channel.particles.size() != 1) {
+            std::cerr << "[ERROR] outputMode=matchedRows requires exactly one particle role\n";
+            return 1;
+        }
+        if (!hasGenBranch) {
+            std::cerr << "[ERROR] outputMode=matchedRows requires an input gen branch\n";
+            return 1;
+        }
+
+        EventBranches outEvent;
+        RecBranches outRec;
+        GenBranches outGen;
+        outTree.Branch("event", &outEvent);
+        outTree.Branch("rec", &outRec);
+        outTree.Branch("gen", &outGen);
+
+        ProcessingStats stats;
+        long long nInputRows = 0;
+        long long nWritten = 0;
+        long long lastProgressRow = 0;
+        const Clock::time_point startTime = Clock::now();
+        const ParticleRoleSpec& role = cfg.channel.particles.front();
+
+        for (Long64_t i = 0; i < nEntries; ++i) {
+            inTree->GetEntry(i);
+            ++nInputRows;
+            if (progressEvery > 0 && nInputRows - lastProgressRow >= progressEvery) {
+                printProgress(nInputRows, nEntries, nInputRows, nWritten, stats, startTime);
+                lastProgressRow = nInputRows;
+            }
+
+            if (!event || !rec || !gen || rec->pid == -999) continue;
+            if (rec->pid != role.pid) continue;
+
+            const std::vector<RecBranches> eventParticles{*rec};
+            const std::map<std::string, const RecBranches*> selected;
+            const CutDecision decision = cuts.evaluateParticle(*rec, role, eventParticles, selected);
+            if (!decision.pass) {
+                stats.addFailures(decision);
+                continue;
+            }
+
+            outEvent = *event;
+            outRec = *rec;
+            outGen = *gen;
+            outTree.Fill();
+            ++nWritten;
+        }
+
+        if (progressEvery > 0 && nInputRows != lastProgressRow) {
+            printProgress(nInputRows, nEntries, nInputRows, nWritten, stats, startTime);
+        }
+
+        output.Write();
+        output.Close();
+
+        const double elapsed = std::chrono::duration<double>(Clock::now() - startTime).count();
+        const double savedFraction = 100.0 * fraction(nWritten, nInputRows);
+        std::cout << "[DONE]\n"
+                  << "  Input rows       : " << nInputRows << "\n"
+                  << "  Rows saved       : " << nWritten << "\n"
+                  << "  Selection yield  : " << std::fixed << std::setprecision(2)
+                  << savedFraction << "%\n"
+                  << "  Elapsed time     : " << std::fixed << std::setprecision(1)
+                  << elapsed << " s\n"
+                  << "  Output file      : " << cfg.outputFile << "\n";
+
+        if (!stats.cutFailures.empty()) {
+            std::cout << "  Cut rejection counts:\n";
+            for (const auto& [name, count] : stats.cutFailures) {
+                std::cout << "    " << name << ": " << count << "\n";
+            }
+        }
+        return 0;
+    }
+
+    if (cfg.outputMode != "candidates") {
+        std::cerr << "[ERROR] Unsupported outputMode: " << cfg.outputMode << "\n";
+        return 1;
+    }
+
     CandidateOutput out;
     out.registerBranches(outTree, supportsEppi0Logic(cfg));
 

@@ -61,6 +61,11 @@ PrimitiveCutSpec parseCutSpec(const json& j) {
     PrimitiveCutSpec cut;
     cut.op = j.value("op", "");
     cut.name = j.value("name", cut.op);
+    cut.mode = j.value("mode", cut.mode);
+    if (cut.mode != "require" && cut.mode != "tag") {
+        throw std::runtime_error("Unsupported cut mode '" + cut.mode +
+                                 "' for cut '" + cut.name + "'");
+    }
     cut.min = j.value("min", cut.min);
     cut.max = j.value("max", cut.max);
     cut.detector = j.value("detector", cut.detector);
@@ -84,6 +89,11 @@ CompositeSpec parseCompositeSpec(const json& j) {
     CompositeSpec composite;
     composite.role = j.value("role", "");
     composite.type = j.value("type", "");
+    composite.mode = j.value("mode", composite.mode);
+    if (composite.mode != "require" && composite.mode != "tag") {
+        throw std::runtime_error("Unsupported composite mode '" + composite.mode +
+                                 "' for composite '" + composite.role + "'");
+    }
     composite.daughters = j.value("daughters", composite.daughters);
     composite.mass = j.value("mass", composite.mass);
     composite.window = j.value("window", composite.window);
@@ -237,14 +247,23 @@ const CompositeSpec* ChannelSpec::findComposite(const std::string& role) const {
 }
 
 void CutDecision::require(bool condition, const std::string& name) {
+    evaluated.push_back(name);
     if (condition) return;
     pass = false;
     failed.push_back(name);
 }
 
+void CutDecision::tag(bool condition, const std::string& name) {
+    evaluated.push_back(name);
+    tagged.push_back(name);
+    if (!condition) taggedFailed.push_back(name);
+}
+
 void CutDecision::merge(const CutDecision& other) {
-    if (other.pass) return;
-    pass = false;
+    evaluated.insert(evaluated.end(), other.evaluated.begin(), other.evaluated.end());
+    tagged.insert(tagged.end(), other.tagged.begin(), other.tagged.end());
+    taggedFailed.insert(taggedFailed.end(), other.taggedFailed.begin(), other.taggedFailed.end());
+    if (!other.pass) pass = false;
     failed.insert(failed.end(), other.failed.begin(), other.failed.end());
 }
 
@@ -265,6 +284,7 @@ PostCutConfig PostCutConfig::fromFile(const std::string& filename) {
     cfg.outputFile = j.value("outputFile", cfg.outputFile);
     cfg.inputTree = j.value("inputTree", cfg.inputTree);
     cfg.outputTree = j.value("outputTree", cfg.outputTree);
+    cfg.outputMode = j.value("outputMode", cfg.outputMode);
     cfg.beamEnergy = j.value("beamEnergy", cfg.beamEnergy);
     cfg.torus = j.value("torus", cfg.torus);
     cfg.saveFailedCandidates = j.value("saveFailedCandidates", cfg.saveFailedCandidates);
@@ -423,50 +443,56 @@ CutDecision Cuts::evaluateParticle(const RecBranches& p,
 
     for (const auto& cut : role.cuts) {
         const std::string name = cut.name.empty() ? (role.role + "." + cut.op) : cut.name;
+        const auto apply = [&](bool condition) {
+            if (cut.mode == "tag") decision.tag(condition, name);
+            else decision.require(condition, name);
+        };
 
         if (cut.op == "minP") {
-            decision.require(isFinite(p.p) && isFinite(cut.min) && p.p >= cut.min, name);
+            apply(isFinite(p.p) && isFinite(cut.min) && p.p >= cut.min);
         } else if (cut.op == "maxP") {
-            decision.require(isFinite(p.p) && isFinite(cut.max) && p.p <= cut.max, name);
+            apply(isFinite(p.p) && isFinite(cut.max) && p.p <= cut.max);
         } else if (cut.op == "pRange") {
-            decision.require(isFinite(p.p) && isFinite(cut.min) && isFinite(cut.max) &&
-                             p.p >= cut.min && p.p <= cut.max, name);
+            apply(isFinite(p.p) && isFinite(cut.min) && isFinite(cut.max) &&
+                  p.p >= cut.min && p.p <= cut.max);
         } else if (cut.op == "betaRange") {
-            decision.require(isFinite(p.beta) && isFinite(cut.min) && isFinite(cut.max) &&
-                             p.beta >= cut.min && p.beta <= cut.max, name);
+            apply(isFinite(p.beta) && isFinite(cut.min) && isFinite(cut.max) &&
+                  p.beta >= cut.min && p.beta <= cut.max);
         } else if (cut.op == "minCalEnergy") {
             const double calEnergy = p.E_PCAL + p.E_ECIN + p.E_ECOUT;
-            decision.require(isFinite(calEnergy) && isFinite(cut.min) && calEnergy >= cut.min, name);
+            apply(isFinite(calEnergy) && isFinite(cut.min) && calEnergy >= cut.min);
         } else if (cut.op == "firstPidInstance") {
-            decision.require(isFirstPidInstance(p, eventParticles), name);
+            apply(isFirstPidInstance(p, eventParticles));
+        } else if (cut.op == "matchedGen") {
+            apply(p.matchedGenIdx >= 0);
         } else if (cut.op == "rejectDetector") {
-            decision.require(p.det != cut.detector, name);
+            apply(p.det != cut.detector);
         } else if (cut.op == "rejectSameSectorAsRole") {
             const auto ref = selected.find(cut.refRole);
-            decision.require(ref == selected.end() || !ref->second || p.sector != ref->second->sector, name);
+            apply(ref == selected.end() || !ref->second || p.sector != ref->second->sector);
         } else if (cut.op == "vertexDiff") {
             const auto ref = selected.find(cut.refRole);
             const bool pass = ref == selected.end() || !ref->second ||
                               !isFinite(ref->second->vz) || !isFinite(p.vz) ||
                               (isFinite(cut.max) && std::abs(p.vz - ref->second->vz) <= cut.max);
-            decision.require(pass, name);
+            apply(pass);
         } else if (cut.op == "removeCVTPhi") {
-            decision.require(isFinite(cut.min) && isFinite(cut.max) &&
-                             passesCVTPhiVeto(p, cut.min, cut.max), name);
+            apply(isFinite(cut.min) && isFinite(cut.max) &&
+                  passesCVTPhiVeto(p, cut.min, cut.max));
         } else if (cut.op == "fiducial") {
-            decision.require(evaluateFiducial(p).pass, name);
+            apply(evaluateFiducial(p).pass);
         } else if (cut.op == "minPcalEnergy") {
-            decision.require(p.det != 1 || passSFMinPcalCut(p.E_PCAL), name);
+            apply(p.det != 1 || passSFMinPcalCut(p.E_PCAL));
         } else if (cut.op == "samplingFractionDiagonal") {
-            decision.require(p.det != 1 || passSFTriangleCut(p.E_PCAL, p.E_ECIN, p.p), name);
+            apply(p.det != 1 || passSFTriangleCut(p.E_PCAL, p.E_ECIN, p.p));
         } else if (cut.op == "samplingFractionSigma") {
             const double sf = (p.E_PCAL + p.E_ECIN + p.E_ECOUT) / p.p;
-            decision.require(p.det != 1 ||
-                             (!sfCoeffs_.empty() && passSFSigmaCut(p.sector, sf, p.p)), name);
+            apply(p.det != 1 ||
+                  (!sfCoeffs_.empty() && passSFSigmaCut(p.sector, sf, p.p)));
         } else if (cut.op == "samplingFraction") {
-            decision.require(evaluateSamplingFraction(p).pass, name);
+            apply(evaluateSamplingFraction(p).pass);
         } else {
-            decision.require(false, name.empty() ? "unknown_cut" : name);
+            apply(false);
         }
     }
 

@@ -14,6 +14,8 @@ COLUMNS = [
     "m_gg", "m2_miss", "m2_epX", "m_eggX", "E_miss", "pT_miss",
 ]
 
+OPTIONAL_COLUMNS = ["t_pi0"]
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export selected EPPI0 data to a compact NumPy artifact")
@@ -32,22 +34,24 @@ def main() -> int:
     ROOT.gROOT.SetBatch(True)
     if args.dictionary and ROOT.gSystem.Load(str(args.dictionary.resolve())) < 0:
         raise RuntimeError(f"Could not load ROOT dictionary: {args.dictionary}")
-    arrays = ROOT.RDataFrame(args.tree, str(args.selected_root.resolve())).AsNumpy(COLUMNS)
+    selected_path = str(args.selected_root.resolve())
+    columns = columns_in_tree(ROOT, selected_path, args.tree, COLUMNS, OPTIONAL_COLUMNS)
+    arrays = ROOT.RDataFrame(args.tree, selected_path).AsNumpy(columns)
     processing_file = ROOT.TFile.Open(str(args.processing_root.resolve()), "READ")
     charge_object = processing_file.Get("AccumulatedCharge")
     if not charge_object:
         raise RuntimeError("processing ROOT file has no AccumulatedCharge metadata")
     beam_charge_c = float(charge_object.GetVal()) * 1.0e-9
     processing_file.Close()
+    has_t_pi0 = "t_pi0" in arrays
     metadata = {
         "selected_root": str(args.selected_root.resolve()),
         "processing_root": str(args.processing_root.resolve()),
         "selected_events": int(len(arrays["Q2"])),
-        "schema_version": 1,
+        "schema_version": 2 if has_t_pi0 else 1,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        args.output,
+    output = dict(
         run=arrays["runNum"],
         event=arrays["eventNum"],
         rec_Q2=arrays["Q2"],
@@ -65,10 +69,30 @@ def main() -> int:
         beam_charge_c=beam_charge_c,
         metadata_json=json.dumps(metadata, sort_keys=True),
     )
+    if has_t_pi0:
+        output["rec_minus_t_pi0"] = arrays["t_pi0"]
+    np.savez_compressed(args.output, **output)
     print(f"Selected events: {len(arrays['Q2'])}")
     print(f"Beam charge: {beam_charge_c:.6e} C")
     print(f"Wrote {args.output}")
     return 0
+
+
+def columns_in_tree(ROOT, path: str, tree_name: str, required: list[str], optional: list[str]) -> list[str]:
+    root_file = ROOT.TFile.Open(path, "READ")
+    if not root_file or root_file.IsZombie():
+        raise RuntimeError(f"Could not open selected ROOT file: {path}")
+    tree = root_file.Get(tree_name)
+    if not tree:
+        root_file.Close()
+        raise RuntimeError(f"Could not find tree {tree_name} in {path}")
+    missing = [name for name in required if not tree.GetBranch(name)]
+    if missing:
+        root_file.Close()
+        raise RuntimeError(f"Tree {tree_name} is missing branches: {missing}")
+    columns = list(required) + [name for name in optional if tree.GetBranch(name)]
+    root_file.Close()
+    return columns
 
 
 if __name__ == "__main__":

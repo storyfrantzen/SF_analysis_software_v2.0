@@ -3,6 +3,7 @@
     "treeName": "Events",
 
     "beamEnergy": 6.535,
+    "kinematicCorrections": "../../../../parameters/proton_energy_loss/6.535RGK_clasdisP2.json",
 
     "qadb": {
         "enabled": false

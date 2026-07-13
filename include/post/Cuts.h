@@ -11,9 +11,13 @@
 
 struct CutDecision {
     bool pass = true;
+    std::vector<std::string> evaluated;
     std::vector<std::string> failed;
+    std::vector<std::string> tagged;
+    std::vector<std::string> taggedFailed;
 
     void require(bool condition, const std::string& name);
+    void tag(bool condition, const std::string& name);
     void merge(const CutDecision& other);
     std::string failedCsv() const;
 };
@@ -29,6 +33,7 @@ struct ExclusivityVars {
 struct PrimitiveCutSpec {
     std::string name;
     std::string op;
+    std::string mode = "require";
     double min = NAN;
     double max = NAN;
     int detector = -999;
@@ -46,6 +51,7 @@ struct ParticleRoleSpec {
 struct CompositeSpec {
     std::string role;
     std::string type;
+    std::string mode = "require";
     std::vector<std::string> daughters;
     double mass = NAN;
     double window = NAN;
@@ -64,6 +70,7 @@ struct PostCutConfig {
     std::string outputFile = "post_processed.root";
     std::string inputTree = "Events";
     std::string outputTree = "Events";
+    std::string outputMode = "candidates";
 
     double beamEnergy = 10.6;
     int torus = -1;

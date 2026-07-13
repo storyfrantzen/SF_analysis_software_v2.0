@@ -1,0 +1,31 @@
+{
+    "outputFile": "6.535_rgk_proton_energy_loss_mc_fiducial.root",
+    "inputTree": "Events",
+    "outputTree": "Events",
+    "outputMode": "matchedRows",
+    "beamEnergy": 6.535,
+    "torus": 1,
+    "saveFailedCandidates": false,
+
+    "fiducialCuts": [
+        "DCEdges_RGA",
+        "CVT_RGA"
+    ],
+
+    "channel": {
+        "name": "proton_energy_loss_fiducial",
+        "particles": [
+            {
+                "role": "proton",
+                "pid": 2212,
+                "count": 1,
+                "detectors": [1, 2],
+                "cuts": [
+                    { "name": "proton.matched_gen", "op": "matchedGen" },
+                    { "name": "proton.fiducial", "op": "fiducial" }
+                ]
+            }
+        ],
+        "composites": []
+    }
+}

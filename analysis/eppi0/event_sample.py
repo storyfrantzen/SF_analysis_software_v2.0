@@ -187,6 +187,100 @@ def join_reconstructed(
     return output
 
 
+def generated_particle_columns(
+    run: Array,
+    event: Array,
+    pid: Array,
+    momentum: Array,
+    theta: Array,
+    phi: Array,
+    target_run: Array,
+    target_event: Array,
+    source_file_id: Array | None = None,
+    source_event_index: Array | None = None,
+    target_source_file_id: Array | None = None,
+    target_source_event_index: Array | None = None,
+) -> dict[str, Array]:
+    """Collapse per-particle GEN rows and align them to an event-level sample."""
+    run = np.asarray(run, dtype=np.int64)
+    event = np.asarray(event, dtype=np.int64)
+    pid = np.asarray(pid, dtype=np.int64)
+    momentum = np.asarray(momentum, dtype=float)
+    theta = np.asarray(theta, dtype=float)
+    phi = np.asarray(phi, dtype=float)
+    if not (run.shape == event.shape == pid.shape == momentum.shape == theta.shape == phi.shape):
+        raise ValueError("all generated-particle arrays must have equal shapes")
+
+    use_source_keys = (
+        source_file_id is not None
+        and source_event_index is not None
+        and target_source_file_id is not None
+        and target_source_event_index is not None
+        and np.all(np.asarray(source_file_id, dtype=np.uint64) != INVALID_SOURCE_ID)
+        and np.all(np.asarray(source_event_index, dtype=np.uint64) != INVALID_SOURCE_ID)
+        and np.all(np.asarray(target_source_file_id, dtype=np.uint64) != INVALID_SOURCE_ID)
+        and np.all(np.asarray(target_source_event_index, dtype=np.uint64) != INVALID_SOURCE_ID)
+    )
+
+    valid = (pid != -999) & np.isfinite(momentum) & np.isfinite(theta) & np.isfinite(phi)
+    if use_source_keys:
+        keys = _source_keys(
+            np.asarray(source_file_id, dtype=np.uint64)[valid],
+            np.asarray(source_event_index, dtype=np.uint64)[valid],
+        )
+        target_keys = _source_keys(target_source_file_id, target_source_event_index)
+    else:
+        keys = _keys(run[valid], event[valid])
+        target_keys = _keys(target_run, target_event)
+    pid = pid[valid]
+    momentum = momentum[valid]
+    theta = theta[valid]
+    phi = phi[valid]
+
+    unique_keys, inverse = np.unique(keys, return_inverse=True)
+    number_of_events = unique_keys.size
+    electron = _first_particle(inverse, pid, momentum, theta, phi, 11, number_of_events)
+    proton = _first_particle(inverse, pid, momentum, theta, phi, 2212, number_of_events)
+    pi0 = _first_particle(inverse, pid, momentum, theta, phi, 111, number_of_events)
+    gamma1, gamma2 = _first_two_particles(inverse, pid, momentum, theta, phi, 22, number_of_events)
+    radiative = pi0["present"]
+    nonradiative_pi0 = _kinematics_from_vector(_four_vector(gamma1, 0.0) + _four_vector(gamma2, 0.0))
+    pi0_kinematics = {
+        "p": np.where(radiative, pi0["p"], nonradiative_pi0["p"]),
+        "theta": np.where(radiative, pi0["theta"], nonradiative_pi0["theta"]),
+        "phi": np.where(radiative, pi0["phi"], nonradiative_pi0["phi"]),
+    }
+    columns: dict[str, Array] = {}
+    for prefix, particle in (
+        ("gen_electron", electron),
+        ("gen_proton", proton),
+        ("gen_gamma1", gamma1),
+        ("gen_gamma2", gamma2),
+        ("gen_pi0", pi0_kinematics),
+    ):
+        columns[f"{prefix}P"] = particle["p"]
+        columns[f"{prefix}Theta"] = particle["theta"]
+        columns[f"{prefix}Phi"] = particle["phi"]
+    return _align_event_columns(unique_keys, target_keys, columns)
+
+
+def _align_event_columns(source_keys: Array, target_keys: Array, columns: dict[str, Array]) -> dict[str, Array]:
+    if source_keys.size == 0:
+        return {name: np.full(target_keys.size, np.nan, dtype=float) for name in columns}
+    order = np.argsort(source_keys, order=source_keys.dtype.names)
+    sorted_keys = source_keys[order]
+    positions = np.searchsorted(sorted_keys, target_keys)
+    bounded = positions < sorted_keys.size
+    matched = np.zeros(target_keys.size, dtype=bool)
+    matched[bounded] = sorted_keys[positions[bounded]] == target_keys[bounded]
+    aligned: dict[str, Array] = {}
+    for name, values in columns.items():
+        output = np.full(target_keys.size, np.nan, dtype=float)
+        output[matched] = np.asarray(values, dtype=float)[order[positions[matched]]]
+        aligned[name] = output
+    return aligned
+
+
 def _keys(run: Array, event: Array) -> Array:
     keys = np.empty(np.asarray(run).size, dtype=[("run", "<i8"), ("event", "<i8")])
     keys["run"] = run
@@ -272,6 +366,13 @@ def _four_vector(particle: dict[str, Array], mass: float) -> Array:
     pz = p * np.cos(particle["theta"])
     energy = np.sqrt(p * p + mass * mass)
     return np.column_stack((px, py, pz, energy))
+
+
+def _kinematics_from_vector(vector: Array) -> dict[str, Array]:
+    p = np.linalg.norm(vector[:, :3], axis=1)
+    theta = np.arccos(np.divide(vector[:, 2], p, out=np.full_like(p, np.nan), where=p > 0))
+    phi = np.arctan2(vector[:, 1], vector[:, 0])
+    return {"p": p, "theta": theta, "phi": phi}
 
 
 def _dis(electron: Array, beam_energy: float) -> tuple[Array, Array]:

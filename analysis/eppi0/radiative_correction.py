@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import glob
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import numpy as np
 
@@ -12,6 +12,7 @@ from .event_sample import _dis, _minus_t, _trento_phi
 
 
 Array = np.ndarray
+LUND_TEXT_SUFFIXES = {".lund", ".txt"}
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,7 @@ def compute_radiative_correction(
     beam_energy: float,
     chunk_size: int = 200_000,
     max_events: int | None = None,
+    max_files: int | None = None,
     min_counts: int = 5,
     normalization_ratio: float | None = None,
     born_integrated_cross_section: float | None = None,
@@ -64,11 +66,23 @@ def compute_radiative_correction(
     Histograms are accumulated in the native flat bin order and unflattened only at
     output time.  The trento phi convention is inherited from the analysis core:
     electron-proton planes through ``event_sample._trento_phi``.
+    The stored correction is the radiative-to-Born cross-section ratio; downstream
+    unfolding divides by it.
     """
     if min_counts < 0:
         raise ValueError("min_counts must be non-negative")
+    born_files = _limited_lund_files(born, max_files)
+    radiative_files = _limited_lund_files(radiative, max_files)
+    if progress_chunks > 0:
+        limit_text = f", max_files={max_files}" if max_files is not None else ""
+        events_text = f", max_events={max_events}" if max_events is not None else ""
+        print(
+            f"[PROGRESS] Radiative correction preflight: "
+            f"born_files={len(born_files)}, radiative_files={len(radiative_files)}"
+            f"{limit_text}{events_text}"
+        )
     born_result = histogram_lund(
-        born,
+        born_files,
         binning,
         beam_energy=beam_energy,
         chunk_size=chunk_size,
@@ -77,7 +91,7 @@ def compute_radiative_correction(
         progress_label="Born",
     )
     radiative_result = histogram_lund(
-        radiative,
+        radiative_files,
         binning,
         beam_energy=beam_energy,
         chunk_size=chunk_size,
@@ -108,20 +122,20 @@ def compute_radiative_correction(
             radiative_integrated_cross_section, "radiative_integrated_cross_section"
         )
         normalization_ratio = (
-            born_integrated_cross_section
-            / radiative_integrated_cross_section
-            * radiative_result.topology_events
-            / born_result.topology_events
+            radiative_integrated_cross_section
+            / born_integrated_cross_section
+            * born_result.topology_events
+            / radiative_result.topology_events
         )
     elif normalization_ratio is None:
-        normalization_ratio = radiative_result.topology_events / born_result.topology_events
+        normalization_ratio = born_result.topology_events / radiative_result.topology_events
     normalization_ratio = float(normalization_ratio)
     if not np.isfinite(normalization_ratio) or normalization_ratio <= 0.0:
         raise ValueError("normalization_ratio must be positive and finite")
 
     lambda_born = born_result.counts + 0.5
     lambda_rad = radiative_result.counts + 0.5
-    c_rad_flat = normalization_ratio * lambda_born / lambda_rad
+    c_rad_flat = normalization_ratio * lambda_rad / lambda_born
     delta_flat = c_rad_flat * np.sqrt((1.0 / lambda_born) + (1.0 / lambda_rad))
     reliable_flat = (born_result.counts >= min_counts) & (radiative_result.counts >= min_counts)
 
@@ -154,23 +168,19 @@ def _positive_finite(value: float | None, name: str) -> float:
 
 
 def histogram_lund(
-    pattern_or_dir: str | Path,
+    pattern_or_dir: str | Path | Sequence[Path],
     binning: AnalysisBinning,
     *,
     beam_energy: float,
     chunk_size: int = 200_000,
     max_events: int | None = None,
+    max_files: int | None = None,
     progress_chunks: int = 0,
     progress_label: str = "LUND",
 ) -> LundHistogramResult:
     if max_events is not None and max_events <= 0:
         raise ValueError("max_events must be positive when provided")
-    files = _lund_files(pattern_or_dir)
-    if not files:
-        raise FileNotFoundError(
-            f"No LUND-like text files matched: {pattern_or_dir}. "
-            "Directories are scanned recursively for text files with LUND event headers."
-        )
+    files = _limited_lund_files(pattern_or_dir, max_files)
     counts = np.zeros(binning.size, dtype=float)
     q2_min = np.full(binning.size, np.inf)
     q2_max = np.full(binning.size, -np.inf)
@@ -371,25 +381,54 @@ def _iter_lund_chunks(
         yield np.asarray(electron_rows, dtype=float), np.asarray(proton_rows, dtype=float)
 
 
-def _lund_files(pattern_or_dir: str | Path) -> list[Path]:
+def _limited_lund_files(pattern_or_dir: str | Path | Sequence[Path], max_files: int | None) -> list[Path]:
+    if max_files is not None and max_files <= 0:
+        raise ValueError("max_files must be positive when provided")
+    files = _lund_files(pattern_or_dir, max_files=max_files)
+    if not files:
+        raise FileNotFoundError(
+            f"No LUND-like text files matched: {pattern_or_dir}. "
+            "Directories are scanned recursively for text files with LUND event headers."
+        )
+    return files
+
+
+def _lund_files(pattern_or_dir: str | Path | Sequence[Path], max_files: int | None = None) -> list[Path]:
+    if not isinstance(pattern_or_dir, str | Path):
+        return _filter_lund_files(pattern_or_dir, max_files=max_files)
     path = Path(pattern_or_dir)
     if path.is_dir():
-        candidates = sorted(item for item in path.rglob("*.txt") if item.is_file())
-        files = _filter_lund_files(candidates)
-        if files:
-            return files
-        candidates = sorted(item for item in path.rglob("*") if item.is_file())
+        if max_files is not None:
+            return _filter_lund_files(path.rglob("*"), max_files=max_files)
+        candidates = sorted(
+            item for item in path.rglob("*")
+            if item.is_file() and item.suffix.lower() in LUND_TEXT_SUFFIXES
+        )
     else:
         candidates = sorted(Path(item) for item in glob.glob(str(pattern_or_dir)))
-    return _filter_lund_files(candidates)
+    return _filter_lund_files(candidates, max_files=max_files)
 
 
-def _filter_lund_files(candidates: Iterable[Path]) -> list[Path]:
-    return [
-        item
-        for item in candidates
-        if item.stat().st_size > 0 and _looks_text(item) and _looks_lund_header(item)
-    ]
+def _filter_lund_files(candidates: Iterable[Path], max_files: int | None = None) -> list[Path]:
+    files: list[Path] = []
+    for item in candidates:
+        if not item.is_file() or item.suffix.lower() not in LUND_TEXT_SUFFIXES:
+            continue
+        if item.stat().st_size <= 0:
+            continue
+        if item.suffix.lower() == ".lund":
+            files.append(item)
+            if max_files is not None and len(files) >= max_files:
+                break
+            continue
+        if (
+            _looks_text(item)
+            and _looks_lund_header(item)
+        ):
+            files.append(item)
+            if max_files is not None and len(files) >= max_files:
+                break
+    return files
 
 
 def _looks_text(path: Path, nbytes: int = 4096) -> bool:

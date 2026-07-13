@@ -36,14 +36,18 @@ The active RGK 6.535 GeV files are:
 
 - `processing/rgk/6.535/aao_rad_q2_0.7_ep_1.00.json`;
 - `processing/rgk/6.535/aao_rad_q2_0.9_ep_1.15.json`;
+- `processing/rgk/6.535/eppi0_data.json`;
+- `post/rgk/6.535/eppi0_data.json`;
 - `post/rgk/6.535/eppi0_base.json`;
 - `post/rgk/6.535/aao_rad_eppi0_loose.json`;
 - `processing/rgk/6.535/eppi0_mc_acceptance.json`;
+- `post/rgk/6.535/eppi0_mc_acceptance.json`;
 - `processing/rgk/6.535/calibration/sidis_electrons_data.json`;
 - `processing/rgk/6.535/calibration/sidis_electrons_mc.json`;
 - `processing/rgk/6.535/calibration/proton_energy_loss_mc.json`;
 - `post/rgk/6.535/calibration/electron_sf_candidates.json`;
 - `post/rgk/6.535/calibration/electron_sf_candidates_mc.json`;
+- `post/rgk/6.535/calibration/proton_energy_loss_fiducial.json`;
 - `post/rgk/6.535/calibration/electron_sf_selected.json`;
 - `analysis/rgk/6.535.json`.
 
@@ -70,6 +74,25 @@ selection. For example, `configs/post/rga/10.604/eppi0_data.json` extends the
 RGA EPPI0 base config and overrides only `outputFile` plus
 `samplingFraction.sigma.paramsFile`.
 
+Primitive particle cuts and pair-mass composites accept an optional `mode`:
+
+- `"mode": "require"` is the default and rejects a particle combination when
+  the cut fails;
+- `"mode": "tag"` keeps the combination and records the result in
+  `evaluatedCuts` and `failedCuts`.
+
+Use required cuts for stable topology and candidate identity, and tagged cuts
+for selections whose effects should be studied after candidate construction.
+When `saveFailedCandidates` is true, loose-exclusivity failures are retained as
+well. The visualizer expands these two CSV branches into filterable quantities
+named `passCut_<cut_name>`.
+
+`post/rga/10.604/eppi0_cut_diagnostics.json` is a ready-to-run RGA data
+configuration. It requires the trigger electron and loose particle-quality
+preselection, while tagging electron/proton/photon fiducials, electron
+sampling-fraction cuts, the three CVT phi vetoes, and the pi0 mass window. It
+also retains failed loose-exclusivity candidates.
+
 ## RGA 10.604 GeV EPPI0 smoke test
 
 From the repository root:
@@ -86,6 +109,12 @@ From the repository root:
 
 ./build/post_process configs/post/rga/10.604/eppi0_mc_nonradiative.json \
   10.604_rga_eppi0_mc_nonradiative.root
+
+./build/post_process configs/post/rga/10.604/eppi0_cut_diagnostics.json \
+  10.604_rga_eppi0_data.root
+
+python3 -m visualizer 10.604_rga_eppi0_cut_diagnostics.root \
+  --tree Events --output 10.604_rga_eppi0_cut_diagnostics.html
 ```
 
 The processing stage corrects reconstructed proton momentum and angles before
@@ -159,6 +188,40 @@ phase-space families in the filenames: `Q2 >= 0.7, electron p >= 1.00` for
 `11225`, and `11238`. The post config extends the RGK EPPI0 base but keeps a
 loose photon selection with a very low reconstructed photon momentum threshold,
 so the comparison is sensitive to the generated `EG` threshold scan.
+
+For RGK 6.535 GeV data processing, use the data config pair. The processing
+config enables QADB, applies the `6.535RGK_clasdisP2` proton energy-loss
+corrections, and records accumulated beam charge for cross-section
+normalization. The post config extends the nominal RGK EPPI0 base selection and
+loads the data-side `6.535RGKSKIM1` sampling-fraction parameters:
+
+```bash
+./build/hipo2root configs/processing/rgk/6.535/eppi0_data.json \
+  /path/to/rgk/6.535/data 0 1000000
+
+./build/post_process configs/post/rgk/6.535/eppi0_data.json \
+  6.535_rgk_eppi0_data.root 1000000
+
+python3 analysis/export_selected_data.py \
+  6.535_rgk_eppi0_data_selected.root \
+  6.535_rgk_eppi0_data.root \
+  results/data/rgk_6.535_data_events.npz \
+  --dictionary build/libROOTBranchesDict.so
+```
+
+For calibrated RGK 6.535 GeV acceptance studies, use the compact acceptance
+processing config together with the acceptance post config. The processing
+config applies the `6.535RGK_clasdisP2` proton energy-loss corrections; the
+post config extends the nominal RGK EPPI0 base selection and loads the
+`6.535RGK_clasdisGEMC_11285` sampling-fraction parameters:
+
+```bash
+./build/hipo2root configs/processing/rgk/6.535/eppi0_mc_acceptance.json \
+  /volatile/clas12/osg/storyf/11285 0 1000000
+
+./build/post_process configs/post/rgk/6.535/eppi0_mc_acceptance.json \
+  6.535_rgk_eppi0_mc_acceptance.root 1000000
+```
 
 Example smoke-test commands on ifarm:
 
@@ -254,6 +317,35 @@ python3 scripts/derive_proton_energy_loss.py \
   --output parameters/proton_energy_loss/6.535RGK_clasdisP2.json \
   --plot-dir calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2 \
   --dataset-tag 6.535RGK_clasdisP2 \
+  --beam-energy 6.535
+```
+
+To compare against a fiducial-volume derivation, first filter the matched
+proton rows through post-processing while preserving the `event`, `rec`, and
+`gen` branches:
+
+```bash
+./build/post_process \
+  configs/post/rgk/6.535/calibration/proton_energy_loss_fiducial.json \
+  6.535_rgk_proton_energy_loss_mc.root
+
+python3 scripts/derive_proton_energy_loss.py \
+  6.535_rgk_proton_energy_loss_mc_fiducial.root \
+  --output parameters/proton_energy_loss/6.535RGK_clasdisP2_fiducial.json \
+  --plot-dir calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2_fiducial \
+  --dataset-tag 6.535RGK_clasdisP2_fiducial \
+  --beam-energy 6.535
+
+python3 scripts/compare_proton_energy_loss.py \
+  6.535_rgk_proton_energy_loss_mc_fiducial.root \
+  parameters/proton_energy_loss/6.535RGK_clasdisP2.json \
+  parameters/proton_energy_loss/6.535RGK_clasdisP2_fiducial.json \
+  --baseline-label standard \
+  --updated-label fiducial \
+  --output calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2_compare/residual_summary.csv \
+  --binned-output calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2_compare/residual_summary_binned.csv \
+  --plot-dir calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2_compare \
+  --dataset-tag 6.535RGK_clasdisP2_compare \
   --beam-energy 6.535
 ```
 
