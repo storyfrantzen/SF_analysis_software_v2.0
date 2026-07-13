@@ -1386,6 +1386,7 @@ def render_html(payload: dict[str, Any]) -> str:
   --filter-alert: color-mix(in srgb, red 78%, CanvasText);
   --mark: color-mix(in srgb, Highlight 78%, CanvasText);
   --ghost: color-mix(in srgb, orange 82%, CanvasText);
+  --reference: color-mix(in srgb, LinkText 86%, CanvasText);
 }}
 * {{ box-sizing: border-box; }}
 body {{
@@ -1838,6 +1839,50 @@ canvas {{
   color: var(--muted);
   cursor: default;
 }}
+.reference-editor {{
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: color-mix(in srgb, CanvasText 26%, transparent);
+}}
+.reference-editor[hidden] {{ display: none; }}
+.reference-editor-panel {{
+  width: min(460px, 100%);
+  max-height: min(680px, calc(100vh - 32px));
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow: 0 12px 36px color-mix(in srgb, CanvasText 24%, transparent);
+}}
+.reference-editor-head,
+.reference-editor-actions,
+.reference-curve-item {{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}}
+.reference-editor-head h2 {{ margin: 0; font-size: 14px; }}
+.reference-editor-grid {{
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 8px;
+}}
+.reference-editor-grid .reference-label {{ grid-column: 1 / -1; }}
+.reference-editor-actions {{ justify-content: flex-end; margin-top: 8px; }}
+.reference-curve-list {{ display: grid; gap: 5px; margin-top: 12px; }}
+.reference-curve-item {{
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}}
+.reference-curve-item span {{ min-width: 0; overflow-wrap: anywhere; }}
 .filter-badge {{
   display: none;
   align-items: center;
@@ -2278,6 +2323,28 @@ th:first-child, td:first-child {{ text-align: left; }}
 <div class="canvas-context-menu" id="canvasContextMenu" role="menu" hidden>
   <button type="button" id="makeGhost" role="menuitem">Make ghost</button>
   <button type="button" id="clearGhost" role="menuitem">Clear ghost</button>
+  <button type="button" id="addMinimumWCurve" role="menuitem">Add minimum W curve…</button>
+  <button type="button" id="manageReferenceCurves" role="menuitem">Manage reference curves…</button>
+</div>
+<div class="reference-editor" id="referenceCurveEditor" role="dialog" aria-modal="true" aria-labelledby="referenceCurveTitle" hidden>
+  <div class="reference-editor-panel">
+    <div class="reference-editor-head">
+      <h2 id="referenceCurveTitle">Reference curves</h2>
+      <button type="button" id="closeReferenceCurveEditor">Close</button>
+    </div>
+    <div class="subtle" id="referenceCurveAxes"></div>
+    <div class="reference-editor-grid">
+      <label>Minimum W (GeV)<input id="referenceWMin" type="number" min="0" step="0.05" value="2.0"></label>
+      <label>Target mass (GeV)<input id="referenceTargetMass" type="number" min="0" step="0.001" value="0.9382720813"></label>
+      <label class="reference-label">Label (optional)<input id="referenceCurveLabel" type="text" placeholder="W > 2 GeV"></label>
+    </div>
+    <div class="subtle" id="referenceCurveStatus" role="status" aria-live="polite"></div>
+    <div class="reference-editor-actions">
+      <button type="button" id="clearReferenceCurves">Clear all</button>
+      <button type="button" id="saveReferenceCurve">Add curve</button>
+    </div>
+    <div class="reference-curve-list" id="referenceCurveList"></div>
+  </div>
 </div>
 <script>
 const payload = {payload_json};
@@ -2307,6 +2374,7 @@ let enabledPanels = ["A"];
 let activePanel = "A";
 let compareMode = false;
 let contextMenuPanelKey = "A";
+let referenceCurveId = 0;
 let activeRanges = [];
 let topologyCollapsed = false;
 const categoryState = {{}};
@@ -2788,6 +2856,7 @@ function makePanel(key, xvar, yvar) {{
     fitRangeMax: NaN,
     fitSummary: "No fit",
     ghostPlot: null,
+    referenceCurves: [],
     lastPlot: null,
     stats: {{selected: 0, meanX: NaN, meanY: NaN}}
   }};
@@ -3382,6 +3451,20 @@ function attachEvents() {{
     clearGhost(contextMenuPanelKey);
     hideCanvasContextMenu();
   }});
+  el("addMinimumWCurve").addEventListener("click", () => {{
+    hideCanvasContextMenu();
+    openReferenceCurveEditor(contextMenuPanelKey, true);
+  }});
+  el("manageReferenceCurves").addEventListener("click", () => {{
+    hideCanvasContextMenu();
+    openReferenceCurveEditor(contextMenuPanelKey, false);
+  }});
+  el("closeReferenceCurveEditor").addEventListener("click", hideReferenceCurveEditor);
+  el("saveReferenceCurve").addEventListener("click", saveReferenceCurve);
+  el("clearReferenceCurves").addEventListener("click", clearReferenceCurves);
+  el("referenceCurveEditor").addEventListener("click", event => {{
+    if (event.target === el("referenceCurveEditor")) hideReferenceCurveEditor();
+  }});
   document.querySelectorAll("input[data-text-filter]").forEach(input => input.addEventListener("input", update));
   for (const key of panelKeys) {{
     el("plot" + key).addEventListener("mousemove", event => showHoverInfo(event, key));
@@ -3397,7 +3480,10 @@ function attachEvents() {{
     if (!el("canvasContextMenu").contains(event.target)) hideCanvasContextMenu();
   }});
   document.addEventListener("keydown", event => {{
-    if (event.key === "Escape") hideCanvasContextMenu();
+    if (event.key === "Escape") {{
+      hideCanvasContextMenu();
+      hideReferenceCurveEditor();
+    }}
   }});
   window.addEventListener("blur", hideCanvasContextMenu);
   window.addEventListener("resize", update);
@@ -3986,9 +4072,14 @@ function showCanvasContextMenu(event, key) {{
   const menu = el("canvasContextMenu");
   const make = el("makeGhost");
   const clear = el("clearGhost");
+  const addCurve = el("addMinimumWCurve");
+  const manageCurves = el("manageReferenceCurves");
   make.textContent = panel.ghostPlot ? "Replace ghost" : "Make ghost";
   make.disabled = !panel.lastPlot;
   clear.disabled = !panel.ghostPlot;
+  addCurve.disabled = !referenceCurveOrientation(panel.xvar, panel.yvar) || panel.mode !== "2d";
+  addCurve.title = addCurve.disabled ? "Use a 2D xB versus Q2 plot to add this curve" : "";
+  manageCurves.disabled = !(panel.referenceCurves || []).length;
   menu.hidden = false;
   const padding = 6;
   menu.style.left = clamp(event.clientX, padding, Math.max(padding, window.innerWidth - menu.offsetWidth - padding)) + "px";
@@ -3997,6 +4088,114 @@ function showCanvasContextMenu(event, key) {{
 
 function hideCanvasContextMenu() {{
   el("canvasContextMenu").hidden = true;
+}}
+
+function canonicalKinematicName(name) {{
+  return String(name || "").toLowerCase().replace(/^(rec_|gen_)/, "").replace(/_/g, "");
+}}
+
+function referenceCurveOrientation(xName, yName) {{
+  const x = canonicalKinematicName(xName);
+  const y = canonicalKinematicName(yName);
+  if (x === "xb" && y === "q2") return "xb-x";
+  if (x === "q2" && y === "xb") return "xb-y";
+  return "";
+}}
+
+function minimumWQ2(xb, wMin, targetMass) {{
+  if (!(xb > 0 && xb < 1) || !(wMin > 0) || !(targetMass >= 0)) return NaN;
+  return (wMin * wMin - targetMass * targetMass) * xb / (1 - xb);
+}}
+
+function automaticReferenceCurveLabel(wMin) {{
+  return `W > ${{formatAxisTick(wMin)}} GeV`;
+}}
+
+function openReferenceCurveEditor(key, focusValue = false) {{
+  contextMenuPanelKey = key;
+  const panel = panels[key];
+  const orientation = referenceCurveOrientation(panel.xvar, panel.yvar);
+  el("referenceCurveAxes").textContent = orientation
+    ? `${{byName[panel.yvar]?.label || panel.yvar}} versus ${{byName[panel.xvar]?.label || panel.xvar}} · events on the higher-Q2 side satisfy the minimum-W cut`
+    : "Minimum-W curves require a 2D xB versus Q2 plot.";
+  el("referenceCurveStatus").textContent = "";
+  el("saveReferenceCurve").disabled = !orientation || panel.mode !== "2d";
+  renderReferenceCurveList(panel);
+  el("referenceCurveEditor").hidden = false;
+  if (focusValue) {{
+    el("referenceWMin").focus();
+    el("referenceWMin").select();
+  }} else {{
+    el("closeReferenceCurveEditor").focus();
+  }}
+}}
+
+function hideReferenceCurveEditor() {{
+  const editor = el("referenceCurveEditor");
+  if (!editor || editor.hidden) return;
+  editor.hidden = true;
+}}
+
+function saveReferenceCurve() {{
+  const panel = panels[contextMenuPanelKey];
+  const wMin = Number(el("referenceWMin").value);
+  const targetMass = Number(el("referenceTargetMass").value);
+  if (!(wMin > 0) || !(targetMass >= 0)) {{
+    el("referenceCurveStatus").textContent = "Enter a positive minimum W and a nonnegative target mass.";
+    return;
+  }}
+  if (!Array.isArray(panel.referenceCurves)) panel.referenceCurves = [];
+  panel.referenceCurves.push({{
+    id: ++referenceCurveId,
+    kind: "minimum-w",
+    wMin,
+    targetMass,
+    label: el("referenceCurveLabel").value.trim() || automaticReferenceCurveLabel(wMin)
+  }});
+  el("referenceCurveLabel").value = "";
+  el("referenceCurveStatus").textContent = `Added ${{automaticReferenceCurveLabel(wMin)}}.`;
+  renderReferenceCurveList(panel);
+  update();
+}}
+
+function removeReferenceCurve(id) {{
+  const panel = panels[contextMenuPanelKey];
+  panel.referenceCurves = (panel.referenceCurves || []).filter(curve => curve.id !== id);
+  renderReferenceCurveList(panel);
+  update();
+}}
+
+function clearReferenceCurves() {{
+  const panel = panels[contextMenuPanelKey];
+  panel.referenceCurves = [];
+  el("referenceCurveStatus").textContent = "Cleared reference curves for this panel.";
+  renderReferenceCurveList(panel);
+  update();
+}}
+
+function renderReferenceCurveList(panel) {{
+  const target = el("referenceCurveList");
+  target.innerHTML = "";
+  const curves = panel.referenceCurves || [];
+  el("clearReferenceCurves").disabled = !curves.length;
+  for (const curve of curves) {{
+    const row = document.createElement("div");
+    row.className = "reference-curve-item";
+    const text = document.createElement("span");
+    text.textContent = `${{curve.label}} · M=${{formatAxisTick(curve.targetMass)}} GeV`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => removeReferenceCurve(curve.id));
+    row.append(text, remove);
+    target.appendChild(row);
+  }}
+  if (!curves.length) {{
+    const empty = document.createElement("div");
+    empty.className = "subtle";
+    empty.textContent = "No reference curves on this panel.";
+    target.appendChild(empty);
+  }}
 }}
 
 function copyGhostValues(values) {{
@@ -4168,8 +4367,106 @@ function colors() {{
     mark: style.getPropertyValue("--mark").trim(),
     alert: style.getPropertyValue("--filter-alert").trim(),
     bg: style.getPropertyValue("--bg").trim(),
-    ghost: style.getPropertyValue("--ghost").trim()
+    ghost: style.getPropertyValue("--ghost").trim(),
+    reference: style.getPropertyValue("--reference").trim()
   }};
+}}
+
+function drawReferenceCurves(ctx, area, panel, xMin, xMax, yMin, yMax, showLegend = true) {{
+  const orientation = panel.mode === "2d" ? referenceCurveOrientation(panel.xvar, panel.yvar) : "";
+  const curves = (panel.referenceCurves || []).filter(curve => curve.kind === "minimum-w");
+  if (!orientation || !curves.length || !(xMax > xMin) || !(yMax > yMin)) return 0;
+  const xbMin = Math.max(1.0e-5, orientation === "xb-x" ? xMin : yMin);
+  const xbMax = Math.min(0.999, orientation === "xb-x" ? xMax : yMax);
+  if (!(xbMax > xbMin)) return 0;
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  const q2Min = orientation === "xb-x" ? yMin : xMin;
+  const q2Max = orientation === "xb-x" ? yMax : xMax;
+  const q2Padding = Math.max(1.0e-12, q2Max - q2Min) * 0.08;
+  const c = colors();
+  const drawn = [];
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(area.left, area.top, pw, ph);
+  ctx.clip();
+  for (let curveIndex = 0; curveIndex < curves.length; curveIndex++) {{
+    const curve = curves[curveIndex];
+    const points = [];
+    const samples = 520;
+    for (let index = 0; index <= samples; index++) {{
+      const xb = xbMin + (xbMax - xbMin) * index / samples;
+      const q2 = minimumWQ2(xb, curve.wMin, curve.targetMass);
+      if (!Number.isFinite(q2) || q2 < q2Min - q2Padding || q2 > q2Max + q2Padding) {{
+        points.push(null);
+        continue;
+      }}
+      const xValue = orientation === "xb-x" ? xb : q2;
+      const yValue = orientation === "xb-x" ? q2 : xb;
+      points.push({{
+        x: area.left + (xValue - xMin) / (xMax - xMin) * pw,
+        y: area.top + ph - (yValue - yMin) / (yMax - yMin) * ph
+      }});
+    }}
+    if (!points.some(Boolean)) continue;
+    const dashPatterns = [[], [8, 4], [3, 3], [10, 3, 2, 3]];
+    const drawPath = () => {{
+      ctx.beginPath();
+      let penDown = false;
+      for (const point of points) {{
+        if (!point) {{ penDown = false; continue; }}
+        if (!penDown) ctx.moveTo(point.x, point.y);
+        else ctx.lineTo(point.x, point.y);
+        penDown = true;
+      }}
+      ctx.stroke();
+    }};
+    ctx.setLineDash(dashPatterns[curveIndex % dashPatterns.length]);
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = c.bg;
+    ctx.lineWidth = 4.5;
+    drawPath();
+    ctx.strokeStyle = c.reference;
+    ctx.lineWidth = 2.2;
+    drawPath();
+    drawn.push(curve);
+  }}
+  ctx.restore();
+  if (showLegend && drawn.length) drawReferenceCurveLegend(ctx, area, drawn);
+  return drawn.length;
+}}
+
+function drawReferenceCurveLegend(ctx, area, curves) {{
+  const c = colors();
+  ctx.save();
+  ctx.font = "12px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  const shown = curves.slice(0, 4);
+  const lineHeight = 17;
+  const longest = Math.max(...shown.map(curve => ctx.measureText(curve.label).width));
+  const boxWidth = Math.min(area.width - area.left - area.right - 10, longest + 38);
+  const boxHeight = shown.length * lineHeight + 8;
+  const x = area.width - area.right - 5;
+  const y = area.top + (area.height - area.top - area.bottom) - boxHeight - 5;
+  ctx.globalAlpha = 0.84;
+  ctx.fillStyle = c.bg;
+  ctx.fillRect(x - boxWidth, y, boxWidth, boxHeight);
+  ctx.globalAlpha = 1;
+  for (let index = 0; index < shown.length; index++) {{
+    const cy = y + 4 + lineHeight * (index + 0.5);
+    ctx.strokeStyle = c.reference;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([[], [8, 4], [3, 3], [10, 3, 2, 3]][index]);
+    ctx.beginPath();
+    ctx.moveTo(x - boxWidth + 7, cy);
+    ctx.lineTo(x - boxWidth + 27, cy);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = c.fg;
+    ctx.fillText(curves[index].label, x - 6, cy);
+  }}
+  ctx.restore();
 }}
 
 function filterBadgeText() {{
@@ -4442,6 +4739,7 @@ function draw2d(panel, mask) {{
   if (ghost) drawGhost2d(ctx, area, ghost, ghost.counts, xMin, xMax, yMin, yMax);
   drawFitRangeIndicator(ctx, area, panel, xMin, xMax);
   panel.fitSummary = draw2dFit(ctx, area, panel, mask, x, y, xMin, xMax, yMin, yMax);
+  drawReferenceCurves(ctx, area, panel, xMin, xMax, yMin, yMax);
   panel.lastPlot = {{
     mode: "2d", area, xName, x2Name, yName, y2Name, xMin, xMax, yMin, yMax,
     xBins, yBins, counts, overlayCounts, selected, overlaySelected, density: panel.density,
@@ -4689,6 +4987,7 @@ function draw2dFacets(panel, mask, splitName) {{
       }}
       fitSummaries.push(`${{facet.shortLabel}}: ${{fit.summary}}; n=${{facet.fitXs.length.toLocaleString()}}`);
     }}
+    drawReferenceCurves(ctx, facetAreaInfo, panel, xMin, xMax, yMin, yMax, index === 0);
     facet.area = facetAreaInfo;
   }}
   panel.lastPlot = {{

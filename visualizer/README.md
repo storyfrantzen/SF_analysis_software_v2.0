@@ -113,6 +113,15 @@ Ghost state is independent for each panel and supports both ordinary and
 faceted histograms. Changing to an incompatible variable, mode, or density view
 temporarily hides the ghost without deleting it.
 
+For kinematic-coverage studies, right-click a two-dimensional `xB` versus `Q2`
+plot and choose `Add minimum W curve…`. The panel-local editor uses
+`Q2 = (W_min^2 - M^2) xB / (1 - xB)` with an editable minimum `W`, target mass,
+and label. It supports either axis orientation, multiple simultaneously drawn
+boundaries, split facets, and per-curve removal or clearing. Events satisfying
+the minimum-`W` requirement lie on the higher-`Q2` side of the boundary. Curves
+remain stored when the panel temporarily displays incompatible quantities, just
+as ghosts do.
+
 Derived Operations uses a compact two-row builder in the sidebar beneath
 Constraints, before the sidebar's axis-range separator. Only validation and
 completion messages appear beneath the builder; the redundant expression
