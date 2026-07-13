@@ -63,11 +63,12 @@ the active panel without disabling the fit curves or the textual Fit summary.
 Each panel retains its own annotation visibility setting, which is useful when
 fit boxes would obscure a dense facet layout.
 
-The Fit output uses the panel width as a responsive stats grid. A single fit
-gets one full-width summary cell, while split fits receive one labeled cell per
-facet (for example `S1` through `S6` and `CD`) arranged into as many columns as
-fit comfortably. The fit-range summary occupies a compact companion cell and
-the layout stacks on narrow screens.
+The Fit card places its controls and fit-range information in a left column and
+the statistics grid in a distinct right column. A single fit gets one summary
+cell, while proton-sector fits use exactly three result columns so `S1`-`S3`
+and `S4`-`S6` form two aligned rows; a sector-0 `CD` result is centered on a
+third row. The two major columns stack only when the window becomes too narrow,
+and the sector results reduce to one column on phone-sized screens.
 
 Default axis ranges are quantity-aware. Discrete detector codes such as `eDet`
 receive half-category padding so the first and last detector bins are fully

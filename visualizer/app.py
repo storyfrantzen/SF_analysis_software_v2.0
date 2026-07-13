@@ -1530,14 +1530,17 @@ button.active {{
 .fit-tools button {{
   flex: 0 0 auto;
 }}
-.fit-output {{
+.fit-panel-layout {{
   display: grid;
-  grid-template-columns: minmax(170px, 0.45fr) minmax(0, 2.55fr);
-  gap: 8px 12px;
+  grid-template-columns: minmax(470px, 0.98fr) minmax(0, 1.02fr);
+  gap: 12px;
   align-items: start;
-  margin-top: 8px;
+}}
+.fit-controls {{
+  min-width: 0;
 }}
 .fit-range-summary {{
+  margin-top: 8px;
   padding: 7px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1548,6 +1551,12 @@ button.active {{
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 6px;
   min-width: 0;
+}}
+.fit-summary.sector {{
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}}
+.fit-summary.sector .fit-summary-item:last-child:nth-child(7) {{
+  grid-column: 2;
 }}
 .fit-summary-item {{
   min-width: 0;
@@ -1987,14 +1996,20 @@ button.remote-entry {{
 table {{ border-collapse: collapse; width: 100%; font-size: 12px; }}
 th, td {{ border-bottom: 1px solid var(--border); padding: 5px 7px; text-align: right; white-space: nowrap; }}
 th:first-child, td:first-child {{ text-align: left; }}
+@media (max-width: 1250px) {{
+  .fit-panel-layout {{ grid-template-columns: 1fr; }}
+}}
 @media (max-width: 820px) {{
   main {{ grid-template-columns: 1fr; }}
   aside {{ border-right: 0; border-bottom: 1px solid var(--border); }}
   .control-deck {{ grid-template-columns: 1fr; }}
-  .fit-output {{ grid-template-columns: 1fr; }}
   #categoryFilters {{ column-width: auto; }}
   .plot-grid.compare {{ grid-template-columns: 1fr; }}
   canvas {{ min-height: 340px; height: 58vh; }}
+}}
+@media (max-width: 620px) {{
+  .fit-summary.sector {{ grid-template-columns: 1fr; }}
+  .fit-summary.sector .fit-summary-item:last-child:nth-child(7) {{ grid-column: 1; }}
 }}
 </style>
 </head>
@@ -2167,39 +2182,41 @@ th:first-child, td:first-child {{ text-align: left; }}
     <div class="control-deck analysis-tools">
       <div class="control-panel fit-panel">
         <h2>Fit</h2>
-        <div class="fit-model-grid">
-          <label>Signal S <select id="signalModel">
-            <option value="none">none</option>
-            <option value="gaussian">Gaussian</option>
-            <option value="crystalball">Crystal Ball</option>
-          </select></label>
-          <label>Background B <select id="backgroundModel">
-            <option value="none">none</option>
-            <option value="poly0">constant</option>
-            <option value="poly1">Polynomial degree 1</option>
-            <option value="poly2">Polynomial degree 2</option>
-            <option value="poly3">Polynomial degree 3</option>
-            <option value="poly4">Polynomial degree 4</option>
-            <option value="poly5">Polynomial degree 5</option>
-          </select></label>
-          <label>Method <select id="fitMethod">
-            <option value="unweighted">Ordinary LS</option>
-            <option value="poisson">Poisson WLS (Pearson)</option>
-            <option value="unbinned">Unbinned likelihood</option>
-          </select></label>
-        </div>
-        <div class="fit-tools">
-          <label class="chip"><input id="fitRangeClick" type="checkbox"> click endpoints</label>
-          <button type="button" id="clearFitRange">Clear range</button>
-          <button type="button" id="toggleFitAnnotations" aria-pressed="true">Hide canvas fit results</button>
-        </div>
-        <label id="fitScanDetailControl">
-          <span>Unbinned scan detail: <strong id="fitScanDetailValue">balanced</strong></span>
-          <input id="fitScanDetail" type="range" min="1" max="5" step="1" value="3">
-        </label>
-        <div class="subtle" id="fitMethodNote"></div>
-        <div class="fit-output">
+        <div class="fit-panel-layout">
+          <div class="fit-controls">
+            <div class="fit-model-grid">
+              <label>Signal S <select id="signalModel">
+                <option value="none">none</option>
+                <option value="gaussian">Gaussian</option>
+                <option value="crystalball">Crystal Ball</option>
+              </select></label>
+              <label>Background B <select id="backgroundModel">
+                <option value="none">none</option>
+                <option value="poly0">constant</option>
+                <option value="poly1">Polynomial degree 1</option>
+                <option value="poly2">Polynomial degree 2</option>
+                <option value="poly3">Polynomial degree 3</option>
+                <option value="poly4">Polynomial degree 4</option>
+                <option value="poly5">Polynomial degree 5</option>
+              </select></label>
+              <label>Method <select id="fitMethod">
+                <option value="unweighted">Ordinary LS</option>
+                <option value="poisson">Poisson WLS (Pearson)</option>
+                <option value="unbinned">Unbinned likelihood</option>
+              </select></label>
+            </div>
+            <div class="fit-tools">
+              <label class="chip"><input id="fitRangeClick" type="checkbox"> click endpoints</label>
+              <button type="button" id="clearFitRange">Clear range</button>
+              <button type="button" id="toggleFitAnnotations" aria-pressed="true">Hide canvas fit results</button>
+            </div>
+            <label id="fitScanDetailControl">
+              <span>Unbinned scan detail: <strong id="fitScanDetailValue">balanced</strong></span>
+              <input id="fitScanDetail" type="range" min="1" max="5" step="1" value="3">
+            </label>
+            <div class="subtle" id="fitMethodNote"></div>
           <div class="subtle fit-range-summary" id="fitRangeSummary">Fit range: full X range</div>
+          </div>
           <div class="fit-summary" id="fitSummary" aria-live="polite"></div>
         </div>
       </div>
@@ -3523,8 +3540,10 @@ function renderFitSummary(panel) {{
   const entries = summary.split(/\\s+\\|\\s+/).map(value => value.trim()).filter(Boolean);
   const items = entries.length ? entries : ["No fit"];
   const multi = items.length > 1;
+  const sector = multi && isProtonSectorSplit(panel?.splitVar);
   target.innerHTML = "";
   target.classList.toggle("multi", multi);
+  target.classList.toggle("sector", sector);
   for (const text of items) {{
     const item = document.createElement("div");
     item.className = "fit-summary-item";
