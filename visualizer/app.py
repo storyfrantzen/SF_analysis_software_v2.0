@@ -2467,6 +2467,7 @@ th:first-child, td:first-child {{ text-align: left; }}
 <div class="canvas-context-menu" id="canvasContextMenu" role="menu" hidden>
   <button type="button" id="makeGhost" role="menuitem">Make ghost</button>
   <button type="button" id="clearGhost" role="menuitem">Clear ghost</button>
+  <button type="button" id="toggleCanvasToolbarContext" role="menuitem">Hide plot controls</button>
   <button type="button" id="profileX" role="menuitem">Profile X</button>
   <button type="button" id="profileY" role="menuitem">Profile Y</button>
   <button type="button" id="addFunctionCurve" role="menuitem">Add function curve…</button>
@@ -3791,6 +3792,10 @@ function attachEvents() {{
     clearGhost(contextMenuPanelKey);
     hideCanvasContextMenu();
   }});
+  el("toggleCanvasToolbarContext").addEventListener("click", () => {{
+    toggleCanvasToolbar();
+    hideCanvasContextMenu();
+  }});
   el("profileX").addEventListener("click", () => {{
     launchBinProfile("x");
     hideCanvasContextMenu();
@@ -3895,7 +3900,10 @@ function syncCanvasToolbarVisibility() {{
   const button = el("toggleCanvasToolbar");
   if (!toolbar || !button) return;
   toolbar.hidden = canvasToolbarCollapsed;
-  button.textContent = canvasToolbarCollapsed ? "Show plot controls" : "Hide plot controls";
+  const actionLabel = canvasToolbarCollapsed ? "Show plot controls" : "Hide plot controls";
+  button.textContent = actionLabel;
+  const contextButton = el("toggleCanvasToolbarContext");
+  if (contextButton) contextButton.textContent = actionLabel;
   button.setAttribute("aria-expanded", canvasToolbarCollapsed ? "false" : "true");
   button.title = canvasToolbarCollapsed
     ? "Show axis, display, and plot-action controls"
@@ -4607,6 +4615,9 @@ function showCanvasContextMenu(event, key) {{
   const manageCurves = el("manageReferenceCurves");
   const profileX = el("profileX");
   const profileY = el("profileY");
+  el("toggleCanvasToolbarContext").textContent = canvasToolbarCollapsed
+    ? "Show plot controls"
+    : "Hide plot controls";
   make.textContent = panel.ghostPlot ? "Replace ghost" : "Make ghost";
   make.disabled = !panel.lastPlot;
   clear.disabled = !panel.ghostPlot;

@@ -144,9 +144,10 @@ combined sample count and contributing filenames. Log color and color-scale
 controls are shown only for 2D plots; 1D plots retain density as their sole
 display toggle.
 
-Right-clicking either canvas opens a plot menu with `Make ghost`, `Replace
-ghost`, and `Clear ghost` behavior. A ghost snapshots the active panel's
-current histogram bins and remains fixed while filters change. One-dimensional
+Right-clicking either canvas opens a plot menu with the ghost actions and a
+`Hide plot controls` / `Show plot controls` action that mirrors the persistent
+toolbar toggle. A ghost snapshots the active panel's current histogram bins and
+remains fixed while filters change. One-dimensional
 ghosts use a dashed orange step outline; two-dimensional ghosts use
 intensity-weighted orange cell outlines so the live heat map remains readable.
 Ghost state is independent for each panel and supports both ordinary and
