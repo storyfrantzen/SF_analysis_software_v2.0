@@ -55,7 +55,10 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn('<div class="toolbar-tile action-tile" aria-label="Plot actions">', html)
         self.assertIn('<div class="toolbar-tile count-tile" aria-label="Event counts">', html)
         self.assertIn('<div class="header-utility-stack">', html)
-        self.assertIn('<div class="canvas-toolbar" id="canvasToolbar" aria-label="Display options">', html)
+        self.assertIn('<div class="canvas-toolbar" id="canvasToolbar" aria-label="Plot controls">', html)
+        self.assertIn('<div class="toolbar-tile display-tile" aria-label="Display options">', html)
+        self.assertIn("grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr))", html)
+        self.assertIn("width: min(100%, 570px)", html)
         self.assertIn('id="canvasContextMenu" role="menu" hidden', html)
         self.assertIn('id="makeGhost" role="menuitem">Make ghost</button>', html)
         self.assertIn('id="clearGhost" role="menuitem">Clear ghost</button>', html)
@@ -119,8 +122,9 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertLess(html.index('id="plotB"'), html.index('id="hoverInfoB"'))
         self.assertLess(html.index('aria-label="Event counts"'), html.index('aria-label="Display options"'))
         self.assertLess(html.index('aria-label="Event counts"'), html.index('aria-label="Plot actions"'))
-        self.assertLess(html.index('aria-label="Plot actions"'), html.index('aria-label="Display options"'))
+        self.assertLess(html.index('aria-label="Display options"'), html.index('aria-label="Plot actions"'))
         self.assertLess(html.index('aria-label="Display options"'), html.index('class="plot-grid"'))
+        self.assertLess(html.index('aria-label="Plot actions"'), html.index('class="plot-grid"'))
         self.assertIn("Rows embedded: 3", completed.stdout)
         return html
 

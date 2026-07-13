@@ -105,11 +105,12 @@ and maximum are independently optional, allowing lower-only (`x >= min`),
 upper-only (`x <= max`), or bounded cuts. At least one bound is required when a
 constraint is added.
 Selected and embedded counts share one compact toolbar tile, while active-axis
-means are hidden from the default interface. Reset/export actions occupy a
-second tile directly beneath the event counts. Log color, density, and color
-scale remain panel-specific and are centered beneath the active quantity title,
-immediately above its canvas. Hover coordinates and bin values appear beneath
-the canvas.
+means are hidden from the default interface. Log color, density, and color scale
+remain panel-specific in a display tile beneath the active quantity title. An
+equal-size reset/export tile sits immediately to its right; the two tiles are
+spaced and centered as a group above the canvas, wrapping only when the pane is
+too narrow to hold them side by side. Hover coordinates and bin values appear
+beneath the canvas.
 Color-scale hover readouts are clamped inside the plot pane so their numeric
 values remain visible at the right edge.
 

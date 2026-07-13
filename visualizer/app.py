@@ -1777,12 +1777,20 @@ canvas.fit-range-picker {{
 .count-stat .subtle {{ font-size: 10px; }}
 .count-stat strong {{ font-size: 12px; font-weight: 650; }}
 .canvas-toolbar {{
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  align-items: stretch;
+  gap: 10px;
+  width: min(100%, 570px);
+  min-height: 34px;
+  margin: 0 auto 6px;
+}}
+.canvas-toolbar .toolbar-tile {{
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
   justify-content: center;
-  align-items: center;
-  gap: 6px;
-  min-height: 28px;
-  margin: 0 0 6px;
 }}
 .canvas-toolbar-slot:empty {{ display: none; }}
 .display-tile .chip {{
@@ -2223,11 +2231,6 @@ th:first-child, td:first-child {{ text-align: left; }}
           <div class="count-stat"><span class="subtle">embedded</span><strong id="embeddedCount">0</strong></div>
           <div class="subtle" id="samplingNote"></div>
         </div>
-        <div class="toolbar-tile action-tile" aria-label="Plot actions">
-          <button type="button" id="resetFilters">Reset filters</button>
-          <button type="button" id="resetRanges">Reset axes</button>
-          <button type="button" id="savePng">Save PNG</button>
-        </div>
       </div>
       <span id="meanX" hidden>-</span>
       <span id="meanY" hidden>-</span>
@@ -2253,11 +2256,16 @@ th:first-child, td:first-child {{ text-align: left; }}
         <div class="remote-file-list" id="remoteFileList"></div>
       </div>
     </div>
-    <div class="canvas-toolbar" id="canvasToolbar" aria-label="Display options">
-      <div class="toolbar-tile display-tile">
+    <div class="canvas-toolbar" id="canvasToolbar" aria-label="Plot controls">
+      <div class="toolbar-tile display-tile" aria-label="Display options">
         <label class="chip"><input id="logz" type="checkbox"> log color</label>
         <label class="chip"><input id="density" type="checkbox"> density</label>
         <label class="chip" id="colorScaleChip"><input id="colorScale" type="checkbox"> color scale</label>
+      </div>
+      <div class="toolbar-tile action-tile" aria-label="Plot actions">
+        <button type="button" id="resetFilters">Reset filters</button>
+        <button type="button" id="resetRanges">Reset axes</button>
+        <button type="button" id="savePng">Save PNG</button>
       </div>
     </div>
     <div class="plot-grid" id="plotGrid">
