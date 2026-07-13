@@ -62,7 +62,9 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn('id="addFunctionCurve" role="menuitem">Add function curve…</button>', html)
         self.assertIn('id="referenceCurveEditor" role="dialog"', html)
         self.assertIn('<option value="y-of-x">y = f(x)</option>', html)
+        self.assertIn('<option value="dash-dot">Dash-dot</option>', html)
         self.assertIn('id="referenceCurveExpression" type="text"', html)
+        self.assertIn('id="referenceLineWidth" type="number" min="0.5" max="3"', html)
         self.assertIn('addEventListener("contextmenu"', html)
         self.assertIn("ghostPlot: null", html)
         self.assertIn("referenceCurves: []", html)
@@ -71,6 +73,7 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn("function drawGhost1d", html)
         self.assertIn("function drawGhost2d", html)
         self.assertIn("function compileMathExpression", html)
+        self.assertIn("function referenceLineDash", html)
         self.assertIn("function drawReferenceCurves", html)
         self.assertIn('<span id="meanX" hidden>-</span>', html)
         self.assertIn('<span id="meanY" hidden>-</span>', html)
@@ -216,6 +219,14 @@ const calculatorValues = [
   compileMathExpression("max(y, 2) + pow(y, 2)", "y")(3),
   compileMathExpression("2**3 + log10(100)", "x")(0)
 ];
+const referenceStyles = [
+  referenceLineDash("solid"),
+  referenceLineDash("dashed"),
+  referenceLineDash("dotted"),
+  referenceLineDash("dash-dot"),
+  referenceLineWidth({lineWidth: 1.25}),
+  referenceLineWidth({lineWidth: 9})
+];
 let rejectedExpression = false;
 try { compileMathExpression("window.alert(1)", "x"); } catch (_) { rejectedExpression = true; }
 console.log(JSON.stringify({
@@ -245,6 +256,7 @@ console.log(JSON.stringify({
   lowerOnlyRange,
   upperOnlyRange,
   calculatorValues,
+  referenceStyles,
   rejectedExpression
 }));
 """
@@ -298,6 +310,10 @@ console.log(JSON.stringify({
         self.assertAlmostEqual(result["calculatorValues"][1], 4.0, places=10)
         self.assertAlmostEqual(result["calculatorValues"][2], 12.0, places=10)
         self.assertAlmostEqual(result["calculatorValues"][3], 10.0, places=10)
+        self.assertEqual(
+            result["referenceStyles"],
+            [[], [7, 4], [1.25, 3], [8, 3, 1.25, 3], 1.25, 3],
+        )
         self.assertTrue(result["rejectedExpression"])
         self.assertEqual(
             result["protonAxisVisibility"],

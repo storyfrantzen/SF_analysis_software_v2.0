@@ -1873,8 +1873,7 @@ canvas {{
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 8px;
 }}
-.reference-editor-grid .reference-expression,
-.reference-editor-grid .reference-label {{ grid-column: 1 / -1; }}
+.reference-editor-grid .reference-expression {{ grid-column: 1 / -1; }}
 .reference-editor-actions {{ justify-content: flex-end; margin-top: 8px; }}
 .reference-curve-list {{ display: grid; gap: 5px; margin-top: 12px; }}
 .reference-curve-item {{
@@ -2098,8 +2097,7 @@ th:first-child, td:first-child {{ text-align: left; }}
 }}
 @media (max-width: 420px) {{
   .reference-editor-grid {{ grid-template-columns: 1fr; }}
-  .reference-editor-grid .reference-expression,
-  .reference-editor-grid .reference-label {{ grid-column: 1; }}
+  .reference-editor-grid .reference-expression {{ grid-column: 1; }}
 }}
 </style>
 </head>
@@ -2344,10 +2342,17 @@ th:first-child, td:first-child {{ text-align: left; }}
         <option value="y-of-x">y = f(x)</option>
         <option value="x-of-y">x = f(y)</option>
       </select></label>
+      <label>Line style <select id="referenceLineStyle">
+        <option value="solid">Solid</option>
+        <option value="dashed">Dashed</option>
+        <option value="dotted">Dotted</option>
+        <option value="dash-dot">Dash-dot</option>
+      </select></label>
       <label class="reference-expression"><span id="referenceExpressionLabel">f(x)</span><input id="referenceCurveExpression" type="text" value="x" spellcheck="false"></label>
       <label>Domain minimum (optional)<input id="referenceDomainMin" type="number" step="any"></label>
       <label>Domain maximum (optional)<input id="referenceDomainMax" type="number" step="any"></label>
-      <label class="reference-label">Label (optional)<input id="referenceCurveLabel" type="text" placeholder="auto"></label>
+      <label>Line width <input id="referenceLineWidth" type="number" min="0.5" max="3" step="0.25" value="1.25"></label>
+      <label>Label (optional)<input id="referenceCurveLabel" type="text" placeholder="auto"></label>
     </div>
     <div class="subtle">Use numbers, x or y, pi, e, + − * / ^, parentheses, and functions such as sqrt, sin, cos, abs, exp, log, min, max, and pow.</div>
     <div class="subtle" id="referenceCurveStatus" role="status" aria-live="polite"></div>
@@ -4270,6 +4275,8 @@ function saveReferenceCurve() {{
   const expression = el("referenceCurveExpression").value.trim();
   const domainMin = parseOptionalNumber(el("referenceDomainMin").value);
   const domainMax = parseOptionalNumber(el("referenceDomainMax").value);
+  const lineStyle = el("referenceLineStyle").value;
+  const lineWidth = Number(el("referenceLineWidth").value);
   if (!expression) {{
     el("referenceCurveStatus").textContent = "Enter a function expression.";
     return;
@@ -4280,6 +4287,10 @@ function saveReferenceCurve() {{
     el("referenceCurveStatus").textContent = "The domain maximum must exceed the minimum.";
     return;
   }}
+  if (!(lineWidth >= 0.5 && lineWidth <= 3)) {{
+    el("referenceCurveStatus").textContent = "Line width must be between 0.5 and 3 pixels.";
+    return;
+  }}
   if (!Array.isArray(panel.referenceCurves)) panel.referenceCurves = [];
   panel.referenceCurves.push({{
     id: ++referenceCurveId,
@@ -4288,6 +4299,8 @@ function saveReferenceCurve() {{
     expression,
     domainMin,
     domainMax,
+    lineStyle,
+    lineWidth,
     xName: panel.xvar,
     yName: panel.yvar,
     label: el("referenceCurveLabel").value.trim() || automaticReferenceCurveLabel(direction, expression)
@@ -4326,7 +4339,8 @@ function renderReferenceCurveList(panel) {{
     const axes = curve.xName && curve.yName
       ? `${{byName[curve.yName]?.label || curve.yName}} vs ${{byName[curve.xName]?.label || curve.xName}}`
       : "current axes";
-    text.textContent = `${{curve.label}} · ${{relation}} · ${{axes}}`;
+    const style = `${{curve.lineStyle || "solid"}}, ${{formatAxisTick(curve.lineWidth || 1.25)}} px`;
+    text.textContent = `${{curve.label}} · ${{relation}} · ${{style}} · ${{axes}}`;
     const remove = document.createElement("button");
     remove.type = "button";
     remove.textContent = "Remove";
@@ -4516,6 +4530,18 @@ function colors() {{
   }};
 }}
 
+function referenceLineDash(style) {{
+  if (style === "dashed") return [7, 4];
+  if (style === "dotted") return [1.25, 3];
+  if (style === "dash-dot") return [8, 3, 1.25, 3];
+  return [];
+}}
+
+function referenceLineWidth(curve) {{
+  const width = Number(curve?.lineWidth);
+  return Number.isFinite(width) ? clamp(width, 0.5, 3) : 1.25;
+}}
+
 function drawReferenceCurves(ctx, area, panel, xMin, xMax, yMin, yMax, showLegend = true) {{
   const curves = (panel.referenceCurves || []).filter(curve =>
     curve.kind === "function" && curve.xName === panel.xvar && curve.yName === panel.yvar
@@ -4560,7 +4586,6 @@ function drawReferenceCurves(ctx, area, panel, xMin, xMax, yMin, yMax, showLegen
       }});
     }}
     if (!points.some(Boolean)) continue;
-    const dashPatterns = [[], [8, 4], [3, 3], [10, 3, 2, 3]];
     const drawPath = () => {{
       ctx.beginPath();
       let previous = null;
@@ -4573,13 +4598,11 @@ function drawReferenceCurves(ctx, area, panel, xMin, xMax, yMin, yMax, showLegen
       }}
       ctx.stroke();
     }};
-    ctx.setLineDash(dashPatterns[curveIndex % dashPatterns.length]);
+    ctx.setLineDash(referenceLineDash(curve.lineStyle));
     ctx.lineJoin = "round";
-    ctx.strokeStyle = c.bg;
-    ctx.lineWidth = 4.5;
-    drawPath();
+    ctx.lineCap = "round";
     ctx.strokeStyle = c.reference;
-    ctx.lineWidth = 2.2;
+    ctx.lineWidth = referenceLineWidth(curve);
     drawPath();
     drawn.push(curve);
   }}
@@ -4606,17 +4629,19 @@ function drawReferenceCurveLegend(ctx, area, curves) {{
   ctx.fillRect(x - boxWidth, y, boxWidth, boxHeight);
   ctx.globalAlpha = 1;
   for (let index = 0; index < shown.length; index++) {{
+    const curve = shown[index];
     const cy = y + 4 + lineHeight * (index + 0.5);
     ctx.strokeStyle = c.reference;
-    ctx.lineWidth = 2;
-    ctx.setLineDash([[], [8, 4], [3, 3], [10, 3, 2, 3]][index]);
+    ctx.lineWidth = referenceLineWidth(curve);
+    ctx.lineCap = "round";
+    ctx.setLineDash(referenceLineDash(curve.lineStyle));
     ctx.beginPath();
     ctx.moveTo(x - boxWidth + 7, cy);
     ctx.lineTo(x - boxWidth + 27, cy);
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = c.fg;
-    ctx.fillText(curves[index].label, x - 6, cy);
+    ctx.fillText(curve.label, x - 6, cy);
   }}
   ctx.restore();
 }}

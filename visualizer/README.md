@@ -121,7 +121,9 @@ Expressions support arithmetic, powers, `pi`, `e`, and common functions such as
 curves can be drawn simultaneously on ordinary or faceted plots and managed
 independently for each panel. Each curve is associated with the plotted quantity
 pair on which it was created, so it hides when the axes change and reappears when
-that pair is restored.
+that pair is restored. Curves default to a thin 1.25-pixel stroke; solid, dashed,
+dotted, and dash-dot styles and widths from 0.5 to 3 pixels are selectable when
+the curve is added.
 
 For example, on a `Q2` versus `xB` plot, a minimum-`W` boundary can be drawn as
 `y = (2^2 - 0.938272^2) * x / (1 - x)` with an optional domain such as
