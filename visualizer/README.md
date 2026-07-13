@@ -80,13 +80,19 @@ constraint quantity, minimum, maximum, and action a compact single-row layout,
 and uses content-sized buttons instead of stretching routine actions.
 Selected and embedded counts share one compact toolbar tile, while active-axis
 means are hidden from the default interface. Reset/export actions share a
-separate tile. Log color, density, and color-scale controls sit in a small
-display tile beneath the active panel title and immediately above its canvas.
-Hover coordinates and bin values appear beneath the canvas.
+separate tile beside the display options. Log color, density, color scale,
+reset, and PNG controls sit beneath the active panel title and immediately
+above its canvas. Hover coordinates and bin values appear beneath the canvas.
+Color-scale hover readouts are clamped inside the plot pane so their numeric
+values remain visible at the right edge.
 
-Fit, Derived Operations, and Text Filters use distinct full-width cards. Fit is
-presented first, Derived Operations is stacked beneath it, and Text Filters
-remain last so the two analysis workflows never compete horizontally.
+Fit and Derived Operations use compact side-by-side cards, with Fit on the left
+and the wider derivation builder on the right. Their dropdowns are content-sized
+and capped instead of stretching across the cards. The cards share a common
+height, and the derived-expression preview is anchored in a separated footer so
+the additional space remains useful and visually balanced. Text Filters spans
+the row beneath them. When the plot section is narrower than 975 pixels, the two
+cards stack automatically with Fit first.
 
 ## Source layout
 

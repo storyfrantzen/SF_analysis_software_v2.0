@@ -1407,6 +1407,7 @@ aside {{
 section {{
   padding: 12px;
   min-width: 0;
+  container: plot-section / inline-size;
 }}
 .control-deck {{
   display: grid;
@@ -1427,8 +1428,9 @@ section {{
   grid-column: 1 / -1;
 }}
 .analysis-tools {{
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(2, minmax(460px, 1fr));
   gap: 12px;
+  align-items: stretch;
 }}
 .analysis-tools .control-panel {{
   min-width: 0;
@@ -1441,11 +1443,16 @@ section {{
   margin-top: 0;
 }}
 .analysis-tools .text-panel {{
-  grid-column: 1;
+  grid-column: 1 / -1;
 }}
 .analysis-tools .fit-panel {{ order: 1; }}
 .analysis-tools .derived-panel {{ order: 2; }}
 .analysis-tools .text-panel {{ order: 3; }}
+.analysis-tools .fit-panel,
+.analysis-tools .derived-panel {{
+  display: flex;
+  flex-direction: column;
+}}
 h1 {{
   font-size: 16px;
   font-weight: 600;
@@ -1521,10 +1528,13 @@ button.active {{
   margin: 8px 0 6px;
 }}
 .fit-model-grid {{
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: end;
 }}
+.fit-model-grid label {{ margin: 0; width: auto; }}
+.fit-model-grid select {{ width: auto; max-width: 190px; }}
 .fit-tools button {{
   flex: 0 0 auto;
 }}
@@ -1641,15 +1651,17 @@ canvas.fit-range-picker {{
 .filter-row > :first-child {{ min-width: 0; overflow: hidden; text-overflow: ellipsis; }}
 .filter-row input {{ width: 100%; }}
 .operation-grid {{
-  display: grid;
-  grid-template-columns: 1fr;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
   gap: 6px;
 }}
 .operation-builder {{
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(86px, 0.75fr) minmax(0, 1.3fr) auto;
+  grid-template-columns: minmax(130px, 220px) minmax(100px, 160px) minmax(130px, 220px) auto;
   gap: 6px;
   align-items: end;
+  justify-content: start;
 }}
 .operation-builder label {{
   margin: 0;
@@ -1659,11 +1671,21 @@ canvas.fit-range-picker {{
   white-space: nowrap;
 }}
 .operation-feedback {{
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 8px;
-  justify-content: space-between;
   align-items: center;
   min-height: 20px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}}
+.operation-feedback-label {{
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }}
 .operation-preview {{
   min-width: 0;
@@ -1705,6 +1727,7 @@ canvas.fit-range-picker {{
   display: flex;
   justify-content: flex-end;
   align-items: center;
+  gap: 6px;
   min-height: 28px;
   margin: 0 0 6px;
 }}
@@ -1957,6 +1980,10 @@ button.remote-entry {{
 table {{ border-collapse: collapse; width: 100%; font-size: 12px; }}
 th, td {{ border-bottom: 1px solid var(--border); padding: 5px 7px; text-align: right; white-space: nowrap; }}
 th:first-child, td:first-child {{ text-align: left; }}
+@container plot-section (max-width: 975px) {{
+  .analysis-tools {{ grid-template-columns: 1fr; }}
+  .analysis-tools .text-panel {{ grid-column: 1; }}
+}}
 @media (max-width: 820px) {{
   main {{ grid-template-columns: 1fr; }}
   aside {{ border-right: 0; border-bottom: 1px solid var(--border); }}
@@ -2059,11 +2086,6 @@ th:first-child, td:first-child {{ text-align: left; }}
         <span class="subtle" id="datasetStatus"></span>
         <label class="chip"><input id="splitView" type="checkbox"> split view</label>
       </div>
-      <div class="toolbar-tile action-tile" aria-label="Plot actions">
-        <button type="button" id="resetFilters">Reset filters</button>
-        <button type="button" id="resetRanges">Reset axes</button>
-        <button type="button" id="savePng">Save PNG</button>
-      </div>
       <div class="toolbar-tile count-tile" aria-label="Event counts">
         <div class="count-stat"><span class="subtle">selected</span><strong id="selectedCount">0</strong></div>
         <div class="count-stat"><span class="subtle">embedded</span><strong id="embeddedCount">0</strong></div>
@@ -2098,6 +2120,11 @@ th:first-child, td:first-child {{ text-align: left; }}
         <label class="chip"><input id="logz" type="checkbox"> log color</label>
         <label class="chip"><input id="density" type="checkbox"> density</label>
         <label class="chip" id="colorScaleChip"><input id="colorScale" type="checkbox"> color scale</label>
+      </div>
+      <div class="toolbar-tile action-tile" aria-label="Plot actions">
+        <button type="button" id="resetFilters">Reset filters</button>
+        <button type="button" id="resetRanges">Reset axes</button>
+        <button type="button" id="savePng">Save PNG</button>
       </div>
     </div>
     <div class="plot-grid" id="plotGrid">
@@ -2146,6 +2173,7 @@ th:first-child, td:first-child {{ text-align: left; }}
             <button type="button" id="addDerived">Add</button>
           </div>
           <div class="operation-feedback">
+            <span class="operation-feedback-label">Preview</span>
             <div class="operation-preview" id="opPreview"></div>
             <div class="subtle" id="opStatus"></div>
           </div>
@@ -5576,15 +5604,20 @@ function showColorScaleMarker(key, scaleInfo, value, colorFn, suffix) {{
   const clamped = clamp(fraction, 0, 1);
   const canvasRect = el("plot" + key).getBoundingClientRect();
   const paneRect = el("plotPane" + key).getBoundingClientRect();
-  const markerLeft = canvasRect.left - paneRect.left + scaleInfo.x - 4;
+  const preferredLeft = canvasRect.left - paneRect.left + scaleInfo.x - 4;
   const markerTop = canvasRect.top - paneRect.top + scaleInfo.y + scaleInfo.height - clamped * scaleInfo.height;
-  marker.style.left = markerLeft + "px";
-  marker.style.top = markerTop + "px";
   marker.style.setProperty("--marker-width", (scaleInfo.width + 10) + "px");
   marker.style.setProperty("--marker-color", colorFn(clamped));
   marker.querySelector(".scale-name").textContent = scaleInfo.label || "";
   marker.querySelector(".scale-value").textContent = fmt(value);
   marker.style.display = "flex";
+  const markerLeft = constrainedOverlayLeft(preferredLeft, marker.offsetWidth, paneRect.width);
+  marker.style.left = markerLeft + "px";
+  marker.style.top = markerTop + "px";
+}}
+
+function constrainedOverlayLeft(preferredLeft, overlayWidth, containerWidth, padding = 4) {{
+  return clamp(preferredLeft, padding, Math.max(padding, containerWidth - overlayWidth - padding));
 }}
 
 function showColorScaleMarkers(key, colorScale, value, overlayValue) {{

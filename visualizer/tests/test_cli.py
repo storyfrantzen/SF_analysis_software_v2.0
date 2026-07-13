@@ -62,11 +62,18 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn('<div class="control-panel text-panel" id="textFilterPanel">', html)
         self.assertIn(".analysis-tools .fit-panel { order: 1; }", html)
         self.assertIn(".analysis-tools .derived-panel { order: 2; }", html)
+        self.assertIn("grid-template-columns: repeat(2, minmax(460px, 1fr))", html)
+        self.assertIn("align-items: stretch", html)
+        self.assertIn("@container plot-section (max-width: 975px)", html)
+        self.assertIn('<span class="operation-feedback-label">Preview</span>', html)
+        self.assertIn(".fit-model-grid select { width: auto; max-width: 190px; }", html)
+        self.assertIn("grid-template-columns: minmax(130px, 220px) minmax(100px, 160px)", html)
         self.assertIn('id="canvasToolbarSlotA"', html)
         self.assertIn("toolbarSlot.appendChild(canvasToolbar)", html)
         self.assertLess(html.index('id="plotA"'), html.index('id="hoverInfoA"'))
         self.assertLess(html.index('id="plotB"'), html.index('id="hoverInfoB"'))
         self.assertLess(html.index('aria-label="Event counts"'), html.index('aria-label="Display options"'))
+        self.assertLess(html.index('aria-label="Display options"'), html.index('aria-label="Plot actions"'))
         self.assertLess(html.index('aria-label="Display options"'), html.index('class="plot-grid"'))
         self.assertIn("Rows embedded: 3", completed.stdout)
         return html
@@ -160,6 +167,7 @@ const protonFacets = orderSplitFacets(
 );
 const protonLayout = facetLayout({width: 1200}, protonFacets.length, "pSector", protonFacets);
 const protonAxisVisibility = protonFacets.map((_, index) => facetAxisVisibility(protonLayout, index, protonFacets.length));
+const clampedScaleMarkerLeft = constrainedOverlayLeft(980, 120, 1000);
 console.log(JSON.stringify({
   ordinaryCoeff: ordinary.coeff,
   poissonCoeff: poisson.coeff,
@@ -181,7 +189,8 @@ console.log(JSON.stringify({
   protonFacetValues: protonFacets.map(facet => facet.value),
   protonFacetPositions: protonLayout.positions,
   protonAxisVisibility,
-  compactTick: formatAxisTick(0.090000)
+  compactTick: formatAxisTick(0.090000),
+  clampedScaleMarkerLeft
 }));
 """
         script_path = self.directory / "weighted_fit_test.js"
@@ -226,6 +235,7 @@ console.log(JSON.stringify({
             ],
         )
         self.assertEqual(result["compactTick"], "0.09")
+        self.assertEqual(result["clampedScaleMarkerLeft"], 876)
         self.assertEqual(
             result["protonAxisVisibility"],
             [
