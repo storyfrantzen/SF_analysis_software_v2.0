@@ -1395,6 +1395,43 @@ body {{
   color: var(--fg);
   font: 13px/1.38 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }}
+.startup-loading {{
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+  opacity: 1;
+  transition: opacity 160ms ease;
+}}
+.startup-loading.complete {{
+  opacity: 0;
+  pointer-events: none;
+}}
+.startup-loading-content {{
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  color: var(--fg);
+  text-align: center;
+}}
+.startup-loading-spinner {{
+  width: 30px;
+  height: 30px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: startup-spin 720ms linear infinite;
+}}
+.startup-loading-content strong {{ font-size: 16px; }}
+.startup-loading-content span {{ color: var(--muted); }}
+@keyframes startup-spin {{ to {{ transform: rotate(360deg); }} }}
+@media (prefers-reduced-motion: reduce) {{
+  .startup-loading {{ transition: none; }}
+  .startup-loading-spinner {{ animation: none; }}
+}}
 main {{
   display: grid;
   grid-template-columns: minmax(220px, 270px) minmax(0, 1fr);
@@ -1759,13 +1796,15 @@ canvas.fit-range-picker {{
 }}
 .action-tile button + button {{ border-left: 1px solid var(--border); border-radius: 0 4px 4px 0; }}
 .header-utility-stack {{
-  display: grid;
-  gap: 4px;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
   margin-left: auto;
 }}
 .header-utility-stack .toolbar-tile {{
   justify-content: center;
 }}
+.header-utility-stack #loadFiles {{ white-space: nowrap; }}
 .count-tile {{ gap: 0; }}
 .count-stat {{
   display: inline-flex;
@@ -2117,7 +2156,14 @@ th:first-child, td:first-child {{ text-align: left; }}
 }}
 </style>
 </head>
-<body>
+<body aria-busy="true">
+<div class="startup-loading" id="startupLoading" role="status" aria-live="polite" aria-label="Loading visualizer data">
+  <div class="startup-loading-content">
+    <div class="startup-loading-spinner" aria-hidden="true"></div>
+    <strong>Loading visualizer</strong>
+    <span>Reading embedded data…</span>
+  </div>
+</div>
 <main id="app">
   <aside>
     <div class="dataset-heading">
@@ -2220,12 +2266,12 @@ th:first-child, td:first-child {{ text-align: left; }}
       <div class="plot-panel-controls">
         <div class="panel-tabs" id="panelTabs"></div>
         <button type="button" id="addPanel">+ panel</button>
-        <button type="button" id="loadFiles">Load File(s)</button>
-        <input id="loadFileInput" type="file" accept=".html,text/html" multiple hidden>
         <span class="subtle" id="datasetStatus"></span>
         <label class="chip"><input id="splitView" type="checkbox"> split view</label>
       </div>
       <div class="header-utility-stack">
+        <button type="button" id="loadFiles">Load File(s)</button>
+        <input id="loadFileInput" type="file" accept=".html,text/html" multiple hidden>
         <div class="toolbar-tile count-tile" aria-label="Event counts">
           <div class="count-stat"><span class="subtle">selected</span><strong id="selectedCount">0</strong></div>
           <div class="count-stat"><span class="subtle">embedded</span><strong id="embeddedCount">0</strong></div>
@@ -3244,6 +3290,12 @@ function init() {{
   renderPanelTabs();
   syncControlsFromPanel();
   update();
+  const startupLoading = el("startupLoading");
+  document.body.removeAttribute("aria-busy");
+  requestAnimationFrame(() => {{
+    startupLoading.classList.add("complete");
+    window.setTimeout(() => startupLoading.remove(), 180);
+  }});
 }}
 
 function initializeCategoryState() {{

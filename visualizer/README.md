@@ -114,6 +114,11 @@ beneath the canvas.
 Color-scale hover readouts are clamped inside the plot pane so their numeric
 values remain visible at the right edge.
 
+The `Load File(s)` action sits in the right-side header utilities immediately
+before the selected/embedded count tile. On startup, a full-window loading
+screen remains visible while the embedded columns are decoded and the initial
+plot state is constructed, then clears once the first visualization is ready.
+
 Right-clicking either canvas opens a plot menu with `Make ghost`, `Replace
 ghost`, and `Clear ghost` behavior. A ghost snapshots the active panel's
 current histogram bins and remains fixed while filters change. One-dimensional
