@@ -72,6 +72,9 @@ void RecBranches::reset() {
     delta_phi = 0.0;
     beta = NAN;
     chi2pid = NAN;
+    trackChi2 = NAN;
+    trackNDF = NAN;
+    trackChi2N = NAN;
 
     vx = NAN;
     vy = NAN;
@@ -117,6 +120,20 @@ void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx) {
     delta_phi = 0.0;
     beta    = safeGet(rec->par()->getBeta());
     chi2pid = safeGet(rec->par()->getChi2Pid());
+
+    // REC::Track contains charged-particle tracking fits only. The detector
+    // choice also prevents an absent track link from returning a dummy value
+    // for FT or neutral particles.
+    if (charge != 0 && det == 1) {
+        trackChi2  = safeGet(rec->trk(clas12::DC)->getChi2());
+        trackNDF   = safeGet(rec->trk(clas12::DC)->getNDF());
+    } else if (charge != 0 && det == 2) {
+        trackChi2  = safeGet(rec->trk(clas12::CVT)->getChi2());
+        trackNDF   = safeGet(rec->trk(clas12::CVT)->getNDF());
+    }
+    if (std::isfinite(trackChi2) && std::isfinite(trackNDF) && trackNDF > 0.0) {
+        trackChi2N = trackChi2 / trackNDF;
+    }
 
     vx      = safeGet(rec->par()->getVx());
     vy      = safeGet(rec->par()->getVy());

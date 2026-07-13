@@ -80,6 +80,12 @@ struct RecBranches : public TObject {
     double beta   = NAN;
     double chi2pid = NAN;
 
+    // REC::Track fit quality. These are NAN when the particle has no
+    // associated DC (FD) or CVT (CD) track.
+    double trackChi2  = NAN;
+    double trackNDF   = NAN;
+    double trackChi2N = NAN;
+
     double vx     = NAN;
     double vy     = NAN;
     double vz     = NAN;
@@ -119,7 +125,7 @@ struct RecBranches : public TObject {
               double pCorr, double thetaCorr, double phiCorr);
     #endif
 
-    ClassDef(RecBranches, 4);
+    ClassDef(RecBranches, 5);
 };
 
 // ─── GenBranches ─────────────────────────────────────────────────────────────────

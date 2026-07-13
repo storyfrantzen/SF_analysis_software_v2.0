@@ -252,6 +252,14 @@ The dataset tag and beam energy are also printed visibly on every generated plot
 
 With matching enabled, each reconstructed particle row is paired with the closest unused generator particle of the same PID within `matchMaxAngleDeg`. Matched rows carry both `rec` and `gen` branches, with `rec.matchedGenIdx` and `rec.matchAngleDeg` recording the match. Reconstructed rows without a match have `matchedGenIdx == -999` and a reset `gen` branch. If `saveUnmatchedMC` is true, unmatched generator particles are also written as GEN-only rows with a reset `rec` branch. This layout supports both calibration scripts, which select matched rows, and acceptance studies, which can count unmatched generator rows.
 
+Each reconstructed row also carries `rec.trackChi2`, `rec.trackNDF`, and
+`rec.trackChi2N`. Forward-detector charged particles use their linked DC track,
+central-detector charged particles use their linked CVT track, and
+`trackChi2N` is computed as `trackChi2 / trackNDF` only for a positive finite
+NDF. FT particles, neutral particles, and rows without an applicable track keep
+all three values as `NAN`. These track-fit quantities are distinct from
+`rec.chi2pid`, which is the particle-identification chi-square.
+
 ### Compact generated-event acceptance tree
 
 Particle-level unmatched GEN rows are not required for production acceptance

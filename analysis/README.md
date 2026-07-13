@@ -188,7 +188,11 @@ filters appear only when the input contains string-valued columns. Selected ROOT
 inputs
 expose the richest set of reconstruction filters, including `pDet`, `passFiducial`,
 `passSamplingFraction`, `passExclusivity`, and selected-particle kinematics
-such as `protonTheta`, so plots like `theta_p` vs `-t` can be explored directly.
+such as `protonTheta`, so its correlation with `-t` can be explored directly.
+Diagnostic post-processing outputs also provide `evaluatedCuts` and
+`failedCuts`. The visualizer expands them into numeric `passCut_*` quantities,
+with `1` for pass, `0` for failure, and `NAN` when that cut was not evaluated
+for a row.
 Newly post-processed selected files also expose selected-particle indices and
 sectors, including `pIdx`, `g1Idx`, `g2Idx`, `pSector`, `g1Sector`, and
 `g2Sector`, so proton and photon selections can be filtered like the electron.

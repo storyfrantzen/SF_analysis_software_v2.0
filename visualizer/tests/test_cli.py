@@ -10,7 +10,7 @@ import unittest
 
 import numpy as np
 
-from visualizer.app import build_payload
+from visualizer.app import add_derived_quantities, build_payload, label_for
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -211,6 +211,47 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertGreater(variables["m2_miss"]["min"], -1.0)
         self.assertLess(variables["m2_miss"]["max"], 1.0)
         self.assertIn("pSector", {item["name"] for item in payload["sectorSplits"]})
+
+    def test_particle_quantity_labels_follow_branch_names(self) -> None:
+        self.assertEqual(label_for("electronP"), "electronP")
+        self.assertEqual(label_for("protonP"), "protonP")
+        self.assertEqual(label_for("electronTheta_deg"), "electronTheta deg")
+        self.assertEqual(label_for("protonTheta_deg"), "protonTheta deg")
+        self.assertEqual(label_for("pi0_theta_deg"), "pi0_theta deg")
+
+    def test_tagged_cut_sets_expand_to_filterable_pass_quantities(self) -> None:
+        arrays = add_derived_quantities({
+            "Q2": np.array([1.0, 2.0, 3.0]),
+            "evaluatedCuts": np.array([
+                "electron.fiducial,proton.fiducial",
+                "electron.fiducial,proton.fiducial",
+                "electron.fiducial",
+            ]),
+            "failedCuts": np.array([
+                "proton.fiducial",
+                "",
+                "electron.fiducial",
+            ]),
+        })
+        np.testing.assert_allclose(
+            arrays["passCut_electron_fiducial"], [1.0, 1.0, 0.0]
+        )
+        np.testing.assert_allclose(
+            arrays["passCut_proton_fiducial"][:2], [0.0, 1.0]
+        )
+        self.assertTrue(np.isnan(arrays["passCut_proton_fiducial"][2]))
+
+        payload = build_payload(
+            Path("diagnostics.npz"),
+            {name: np.asarray(value) for name, value in arrays.items()},
+            metadata={},
+            downsample={"sampled": False, "originalRows": 3, "embeddedRows": 3},
+            title=None,
+        )
+        filters = {item["name"]: item for item in payload["categoricalFilters"]}
+        self.assertEqual(
+            filters["passCut_electron_fiducial"]["labels"], ["fail", "pass"]
+        )
 
     def test_legacy_entry_point_remains_compatible(self) -> None:
         package_html = self.run_visualizer(

@@ -59,6 +59,35 @@ void addCsvFailures(const std::string& failedCuts, ProcessingStats& stats) {
     }
 }
 
+void appendUnique(std::vector<std::string>& destination,
+                  const std::vector<std::string>& source) {
+    for (const auto& name : source) {
+        if (name.empty()) continue;
+        if (std::find(destination.begin(), destination.end(), name) == destination.end()) {
+            destination.push_back(name);
+        }
+    }
+}
+
+std::string joinCsv(const std::vector<std::string>& names) {
+    std::ostringstream out;
+    for (size_t i = 0; i < names.size(); ++i) {
+        if (i > 0) out << ",";
+        out << names[i];
+    }
+    return out.str();
+}
+
+std::vector<std::string> splitCsv(const std::string& value) {
+    std::vector<std::string> names;
+    std::istringstream stream(value);
+    std::string name;
+    while (std::getline(stream, name, ',')) {
+        if (!name.empty()) names.push_back(name);
+    }
+    return names;
+}
+
 double fraction(long long numerator, long long denominator) {
     if (denominator <= 0) return 0.0;
     return static_cast<double>(numerator) / static_cast<double>(denominator);
@@ -145,8 +174,13 @@ struct CandidateOutput {
     int eppi0_g1Sector = -999;
     int eppi0_g2Sector = -999;
     int eppi0_passFiducial = 0;
+    int eppi0_electronPassFiducial = 0;
+    int eppi0_protonPassFiducial = 0;
+    int eppi0_gamma1PassFiducial = 0;
+    int eppi0_gamma2PassFiducial = 0;
     int eppi0_passSamplingFraction = 0;
     int eppi0_passExclusivity = 0;
+    std::string eppi0_evaluatedCuts;
     std::string eppi0_failedCuts;
     double Q2 = NAN;
     double nu = NAN;
@@ -219,8 +253,17 @@ struct CandidateOutput {
         tree.Branch("g1Sector", &eppi0_g1Sector, "g1Sector/I");
         tree.Branch("g2Sector", &eppi0_g2Sector, "g2Sector/I");
         tree.Branch("passFiducial", &eppi0_passFiducial, "passFiducial/I");
+        tree.Branch("electronPassFiducial", &eppi0_electronPassFiducial,
+                    "electronPassFiducial/I");
+        tree.Branch("protonPassFiducial", &eppi0_protonPassFiducial,
+                    "protonPassFiducial/I");
+        tree.Branch("gamma1PassFiducial", &eppi0_gamma1PassFiducial,
+                    "gamma1PassFiducial/I");
+        tree.Branch("gamma2PassFiducial", &eppi0_gamma2PassFiducial,
+                    "gamma2PassFiducial/I");
         tree.Branch("passSamplingFraction", &eppi0_passSamplingFraction, "passSamplingFraction/I");
         tree.Branch("passExclusivity", &eppi0_passExclusivity, "passExclusivity/I");
+        tree.Branch("evaluatedCuts", &eppi0_evaluatedCuts);
         tree.Branch("failedCuts", &eppi0_failedCuts);
         tree.Branch("y", &y, "y/D");
         tree.Branch("W", &W, "W/D");
@@ -309,10 +352,9 @@ void fillDISBranches(const Selection& selection,
 bool evaluateCompositeRank(const Selection& selection,
                            const PostCutConfig& cfg,
                            double& rank,
-                           std::string& failedCut) {
+                           CutDecision& decision) {
     rank = 0.0;
     bool usedComposite = false;
-    failedCut.clear();
 
     for (const auto& composite : cfg.channel.composites) {
         if (composite.type != "pairMass" || composite.daughters.size() != 2) continue;
@@ -337,10 +379,11 @@ bool evaluateCompositeRank(const Selection& selection,
         const TLorentzVector lvRight = Kinematics::particle(*right);
         const double mass = (lvLeft + lvRight).M();
         const double delta = std::abs(mass - composite.mass);
-        if (std::isfinite(composite.window) && delta > composite.window) {
-            failedCut = composite.role + ".mass_window";
-            return false;
-        }
+        const bool passesWindow = !std::isfinite(composite.window) || delta <= composite.window;
+        const std::string cutName = composite.role + ".mass_window";
+        if (composite.mode == "tag") decision.tag(passesWindow, cutName);
+        else decision.require(passesWindow, cutName);
+        if (!decision.pass) return false;
         rank += delta;
         usedComposite = true;
     }
@@ -421,13 +464,18 @@ void runEppi0Logic(const Selection& selection,
     out.eppi0_g1Sector = g1.sector;
     out.eppi0_g2Sector = g2.sector;
     const CutDecision fiducial = cuts.evaluateFiducial(e);
-    CutDecision fiducialP = cuts.evaluateFiducial(p);
-    CutDecision fiducialG1 = cuts.evaluateFiducial(g1);
-    CutDecision fiducialG2 = cuts.evaluateFiducial(g2);
-    fiducialP.merge(fiducialG1);
-    fiducialP.merge(fiducialG2);
-    fiducialP.merge(fiducial);
-    out.eppi0_passFiducial = fiducialP.pass;
+    const CutDecision fiducialP = cuts.evaluateFiducial(p);
+    const CutDecision fiducialG1 = cuts.evaluateFiducial(g1);
+    const CutDecision fiducialG2 = cuts.evaluateFiducial(g2);
+    out.eppi0_electronPassFiducial = fiducial.pass;
+    out.eppi0_protonPassFiducial = fiducialP.pass;
+    out.eppi0_gamma1PassFiducial = fiducialG1.pass;
+    out.eppi0_gamma2PassFiducial = fiducialG2.pass;
+    CutDecision combinedFiducial = fiducialP;
+    combinedFiducial.merge(fiducialG1);
+    combinedFiducial.merge(fiducialG2);
+    combinedFiducial.merge(fiducial);
+    out.eppi0_passFiducial = combinedFiducial.pass;
     out.eppi0_passSamplingFraction = cuts.evaluateSamplingFraction(e).pass;
 
     out.y = dis.y;
@@ -458,6 +506,7 @@ void runEppi0Logic(const Selection& selection,
         out.pi0_thetaX * 180.0 / kPi
     });
     out.eppi0_passExclusivity = exclusivity.pass;
+    out.eppi0_evaluatedCuts = joinCsv(exclusivity.evaluated);
     out.eppi0_failedCuts = exclusivity.failedCsv();
 }
 
@@ -482,6 +531,8 @@ bool processEvent(const EventRows& rows,
     CandidateOutput best;
     bool found = false;
     Selection selection;
+    std::vector<std::string> taggedCuts;
+    std::vector<std::string> taggedFailures;
 
     const auto alreadySelected = [&](const RecBranches* candidate) {
         for (const auto& [_, particles] : selection) {
@@ -504,15 +555,23 @@ bool processEvent(const EventRows& rows,
     visitRole = [&](size_t roleIndex) {
         if (roleIndex >= cfg.channel.particles.size()) {
             double rank = 0.0;
-            std::string failedCompositeCut;
-            if (!evaluateCompositeRank(selection, cfg, rank, failedCompositeCut)) {
+            CutDecision compositeDecision;
+            if (!evaluateCompositeRank(selection, cfg, rank, compositeDecision)) {
                 ++stats.compositeFailures;
-                ++stats.cutFailures[failedCompositeCut.empty() ? "composite" : failedCompositeCut];
+                stats.addFailures(compositeDecision);
                 return;
             }
 
             CandidateOutput candidate;
             buildCandidateOutput(rows, selection, cuts, candidate);
+            std::vector<std::string> candidateTaggedCuts = taggedCuts;
+            std::vector<std::string> candidateTaggedFailures = taggedFailures;
+            appendUnique(candidateTaggedCuts, compositeDecision.tagged);
+            appendUnique(candidateTaggedFailures, compositeDecision.taggedFailed);
+            appendUnique(candidateTaggedCuts, splitCsv(candidate.eppi0_evaluatedCuts));
+            appendUnique(candidateTaggedFailures, splitCsv(candidate.eppi0_failedCuts));
+            candidate.eppi0_evaluatedCuts = joinCsv(candidateTaggedCuts);
+            candidate.eppi0_failedCuts = joinCsv(candidateTaggedFailures);
             if (runEppi0 && !candidate.eppi0_passExclusivity && !cfg.saveFailedCandidates) {
                 ++stats.exclusivityFailures;
                 addCsvFailures(candidate.eppi0_failedCuts, stats);
@@ -549,9 +608,15 @@ bool processEvent(const EventRows& rows,
                     continue;
                 }
 
+                const size_t taggedCutCount = taggedCuts.size();
+                const size_t taggedFailureCount = taggedFailures.size();
+                appendUnique(taggedCuts, decision.tagged);
+                appendUnique(taggedFailures, decision.taggedFailed);
                 chosen.push_back(candidate);
                 chooseParticle(i + 1);
                 chosen.pop_back();
+                taggedCuts.resize(taggedCutCount);
+                taggedFailures.resize(taggedFailureCount);
             }
         };
 

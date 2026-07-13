@@ -59,6 +59,10 @@ ROOT_PREFERRED_BRANCHES = (
     "g1Sector",
     "g2Sector",
     "passFiducial",
+    "electronPassFiducial",
+    "protonPassFiducial",
+    "gamma1PassFiducial",
+    "gamma2PassFiducial",
     "passSamplingFraction",
     "passExclusivity",
     "Q2",
@@ -83,6 +87,7 @@ ROOT_PREFERRED_BRANCHES = (
     "theta_e_g1",
     "theta_e_g2",
     "theta_g1_g2",
+    "evaluatedCuts",
     "failedCuts",
 ) + ROOT_VECTOR_BRANCHES
 
@@ -120,6 +125,9 @@ REC_OBJECT_FIELDS = (
     "delta_phi",
     "beta",
     "chi2pid",
+    "trackChi2",
+    "trackNDF",
+    "trackChi2N",
     "vx",
     "vy",
     "vz",
@@ -250,9 +258,7 @@ DISPLAY_NAMES = {
     "pSector": "proton sector",
     "g1Sector": "gamma 1 sector",
     "g2Sector": "gamma 2 sector",
-    "protonTheta": "theta_p",
-    "protonTheta_deg": "theta_p deg",
-    "protonP": "p_p",
+    "protonTheta_deg": "protonTheta deg",
     "protonIdx": "proton index",
     "protonSector": "proton sector",
     "gammaIdx": "gamma index",
@@ -261,9 +267,9 @@ DISPLAY_NAMES = {
     "gamma1Sector": "gamma 1 sector",
     "gamma2Idx": "gamma 2 index",
     "gamma2Sector": "gamma 2 sector",
-    "electronTheta_deg": "theta_e deg",
+    "electronTheta_deg": "electronTheta deg",
     "electronIdx": "electron index",
-    "pi0_theta_deg": "theta_pi0 deg",
+    "pi0_theta_deg": "pi0_theta deg",
     "rec_pid": "REC pid",
     "rec_det": "REC detector",
     "rec_p": "REC p",
@@ -658,7 +664,60 @@ def add_derived_quantities(arrays: dict[str, Any]) -> dict[str, Any]:
         derived["rec_not_selected"] = ~np.asarray(derived["rec_selected"], dtype=bool)
     add_sampling_fraction_quantities(derived, "")
     add_sampling_fraction_quantities(derived, "rec_")
+    add_cut_result_quantities(derived)
     return derived
+
+
+def add_cut_result_quantities(arrays: dict[str, Any]) -> None:
+    """Expand evaluated/failed CSV cut sets into filterable passCut_* arrays."""
+    for prefix in ("", "rec_"):
+        evaluated_name = f"{prefix}evaluatedCuts"
+        failed_name = f"{prefix}failedCuts"
+        if evaluated_name not in arrays and failed_name not in arrays:
+            continue
+
+        reference = arrays.get(evaluated_name, arrays.get(failed_name))
+        rows = len(np.asarray(reference))
+        evaluated_values = np.asarray(
+            arrays.get(evaluated_name, np.full(rows, "", dtype=str)), dtype=str
+        )
+        failed_values = np.asarray(
+            arrays.get(failed_name, np.full(rows, "", dtype=str)), dtype=str
+        )
+        evaluated_sets: list[set[str]] = []
+        failed_sets: list[set[str]] = []
+        cut_names: set[str] = set()
+        for row in range(rows):
+            evaluated = csv_name_set(evaluated_values[row])
+            failed = csv_name_set(failed_values[row])
+            evaluated.update(failed)  # Supports older files with failedCuts only.
+            evaluated_sets.append(evaluated)
+            failed_sets.append(failed)
+            cut_names.update(evaluated)
+
+        used_names: set[str] = set(arrays)
+        for cut_name in sorted(cut_names):
+            base = f"{prefix}passCut_{sanitize_cut_name(cut_name)}"
+            quantity_name = base
+            suffix = 2
+            while quantity_name in used_names:
+                quantity_name = f"{base}_{suffix}"
+                suffix += 1
+            used_names.add(quantity_name)
+            values = np.full(rows, np.nan, dtype=float)
+            for row, evaluated in enumerate(evaluated_sets):
+                if cut_name in evaluated:
+                    values[row] = 0.0 if cut_name in failed_sets[row] else 1.0
+            arrays[quantity_name] = values
+
+
+def csv_name_set(value: Any) -> set[str]:
+    return {name.strip() for name in str(value).split(",") if name.strip()}
+
+
+def sanitize_cut_name(name: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_")
+    return sanitized or "unnamed"
 
 
 def add_tmin_quantities(
@@ -1183,7 +1242,7 @@ def quantity_sort_rank(name: str) -> int:
         return 121
     if core.startswith("delta"):
         return 122
-    if core in {"beta", "chi2pid"}:
+    if core in {"beta", "chi2pid", "trackchi2", "trackndf", "trackchi2n"}:
         return 130
     if core.startswith("e") or "samplingfraction" in core:
         return 140
@@ -1324,7 +1383,10 @@ def category_label(name: str, value: Any) -> str:
 
 
 def is_pass_flag(name: str) -> bool:
-    return name.startswith("pass") or name.startswith("rec_pass")
+    core = name.removeprefix("rec_").removeprefix("gen_")
+    return core.startswith("pass") or bool(
+        re.match(r"^(?:electron|proton|gamma1|gamma2|gamma|pi0)Pass", core)
+    )
 
 
 def is_index_column(name: str) -> bool:

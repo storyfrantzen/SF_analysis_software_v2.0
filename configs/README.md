@@ -74,6 +74,25 @@ selection. For example, `configs/post/rga/10.604/eppi0_data.json` extends the
 RGA EPPI0 base config and overrides only `outputFile` plus
 `samplingFraction.sigma.paramsFile`.
 
+Primitive particle cuts and pair-mass composites accept an optional `mode`:
+
+- `"mode": "require"` is the default and rejects a particle combination when
+  the cut fails;
+- `"mode": "tag"` keeps the combination and records the result in
+  `evaluatedCuts` and `failedCuts`.
+
+Use required cuts for stable topology and candidate identity, and tagged cuts
+for selections whose effects should be studied after candidate construction.
+When `saveFailedCandidates` is true, loose-exclusivity failures are retained as
+well. The visualizer expands these two CSV branches into filterable quantities
+named `passCut_<cut_name>`.
+
+`post/rga/10.604/eppi0_cut_diagnostics.json` is a ready-to-run RGA data
+configuration. It requires the trigger electron and loose particle-quality
+preselection, while tagging electron/proton/photon fiducials, electron
+sampling-fraction cuts, the three CVT phi vetoes, and the pi0 mass window. It
+also retains failed loose-exclusivity candidates.
+
 ## RGA 10.604 GeV EPPI0 smoke test
 
 From the repository root:
@@ -90,6 +109,12 @@ From the repository root:
 
 ./build/post_process configs/post/rga/10.604/eppi0_mc_nonradiative.json \
   10.604_rga_eppi0_mc_nonradiative.root
+
+./build/post_process configs/post/rga/10.604/eppi0_cut_diagnostics.json \
+  10.604_rga_eppi0_data.root
+
+python3 -m visualizer 10.604_rga_eppi0_cut_diagnostics.root \
+  --tree Events --output 10.604_rga_eppi0_cut_diagnostics.html
 ```
 
 The processing stage corrects reconstructed proton momentum and angles before
