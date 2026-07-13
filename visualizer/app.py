@@ -2276,16 +2276,17 @@ th:first-child, td:first-child {{ text-align: left; }}
       <div class="plot-panel-controls">
         <div class="panel-tabs" id="panelTabs"></div>
         <button type="button" id="addPanel">+ panel</button>
-        <span class="subtle" id="datasetStatus"></span>
         <label class="chip"><input id="splitView" type="checkbox"> split view</label>
       </div>
       <div class="header-utility-stack">
+        <span class="subtle" id="samplingNote"></span>
+        <span class="subtle" id="datasetStatus" role="status" aria-live="polite"></span>
         <button type="button" id="loadFiles">Load File(s)</button>
         <input id="loadFileInput" type="file" accept=".html,text/html" multiple hidden>
-        <div class="toolbar-tile count-tile" aria-label="Event counts">
+        <div class="toolbar-tile count-tile" aria-label="Dataset counts">
+          <div class="count-stat"><span class="subtle">samples</span><strong id="sampleCount">1</strong></div>
           <div class="count-stat"><span class="subtle">selected</span><strong id="selectedCount">0</strong></div>
           <div class="count-stat"><span class="subtle">embedded</span><strong id="embeddedCount">0</strong></div>
-          <div class="subtle" id="samplingNote"></div>
         </div>
       </div>
       <span id="meanX" hidden>-</span>
@@ -2884,7 +2885,7 @@ async function loadVisualizerFiles(files) {{
 
 function finishLoadedVisualizers(loaded) {{
   if (loaded) {{
-    el("datasetStatus").textContent = `${{loadedSamples.length}} samples, ${{rowCount.toLocaleString()}} rows`;
+    updateDatasetStatus();
     for (const panel of Object.values(panels)) resetAxisRanges(panel);
     fillSelect(el("rangeVar"), payload.defaultX);
     fillOperationSelects();
@@ -2899,7 +2900,8 @@ function finishLoadedVisualizers(loaded) {{
 
 function updateDatasetStatus() {{
   const status = el("datasetStatus");
-  if (status) status.textContent = `${{loadedSamples.length}} sample${{loadedSamples.length === 1 ? "" : "s"}}`;
+  if (status) status.textContent = "";
+  el("sampleCount").textContent = loadedSamples.length.toLocaleString();
   el("embeddedCount").textContent = rowCount.toLocaleString();
   el("source").textContent = loadedSamples.length > 1
     ? `${{loadedSamples[0].label}} + ${{loadedSamples.length - 1}} loaded`

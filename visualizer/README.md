@@ -104,8 +104,9 @@ and uses content-sized buttons instead of stretching routine actions. Minimum
 and maximum are independently optional, allowing lower-only (`x >= min`),
 upper-only (`x <= max`), or bounded cuts. At least one bound is required when a
 constraint is added.
-Selected and embedded counts share one compact toolbar tile, while active-axis
-means are hidden from the default interface. Log color, density, and color scale
+Sample, selected-event, and embedded-event counts form a compact three-column
+toolbar tile in that order, while active-axis means are hidden from the default
+interface. Log color, density, and color scale
 remain panel-specific in a display tile beneath the active quantity title. An
 equal-size reset/export tile sits immediately to its right; the two tiles are
 spaced and centered as a group above the canvas, wrapping only when the pane is
