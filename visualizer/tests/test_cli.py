@@ -59,15 +59,18 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn('id="canvasContextMenu" role="menu" hidden', html)
         self.assertIn('id="makeGhost" role="menuitem">Make ghost</button>', html)
         self.assertIn('id="clearGhost" role="menuitem">Clear ghost</button>', html)
-        self.assertIn('id="addMinimumWCurve" role="menuitem">Add minimum W curve…</button>', html)
+        self.assertIn('id="addFunctionCurve" role="menuitem">Add function curve…</button>', html)
         self.assertIn('id="referenceCurveEditor" role="dialog"', html)
+        self.assertIn('<option value="y-of-x">y = f(x)</option>', html)
+        self.assertIn('id="referenceCurveExpression" type="text"', html)
         self.assertIn('addEventListener("contextmenu"', html)
         self.assertIn("ghostPlot: null", html)
         self.assertIn("referenceCurves: []", html)
+        self.assertIn("xName: panel.xvar", html)
         self.assertIn("function captureGhost(key)", html)
         self.assertIn("function drawGhost1d", html)
         self.assertIn("function drawGhost2d", html)
-        self.assertIn("function minimumWQ2", html)
+        self.assertIn("function compileMathExpression", html)
         self.assertIn("function drawReferenceCurves", html)
         self.assertIn('<span id="meanX" hidden>-</span>', html)
         self.assertIn('<span id="meanY" hidden>-</span>', html)
@@ -206,12 +209,15 @@ const clampedScaleMarkerLeft = constrainedOverlayLeft(980, 120, 1000);
 const emptyConstraintValueIsNaN = Number.isNaN(parseNumber(""));
 const lowerOnlyRange = [valuePassesRange(4, 3, NaN), valuePassesRange(2, 3, NaN)];
 const upperOnlyRange = [valuePassesRange(4, NaN, 5), valuePassesRange(6, NaN, 5)];
-const minimumWBoundary = minimumWQ2(0.3, 2.0, 0.9382720813);
-const referenceOrientations = [
-  referenceCurveOrientation("xB", "Q2"),
-  referenceCurveOrientation("rec_Q2", "rec_xB"),
-  referenceCurveOrientation("t", "Q2")
+const minimumWFunction = compileMathExpression("(2^2 - 0.9382720813^2) * x / (1 - x)", "x");
+const calculatorValues = [
+  minimumWFunction(0.3),
+  compileMathExpression("sqrt(x^2) + sin(pi / 2)", "x")(-3),
+  compileMathExpression("max(y, 2) + pow(y, 2)", "y")(3),
+  compileMathExpression("2**3 + log10(100)", "x")(0)
 ];
+let rejectedExpression = false;
+try { compileMathExpression("window.alert(1)", "x"); } catch (_) { rejectedExpression = true; }
 console.log(JSON.stringify({
   ordinaryCoeff: ordinary.coeff,
   poissonCoeff: poisson.coeff,
@@ -238,8 +244,8 @@ console.log(JSON.stringify({
   emptyConstraintValueIsNaN,
   lowerOnlyRange,
   upperOnlyRange,
-  minimumWBoundary,
-  referenceOrientations
+  calculatorValues,
+  rejectedExpression
 }));
 """
         script_path = self.directory / "weighted_fit_test.js"
@@ -288,8 +294,11 @@ console.log(JSON.stringify({
         self.assertTrue(result["emptyConstraintValueIsNaN"])
         self.assertEqual(result["lowerOnlyRange"], [True, False])
         self.assertEqual(result["upperOnlyRange"], [True, False])
-        self.assertAlmostEqual(result["minimumWBoundary"], 1.337, delta=0.002)
-        self.assertEqual(result["referenceOrientations"], ["xb-x", "xb-y", ""])
+        self.assertAlmostEqual(result["calculatorValues"][0], 1.337, delta=0.002)
+        self.assertAlmostEqual(result["calculatorValues"][1], 4.0, places=10)
+        self.assertAlmostEqual(result["calculatorValues"][2], 12.0, places=10)
+        self.assertAlmostEqual(result["calculatorValues"][3], 10.0, places=10)
+        self.assertTrue(result["rejectedExpression"])
         self.assertEqual(
             result["protonAxisVisibility"],
             [

@@ -113,14 +113,21 @@ Ghost state is independent for each panel and supports both ordinary and
 faceted histograms. Changing to an incompatible variable, mode, or density view
 temporarily hides the ghost without deleting it.
 
-For kinematic-coverage studies, right-click a two-dimensional `xB` versus `Q2`
-plot and choose `Add minimum W curve…`. The panel-local editor uses
-`Q2 = (W_min^2 - M^2) xB / (1 - xB)` with an editable minimum `W`, target mass,
-and label. It supports either axis orientation, multiple simultaneously drawn
-boundaries, split facets, and per-curve removal or clearing. Events satisfying
-the minimum-`W` requirement lie on the higher-`Q2` side of the boundary. Curves
-remain stored when the panel temporarily displays incompatible quantities, just
-as ghosts do.
+Right-click any two-dimensional plot and choose `Add function curve…` to open a
+panel-local graphing calculator. Curves may be entered as either `y = f(x)` or
+`x = f(y)`, with optional independent-variable domain limits and a custom label.
+Expressions support arithmetic, powers, `pi`, `e`, and common functions such as
+`sqrt`, `sin`, `cos`, `abs`, `exp`, `log`, `min`, `max`, and `pow`. Multiple
+curves can be drawn simultaneously on ordinary or faceted plots and managed
+independently for each panel. Each curve is associated with the plotted quantity
+pair on which it was created, so it hides when the axes change and reappears when
+that pair is restored.
+
+For example, on a `Q2` versus `xB` plot, a minimum-`W` boundary can be drawn as
+`y = (2^2 - 0.938272^2) * x / (1 - x)` with an optional domain such as
+`0 < x < 1`. More generally, the calculator operates only in plotted
+coordinates and is independent of quantity names, filters, and the underlying
+physics interpretation.
 
 Derived Operations uses a compact two-row builder in the sidebar beneath
 Constraints, before the sidebar's axis-range separator. Only validation and

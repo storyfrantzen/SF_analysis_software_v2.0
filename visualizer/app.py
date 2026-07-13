@@ -1873,6 +1873,7 @@ canvas {{
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 8px;
 }}
+.reference-editor-grid .reference-expression,
 .reference-editor-grid .reference-label {{ grid-column: 1 / -1; }}
 .reference-editor-actions {{ justify-content: flex-end; margin-top: 8px; }}
 .reference-curve-list {{ display: grid; gap: 5px; margin-top: 12px; }}
@@ -2094,6 +2095,11 @@ th:first-child, td:first-child {{ text-align: left; }}
 @media (max-width: 620px) {{
   .fit-summary.sector {{ grid-template-columns: 1fr; }}
   .fit-summary.sector .fit-summary-item:last-child:nth-child(7) {{ grid-column: 1; }}
+}}
+@media (max-width: 420px) {{
+  .reference-editor-grid {{ grid-template-columns: 1fr; }}
+  .reference-editor-grid .reference-expression,
+  .reference-editor-grid .reference-label {{ grid-column: 1; }}
 }}
 </style>
 </head>
@@ -2323,7 +2329,7 @@ th:first-child, td:first-child {{ text-align: left; }}
 <div class="canvas-context-menu" id="canvasContextMenu" role="menu" hidden>
   <button type="button" id="makeGhost" role="menuitem">Make ghost</button>
   <button type="button" id="clearGhost" role="menuitem">Clear ghost</button>
-  <button type="button" id="addMinimumWCurve" role="menuitem">Add minimum W curve…</button>
+  <button type="button" id="addFunctionCurve" role="menuitem">Add function curve…</button>
   <button type="button" id="manageReferenceCurves" role="menuitem">Manage reference curves…</button>
 </div>
 <div class="reference-editor" id="referenceCurveEditor" role="dialog" aria-modal="true" aria-labelledby="referenceCurveTitle" hidden>
@@ -2334,10 +2340,16 @@ th:first-child, td:first-child {{ text-align: left; }}
     </div>
     <div class="subtle" id="referenceCurveAxes"></div>
     <div class="reference-editor-grid">
-      <label>Minimum W (GeV)<input id="referenceWMin" type="number" min="0" step="0.05" value="2.0"></label>
-      <label>Target mass (GeV)<input id="referenceTargetMass" type="number" min="0" step="0.001" value="0.9382720813"></label>
-      <label class="reference-label">Label (optional)<input id="referenceCurveLabel" type="text" placeholder="W > 2 GeV"></label>
+      <label>Graph <select id="referenceCurveDirection">
+        <option value="y-of-x">y = f(x)</option>
+        <option value="x-of-y">x = f(y)</option>
+      </select></label>
+      <label class="reference-expression"><span id="referenceExpressionLabel">f(x)</span><input id="referenceCurveExpression" type="text" value="x" spellcheck="false"></label>
+      <label>Domain minimum (optional)<input id="referenceDomainMin" type="number" step="any"></label>
+      <label>Domain maximum (optional)<input id="referenceDomainMax" type="number" step="any"></label>
+      <label class="reference-label">Label (optional)<input id="referenceCurveLabel" type="text" placeholder="auto"></label>
     </div>
+    <div class="subtle">Use numbers, x or y, pi, e, + − * / ^, parentheses, and functions such as sqrt, sin, cos, abs, exp, log, min, max, and pow.</div>
     <div class="subtle" id="referenceCurveStatus" role="status" aria-live="polite"></div>
     <div class="reference-editor-actions">
       <button type="button" id="clearReferenceCurves">Clear all</button>
@@ -3451,7 +3463,7 @@ function attachEvents() {{
     clearGhost(contextMenuPanelKey);
     hideCanvasContextMenu();
   }});
-  el("addMinimumWCurve").addEventListener("click", () => {{
+  el("addFunctionCurve").addEventListener("click", () => {{
     hideCanvasContextMenu();
     openReferenceCurveEditor(contextMenuPanelKey, true);
   }});
@@ -3462,6 +3474,7 @@ function attachEvents() {{
   el("closeReferenceCurveEditor").addEventListener("click", hideReferenceCurveEditor);
   el("saveReferenceCurve").addEventListener("click", saveReferenceCurve);
   el("clearReferenceCurves").addEventListener("click", clearReferenceCurves);
+  el("referenceCurveDirection").addEventListener("change", syncReferenceExpressionControl);
   el("referenceCurveEditor").addEventListener("click", event => {{
     if (event.target === el("referenceCurveEditor")) hideReferenceCurveEditor();
   }});
@@ -4072,13 +4085,13 @@ function showCanvasContextMenu(event, key) {{
   const menu = el("canvasContextMenu");
   const make = el("makeGhost");
   const clear = el("clearGhost");
-  const addCurve = el("addMinimumWCurve");
+  const addCurve = el("addFunctionCurve");
   const manageCurves = el("manageReferenceCurves");
   make.textContent = panel.ghostPlot ? "Replace ghost" : "Make ghost";
   make.disabled = !panel.lastPlot;
   clear.disabled = !panel.ghostPlot;
-  addCurve.disabled = !referenceCurveOrientation(panel.xvar, panel.yvar) || panel.mode !== "2d";
-  addCurve.title = addCurve.disabled ? "Use a 2D xB versus Q2 plot to add this curve" : "";
+  addCurve.disabled = panel.mode !== "2d";
+  addCurve.title = addCurve.disabled ? "Function curves require a 2D plot" : "";
   manageCurves.disabled = !(panel.referenceCurves || []).length;
   menu.hidden = false;
   const padding = 6;
@@ -4090,41 +4103,155 @@ function hideCanvasContextMenu() {{
   el("canvasContextMenu").hidden = true;
 }}
 
-function canonicalKinematicName(name) {{
-  return String(name || "").toLowerCase().replace(/^(rec_|gen_)/, "").replace(/_/g, "");
+const MATH_FUNCTIONS = {{
+  sin: {{fn: Math.sin, min: 1, max: 1}}, cos: {{fn: Math.cos, min: 1, max: 1}},
+  tan: {{fn: Math.tan, min: 1, max: 1}}, asin: {{fn: Math.asin, min: 1, max: 1}},
+  acos: {{fn: Math.acos, min: 1, max: 1}}, atan: {{fn: Math.atan, min: 1, max: 1}},
+  atan2: {{fn: Math.atan2, min: 2, max: 2}}, sqrt: {{fn: Math.sqrt, min: 1, max: 1}},
+  abs: {{fn: Math.abs, min: 1, max: 1}}, exp: {{fn: Math.exp, min: 1, max: 1}},
+  log: {{fn: Math.log, min: 1, max: 1}}, ln: {{fn: Math.log, min: 1, max: 1}},
+  log10: {{fn: Math.log10, min: 1, max: 1}},
+  floor: {{fn: Math.floor, min: 1, max: 1}}, ceil: {{fn: Math.ceil, min: 1, max: 1}},
+  round: {{fn: Math.round, min: 1, max: 1}}, min: {{fn: Math.min, min: 2, max: Infinity}},
+  max: {{fn: Math.max, min: 2, max: Infinity}}, pow: {{fn: Math.pow, min: 2, max: 2}}
+}};
+
+function tokenizeMathExpression(expression) {{
+  const source = String(expression || "").replace(/π/gi, "pi").replace(/\\*\\*/g, "^");
+  const tokens = [];
+  let index = 0;
+  while (index < source.length) {{
+    const char = source[index];
+    if (/\\s/.test(char)) {{ index++; continue; }}
+    const number = source.slice(index).match(/^(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:e[+-]?\\d+)?/i);
+    if (number) {{
+      tokens.push({{type: "number", value: Number(number[0])}});
+      index += number[0].length;
+      continue;
+    }}
+    const name = source.slice(index).match(/^[A-Za-z_][A-Za-z0-9_]*/);
+    if (name) {{
+      tokens.push({{type: "name", value: name[0].toLowerCase()}});
+      index += name[0].length;
+      continue;
+    }}
+    if ("+-*/^(),".includes(char)) {{
+      tokens.push({{type: char, value: char}});
+      index++;
+      continue;
+    }}
+    throw new Error(`Unexpected character "${{char}}"`);
+  }}
+  tokens.push({{type: "end", value: ""}});
+  return tokens;
 }}
 
-function referenceCurveOrientation(xName, yName) {{
-  const x = canonicalKinematicName(xName);
-  const y = canonicalKinematicName(yName);
-  if (x === "xb" && y === "q2") return "xb-x";
-  if (x === "q2" && y === "xb") return "xb-y";
-  return "";
+function compileMathExpression(expression, variableName = "x") {{
+  const tokens = tokenizeMathExpression(expression);
+  let position = 0;
+  const peek = () => tokens[position];
+  const match = type => peek().type === type ? tokens[position++] : null;
+  const expect = type => {{
+    const token = match(type);
+    if (!token) throw new Error(`Expected "${{type}}"`);
+    return token;
+  }};
+  const combine = (left, right, operation) => value => operation(left(value), right(value));
+  function parseExpression() {{
+    let left = parseTerm();
+    while (peek().type === "+" || peek().type === "-") {{
+      const operator = tokens[position++].type;
+      const right = parseTerm();
+      left = combine(left, right, operator === "+" ? (a, b) => a + b : (a, b) => a - b);
+    }}
+    return left;
+  }}
+  function parseTerm() {{
+    let left = parseUnary();
+    while (peek().type === "*" || peek().type === "/") {{
+      const operator = tokens[position++].type;
+      const right = parseUnary();
+      left = combine(left, right, operator === "*" ? (a, b) => a * b : (a, b) => a / b);
+    }}
+    return left;
+  }}
+  function parseUnary() {{
+    if (match("+")) return parseUnary();
+    if (match("-")) {{ const value = parseUnary(); return input => -value(input); }}
+    return parsePower();
+  }}
+  function parsePower() {{
+    const left = parsePrimary();
+    if (!match("^")) return left;
+    const right = parseUnary();
+    return combine(left, right, Math.pow);
+  }}
+  function parsePrimary() {{
+    const number = match("number");
+    if (number) return () => number.value;
+    const name = match("name");
+    if (name) {{
+      if (name.value === variableName) return value => value;
+      if (name.value === "pi") return () => Math.PI;
+      if (name.value === "e") return () => Math.E;
+      const definition = MATH_FUNCTIONS[name.value];
+      if (!definition) throw new Error(`Unknown name "${{name.value}}"`);
+      expect("(");
+      const argumentsList = [];
+      if (peek().type !== ")") {{
+        argumentsList.push(parseExpression());
+        while (match(",")) argumentsList.push(parseExpression());
+      }}
+      expect(")");
+      if (argumentsList.length < definition.min || argumentsList.length > definition.max) {{
+        throw new Error(`${{name.value}} received ${{argumentsList.length}} argument(s)`);
+      }}
+      return value => definition.fn(...argumentsList.map(argument => argument(value)));
+    }}
+    if (match("(")) {{
+      const value = parseExpression();
+      expect(")");
+      return value;
+    }}
+    throw new Error("Expected a number, variable, function, or parenthesized expression");
+  }}
+  const evaluate = parseExpression();
+  if (peek().type !== "end") throw new Error(`Unexpected token "${{peek().value}}"`);
+  return value => {{
+    const result = evaluate(value);
+    return Number.isFinite(result) ? result : NaN;
+  }};
 }}
 
-function minimumWQ2(xb, wMin, targetMass) {{
-  if (!(xb > 0 && xb < 1) || !(wMin > 0) || !(targetMass >= 0)) return NaN;
-  return (wMin * wMin - targetMass * targetMass) * xb / (1 - xb);
+function parseOptionalNumber(value) {{
+  return String(value).trim() === "" ? NaN : Number(value);
 }}
 
-function automaticReferenceCurveLabel(wMin) {{
-  return `W > ${{formatAxisTick(wMin)}} GeV`;
+function syncReferenceExpressionControl() {{
+  const variable = el("referenceCurveDirection").value === "x-of-y" ? "y" : "x";
+  el("referenceExpressionLabel").textContent = `f(${{variable}})`;
+  el("referenceCurveExpression").placeholder = variable;
+}}
+
+function automaticReferenceCurveLabel(direction, expression) {{
+  const dependent = direction === "x-of-y" ? "x" : "y";
+  return truncateText(`${{dependent}} = ${{expression}}`, 48);
 }}
 
 function openReferenceCurveEditor(key, focusValue = false) {{
   contextMenuPanelKey = key;
   const panel = panels[key];
-  const orientation = referenceCurveOrientation(panel.xvar, panel.yvar);
-  el("referenceCurveAxes").textContent = orientation
-    ? `${{byName[panel.yvar]?.label || panel.yvar}} versus ${{byName[panel.xvar]?.label || panel.xvar}} · events on the higher-Q2 side satisfy the minimum-W cut`
-    : "Minimum-W curves require a 2D xB versus Q2 plot.";
+  el("referenceCurveAxes").textContent = panel.mode === "2d"
+    ? `${{byName[panel.yvar]?.label || panel.yvar}} versus ${{byName[panel.xvar]?.label || panel.xvar}}`
+    : "Function curves require a two-dimensional plot.";
   el("referenceCurveStatus").textContent = "";
-  el("saveReferenceCurve").disabled = !orientation || panel.mode !== "2d";
+  el("saveReferenceCurve").disabled = panel.mode !== "2d";
+  syncReferenceExpressionControl();
   renderReferenceCurveList(panel);
   el("referenceCurveEditor").hidden = false;
   if (focusValue) {{
-    el("referenceWMin").focus();
-    el("referenceWMin").select();
+    el("referenceCurveExpression").focus();
+    el("referenceCurveExpression").select();
   }} else {{
     el("closeReferenceCurveEditor").focus();
   }}
@@ -4138,22 +4265,35 @@ function hideReferenceCurveEditor() {{
 
 function saveReferenceCurve() {{
   const panel = panels[contextMenuPanelKey];
-  const wMin = Number(el("referenceWMin").value);
-  const targetMass = Number(el("referenceTargetMass").value);
-  if (!(wMin > 0) || !(targetMass >= 0)) {{
-    el("referenceCurveStatus").textContent = "Enter a positive minimum W and a nonnegative target mass.";
+  const direction = el("referenceCurveDirection").value;
+  const variable = direction === "x-of-y" ? "y" : "x";
+  const expression = el("referenceCurveExpression").value.trim();
+  const domainMin = parseOptionalNumber(el("referenceDomainMin").value);
+  const domainMax = parseOptionalNumber(el("referenceDomainMax").value);
+  if (!expression) {{
+    el("referenceCurveStatus").textContent = "Enter a function expression.";
+    return;
+  }}
+  try {{ compileMathExpression(expression, variable); }}
+  catch (error) {{ el("referenceCurveStatus").textContent = error.message; return; }}
+  if ((Number.isFinite(domainMin) && Number.isFinite(domainMax)) && domainMax <= domainMin) {{
+    el("referenceCurveStatus").textContent = "The domain maximum must exceed the minimum.";
     return;
   }}
   if (!Array.isArray(panel.referenceCurves)) panel.referenceCurves = [];
   panel.referenceCurves.push({{
     id: ++referenceCurveId,
-    kind: "minimum-w",
-    wMin,
-    targetMass,
-    label: el("referenceCurveLabel").value.trim() || automaticReferenceCurveLabel(wMin)
+    kind: "function",
+    direction,
+    expression,
+    domainMin,
+    domainMax,
+    xName: panel.xvar,
+    yName: panel.yvar,
+    label: el("referenceCurveLabel").value.trim() || automaticReferenceCurveLabel(direction, expression)
   }});
   el("referenceCurveLabel").value = "";
-  el("referenceCurveStatus").textContent = `Added ${{automaticReferenceCurveLabel(wMin)}}.`;
+  el("referenceCurveStatus").textContent = "Added function curve.";
   renderReferenceCurveList(panel);
   update();
 }}
@@ -4182,7 +4322,11 @@ function renderReferenceCurveList(panel) {{
     const row = document.createElement("div");
     row.className = "reference-curve-item";
     const text = document.createElement("span");
-    text.textContent = `${{curve.label}} · M=${{formatAxisTick(curve.targetMass)}} GeV`;
+    const relation = curve.direction === "x-of-y" ? "x=f(y)" : "y=f(x)";
+    const axes = curve.xName && curve.yName
+      ? `${{byName[curve.yName]?.label || curve.yName}} vs ${{byName[curve.xName]?.label || curve.xName}}`
+      : "current axes";
+    text.textContent = `${{curve.label}} · ${{relation}} · ${{axes}}`;
     const remove = document.createElement("button");
     remove.type = "button";
     remove.textContent = "Remove";
@@ -4373,17 +4517,12 @@ function colors() {{
 }}
 
 function drawReferenceCurves(ctx, area, panel, xMin, xMax, yMin, yMax, showLegend = true) {{
-  const orientation = panel.mode === "2d" ? referenceCurveOrientation(panel.xvar, panel.yvar) : "";
-  const curves = (panel.referenceCurves || []).filter(curve => curve.kind === "minimum-w");
-  if (!orientation || !curves.length || !(xMax > xMin) || !(yMax > yMin)) return 0;
-  const xbMin = Math.max(1.0e-5, orientation === "xb-x" ? xMin : yMin);
-  const xbMax = Math.min(0.999, orientation === "xb-x" ? xMax : yMax);
-  if (!(xbMax > xbMin)) return 0;
+  const curves = (panel.referenceCurves || []).filter(curve =>
+    curve.kind === "function" && curve.xName === panel.xvar && curve.yName === panel.yvar
+  );
+  if (panel.mode !== "2d" || !curves.length || !(xMax > xMin) || !(yMax > yMin)) return 0;
   const pw = area.width - area.left - area.right;
   const ph = area.height - area.top - area.bottom;
-  const q2Min = orientation === "xb-x" ? yMin : xMin;
-  const q2Max = orientation === "xb-x" ? yMax : xMax;
-  const q2Padding = Math.max(1.0e-12, q2Max - q2Min) * 0.08;
   const c = colors();
   const drawn = [];
   ctx.save();
@@ -4392,17 +4531,29 @@ function drawReferenceCurves(ctx, area, panel, xMin, xMax, yMin, yMax, showLegen
   ctx.clip();
   for (let curveIndex = 0; curveIndex < curves.length; curveIndex++) {{
     const curve = curves[curveIndex];
+    const xOfY = curve.direction === "x-of-y";
+    const independentMin = xOfY ? yMin : xMin;
+    const independentMax = xOfY ? yMax : xMax;
+    const dependentMin = xOfY ? xMin : yMin;
+    const dependentMax = xOfY ? xMax : yMax;
+    const domainMin = Number.isFinite(curve.domainMin) ? Math.max(independentMin, curve.domainMin) : independentMin;
+    const domainMax = Number.isFinite(curve.domainMax) ? Math.min(independentMax, curve.domainMax) : independentMax;
+    if (!(domainMax > domainMin)) continue;
+    let evaluate;
+    try {{ evaluate = compileMathExpression(curve.expression, xOfY ? "y" : "x"); }}
+    catch (_) {{ continue; }}
     const points = [];
     const samples = 520;
+    const dependentPadding = Math.max(1.0e-12, dependentMax - dependentMin) * 0.08;
     for (let index = 0; index <= samples; index++) {{
-      const xb = xbMin + (xbMax - xbMin) * index / samples;
-      const q2 = minimumWQ2(xb, curve.wMin, curve.targetMass);
-      if (!Number.isFinite(q2) || q2 < q2Min - q2Padding || q2 > q2Max + q2Padding) {{
+      const independent = domainMin + (domainMax - domainMin) * index / samples;
+      const dependent = evaluate(independent);
+      if (!Number.isFinite(dependent) || dependent < dependentMin - dependentPadding || dependent > dependentMax + dependentPadding) {{
         points.push(null);
         continue;
       }}
-      const xValue = orientation === "xb-x" ? xb : q2;
-      const yValue = orientation === "xb-x" ? q2 : xb;
+      const xValue = xOfY ? dependent : independent;
+      const yValue = xOfY ? independent : dependent;
       points.push({{
         x: area.left + (xValue - xMin) / (xMax - xMin) * pw,
         y: area.top + ph - (yValue - yMin) / (yMax - yMin) * ph
@@ -4412,12 +4563,13 @@ function drawReferenceCurves(ctx, area, panel, xMin, xMax, yMin, yMax, showLegen
     const dashPatterns = [[], [8, 4], [3, 3], [10, 3, 2, 3]];
     const drawPath = () => {{
       ctx.beginPath();
-      let penDown = false;
+      let previous = null;
       for (const point of points) {{
-        if (!point) {{ penDown = false; continue; }}
-        if (!penDown) ctx.moveTo(point.x, point.y);
+        if (!point) {{ previous = null; continue; }}
+        const discontinuity = previous && (Math.abs(point.x - previous.x) > pw * 0.45 || Math.abs(point.y - previous.y) > ph * 0.45);
+        if (!previous || discontinuity) ctx.moveTo(point.x, point.y);
         else ctx.lineTo(point.x, point.y);
-        penDown = true;
+        previous = point;
       }}
       ctx.stroke();
     }};
