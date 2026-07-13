@@ -2463,6 +2463,8 @@ th:first-child, td:first-child {{ text-align: left; }}
 <div class="canvas-context-menu" id="canvasContextMenu" role="menu" hidden>
   <button type="button" id="makeGhost" role="menuitem">Make ghost</button>
   <button type="button" id="clearGhost" role="menuitem">Clear ghost</button>
+  <button type="button" id="profileX" role="menuitem">Profile X</button>
+  <button type="button" id="profileY" role="menuitem">Profile Y</button>
   <button type="button" id="addFunctionCurve" role="menuitem">Add function curve…</button>
   <button type="button" id="manageReferenceCurves" role="menuitem">Manage reference curves…</button>
 </div>
@@ -2527,6 +2529,7 @@ let enabledPanels = ["A"];
 let activePanel = "A";
 let compareMode = false;
 let contextMenuPanelKey = "A";
+let contextMenuProfileBin = null;
 let referenceCurveId = 0;
 let topologyCollapsed = true;
 const sharedFilterState = makeFilterState();
@@ -3022,6 +3025,7 @@ function makePanel(key, xvar, yvar) {{
     fitRangeMin: NaN,
     fitRangeMax: NaN,
     fitSummary: "No fit",
+    profile: null,
     filterState: makeFilterState(),
     ghostPlot: null,
     referenceCurves: [],
@@ -3781,6 +3785,14 @@ function attachEvents() {{
     clearGhost(contextMenuPanelKey);
     hideCanvasContextMenu();
   }});
+  el("profileX").addEventListener("click", () => {{
+    launchBinProfile("x");
+    hideCanvasContextMenu();
+  }});
+  el("profileY").addEventListener("click", () => {{
+    launchBinProfile("y");
+    hideCanvasContextMenu();
+  }});
   el("addFunctionCurve").addEventListener("click", () => {{
     hideCanvasContextMenu();
     openReferenceCurveEditor(contextMenuPanelKey, true);
@@ -4235,12 +4247,14 @@ function handleFitRangeClick(event, key) {{
 
 function setMode(next) {{
   currentPanel().mode = next;
+  currentPanel().profile = null;
   syncControlsFromPanel();
   update();
 }}
 
 function setPanelVariable(axis) {{
   const panel = currentPanel();
+  panel.profile = null;
   const name = el(axis + "var").value;
   const variable = byName[name];
   if (axis === "x") {{
@@ -4294,23 +4308,36 @@ function renderRangeFilters() {{
     const row = document.createElement("div");
     row.className = "filter-row";
     const name = document.createElement("div");
-    name.textContent = byName[filter.name]?.label || filter.name;
+    name.textContent = `${{byName[filter.name]?.label || filter.name}}${{filter.profile ? " (profile bin)" : ""}}`;
     const min = document.createElement("input");
     min.type = "number";
     min.step = "any";
     min.placeholder = "no minimum";
     min.value = Number.isFinite(filter.min) ? filter.min : "";
-    min.addEventListener("input", () => {{ filter.min = parseNumber(min.value); update(); }});
+    min.addEventListener("input", () => {{
+      filter.min = parseNumber(min.value);
+      if (filter.profileAxisSlice && currentPanel().profile) currentPanel().profile.min = filter.min;
+      update();
+    }});
     const max = document.createElement("input");
     max.type = "number";
     max.step = "any";
     max.placeholder = "no maximum";
     max.value = Number.isFinite(filter.max) ? filter.max : "";
-    max.addEventListener("input", () => {{ filter.max = parseNumber(max.value); update(); }});
+    max.addEventListener("input", () => {{
+      filter.max = parseNumber(max.value);
+      if (filter.profileAxisSlice && currentPanel().profile) currentPanel().profile.max = filter.max;
+      update();
+    }});
     const remove = document.createElement("button");
     remove.type = "button";
     remove.textContent = "x";
-    remove.addEventListener("click", () => {{ activeRanges.splice(index, 1); renderRangeFilters(); update(); }});
+    remove.addEventListener("click", () => {{
+      if (filter.profileAxisSlice) currentPanel().profile = null;
+      activeRanges.splice(index, 1);
+      renderRangeFilters();
+      update();
+    }});
     row.append(name, min, max, remove);
     target.appendChild(row);
   }});
@@ -4318,6 +4345,7 @@ function renderRangeFilters() {{
 
 function resetFilters() {{
   const state = filterStateForPanel(activePanel);
+  currentPanel().profile = null;
   for (const filter of payload.categoricalFilters) {{
     categoryState[filter.name] = new Set(filter.values.map(value => Number(value)));
   }}
@@ -4338,10 +4366,10 @@ function parseNumber(value) {{
   return Number.isFinite(number) ? number : NaN;
 }}
 
-function valuePassesRange(value, min, max) {{
+function valuePassesRange(value, min, max, maxExclusive = false) {{
   return Number.isFinite(value)
     && (!Number.isFinite(min) || value >= min)
-    && (!Number.isFinite(max) || value <= max);
+    && (!Number.isFinite(max) || (maxExclusive ? value < max : value <= max));
 }}
 
 function selectedMask(state = filterStateForPanel(activePanel)) {{
@@ -4360,7 +4388,7 @@ function selectedMask(state = filterStateForPanel(activePanel)) {{
     if (!values) continue;
     for (let i = 0; i < rowCount; i++) {{
       const value = values[i];
-      if (mask[i] && !valuePassesRange(value, filter.min, filter.max)) mask[i] = 0;
+      if (mask[i] && !valuePassesRange(value, filter.min, filter.max, filter.maxExclusive)) mask[i] = 0;
     }}
   }}
   for (const filter of payload.textFilters) {{
@@ -4385,7 +4413,7 @@ function activeFilterSummaries(state = filterStateForPanel(activePanel)) {{
     const label = byName[filter.name]?.label || filter.name;
     const bounds = [];
     if (Number.isFinite(filter.min)) bounds.push(`>=${{fmt(filter.min)}}`);
-    if (Number.isFinite(filter.max)) bounds.push(`<=${{fmt(filter.max)}}`);
+    if (Number.isFinite(filter.max)) bounds.push(`${{filter.maxExclusive ? "<" : "<="}}${{fmt(filter.max)}}`);
     if (bounds.length) summaries.push(`${{label}} ${{bounds.join(" ")}}`);
   }}
   for (const filter of payload.textFilters) {{
@@ -4447,18 +4475,87 @@ function syncCanvasToolbarRail(comparing, canvasToolbar) {{
   }}
 }}
 
+function profileBinAtCanvasPoint(clientX, clientY, key) {{
+  const panel = panels[key];
+  const lastPlot = panel?.lastPlot;
+  if (!lastPlot || (lastPlot.mode !== "2d" && lastPlot.mode !== "2d-facet")) return null;
+  const rect = el("plot" + key).getBoundingClientRect();
+  const px = clientX - rect.left;
+  const py = clientY - rect.top;
+  let area = lastPlot.area;
+  let facet = null;
+  if (lastPlot.mode === "2d-facet") {{
+    facet = lastPlot.facets.find(item => {{
+      const candidate = item.area;
+      const width = candidate.width - candidate.left - candidate.right;
+      const height = candidate.height - candidate.top - candidate.bottom;
+      return px >= candidate.left && px <= candidate.left + width
+        && py >= candidate.top && py <= candidate.top + height;
+    }}) || null;
+    if (!facet) return null;
+    area = facet.area;
+  }}
+  const plotWidth = area.width - area.left - area.right;
+  const plotHeight = area.height - area.top - area.bottom;
+  if (px < area.left || px > area.left + plotWidth || py < area.top || py > area.top + plotHeight) return null;
+  const xi = clamp(Math.floor((px - area.left) / plotWidth * lastPlot.xBins), 0, lastPlot.xBins - 1);
+  const yi = clamp(Math.floor((area.top + plotHeight - py) / plotHeight * lastPlot.yBins), 0, lastPlot.yBins - 1);
+  return {{
+    sourceKey: key,
+    xName: lastPlot.xName,
+    yName: lastPlot.yName,
+    xMin: lastPlot.xMin,
+    xMax: lastPlot.xMax,
+    yMin: lastPlot.yMin,
+    yMax: lastPlot.yMax,
+    xBins: lastPlot.xBins,
+    yBins: lastPlot.yBins,
+    xi,
+    yi,
+    x0: lastPlot.xMin + xi / lastPlot.xBins * (lastPlot.xMax - lastPlot.xMin),
+    x1: lastPlot.xMin + (xi + 1) / lastPlot.xBins * (lastPlot.xMax - lastPlot.xMin),
+    y0: lastPlot.yMin + yi / lastPlot.yBins * (lastPlot.yMax - lastPlot.yMin),
+    y1: lastPlot.yMin + (yi + 1) / lastPlot.yBins * (lastPlot.yMax - lastPlot.yMin),
+    facet: facet ? {{
+      splitName: lastPlot.splitName,
+      value: facet.value,
+      numericSlice: Boolean(facet.numericSlice),
+      lower: facet.lower,
+      upper: facet.upper,
+      last: Boolean(facet.last),
+      label: facet.label
+    }} : null
+  }};
+}}
+
+function profileMenuTitle(axis, hit) {{
+  if (!hit) return "Right-click inside a 2D histogram bin";
+  const sliceName = axis === "x" ? hit.yName : hit.xName;
+  const minimum = axis === "x" ? hit.y0 : hit.x0;
+  const maximum = axis === "x" ? hit.y1 : hit.x1;
+  const finalBin = axis === "x" ? hit.yi >= hit.yBins - 1 : hit.xi >= hit.xBins - 1;
+  return `Plot ${{axis.toUpperCase()}} in Panel 2 for ${{variableLabel(sliceName)}} [${{formatAxisTick(minimum)}}, ${{formatAxisTick(maximum)}}${{finalBin ? "]" : ")"}}`;
+}}
+
 function showCanvasContextMenu(event, key) {{
   event.preventDefault();
   contextMenuPanelKey = key;
+  contextMenuProfileBin = profileBinAtCanvasPoint(event.clientX, event.clientY, key);
   const panel = panels[key];
   const menu = el("canvasContextMenu");
   const make = el("makeGhost");
   const clear = el("clearGhost");
   const addCurve = el("addFunctionCurve");
   const manageCurves = el("manageReferenceCurves");
+  const profileX = el("profileX");
+  const profileY = el("profileY");
   make.textContent = panel.ghostPlot ? "Replace ghost" : "Make ghost";
   make.disabled = !panel.lastPlot;
   clear.disabled = !panel.ghostPlot;
+  profileX.disabled = !contextMenuProfileBin;
+  profileY.disabled = !contextMenuProfileBin;
+  profileX.title = profileMenuTitle("x", contextMenuProfileBin);
+  profileY.title = profileMenuTitle("y", contextMenuProfileBin);
   addCurve.disabled = panel.mode !== "2d";
   addCurve.title = addCurve.disabled ? "Function curves require a 2D plot" : "";
   manageCurves.disabled = !(panel.referenceCurves || []).length;
@@ -4470,6 +4567,110 @@ function showCanvasContextMenu(event, key) {{
 
 function hideCanvasContextMenu() {{
   el("canvasContextMenu").hidden = true;
+}}
+
+function addProfileRange(state, name, minimum, maximum, maxExclusive, profileAxisSlice = false) {{
+  state.ranges.push({{
+    name,
+    min: minimum,
+    max: maximum,
+    maxExclusive: Boolean(maxExclusive),
+    profile: true,
+    profileAxisSlice
+  }});
+}}
+
+function applyProfileFacetConstraint(state, facet) {{
+  if (!facet?.splitName) return;
+  if (facet.numericSlice) {{
+    addProfileRange(state, facet.splitName, facet.lower, facet.upper, !facet.last);
+    return;
+  }}
+  const value = Number(facet.value);
+  if (state.categories[facet.splitName]) {{
+    state.categories[facet.splitName] = state.categories[facet.splitName].has(value)
+      ? new Set([value])
+      : new Set();
+  }} else {{
+    addProfileRange(state, facet.splitName, value, value, false);
+  }}
+}}
+
+function configureProfilePanel(target, source, hit, axis) {{
+  const profileX = axis === "x";
+  const sourceSettings = {{
+    xLabel: source.xLabel,
+    yLabel: source.yLabel,
+    xticks: source.xticks,
+    yticks: source.yticks,
+    density: source.density
+  }};
+  const variableName = profileX ? hit.xName : hit.yName;
+  const sliceName = profileX ? hit.yName : hit.xName;
+  const sliceMin = profileX ? hit.y0 : hit.x0;
+  const sliceMax = profileX ? hit.y1 : hit.x1;
+  const sliceIndex = profileX ? hit.yi : hit.xi;
+  const sliceBins = profileX ? hit.yBins : hit.xBins;
+  target.mode = "1d";
+  target.xvar = variableName;
+  target.x2var = "";
+  target.yvar = hit.yName;
+  target.y2var = "";
+  target.xLabel = profileX ? sourceSettings.xLabel : sourceSettings.yLabel;
+  target.yLabel = "";
+  target.splitVar = "";
+  target.xbins = profileX ? hit.xBins : hit.yBins;
+  target.xticks = profileX ? sourceSettings.xticks : sourceSettings.yticks;
+  target.yticks = sourceSettings.yticks;
+  target.xmin = profileX ? hit.xMin : hit.yMin;
+  target.xmax = profileX ? hit.xMax : hit.yMax;
+  target.density = sourceSettings.density;
+  target.fitModel = "none";
+  target.signalModel = "none";
+  target.backgroundModel = "none";
+  target.fitMethod = "unweighted";
+  target.fitRangeClick = false;
+  target.fitRangeMin = NaN;
+  target.fitRangeMax = NaN;
+  target.fitSummary = "No fit";
+  target.profile = {{
+    axis,
+    sourceKey: hit.sourceKey,
+    variableName,
+    sliceName,
+    min: sliceMin,
+    max: sliceMax,
+    maxExclusive: sliceIndex < sliceBins - 1
+  }};
+}}
+
+function launchBinProfile(axis) {{
+  const hit = contextMenuProfileBin;
+  if (!hit || (axis !== "x" && axis !== "y")) return;
+  const source = panels[hit.sourceKey];
+  if (sharedPanelFilters) {{
+    for (const key of panelKeys) copyFilterState(panels[key].filterState, sharedFilterState);
+    sharedPanelFilters = false;
+  }}
+  if (hit.sourceKey !== "B") copyFilterState(panels.B.filterState, panels[hit.sourceKey].filterState);
+  const targetState = panels.B.filterState;
+  applyProfileFacetConstraint(targetState, hit.facet);
+  const profileX = axis === "x";
+  addProfileRange(
+    targetState,
+    profileX ? hit.yName : hit.xName,
+    profileX ? hit.y0 : hit.x0,
+    profileX ? hit.y1 : hit.x1,
+    profileX ? hit.yi < hit.yBins - 1 : hit.xi < hit.xBins - 1,
+    true
+  );
+  configureProfilePanel(panels.B, source, hit, axis);
+  if (!enabledPanels.includes("B")) enabledPanels.push("B");
+  activePanel = "B";
+  compareMode = true;
+  renderActiveFilterControls();
+  syncControlsFromPanel();
+  update();
 }}
 
 const MATH_FUNCTIONS = {{
@@ -5461,7 +5662,7 @@ function draw2dFacets(panel, mask, splitName) {{
     totalOverlaySelected += overlaySelected;
     sumXAll += sumX;
     sumYAll += sumY;
-    facets.push({{value: definition.value, label: definition.label, shortLabel: definition.shortLabel, counts, overlayCounts, selected, overlaySelected, fitXs, fitYs, maxCount: 1, overlayMaxCount: 0, colorScale: null}});
+    facets.push({{...definition, counts, overlayCounts, selected, overlaySelected, fitXs, fitYs, maxCount: 1, overlayMaxCount: 0, colorScale: null}});
   }}
   if (panel.density) {{
     for (const facet of facets) {{
@@ -5723,6 +5924,13 @@ function panelPrimaryQuantity(panel) {{
 
 function panelOverlayQuantity(panel) {{
   const details = [];
+  if (panel.mode === "1d" && panel.profile && panel.profile.variableName === panel.xvar) {{
+    const closing = panel.profile.maxExclusive ? ")" : "]";
+    details.push(
+      `Profile ${{panel.profile.axis.toUpperCase()}} · ${{variableLabel(panel.profile.sliceName)}} `
+      + `[${{formatAxisTick(panel.profile.min)}}, ${{formatAxisTick(panel.profile.max)}}${{closing}}`
+    );
+  }}
   if (panel.mode === "1d") {{
     if (panel.x2var && panel.x2var !== panel.xvar && byName[panel.x2var]) details.push(`overlay: ${{variableLabel(panel.x2var)}}`);
   }} else {{

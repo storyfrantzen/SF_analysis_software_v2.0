@@ -151,6 +151,16 @@ Ghost state is independent for each panel and supports both ordinary and
 faceted histograms. Changing to an incompatible variable, mode, or density view
 temporarily hides the ghost without deleting it.
 
+On a two-dimensional canvas, right-click inside a bin and choose `Profile X` or
+`Profile Y` to open a one-dimensional slice in Panel 2. `Profile X` plots the X
+distribution selected by the clicked Y bin; `Profile Y` plots the Y distribution
+selected by the clicked X bin. The tool opens split view, makes panel filters
+independent, copies the source panel's active filters into Panel 2, and adds the
+clicked bin as an editable numeric constraint. Profiles created inside a facet
+also retain that facet's categorical or numeric slice. Bin upper edges are
+exclusive except for the final bin, matching the two-dimensional histogram's
+bin membership exactly.
+
 Right-click any two-dimensional plot and choose `Add function curve…` to open a
 panel-local graphing calculator. Curves may be entered as either `y = f(x)` or
 `x = f(y)`, with optional independent-variable domain limits and a custom label.
