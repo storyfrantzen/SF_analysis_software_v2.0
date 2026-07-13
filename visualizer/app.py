@@ -1385,6 +1385,7 @@ def render_html(payload: dict[str, Any]) -> str:
   --accent-text: HighlightText;
   --filter-alert: color-mix(in srgb, red 78%, CanvasText);
   --mark: color-mix(in srgb, Highlight 78%, CanvasText);
+  --ghost: color-mix(in srgb, orange 82%, CanvasText);
 }}
 * {{ box-sizing: border-box; }}
 body {{
@@ -1811,6 +1812,32 @@ canvas {{
   position: relative;
 }}
 .plot-pane.hidden {{ display: none; }}
+.canvas-context-menu {{
+  position: fixed;
+  z-index: 40;
+  display: grid;
+  min-width: 148px;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px color-mix(in srgb, CanvasText 22%, transparent);
+}}
+.canvas-context-menu[hidden] {{ display: none; }}
+.canvas-context-menu button {{
+  width: 100%;
+  border: 0;
+  text-align: left;
+  background: transparent;
+}}
+.canvas-context-menu button:hover:not(:disabled) {{
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}}
+.canvas-context-menu button:disabled {{
+  color: var(--muted);
+  cursor: default;
+}}
 .filter-badge {{
   display: none;
   align-items: center;
@@ -2248,6 +2275,10 @@ th:first-child, td:first-child {{ text-align: left; }}
     </div>
   </section>
 </main>
+<div class="canvas-context-menu" id="canvasContextMenu" role="menu" hidden>
+  <button type="button" id="makeGhost" role="menuitem">Make ghost</button>
+  <button type="button" id="clearGhost" role="menuitem">Clear ghost</button>
+</div>
 <script>
 const payload = {payload_json};
 const columns = {{}};
@@ -2275,6 +2306,7 @@ const panelLabels = {{A: "Panel 1", B: "Panel 2"}};
 let enabledPanels = ["A"];
 let activePanel = "A";
 let compareMode = false;
+let contextMenuPanelKey = "A";
 let activeRanges = [];
 let topologyCollapsed = false;
 const categoryState = {{}};
@@ -2755,6 +2787,7 @@ function makePanel(key, xvar, yvar) {{
     fitRangeMin: NaN,
     fitRangeMax: NaN,
     fitSummary: "No fit",
+    ghostPlot: null,
     lastPlot: null,
     stats: {{selected: 0, meanX: NaN, meanY: NaN}}
   }};
@@ -3341,16 +3374,32 @@ function attachEvents() {{
   el("quickCategoryAll").addEventListener("click", () => setCurrentCategoryValues(true));
   el("quickCategoryNone").addEventListener("click", () => setCurrentCategoryValues(false));
   el("toggleTopology").addEventListener("click", toggleTopology);
+  el("makeGhost").addEventListener("click", () => {{
+    captureGhost(contextMenuPanelKey);
+    hideCanvasContextMenu();
+  }});
+  el("clearGhost").addEventListener("click", () => {{
+    clearGhost(contextMenuPanelKey);
+    hideCanvasContextMenu();
+  }});
   document.querySelectorAll("input[data-text-filter]").forEach(input => input.addEventListener("input", update));
   for (const key of panelKeys) {{
     el("plot" + key).addEventListener("mousemove", event => showHoverInfo(event, key));
     el("plot" + key).addEventListener("click", event => handleFitRangeClick(event, key));
+    el("plot" + key).addEventListener("contextmenu", event => showCanvasContextMenu(event, key));
     el("plot" + key).addEventListener("mouseleave", () => {{
       setHoverText(key, "");
       clearHoverOverlay(key);
       hideColorScaleMarker(key);
     }});
   }}
+  document.addEventListener("click", event => {{
+    if (!el("canvasContextMenu").contains(event.target)) hideCanvasContextMenu();
+  }});
+  document.addEventListener("keydown", event => {{
+    if (event.key === "Escape") hideCanvasContextMenu();
+  }});
+  window.addEventListener("blur", hideCanvasContextMenu);
   window.addEventListener("resize", update);
 }}
 
@@ -3930,6 +3979,172 @@ function updatePanelVisibility() {{
   }}
 }}
 
+function showCanvasContextMenu(event, key) {{
+  event.preventDefault();
+  contextMenuPanelKey = key;
+  const panel = panels[key];
+  const menu = el("canvasContextMenu");
+  const make = el("makeGhost");
+  const clear = el("clearGhost");
+  make.textContent = panel.ghostPlot ? "Replace ghost" : "Make ghost";
+  make.disabled = !panel.lastPlot;
+  clear.disabled = !panel.ghostPlot;
+  menu.hidden = false;
+  const padding = 6;
+  menu.style.left = clamp(event.clientX, padding, Math.max(padding, window.innerWidth - menu.offsetWidth - padding)) + "px";
+  menu.style.top = clamp(event.clientY, padding, Math.max(padding, window.innerHeight - menu.offsetHeight - padding)) + "px";
+}}
+
+function hideCanvasContextMenu() {{
+  el("canvasContextMenu").hidden = true;
+}}
+
+function copyGhostValues(values) {{
+  return values ? Float64Array.from(values) : null;
+}}
+
+function captureGhost(key) {{
+  const panel = panels[key];
+  const source = panel?.lastPlot;
+  if (!source) return;
+  panel.ghostPlot = {{
+    mode: source.mode,
+    xName: source.xName || "",
+    yName: source.yName || "",
+    splitName: source.splitName || "",
+    density: Boolean(source.density),
+    logz: Boolean(source.logz),
+    xMin: source.xMin,
+    xMax: source.xMax,
+    yMin: source.yMin,
+    yMax: source.yMax,
+    bins: source.bins,
+    xBins: source.xBins,
+    yBins: source.yBins,
+    selected: source.selected || 0,
+    counts: copyGhostValues(source.counts),
+    facets: source.facets ? source.facets.map(facet => ({{
+      value: facet.value,
+      label: facet.label,
+      counts: copyGhostValues(facet.counts),
+      selected: facet.selected || 0
+    }})) : null
+  }};
+  update();
+}}
+
+function clearGhost(key) {{
+  if (!panels[key]) return;
+  panels[key].ghostPlot = null;
+  update();
+}}
+
+function compatibleGhost(panel, mode, fields) {{
+  const ghost = panel?.ghostPlot;
+  if (!ghost || ghost.mode !== mode || ghost.density !== Boolean(panel.density)) return null;
+  for (const [name, value] of Object.entries(fields)) {{
+    if (String(ghost[name] || "") !== String(value || "")) return null;
+  }}
+  return ghost;
+}}
+
+function ghostFacet(ghost, value) {{
+  return ghost?.facets?.find(facet => Number(facet.value) === Number(value)) || null;
+}}
+
+function drawGhostLegend(ctx, area, selected) {{
+  const c = colors();
+  const pw = area.width - area.left - area.right;
+  const x = area.left + pw - 108;
+  const y = area.top + 10;
+  ctx.save();
+  ctx.fillStyle = c.bg;
+  ctx.globalAlpha = 0.86;
+  ctx.fillRect(x - 5, y - 6, 112, 19);
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = c.ghost;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([5, 3]);
+  ctx.beginPath();
+  ctx.moveTo(x, y + 3);
+  ctx.lineTo(x + 21, y + 3);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = c.fg;
+  ctx.font = "10px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(selected ? `ghost (${{Number(selected).toLocaleString()}})` : "ghost", x + 27, y + 3);
+  ctx.restore();
+}}
+
+function drawGhost1d(ctx, area, ghost, counts, xMin, xMax, yMax, showLegend = true) {{
+  if (!ghost || !counts || !counts.length || !(yMax > 0)) return;
+  const c = colors();
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  const bins = counts.length;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(area.left, area.top, pw, ph);
+  ctx.clip();
+  ctx.strokeStyle = c.ghost;
+  ctx.globalAlpha = 0.9;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = "round";
+  ctx.setLineDash([6, 3]);
+  ctx.beginPath();
+  for (let index = 0; index < bins; index++) {{
+    const value = counts[index];
+    const gx0 = ghost.xMin + index / bins * (ghost.xMax - ghost.xMin);
+    const gx1 = ghost.xMin + (index + 1) / bins * (ghost.xMax - ghost.xMin);
+    const x0 = area.left + (gx0 - xMin) / (xMax - xMin) * pw;
+    const x1 = area.left + (gx1 - xMin) / (xMax - xMin) * pw;
+    const y = area.top + ph - value / yMax * ph;
+    if (index === 0) ctx.moveTo(x0, y);
+    else ctx.lineTo(x0, y);
+    ctx.lineTo(x1, y);
+  }}
+  ctx.stroke();
+  ctx.restore();
+  if (showLegend) drawGhostLegend(ctx, area, ghost.selected);
+}}
+
+function drawGhost2d(ctx, area, ghost, counts, xMin, xMax, yMin, yMax, showLegend = true) {{
+  if (!ghost || !counts || !counts.length) return;
+  const c = colors();
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  const xBins = ghost.xBins;
+  const yBins = ghost.yBins;
+  const maximum = histogramMax(counts);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(area.left, area.top, pw, ph);
+  ctx.clip();
+  ctx.strokeStyle = c.ghost;
+  ctx.lineWidth = 1.2;
+  for (let yi = 0; yi < yBins; yi++) {{
+    for (let xi = 0; xi < xBins; xi++) {{
+      const count = counts[yi * xBins + xi];
+      if (!(count > 0)) continue;
+      const fraction = ghost.logz ? Math.log1p(count) / Math.log1p(maximum) : count / maximum;
+      const gx0 = ghost.xMin + xi / xBins * (ghost.xMax - ghost.xMin);
+      const gx1 = ghost.xMin + (xi + 1) / xBins * (ghost.xMax - ghost.xMin);
+      const gy0 = ghost.yMin + yi / yBins * (ghost.yMax - ghost.yMin);
+      const gy1 = ghost.yMin + (yi + 1) / yBins * (ghost.yMax - ghost.yMin);
+      const x0 = area.left + (gx0 - xMin) / (xMax - xMin) * pw;
+      const x1 = area.left + (gx1 - xMin) / (xMax - xMin) * pw;
+      const py0 = area.top + ph - (gy1 - yMin) / (yMax - yMin) * ph;
+      const py1 = area.top + ph - (gy0 - yMin) / (yMax - yMin) * ph;
+      ctx.globalAlpha = 0.18 + 0.72 * fraction;
+      ctx.strokeRect(x0 + 0.5, py0 + 0.5, Math.max(0, x1 - x0 - 1), Math.max(0, py1 - py0 - 1));
+    }}
+  }}
+  ctx.restore();
+  if (showLegend) drawGhostLegend(ctx, area, ghost.selected);
+}}
+
 function plotArea(canvas, showColorScale = false) {{
   const colorScaleSlots = typeof showColorScale === "number" ? showColorScale : showColorScale ? 1 : 0;
   const dpr = window.devicePixelRatio || 1;
@@ -3952,7 +4167,8 @@ function colors() {{
     border: style.getPropertyValue("--border").trim(),
     mark: style.getPropertyValue("--mark").trim(),
     alert: style.getPropertyValue("--filter-alert").trim(),
-    bg: style.getPropertyValue("--bg").trim()
+    bg: style.getPropertyValue("--bg").trim(),
+    ghost: style.getPropertyValue("--ghost").trim()
   }};
 }}
 
@@ -4089,7 +4305,8 @@ function draw1d(panel, mask) {{
     normalizeHistogram(counts, selected);
     normalizeHistogram(overlayCounts, overlaySelected);
   }}
-  const maxCount = histogramMax(counts, overlayCounts);
+  const ghost = compatibleGhost(panel, "1d", {{xName}});
+  const maxCount = histogramMax(counts, overlayCounts, ghost?.counts);
   const canvas = el("plot" + panel.key);
   const area = plotArea(canvas);
   const {{ctx, width, height, left, right, top, bottom}} = area;
@@ -4118,6 +4335,7 @@ function draw1d(panel, mask) {{
   }}
   drawAxes(ctx, area, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks);
   if (x2Name) drawOverlayLegend(ctx, area, byName[xName].label, byName[x2Name].label);
+  if (ghost) drawGhost1d(ctx, area, ghost, ghost.counts, xMin, xMax, maxCount);
   drawFitRangeIndicator(ctx, area, panel, xMin, xMax);
   panel.fitSummary = draw1dFit(ctx, area, panel, counts, xMin, xMax, 0, maxCount, fitValues);
   panel.lastPlot = {{
@@ -4176,6 +4394,7 @@ function draw2d(panel, mask) {{
     normalizeHistogram(counts, selected);
     normalizeHistogram(overlayCounts, overlaySelected);
   }}
+  const ghost = compatibleGhost(panel, "2d", {{xName, yName}});
   const maxCount = histogramMax(counts);
   const overlayMaxCount = overlayCounts ? histogramMax(overlayCounts) : 1;
   const canvas = el("plot" + panel.key);
@@ -4220,6 +4439,7 @@ function draw2d(panel, mask) {{
   drawAxes(ctx, area, xMin, xMax, yMin, yMax, axisDisplayLabel(panel, "x", xAxisLabel), axisDisplayLabel(panel, "y", yAxisLabel), panel.xticks, panel.yticks);
   if (x2Name || y2Name) drawOverlayLegend(ctx, area, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
   const colorScale = panel.colorScale ? draw2dColorScale(ctx, area, maxCount, overlayCounts ? overlayMaxCount : 0, panel) : null;
+  if (ghost) drawGhost2d(ctx, area, ghost, ghost.counts, xMin, xMax, yMin, yMax);
   drawFitRangeIndicator(ctx, area, panel, xMin, xMax);
   panel.fitSummary = draw2dFit(ctx, area, panel, mask, x, y, xMin, xMax, yMin, yMax);
   panel.lastPlot = {{
@@ -4277,9 +4497,11 @@ function draw1dFacets(panel, mask, splitName) {{
       normalizeHistogram(facet.overlayCounts, facet.overlaySelected);
     }}
   }}
+  const ghost = compatibleGhost(panel, "1d-facet", {{xName, splitName}});
   const maxCount = histogramMax(
     ...facets.map(f => f.counts),
-    ...facets.map(f => f.overlayCounts).filter(Boolean)
+    ...facets.map(f => f.overlayCounts).filter(Boolean),
+    ...(ghost?.facets || []).map(f => f.counts)
   );
   const canvas = el("plot" + panel.key);
   const area = plotArea(canvas);
@@ -4315,6 +4537,8 @@ function draw1dFacets(panel, mask, splitName) {{
     const axisVisibility = facetAxisVisibility(layout, index, facets.length);
     drawAxes(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks, axisVisibility);
     if (x2Name && index === 0) drawOverlayLegend(ctx, facetAreaInfo, byName[xName].label, byName[x2Name].label);
+    const savedFacet = ghostFacet(ghost, facet.value);
+    if (savedFacet) drawGhost1d(ctx, facetAreaInfo, {{...ghost, selected: savedFacet.selected}}, savedFacet.counts, xMin, xMax, maxCount, index === 0);
     drawFacetTitle(ctx, facetAreaInfo, `${{facet.label}} (${{facet.selected.toLocaleString()}})`);
     drawFitRangeIndicator(ctx, facetAreaInfo, panel, xMin, xMax);
     if (panelHasFit(panel)) {{
@@ -4404,6 +4628,7 @@ function draw2dFacets(panel, mask, splitName) {{
     facet.maxCount = histogramMax(facet.counts);
     facet.overlayMaxCount = facet.overlayCounts ? histogramMax(facet.overlayCounts) : 0;
   }}
+  const ghost = compatibleGhost(panel, "2d-facet", {{xName, yName, splitName}});
   const canvas = el("plot" + panel.key);
   const area = plotArea(canvas, panel.colorScale ? (x2Name || y2Name ? 2 : 1) : 0);
   const {{ctx, width, height}} = area;
@@ -4451,6 +4676,8 @@ function draw2dFacets(panel, mask, splitName) {{
     const axisVisibility = facetAxisVisibility(layout, index, facets.length);
     drawAxes(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, axisDisplayLabel(panel, "x", xAxisLabel), axisDisplayLabel(panel, "y", yAxisLabel), panel.xticks, panel.yticks, axisVisibility);
     if ((x2Name || y2Name) && index === 0) drawOverlayLegend(ctx, facetAreaInfo, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
+    const savedFacet = ghostFacet(ghost, facet.value);
+    if (savedFacet) drawGhost2d(ctx, facetAreaInfo, {{...ghost, selected: savedFacet.selected}}, savedFacet.counts, xMin, xMax, yMin, yMax, index === 0);
     drawFacetTitle(ctx, facetAreaInfo, `${{facet.label}} (${{facet.selected.toLocaleString()}})`);
     if (panel.colorScale) facet.colorScale = draw2dColorScale(ctx, facetAreaInfo, facet.maxCount, facet.overlayCounts ? facet.overlayMaxCount : 0, panel);
     drawFitRangeIndicator(ctx, facetAreaInfo, panel, xMin, xMax);

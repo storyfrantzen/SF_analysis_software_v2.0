@@ -104,6 +104,15 @@ the canvas.
 Color-scale hover readouts are clamped inside the plot pane so their numeric
 values remain visible at the right edge.
 
+Right-clicking either canvas opens a plot menu with `Make ghost`, `Replace
+ghost`, and `Clear ghost` behavior. A ghost snapshots the active panel's
+current histogram bins and remains fixed while filters change. One-dimensional
+ghosts use a dashed orange step outline; two-dimensional ghosts use
+intensity-weighted orange cell outlines so the live heat map remains readable.
+Ghost state is independent for each panel and supports both ordinary and
+faceted histograms. Changing to an incompatible variable, mode, or density view
+temporarily hides the ghost without deleting it.
+
 Derived Operations uses a compact two-row builder in the sidebar beneath
 Constraints, before the sidebar's axis-range separator. Only validation and
 completion messages appear beneath the builder; the redundant expression
