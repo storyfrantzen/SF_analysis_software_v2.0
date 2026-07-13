@@ -329,7 +329,11 @@ chi-square per degree of freedom, and the number of contributing phi bins.
 
 The radiative-correction command streams Born and radiative LUND files directly
 into configured analysis bins, using the same electron-proton Trento phi
-convention as the rest of this package. Its output is a native `C_rad.npz`
+convention as the rest of this package. If the analysis config contains a
+`phase_space` block, each filled bin is interpreted as the rectangular 4D bin
+intersected with those generated-level DIS cuts. For the current RGK/RGA
+configs this is `Q2 >= 1`, `W >= 2`, and `y <= 0.8`, matching the processing
+skim region. Its output is a native `C_rad.npz`
 artifact consumed by `unfold --radiative-correction`; reliability masks and
 correction uncertainties are propagated into the self-contained unfolding
 result. For AAO-generated samples, pass the generator `sig_sum` integrated cross
@@ -345,9 +349,9 @@ when entering the values manually. The resulting global factor is
 radiative-to-Born cross-section ratio rather than a raw event-density ratio.
 `unfold --radiative-correction` divides unfolded yields by this factor. The
 artifact also stores support diagnostics: per-bin born/radiative counts, overlap
-and status masks, generated `Q2`/`Eprime` ranges, and the integrated cross
-sections used for each sample. When sidecars are supplied, the artifact also
-preserves the
+and status masks, generated `Q2`/`Eprime` ranges, the phase-space cuts used to
+define the selected bins, and the integrated cross sections used for each
+sample. When sidecars are supplied, the artifact also preserves the
 normalization records used to get those cross sections: sidecar paths,
 combination method, `sig_sum`, `sig_int`, `events`, `ntries`, `nevent`,
 `mcall_max`, `sigr_max`, generator name, and units. Regenerate the diagnostic
@@ -365,12 +369,15 @@ pages.
 
 ## Bin-centering correction
 
-`bin-centering` computes `C_BC = <d4sigma>_physical_bin / d4sigma(center)` with
-AAO model calls over a midpoint grid. The analysis-facing convention remains
-positive `-t`; the command converts internally to signed negative `t` only when
-calling `aao_xsec`. The reference center is the geometric centroid of the
-sampled physical midpoint cells in each bin, and the artifact stores the center
-coordinates, physical fractions, failed-call fractions, and reliability mask.
+`bin-centering` computes `C_BC = <d4sigma>_physical_selected_bin /
+d4sigma(center)` with AAO model calls over a midpoint grid. The selected bin is
+the exclusive physical region intersected with the same optional `phase_space`
+cuts from the analysis config. The analysis-facing convention remains positive
+`-t`; the command converts internally to signed negative `t` only when calling
+`aao_xsec`. The reference center is the geometric centroid of the sampled
+physical selected midpoint cells in each bin, and the artifact stores the center
+coordinates, physical fractions, failed-call fractions, phase-space cuts, and
+reliability mask.
 
 Apply the artifact during normalization with `cross-section --bin-centering`.
 The reduced cross section and uncertainty are divided by `C_BC`; unreliable

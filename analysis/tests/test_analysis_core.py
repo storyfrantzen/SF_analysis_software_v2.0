@@ -32,6 +32,7 @@ from eppi0.radiative_correction import (
     histogram_lund,
     support_status_codes,
 )
+from eppi0.phase_space import AnalysisPhaseSpace
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
 from run_analysis import (
     command_unfold,
@@ -393,6 +394,23 @@ class RadiativeCorrectionTests(unittest.TestCase):
         self.assertTrue(np.isfinite(result.generated_q2_min))
         self.assertTrue(np.isfinite(result.generated_eprime_max))
 
+    def test_lund_histogram_applies_analysis_phase_space(self) -> None:
+        bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "born.txt"
+            path.write_text(_lund_event(pi0=False), encoding="utf-8")
+            result = histogram_lund(
+                path,
+                bins,
+                beam_energy=6.535,
+                chunk_size=1,
+                phase_space=AnalysisPhaseSpace(y_max=0.3),
+            )
+        self.assertEqual(result.events_seen, 1)
+        self.assertEqual(result.topology_events, 1)
+        self.assertEqual(result.in_range, 0)
+        self.assertEqual(result.counts.sum(), 0.0)
+
     def test_lund_directory_accepts_non_txt_lund_files(self) -> None:
         bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
         with tempfile.TemporaryDirectory() as tmp:
@@ -560,6 +578,24 @@ class BinCenteringTests(unittest.TestCase):
         self.assertTrue(np.all(result.computed))
         np.testing.assert_allclose(result.c_bc, 1.0, rtol=1e-12, atol=1e-12)
         self.assertTrue(np.all(result.n_physical > 0))
+
+    def test_bin_centering_phase_space_restricts_physical_cells(self) -> None:
+        bins = AnalysisBinning([1.2, 1.4], [0.25, 0.35], [0.15, 0.25], [0.0, 180.0])
+
+        def flat_d4sigma(points: np.ndarray) -> np.ndarray:
+            flux = virtual_photon_flux(points[:, 1], points[:, 0], 6.535)
+            return np.divide(1.0, flux, out=np.full(points.shape[0], np.nan), where=flux > 0.0)
+
+        unrestricted = compute_bin_centering(bins, 6.535, flat_d4sigma, samples_per_dimension=2)
+        restricted = compute_bin_centering(
+            bins,
+            6.535,
+            flat_d4sigma,
+            samples_per_dimension=2,
+            phase_space=AnalysisPhaseSpace(y_max=0.35),
+        )
+        self.assertGreater(int(unrestricted.n_physical.sum()), int(restricted.n_physical.sum()))
+        self.assertGreater(int(restricted.n_physical.sum()), 0)
 
     def test_partial_bin_centering_merge_matches_full_result(self) -> None:
         bins = AnalysisBinning([1.2, 1.3, 1.4], [0.25, 0.35], [0.15, 0.25], [0.0, 180.0])

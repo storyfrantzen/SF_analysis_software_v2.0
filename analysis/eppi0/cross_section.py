@@ -52,7 +52,7 @@ def physical_bin_volumes(
     proton_mass: float = 0.9382720813,
     q2_minimum: float = 1.0,
     w_minimum: float = 2.0,
-    eprime_scale: float = 0.81,
+    y_maximum: float = 0.8,
     integration_points: int = 100,
 ) -> np.ndarray:
     """Return `(Q2, xB, t, phi)` volumes in GeV^4 rad."""
@@ -67,7 +67,7 @@ def physical_bin_volumes(
             physical_low = np.maximum(
                 q2_minimum, (w_minimum**2 - proton_mass**2) / (1.0 / x - 1.0)
             )
-            physical_high = eprime_scale * 2.0 * proton_mass * beam_energy * x
+            physical_high = y_maximum * 2.0 * proton_mass * beam_energy * x
             overlap = np.maximum(0.0, np.minimum(q_high, physical_high) - np.maximum(q_low, physical_low))
             qx_area[iq2, ixb] = overlap.sum() * dx
     dt = np.diff(binning.t_edges)

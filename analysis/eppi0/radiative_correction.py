@@ -9,6 +9,7 @@ import numpy as np
 
 from .binning import AnalysisBinning
 from .event_sample import _dis, _minus_t, _trento_phi
+from .phase_space import AnalysisPhaseSpace
 
 
 Array = np.ndarray
@@ -60,6 +61,7 @@ def compute_radiative_correction(
     born_integrated_cross_section: float | None = None,
     radiative_integrated_cross_section: float | None = None,
     progress_chunks: int = 0,
+    phase_space: AnalysisPhaseSpace | None = None,
 ) -> RadiativeCorrectionResult:
     """Compute bin-by-bin radiative corrections from Born and radiative LUND samples.
 
@@ -89,6 +91,7 @@ def compute_radiative_correction(
         max_events=max_events,
         progress_chunks=progress_chunks,
         progress_label="Born",
+        phase_space=phase_space,
     )
     radiative_result = histogram_lund(
         radiative_files,
@@ -98,6 +101,7 @@ def compute_radiative_correction(
         max_events=max_events,
         progress_chunks=progress_chunks,
         progress_label="Radiative",
+        phase_space=phase_space,
     )
     if born_result.topology_events == 0:
         raise ValueError(f"Born sample has no valid generated e p pi0 events: {born}")
@@ -177,6 +181,7 @@ def histogram_lund(
     max_files: int | None = None,
     progress_chunks: int = 0,
     progress_label: str = "LUND",
+    phase_space: AnalysisPhaseSpace | None = None,
 ) -> LundHistogramResult:
     if max_events is not None and max_events <= 0:
         raise ValueError("max_events must be positive when provided")
@@ -205,6 +210,8 @@ def histogram_lund(
         phi = _trento_phi(electron, proton, beam_energy)
         flat = binning.coordinates_to_flat(q2, xb, minus_t, phi)
         inside = (flat >= 0) & (flat < binning.size)
+        if phase_space is not None and phase_space.enabled:
+            inside &= phase_space.mask(q2, xb, beam_energy)
         inside_flat = flat[inside]
         counts += np.bincount(inside_flat, minlength=binning.size)
         if inside_flat.size:

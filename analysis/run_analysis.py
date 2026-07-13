@@ -27,6 +27,7 @@ from eppi0.response import build_response
 from eppi0.radiative_correction import compute_radiative_correction
 from eppi0.root_response import build_response_from_root
 from eppi0.harmonics import fit_grid
+from eppi0.phase_space import AnalysisPhaseSpace
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes, subtract_feed_in
 
 
@@ -532,6 +533,7 @@ def command_unfold(args: argparse.Namespace) -> None:
 def command_radiative_correction(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     binning = from_config(args.config)
+    phase_space = AnalysisPhaseSpace.from_config(config)
     born_normalization = _resolve_normalization_summary(
         args.born_integrated_cross_section,
         args.born_normalization_file,
@@ -557,6 +559,7 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         born_integrated_cross_section=born_normalization.integrated_cross_section,
         radiative_integrated_cross_section=radiative_normalization.integrated_cross_section,
         progress_chunks=args.progress_chunks,
+        phase_space=phase_space,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -615,6 +618,12 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
             result.radiative.generated_eprime_min, result.radiative.generated_eprime_max,
         ]),
         phi_convention="electron-proton trento plane",
+        phase_space_definition=(
+            "4D bin"
+            if not phase_space.enabled
+            else f"4D bin and {phase_space.description()}"
+        ),
+        **phase_space.as_npz_fields(),
         **_normalization_npz_fields("born", born_normalization),
         **_normalization_npz_fields("radiative", radiative_normalization),
     )
@@ -658,6 +667,8 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         f"low_both={int(support_counts[6])}"
     )
     print(f"Normalization ratio: {result.normalization_ratio:.8g}")
+    if phase_space.enabled:
+        print(f"Analysis phase space: 4D bin and {phase_space.description()}")
     if result.born_integrated_cross_section is not None:
         print(
             "Integrated cross sections: "
@@ -1437,6 +1448,7 @@ def command_bin_centering(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     binning = from_config(args.config)
     beam_energy = float(config["beam_energy"])
+    phase_space = AnalysisPhaseSpace.from_config(config)
     if not args.exe.is_file():
         raise FileNotFoundError(f"aao_xsec executable not found: {args.exe}")
     if args.N <= 0:
@@ -1465,6 +1477,7 @@ def command_bin_centering(args: argparse.Namespace) -> None:
             bin_start=bin_start,
             bin_stop=bin_stop,
             progress_chunks=args.progress_chunks,
+            phase_space=phase_space,
         )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -1481,6 +1494,7 @@ def command_bin_centering(args: argparse.Namespace) -> None:
         bin_start=bin_start,
         bin_stop=bin_stop,
         total_3d_bins=total_3d_bins,
+        phase_space=phase_space,
     )
     reliable_bins = int(np.count_nonzero(result.reliable & result.computed))
     computed_bins = int(np.count_nonzero(result.computed))
@@ -1491,6 +1505,8 @@ def command_bin_centering(args: argparse.Namespace) -> None:
     print(f"Reliable C_BC bins: {reliable_bins}/{result.reliable.size}")
     if reliable_bins:
         print(f"Mean C_BC reliable: {np.nanmean(result.c_bc[result.reliable & result.computed]):.6g}")
+    if phase_space.enabled:
+        print(f"Analysis phase space: physical bin and {phase_space.description()}")
     print(f"Wrote {args.output}")
 
 
@@ -1528,7 +1544,10 @@ def _save_bin_centering_artifact(
     bin_start: int,
     bin_stop: int,
     total_3d_bins: int,
+    phase_space: AnalysisPhaseSpace | None = None,
 ) -> None:
+    if phase_space is None:
+        phase_space = AnalysisPhaseSpace()
     np.savez_compressed(
         path,
         C_BC=result.c_bc,
@@ -1558,9 +1577,18 @@ def _save_bin_centering_artifact(
         bin_start=bin_start,
         bin_stop=bin_stop,
         total_3d_bins=total_3d_bins,
-        convention="C_BC = <d4sigma>_physical_bin / d4sigma(physical midpoint-grid centroid)",
+        convention=(
+            "C_BC = <d4sigma>_physical_selected_bin / "
+            "d4sigma(physical selected midpoint-grid centroid)"
+        ),
         apply_as="centered_cross_section = bin_averaged_cross_section / C_BC",
         t_convention="positive -t externally; signed t passed to aao_xsec",
+        phase_space_definition=(
+            "exclusive physical bin"
+            if not phase_space.enabled
+            else f"exclusive physical bin and {phase_space.description()}"
+        ),
+        **phase_space.as_npz_fields(),
     )
 
 
@@ -1602,6 +1630,9 @@ def command_bin_centering_merge(args: argparse.Namespace) -> None:
         "theory",
         "channel",
         "resonance",
+        "phase_space_Q2_min",
+        "phase_space_W_min",
+        "phase_space_y_max",
     )
 
     for path, partial in zip(args.partials, partials):
@@ -1646,6 +1677,7 @@ def command_bin_centering_merge(args: argparse.Namespace) -> None:
         convention=_npz_string(first, "convention", "C_BC = <d4sigma>_physical_bin / d4sigma(center)"),
         apply_as=_npz_string(first, "apply_as", "centered_cross_section = bin_averaged_cross_section / C_BC"),
         t_convention=_npz_string(first, "t_convention", "positive -t externally; signed t passed to aao_xsec"),
+        phase_space_definition=_npz_string(first, "phase_space_definition", "exclusive physical bin"),
     )
     for key in metadata_keys:
         if key in first.files:
@@ -1664,6 +1696,7 @@ def command_cross_section(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     binning = from_config(args.config)
     beam_energy = float(config["beam_energy"])
+    phase_space = AnalysisPhaseSpace.from_config(config)
     target = Target(
         float(config["target_length_cm"]),
         float(config["target_density_g_cm3"]),
@@ -1673,7 +1706,15 @@ def command_cross_section(args: argparse.Namespace) -> None:
     if not np.isfinite(beam_charge) or beam_charge <= 0:
         raise ValueError("unfolding result does not contain a positive beam_charge_c")
     luminosity = integrated_luminosity_fb(beam_charge, target)
-    volumes = binning.flatten_values(physical_bin_volumes(binning, beam_energy))
+    volumes = binning.flatten_values(
+        physical_bin_volumes(
+            binning,
+            beam_energy,
+            q2_minimum=1.0 if phase_space.q2_min is None else phase_space.q2_min,
+            w_minimum=2.0 if phase_space.w_min is None else phase_space.w_min,
+            y_maximum=0.8 if phase_space.y_max is None else phase_space.y_max,
+        )
+    )
     # Construct center arrays through the binning itself to avoid order mistakes.
     iq2, ixb, it, iphi = np.indices(binning.shape)
     flat_positions = binning.flatten(iq2, ixb, it, iphi)
@@ -1734,6 +1775,14 @@ def command_cross_section(args: argparse.Namespace) -> None:
         xb_edges=binning.xb_edges,
         t_edges=binning.t_edges,
         phi_edges=binning.phi_edges,
+    )
+    payload.update(
+        phase_space_definition=(
+            "4D bin"
+            if not phase_space.enabled
+            else f"4D bin and {phase_space.description()}"
+        ),
+        **phase_space.as_npz_fields(),
     )
     if bin_centering_cbc is not None and bin_centering_reliable is not None:
         payload.update(

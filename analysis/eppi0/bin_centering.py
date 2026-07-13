@@ -10,6 +10,7 @@ import numpy as np
 
 from .binning import AnalysisBinning
 from .cross_section import virtual_photon_flux
+from .phase_space import AnalysisPhaseSpace
 
 
 Array = np.ndarray
@@ -126,6 +127,7 @@ def compute_bin_centering(
     bin_start: int = 0,
     bin_stop: int | None = None,
     progress_chunks: int = 0,
+    phase_space: AnalysisPhaseSpace | None = None,
 ) -> BinCenteringResult:
     """Compute C_BC = <d4sigma>_physical_bin / d4sigma(reference point)."""
     if samples_per_dimension <= 0:
@@ -178,6 +180,8 @@ def compute_bin_centering(
                 )
                 signed_t_mesh = -minus_t_mesh
                 physical = physical_mask(xb_mesh, q2_mesh, signed_t_mesh, beam_energy)
+                if phase_space is not None and phase_space.enabled:
+                    physical &= phase_space.mask(q2_mesh, xb_mesh, beam_energy)
                 if not np.any(physical):
                     _report_bin_centering_progress(
                         progress_chunks,
