@@ -106,12 +106,13 @@ upper-only (`x <= max`), or bounded cuts. At least one bound is required when a
 constraint is added.
 Sample, selected-event, and embedded-event counts form a compact three-column
 toolbar tile in that order, while active-axis means are hidden from the default
-interface. Log color, density, and color scale
-remain panel-specific in a display tile beneath the active quantity title. An
-equal-size reset/export tile sits immediately to its right; the two tiles are
-spaced and centered as a group above the canvas, wrapping only when the pane is
-too narrow to hold them side by side. Hover coordinates and bin values appear
-beneath the canvas.
+interface. Custom axis labels, bin counts, display minima and maxima, and
+tick-density controls form one panel-specific tile beneath the active quantity
+title. The display tile
+for log color, density, and color scale sits immediately to its right, followed
+by the reset/export tile. All three tiles are spaced and centered as a group
+above the canvas, with responsive wrapping when a pane is too narrow. Hover
+coordinates and bin values appear beneath the canvas.
 In split view, both facets reserve an equal-height, title-width toolbar rail.
 The single toolbar moves between those rails with the active panel, so changing
 panels never shifts one canvas below the other.

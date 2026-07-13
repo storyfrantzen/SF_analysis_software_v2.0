@@ -1846,10 +1846,10 @@ canvas.fit-range-picker {{
 .count-stat strong {{ font-size: 12px; font-weight: 650; }}
 .canvas-toolbar {{
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  grid-template-columns: minmax(390px, 1.55fr) repeat(2, minmax(220px, 1fr));
   align-items: stretch;
   gap: 10px;
-  width: min(100%, 570px);
+  width: min(100%, 1000px);
   min-height: 34px;
   margin: 0 auto;
 }}
@@ -1860,6 +1860,28 @@ canvas.fit-range-picker {{
   min-height: 34px;
   justify-content: center;
 }}
+.canvas-toolbar .axis-tile {{
+  display: grid;
+  grid-template-columns: repeat(4, minmax(70px, 1fr));
+  gap: 4px 6px;
+  padding: 6px;
+}}
+.axis-tile label {{
+  gap: 2px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+}}
+.axis-tile input {{
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 26px;
+}}
+.axis-tile input[type="range"] {{
+  padding-inline: 0;
+}}
+.axis-tile .axis-label-control {{ grid-column: span 2; }}
+.axis-range-pair {{ display: contents; }}
 .canvas-toolbar-slot {{
   width: 100%;
   min-width: 0;
@@ -1903,6 +1925,7 @@ canvas {{
   grid-template-columns: repeat(2, minmax(0, 1fr));
   width: 100%;
 }}
+.plot-grid.compare .canvas-toolbar .axis-tile {{ grid-column: 1 / -1; }}
 .plot-pane {{
   position: relative;
 }}
@@ -2175,6 +2198,8 @@ th, td {{ border-bottom: 1px solid var(--border); padding: 5px 7px; text-align: 
 th:first-child, td:first-child {{ text-align: left; }}
 @media (max-width: 1250px) {{
   .fit-panel-layout.engaged {{ grid-template-columns: 1fr; }}
+  .canvas-toolbar {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+  .canvas-toolbar .axis-tile {{ grid-column: 1 / -1; }}
 }}
 @media (max-width: 820px) {{
   main {{ grid-template-columns: 1fr; }}
@@ -2186,10 +2211,13 @@ th:first-child, td:first-child {{ text-align: left; }}
   canvas {{ min-height: 340px; height: 58vh; }}
 }}
 @media (max-width: 620px) {{
+  .canvas-toolbar {{ grid-template-columns: 1fr; }}
+  .canvas-toolbar .axis-tile {{ grid-column: auto; }}
   .fit-summary.sector {{ grid-template-columns: 1fr; }}
   .fit-summary.sector .fit-summary-item:last-child:nth-child(7) {{ grid-column: 1; }}
 }}
 @media (max-width: 420px) {{
+  .canvas-toolbar .axis-tile {{ grid-template-columns: repeat(2, minmax(70px, 1fr)); }}
   .reference-editor-grid {{ grid-template-columns: 1fr; }}
   .reference-editor-grid .reference-expression {{ grid-column: 1; }}
 }}
@@ -2230,10 +2258,6 @@ th:first-child, td:first-child {{ text-align: left; }}
     <div class="extra-variable" id="extraXControls">
       <label>Additional X <select id="x2var"></select></label>
       <button type="button" class="axis-button" id="removeXVar" aria-label="Remove additional X quantity">-</button>
-    </div>
-    <div class="row">
-      <label><span>X label</span><input id="xAxisLabel" type="text" placeholder="auto"></label>
-      <label><span>Y label</span><input id="yAxisLabel" type="text" placeholder="auto"></label>
     </div>
     <label id="splitLabel">Split by <select id="splitVar"></select></label>
     <div class="slice-controls" id="sliceControls" hidden>
@@ -2283,22 +2307,6 @@ th:first-child, td:first-child {{ text-align: left; }}
         </div>
       </div>
     </div>
-    <div class="row">
-      <label>X bins <input id="xbins" type="number" min="5" max="400" value="80"></label>
-      <label>Y bins <input id="ybins" type="number" min="5" max="300" value="80"></label>
-    </div>
-    <div class="row">
-      <label><span>X min</span><input id="xmin" type="number" step="any"></label>
-      <label><span>X max</span><input id="xmax" type="number" step="any"></label>
-    </div>
-    <div class="row" id="yrange">
-      <label><span>Y min</span><input id="ymin" type="number" step="any"></label>
-      <label><span>Y max</span><input id="ymax" type="number" step="any"></label>
-    </div>
-    <div class="row">
-      <label><span>X ticks <span id="xtickValue"></span></span><input id="xticks" type="range" min="1" max="40" step="0.5" value="6"></label>
-      <label><span>Y ticks <span id="ytickValue"></span></span><input id="yticks" type="range" min="1" max="40" step="0.5" value="6"></label>
-    </div>
   </aside>
   <section>
     <div class="plot-toolbar">
@@ -2346,6 +2354,20 @@ th:first-child, td:first-child {{ text-align: left; }}
       </div>
     </div>
     <div class="canvas-toolbar" id="canvasToolbar" aria-label="Plot controls">
+      <div class="toolbar-tile axis-tile" aria-label="Axis labels, binning, ranges, and ticks">
+        <label><span>X bins</span><input id="xbins" type="number" min="5" max="400" value="80"></label>
+        <label><span>X min</span><input id="xmin" type="number" step="any"></label>
+        <label><span>X max</span><input id="xmax" type="number" step="any"></label>
+        <label><span>X ticks <span id="xtickValue"></span></span><input id="xticks" type="range" min="1" max="40" step="0.5" value="6"></label>
+        <label><span>Y bins</span><input id="ybins" type="number" min="5" max="300" value="80"></label>
+        <span class="axis-range-pair" id="yrange">
+          <label><span>Y min</span><input id="ymin" type="number" step="any"></label>
+          <label><span>Y max</span><input id="ymax" type="number" step="any"></label>
+        </span>
+        <label><span>Y ticks <span id="ytickValue"></span></span><input id="yticks" type="range" min="1" max="40" step="0.5" value="6"></label>
+        <label class="axis-label-control"><span>X label</span><input id="xAxisLabel" type="text" placeholder="auto"></label>
+        <label class="axis-label-control"><span>Y label</span><input id="yAxisLabel" type="text" placeholder="auto"></label>
+      </div>
       <div class="toolbar-tile display-tile" aria-label="Display options">
         <label class="chip" id="logzChip"><input id="logz" type="checkbox"> log color</label>
         <label class="chip"><input id="density" type="checkbox"> density</label>
