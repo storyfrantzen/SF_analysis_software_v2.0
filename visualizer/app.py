@@ -1514,7 +1514,13 @@ h1 {{
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }}
-.dataset-heading #source {{ display: none; }}
+.dataset-heading #source {{
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}}
+.dataset-heading #source[hidden] {{ display: none; }}
 h2 {{
   font-size: 12px;
   font-weight: 600;
@@ -2177,7 +2183,7 @@ th:first-child, td:first-child {{ text-align: left; }}
 <main id="app">
   <aside>
     <div class="dataset-heading">
-      <div class="dataset-kicker">Dataset</div>
+      <div class="dataset-kicker" id="datasetKicker">Dataset</div>
       <h1></h1>
       <div class="subtle" id="source" hidden></div>
     </div>
@@ -2315,7 +2321,7 @@ th:first-child, td:first-child {{ text-align: left; }}
     </div>
     <div class="canvas-toolbar" id="canvasToolbar" aria-label="Plot controls">
       <div class="toolbar-tile display-tile" aria-label="Display options">
-        <label class="chip"><input id="logz" type="checkbox"> log color</label>
+        <label class="chip" id="logzChip"><input id="logz" type="checkbox"> log color</label>
         <label class="chip"><input id="density" type="checkbox"> density</label>
         <label class="chip" id="colorScaleChip"><input id="colorScale" type="checkbox"> color scale</label>
       </div>
@@ -2903,11 +2909,20 @@ function updateDatasetStatus() {{
   if (status) status.textContent = "";
   el("sampleCount").textContent = loadedSamples.length.toLocaleString();
   el("embeddedCount").textContent = rowCount.toLocaleString();
-  el("source").textContent = loadedSamples.length > 1
-    ? `${{loadedSamples[0].label}} + ${{loadedSamples.length - 1}} loaded`
-    : payload.source;
-  el("source").title = el("source").textContent;
-  document.querySelector(".dataset-heading").title = el("source").textContent;
+  const multiple = loadedSamples.length > 1;
+  const labels = loadedSamples.map(sample => sample.label);
+  const fullSourceSummary = labels.join(" + ");
+  const compactSourceSummary = labels.length > 3
+    ? `${{labels.slice(0, 2).join(" + ")}} + ${{labels.length - 2}} more`
+    : fullSourceSummary;
+  el("datasetKicker").textContent = multiple ? "Workspace" : "Dataset";
+  document.querySelector("h1").textContent = multiple
+    ? `${{loadedSamples.length.toLocaleString()}} samples combined`
+    : payload.title;
+  el("source").textContent = multiple ? compactSourceSummary : payload.source;
+  el("source").hidden = !multiple;
+  el("source").title = multiple ? fullSourceSummary : payload.source;
+  document.querySelector(".dataset-heading").title = el("source").title;
 }}
 
 function comparisonDefaultX() {{
@@ -3783,6 +3798,7 @@ function syncControlsFromPanel() {{
   renderPanelTabs();
   el("mode1d").classList.toggle("active", panel.mode === "1d");
   el("mode2d").classList.toggle("active", panel.mode === "2d");
+  el("logzChip").style.display = panel.mode === "2d" ? "" : "none";
   el("colorScaleChip").style.display = panel.mode === "2d" ? "" : "none";
   el("yAxisControl").style.display = panel.mode === "2d" ? "" : "none";
   const showExtraX = Boolean(panel.x2var);

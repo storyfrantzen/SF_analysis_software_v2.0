@@ -124,6 +124,11 @@ The `Load File(s)` action sits in the right-side header utilities immediately
 before the selected/embedded count tile. On startup, a full-window loading
 screen remains visible while the embedded columns are decoded and the initial
 plot state is constructed, then clears once the first visualization is ready.
+With one sample, the upper-left identity badge retains the generated dataset
+title. After more files are loaded, it becomes a workspace summary showing the
+combined sample count and contributing filenames. Log color and color-scale
+controls are shown only for 2D plots; 1D plots retain density as their sole
+display toggle.
 
 Right-clicking either canvas opens a plot menu with `Make ghost`, `Replace
 ghost`, and `Clear ghost` behavior. A ghost snapshots the active panel's
