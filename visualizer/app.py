@@ -1846,10 +1846,10 @@ canvas.fit-range-picker {{
 .count-stat strong {{ font-size: 12px; font-weight: 650; }}
 .canvas-toolbar {{
   display: grid;
-  grid-template-columns: minmax(470px, 1.7fr) repeat(2, minmax(220px, 1fr));
+  grid-template-columns: minmax(470px, 1.7fr) repeat(2, minmax(240px, 1fr));
   align-items: stretch;
   gap: 10px;
-  width: min(100%, 1000px);
+  width: 100%;
   min-height: 34px;
   margin: 0 auto;
 }}
@@ -1881,6 +1881,9 @@ canvas.fit-range-picker {{
   padding-inline: 0;
 }}
 .axis-range-pair {{ display: contents; }}
+.axis-range-pair.axis-range-hidden {{ display: none; }}
+.axis-y-ticks {{ grid-column: 4; grid-row: 2; }}
+.axis-y-label {{ grid-column: 5; grid-row: 2; }}
 .canvas-toolbar-slot {{
   width: 100%;
   min-width: 0;
@@ -2217,6 +2220,8 @@ th:first-child, td:first-child {{ text-align: left; }}
 }}
 @media (max-width: 420px) {{
   .canvas-toolbar .axis-tile {{ grid-template-columns: repeat(2, minmax(70px, 1fr)); }}
+  .axis-y-ticks,
+  .axis-y-label {{ grid-column: auto; grid-row: auto; }}
   .reference-editor-grid {{ grid-template-columns: 1fr; }}
   .reference-editor-grid .reference-expression {{ grid-column: 1; }}
 }}
@@ -2364,8 +2369,8 @@ th:first-child, td:first-child {{ text-align: left; }}
           <label><span>Y min</span><input id="ymin" type="number" step="any"></label>
           <label><span>Y max</span><input id="ymax" type="number" step="any"></label>
         </span>
-        <label><span>Y ticks <span id="ytickValue"></span></span><input id="yticks" type="range" min="1" max="40" step="0.5" value="6"></label>
-        <label class="axis-label-control"><span>Y label</span><input id="yAxisLabel" type="text" placeholder="auto"></label>
+        <label class="axis-y-ticks"><span>Y ticks <span id="ytickValue"></span></span><input id="yticks" type="range" min="1" max="40" step="0.5" value="6"></label>
+        <label class="axis-label-control axis-y-label"><span>Y label</span><input id="yAxisLabel" type="text" placeholder="auto"></label>
       </div>
       <div class="toolbar-tile display-tile" aria-label="Display options">
         <label class="chip" id="logzChip"><input id="logz" type="checkbox"> log color</label>
@@ -3935,7 +3940,7 @@ function syncControlsFromPanel() {{
   el("addXVar").style.display = !panel.x2var ? "" : "none";
   el("extraYControls").style.display = showExtraY ? "" : "none";
   el("addYVar").style.display = panel.mode === "2d" && !panel.y2var ? "" : "none";
-  el("yrange").style.display = panel.mode === "2d" ? "" : "none";
+  el("yrange").classList.toggle("axis-range-hidden", panel.mode !== "2d");
   el("ybins").closest("label").style.display = panel.mode === "2d" ? "" : "none";
   updateFitRangePickerCursors();
 }}
