@@ -89,6 +89,15 @@ visible on every facet and use compact formatting without unnecessary trailing
 zeros. The sidebar uses a narrower desktop width so more of the window is
 available to the plot.
 
+`Split by` also supports continuous numeric quantities. Selecting a numeric Z
+quantity slices the active Y-versus-X histogram into equal-width facets over the
+embedded Z range; the `Slices` input accepts between 1 and 24 intervals. Optional
+comma-, space-, or semicolon-separated manual edges override the equal-width
+count. Intervals are left-inclusive and right-exclusive, except for the final
+interval, which includes its upper edge. Values outside a manual edge range are
+omitted from the facets. Numeric slices retain the existing sector-facet behavior
+for axes, fits, ghosts, reference curves, density, and color scales.
+
 The sidebar presents the active dataset once in a framed identity card, gives the
 constraint quantity, minimum, maximum, and action a compact single-row layout,
 and uses content-sized buttons instead of stretching routine actions. Minimum

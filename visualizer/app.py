@@ -1485,6 +1485,14 @@ h2 {{
 }}
 .subtle {{ color: var(--muted); font-size: 12px; }}
 .row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }}
+.slice-controls {{
+  display: grid;
+  grid-template-columns: minmax(74px, 0.45fr) minmax(0, 1.55fr);
+  gap: 0 8px;
+  margin-top: -3px;
+}}
+.slice-controls[hidden] {{ display: none; }}
+.slice-status {{ grid-column: 1 / -1; min-height: 0; }}
 label {{ display: grid; gap: 4px; margin: 8px 0; }}
 select, input, button {{
   font: inherit;
@@ -2135,6 +2143,11 @@ th:first-child, td:first-child {{ text-align: left; }}
       <label><span>Y label</span><input id="yAxisLabel" type="text" placeholder="auto"></label>
     </div>
     <label id="splitLabel">Split by <select id="splitVar"></select></label>
+    <div class="slice-controls" id="sliceControls" hidden>
+      <label>Slices <input id="sliceBins" type="number" min="1" max="24" step="1" value="6"></label>
+      <label>Manual edges (optional)<input id="sliceEdges" type="text" placeholder="e.g. 0, 0.2, 0.5, 1"></label>
+      <div class="subtle slice-status" id="sliceStatus" role="status" aria-live="polite"></div>
+    </div>
     <div class="quick-category" id="quickCategoryBlock">
       <div class="quick-category-head">
         <label>Filter topology <select id="quickCategoryFilter"></select></label>
@@ -2851,6 +2864,8 @@ function makePanel(key, xvar, yvar) {{
     xLabel: "",
     yLabel: "",
     splitVar: "",
+    sliceBins: 6,
+    sliceEdges: "",
     xbins: 80,
     ybins: 80,
     xticks: 6,
@@ -3030,7 +3045,7 @@ function uniqueDerivedName(label) {{
   return name;
 }}
 
-function fillSectorSelect(selected) {{
+function fillSplitSelect(selected) {{
   const label = el("splitLabel");
   const select = el("splitVar");
   select.innerHTML = "";
@@ -3038,14 +3053,29 @@ function fillSectorSelect(selected) {{
   none.value = "";
   none.textContent = "none";
   select.appendChild(none);
+  const categorical = document.createElement("optgroup");
+  categorical.label = "Categories";
   for (const split of payload.sectorSplits || []) {{
     const option = document.createElement("option");
     option.value = split.name;
     option.textContent = split.label;
-    select.appendChild(option);
+    categorical.appendChild(option);
   }}
+  if (categorical.children.length) select.appendChild(categorical);
+  const categoricalNames = new Set((payload.sectorSplits || []).map(split => split.name));
+  const numeric = document.createElement("optgroup");
+  numeric.label = "Numeric slices";
+  for (const variable of variables) {{
+    if (!columns[variable.name] || categoricalNames.has(variable.name)) continue;
+    const option = document.createElement("option");
+    option.value = variable.name;
+    option.textContent = variable.label;
+    numeric.appendChild(option);
+  }}
+  if (numeric.children.length) select.appendChild(numeric);
   select.value = selected || "";
-  label.style.display = (payload.sectorSplits || []).length ? "" : "none";
+  if (select.value !== (selected || "")) select.value = "";
+  label.style.display = select.options.length > 1 ? "" : "none";
 }}
 
 function splitFacets(splitName) {{
@@ -3068,6 +3098,95 @@ function splitFacets(splitName) {{
     label: isProtonSectorSplit(splitName) && value === 0 ? "CD proton (sector 0)" : String(value),
     shortLabel: isProtonSectorSplit(splitName) && value === 0 ? "CD" : String(value)
   }})));
+}}
+
+function isCategoricalSplit(splitName) {{
+  return (payload.sectorSplits || []).some(split => split.name === splitName);
+}}
+
+function parseManualSliceEdges(text) {{
+  const source = String(text || "").trim();
+  if (!source) return {{edges: null, error: ""}};
+  const parts = source.split(/[\\s,;]+/).filter(Boolean);
+  const edges = parts.map(Number);
+  if (edges.length < 2 || edges.some(value => !Number.isFinite(value))) {{
+    return {{edges: null, error: "Enter at least two finite, comma-separated edges."}};
+  }}
+  if (edges.length > 25) return {{edges: null, error: "Use no more than 25 edges (24 slices)."}};
+  for (let index = 1; index < edges.length; index++) {{
+    if (!(edges[index] > edges[index - 1])) {{
+      return {{edges: null, error: "Manual edges must be strictly increasing."}};
+    }}
+  }}
+  return {{edges, error: ""}};
+}}
+
+function numericSliceConfiguration(panel, splitName) {{
+  const manual = parseManualSliceEdges(panel.sliceEdges);
+  if (manual.edges) return {{edges: manual.edges, manual: true, error: ""}};
+  const variable = byName[splitName];
+  const minimum = Number(variable?.min);
+  const maximum = Number(variable?.max);
+  if (!(maximum > minimum)) {{
+    return {{edges: [], manual: false, error: manual.error || "This quantity has no finite slicing range."}};
+  }}
+  const bins = clamp(Math.round(Number(panel.sliceBins) || 6), 1, 24);
+  const edges = Array.from({{length: bins + 1}}, (_, index) => minimum + (maximum - minimum) * index / bins);
+  return {{edges, manual: false, error: manual.error}};
+}}
+
+function numericSliceFacets(panel, splitName) {{
+  const configuration = numericSliceConfiguration(panel, splitName);
+  const label = variableLabel(splitName);
+  const definitions = [];
+  for (let index = 0; index + 1 < configuration.edges.length; index++) {{
+    const lower = configuration.edges[index];
+    const upper = configuration.edges[index + 1];
+    const last = index === configuration.edges.length - 2;
+    const interval = `[${{formatAxisTick(lower)}}, ${{formatAxisTick(upper)}}${{last ? "]" : ")"}}`;
+    definitions.push({{
+      value: index,
+      lower,
+      upper,
+      last,
+      numericSlice: true,
+      label: `${{label}} ${{interval}}`,
+      shortLabel: interval
+    }});
+  }}
+  return definitions;
+}}
+
+function facetDefinitionsForPanel(panel, splitName) {{
+  return isCategoricalSplit(splitName) ? splitFacets(splitName) : numericSliceFacets(panel, splitName);
+}}
+
+function valueMatchesFacet(value, definition) {{
+  if (definition.numericSlice) {{
+    return Number.isFinite(value) && value >= definition.lower && (definition.last ? value <= definition.upper : value < definition.upper);
+  }}
+  return Math.round(value) === Number(definition.value);
+}}
+
+function panelSplitSignature(panel, splitName) {{
+  if (!splitName) return "";
+  if (isCategoricalSplit(splitName)) return `category:${{splitName}}`;
+  const configuration = numericSliceConfiguration(panel, splitName);
+  return `numeric:${{splitName}}:${{configuration.edges.map(value => Number(value).toPrecision(12)).join(",")}}`;
+}}
+
+function updateSliceControls(panel) {{
+  const numeric = Boolean(panel.splitVar) && !isCategoricalSplit(panel.splitVar);
+  el("sliceControls").hidden = !numeric;
+  if (!numeric) {{ el("sliceStatus").textContent = ""; return; }}
+  const configuration = numericSliceConfiguration(panel, panel.splitVar);
+  if (configuration.error) {{
+    el("sliceStatus").textContent = `${{configuration.error}} Using equal-width slices until the edges are valid.`;
+  }} else if (configuration.manual) {{
+    el("sliceStatus").textContent = `${{configuration.edges.length - 1}} manual slices; values outside the edge range are omitted.`;
+  }} else {{
+    el("sliceStatus").textContent = `${{configuration.edges.length - 1}} equal-width slices over the embedded ${{variableLabel(panel.splitVar)}} range.`;
+  }}
 }}
 
 function isProtonSectorSplit(name) {{
@@ -3403,7 +3522,7 @@ function renderTextFilters() {{
 }}
 
 function attachEvents() {{
-  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","signalModel","backgroundModel","fitMethod","fitScanDetail","fitRangeClick"].forEach(id => {{
+  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","sliceBins","sliceEdges","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","signalModel","backgroundModel","fitMethod","fitScanDetail","fitRangeClick"].forEach(id => {{
     el(id).addEventListener("input", () => {{ readControlsToPanel(); update(); }});
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
@@ -3553,7 +3672,10 @@ function syncControlsFromPanel() {{
   fillOverlaySelect(el("x2var"), panel.x2var);
   fillSelect(el("yvar"), panel.yvar);
   fillOverlaySelect(el("y2var"), panel.y2var);
-  fillSectorSelect(panel.splitVar);
+  fillSplitSelect(panel.splitVar);
+  el("sliceBins").value = panel.sliceBins || 6;
+  el("sliceEdges").value = panel.sliceEdges || "";
+  updateSliceControls(panel);
   el("xAxisLabel").value = panel.xLabel || "";
   el("yAxisLabel").value = panel.yLabel || "";
   el("xbins").value = panel.xbins;
@@ -3630,6 +3752,9 @@ function readControlsToPanel() {{
   panel.xLabel = el("xAxisLabel").value.trim();
   panel.yLabel = el("yAxisLabel").value.trim();
   panel.splitVar = el("splitVar").value;
+  panel.sliceBins = clamp(Math.round(Number(el("sliceBins").value) || 6), 1, 24);
+  panel.sliceEdges = el("sliceEdges").value.trim();
+  updateSliceControls(panel);
   panel.xbins = clamp(Number(el("xbins").value) || 80, 5, 400);
   panel.ybins = clamp(Number(el("ybins").value) || 80, 5, 300);
   panel.xticks = clamp(Number(el("xticks").value) || 6, 1, 40);
@@ -4369,6 +4494,7 @@ function captureGhost(key) {{
     xName: source.xName || "",
     yName: source.yName || "",
     splitName: source.splitName || "",
+    splitSignature: source.splitSignature || "",
     density: Boolean(source.density),
     logz: Boolean(source.logz),
     xMin: source.xMin,
@@ -4745,6 +4871,7 @@ function draw1d(panel, mask) {{
     draw1dFacets(panel, mask, splitName);
     return;
   }}
+  el("plot" + panel.key).style.height = "";
   const xName = panel.xvar;
   const x2Name = panel.x2var && panel.x2var !== xName && columns[panel.x2var] ? panel.x2var : "";
   const x = columns[xName];
@@ -4825,6 +4952,7 @@ function draw2d(panel, mask) {{
     draw2dFacets(panel, mask, splitName);
     return;
   }}
+  el("plot" + panel.key).style.height = "";
   const xName = panel.xvar;
   const yName = panel.yvar;
   const x2Name = panel.x2var && panel.x2var !== xName && columns[panel.x2var] ? panel.x2var : "";
@@ -4935,7 +5063,8 @@ function draw1dFacets(panel, mask, splitName) {{
   const xMin = panel.xmin;
   const xMax = panel.xmax;
   const facets = [];
-  const facetDefinitions = splitFacets(splitName);
+  const facetDefinitions = facetDefinitionsForPanel(panel, splitName);
+  const splitSignature = panelSplitSignature(panel, splitName);
   let totalSelected = 0, totalOverlaySelected = 0, sumXAll = 0;
   for (const definition of facetDefinitions) {{
     const counts = new Float64Array(bins);
@@ -4944,7 +5073,7 @@ function draw1dFacets(panel, mask, splitName) {{
     let selected = 0, overlaySelected = 0, sumX = 0;
     for (let i = 0; i < rowCount; i++) {{
       const xv = x[i];
-      if (!mask[i] || Math.round(split[i]) !== definition.value || xMax <= xMin) continue;
+      if (!mask[i] || !valueMatchesFacet(split[i], definition) || xMax <= xMin) continue;
       if (Number.isFinite(xv) && xv >= xMin && xv <= xMax) {{
         const bin = Math.min(bins - 1, Math.max(0, Math.floor((xv - xMin) / (xMax - xMin) * bins)));
         counts[bin] += 1;
@@ -4972,13 +5101,14 @@ function draw1dFacets(panel, mask, splitName) {{
       normalizeHistogram(facet.overlayCounts, facet.overlaySelected);
     }}
   }}
-  const ghost = compatibleGhost(panel, "1d-facet", {{xName, splitName}});
+  const ghost = compatibleGhost(panel, "1d-facet", {{xName, splitName, splitSignature}});
   const maxCount = histogramMax(
     ...facets.map(f => f.counts),
     ...facets.map(f => f.overlayCounts).filter(Boolean),
     ...(ghost?.facets || []).map(f => f.counts)
   );
   const canvas = el("plot" + panel.key);
+  prepareFacetCanvas(canvas, facets.length, splitName, facets);
   const area = plotArea(canvas);
   const {{ctx, width, height}} = area;
   const c = colors();
@@ -5027,7 +5157,7 @@ function draw1dFacets(panel, mask, splitName) {{
     facet.area = facetAreaInfo;
   }}
   panel.lastPlot = {{
-    mode: "1d-facet", area, facets, splitName, xName, x2Name, xMin, xMax, bins,
+    mode: "1d-facet", area, facets, splitName, splitSignature, xName, x2Name, xMin, xMax, bins,
     selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density, yMax: maxCount
   }};
   panel.fitSummary = panelHasFit(panel) ? fitSummaries.join(" | ") : "No fit";
@@ -5051,7 +5181,8 @@ function draw2dFacets(panel, mask, splitName) {{
   const yMin = panel.ymin;
   const yMax = panel.ymax;
   const facets = [];
-  const facetDefinitions = splitFacets(splitName);
+  const facetDefinitions = facetDefinitionsForPanel(panel, splitName);
+  const splitSignature = panelSplitSignature(panel, splitName);
   const fitSpec = fitSpecFromPanel(panel);
   const collectFitPoints = fitSpec.signal === "none" && fitModelInfo(fitSpec.background).kind === "polynomial";
   let totalSelected = 0, totalOverlaySelected = 0, sumXAll = 0, sumYAll = 0;
@@ -5063,7 +5194,7 @@ function draw2dFacets(panel, mask, splitName) {{
     let selected = 0, overlaySelected = 0, sumX = 0, sumY = 0;
     for (let i = 0; i < rowCount; i++) {{
       const xv = x[i], yv = y[i];
-      if (!mask[i] || Math.round(split[i]) !== definition.value || xMax <= xMin || yMax <= yMin) continue;
+      if (!mask[i] || !valueMatchesFacet(split[i], definition) || xMax <= xMin || yMax <= yMin) continue;
       if (Number.isFinite(xv) && xv >= xMin && xv <= xMax && Number.isFinite(yv) && yv >= yMin && yv <= yMax) {{
         const xi = Math.min(xBins - 1, Math.max(0, Math.floor((xv - xMin) / (xMax - xMin) * xBins)));
         const yi = Math.min(yBins - 1, Math.max(0, Math.floor((yv - yMin) / (yMax - yMin) * yBins)));
@@ -5103,8 +5234,9 @@ function draw2dFacets(panel, mask, splitName) {{
     facet.maxCount = histogramMax(facet.counts);
     facet.overlayMaxCount = facet.overlayCounts ? histogramMax(facet.overlayCounts) : 0;
   }}
-  const ghost = compatibleGhost(panel, "2d-facet", {{xName, yName, splitName}});
+  const ghost = compatibleGhost(panel, "2d-facet", {{xName, yName, splitName, splitSignature}});
   const canvas = el("plot" + panel.key);
+  prepareFacetCanvas(canvas, facets.length, splitName, facets);
   const area = plotArea(canvas, panel.colorScale ? (x2Name || y2Name ? 2 : 1) : 0);
   const {{ctx, width, height}} = area;
   ctx.clearRect(0, 0, width, height);
@@ -5168,7 +5300,7 @@ function draw2dFacets(panel, mask, splitName) {{
     facet.area = facetAreaInfo;
   }}
   panel.lastPlot = {{
-    mode: "2d-facet", area, facets, splitName, xName, x2Name, yName, y2Name, xMin, xMax, yMin, yMax,
+    mode: "2d-facet", area, facets, splitName, splitSignature, xName, x2Name, yName, y2Name, xMin, xMax, yMin, yMax,
     xBins, yBins, selected: totalSelected, overlaySelected: totalOverlaySelected, density: panel.density,
     logz: panel.logz
   }};
@@ -5202,6 +5334,18 @@ function facetLayout(area, facetCount, splitName = "", facets = null) {{
   const cols = count <= 2 ? count : area.width >= 900 ? 3 : 2;
   const rows = Math.ceil(count / cols);
   return {{cols, rows, gapX: 16, gapY: 30, outerLeft: 8, outerRight: 8, outerTop: 4, outerBottom: 8}};
+}}
+
+function prepareFacetCanvas(canvas, facetCount, splitName = "", facets = null) {{
+  const count = Math.max(1, facetCount || 1);
+  const protonValues = Array.isArray(facets) ? facets.map(facet => Math.round(Number(facet.value))) : [];
+  const centeredCd = isProtonSectorSplit(splitName)
+    && count === 7
+    && [0, 1, 2, 3, 4, 5, 6].every(value => protonValues.includes(value));
+  const width = canvas.getBoundingClientRect().width;
+  const columns = centeredCd ? 3 : count <= 2 ? count : width >= 900 ? 3 : 2;
+  const rows = centeredCd ? 3 : Math.ceil(count / Math.max(1, columns));
+  canvas.style.height = `${{clamp(rows * 215 + 20, 420, 2800)}}px`;
 }}
 
 function panelArea(area, layout, index, colorScaleSlots = 0) {{
@@ -5347,7 +5491,12 @@ function panelOverlayQuantity(panel) {{
     const y2Name = panel.y2var && panel.y2var !== panel.yvar && byName[panel.y2var] ? panel.y2var : panel.yvar;
     if (x2Name !== panel.xvar || y2Name !== panel.yvar) details.push(`overlay: ${{variableLabel(y2Name)}} vs ${{variableLabel(x2Name)}}`);
   }}
-  if (panel.splitVar && byName[panel.splitVar]) details.push(`split by ${{variableLabel(panel.splitVar)}}`);
+  if (panel.splitVar && byName[panel.splitVar]) {{
+    const suffix = isCategoricalSplit(panel.splitVar)
+      ? ""
+      : ` (${{numericSliceConfiguration(panel, panel.splitVar).edges.length - 1}} slices)`;
+    details.push(`split by ${{variableLabel(panel.splitVar)}}${{suffix}}`);
+  }}
   return details.join(" | ");
 }}
 

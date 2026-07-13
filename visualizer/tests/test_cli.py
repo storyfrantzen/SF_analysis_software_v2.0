@@ -78,6 +78,11 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn('<span id="meanX" hidden>-</span>', html)
         self.assertIn('<span id="meanY" hidden>-</span>', html)
         self.assertIn("grid-template-columns: minmax(74px, 1.3fr)", html)
+        self.assertIn('id="sliceControls" hidden', html)
+        self.assertIn('id="sliceBins" type="number" min="1" max="24"', html)
+        self.assertIn('id="sliceEdges" type="text"', html)
+        self.assertIn("function numericSliceFacets", html)
+        self.assertIn("function valueMatchesFacet", html)
         self.assertIn('<div class="control-deck analysis-tools">', html)
         self.assertIn('<div class="sidebar-derived">', html)
         self.assertIn('<div class="control-panel fit-panel">', html)
@@ -212,6 +217,15 @@ const clampedScaleMarkerLeft = constrainedOverlayLeft(980, 120, 1000);
 const emptyConstraintValueIsNaN = Number.isNaN(parseNumber(""));
 const lowerOnlyRange = [valuePassesRange(4, 3, NaN), valuePassesRange(2, 3, NaN)];
 const upperOnlyRange = [valuePassesRange(4, NaN, 5), valuePassesRange(6, NaN, 5)];
+const manualSliceParse = parseManualSliceEdges("0, 0.2 0.5; 1");
+const invalidSliceParse = parseManualSliceEdges("0, 0.5, 0.4, 1");
+const slicePanel = {sliceBins: 6, sliceEdges: "0, 0.2, 0.5, 1"};
+const sliceDefinitions = numericSliceFacets(slicePanel, "xB");
+const sliceMembership = sliceDefinitions.map(definition => [
+  valueMatchesFacet(definition.lower, definition),
+  valueMatchesFacet(definition.upper, definition)
+]);
+const automaticSlices = numericSliceConfiguration({sliceBins: 4, sliceEdges: ""}, "xB");
 const minimumWFunction = compileMathExpression("(2^2 - 0.9382720813^2) * x / (1 - x)", "x");
 const calculatorValues = [
   minimumWFunction(0.3),
@@ -255,6 +269,10 @@ console.log(JSON.stringify({
   emptyConstraintValueIsNaN,
   lowerOnlyRange,
   upperOnlyRange,
+  manualSliceEdges: manualSliceParse.edges,
+  invalidSliceError: invalidSliceParse.error,
+  sliceMembership,
+  automaticSliceCount: automaticSlices.edges.length - 1,
   calculatorValues,
   referenceStyles,
   rejectedExpression
@@ -306,6 +324,13 @@ console.log(JSON.stringify({
         self.assertTrue(result["emptyConstraintValueIsNaN"])
         self.assertEqual(result["lowerOnlyRange"], [True, False])
         self.assertEqual(result["upperOnlyRange"], [True, False])
+        self.assertEqual(result["manualSliceEdges"], [0, 0.2, 0.5, 1])
+        self.assertIn("strictly increasing", result["invalidSliceError"])
+        self.assertEqual(
+            result["sliceMembership"],
+            [[True, False], [True, False], [True, True]],
+        )
+        self.assertEqual(result["automaticSliceCount"], 4)
         self.assertAlmostEqual(result["calculatorValues"][0], 1.337, delta=0.002)
         self.assertAlmostEqual(result["calculatorValues"][1], 4.0, places=10)
         self.assertAlmostEqual(result["calculatorValues"][2], 12.0, places=10)
