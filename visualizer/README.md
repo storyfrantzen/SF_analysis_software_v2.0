@@ -58,6 +58,11 @@ preview sample, and run more mixture-fit refinement iterations. The fit summary
 records the selected detail and number of scanned shapes. Both Poisson WLS and
 unbinned likelihood fits operate independently in split views.
 
+`Hide canvas fit results` suppresses the fit-optimization annotation boxes on
+the active panel without disabling the fit curves or the textual Fit summary.
+Each panel retains its own annotation visibility setting, which is useful when
+fit boxes would obscure a dense facet layout.
+
 Default axis ranges are quantity-aware. Discrete detector codes such as `eDet`
 receive half-category padding so the first and last detector bins are fully
 visible. Missing-mass-squared quantities use padded 1st-to-99th-percentile
@@ -77,7 +82,10 @@ available to the plot.
 
 The sidebar presents the active dataset once in a framed identity card, gives the
 constraint quantity, minimum, maximum, and action a compact single-row layout,
-and uses content-sized buttons instead of stretching routine actions.
+and uses content-sized buttons instead of stretching routine actions. Minimum
+and maximum are independently optional, allowing lower-only (`x >= min`),
+upper-only (`x <= max`), or bounded cuts. At least one bound is required when a
+constraint is added.
 Selected and embedded counts share one compact toolbar tile, while active-axis
 means are hidden from the default interface. Reset/export actions share a
 separate tile beside the display options. Log color, density, color scale,
@@ -87,11 +95,12 @@ Color-scale hover readouts are clamped inside the plot pane so their numeric
 values remain visible at the right edge.
 
 Derived Operations uses a compact two-row builder in the sidebar beneath
-Constraints, before the sidebar's axis-range separator. Its preview remains
-visible in a small footer without consuming canvas width. Fit and Text Filters
-use full-width cards beneath the plots. The quantity banner now leads each plot
-directly; redundant panel-name and selected-quantity summaries above it are
-omitted. The active-panel tab is also hidden until a second panel exists.
+Constraints, before the sidebar's axis-range separator. Only validation and
+completion messages appear beneath the builder; the redundant expression
+preview is omitted. Fit and Text Filters use full-width cards beneath the plots.
+The quantity banner now leads each plot directly; redundant panel-name and
+selected-quantity summaries above it are omitted. The active-panel tab is also
+hidden until a second panel exists.
 
 ## Source layout
 

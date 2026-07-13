@@ -50,6 +50,8 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn('<div class="dataset-heading">', html)
         self.assertIn('<div class="subtle" id="source" hidden></div>', html)
         self.assertIn('<div class="filter-row constraint-builder">', html)
+        self.assertIn('id="constraintStatus" role="status"', html)
+        self.assertIn("Enter a minimum, a maximum, or both.", html)
         self.assertIn('<div class="toolbar-tile action-tile" aria-label="Plot actions">', html)
         self.assertIn('<div class="toolbar-tile count-tile" aria-label="Event counts">', html)
         self.assertIn('<div class="canvas-toolbar" id="canvasToolbar" aria-label="Display options">', html)
@@ -62,7 +64,11 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn('<div class="control-panel text-panel" id="textFilterPanel">', html)
         self.assertIn(".analysis-tools .fit-panel { order: 1; }", html)
         self.assertIn(".analysis-tools .text-panel { order: 2; }", html)
-        self.assertIn('<span class="operation-feedback-label">Preview</span>', html)
+        self.assertNotIn('id="opPreview"', html)
+        self.assertNotIn('operation-feedback-label', html)
+        self.assertIn('id="toggleFitAnnotations" aria-pressed="true"', html)
+        self.assertIn("showFitAnnotations: true", html)
+        self.assertIn("panel?.showFitAnnotations === false", html)
         self.assertIn(".fit-model-grid select { width: auto; max-width: 190px; }", html)
         self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr))", html)
         self.assertNotIn('class="plot-head"', html)
@@ -171,6 +177,9 @@ const protonFacets = orderSplitFacets(
 const protonLayout = facetLayout({width: 1200}, protonFacets.length, "pSector", protonFacets);
 const protonAxisVisibility = protonFacets.map((_, index) => facetAxisVisibility(protonLayout, index, protonFacets.length));
 const clampedScaleMarkerLeft = constrainedOverlayLeft(980, 120, 1000);
+const emptyConstraintValueIsNaN = Number.isNaN(parseNumber(""));
+const lowerOnlyRange = [valuePassesRange(4, 3, NaN), valuePassesRange(2, 3, NaN)];
+const upperOnlyRange = [valuePassesRange(4, NaN, 5), valuePassesRange(6, NaN, 5)];
 console.log(JSON.stringify({
   ordinaryCoeff: ordinary.coeff,
   poissonCoeff: poisson.coeff,
@@ -193,7 +202,10 @@ console.log(JSON.stringify({
   protonFacetPositions: protonLayout.positions,
   protonAxisVisibility,
   compactTick: formatAxisTick(0.090000),
-  clampedScaleMarkerLeft
+  clampedScaleMarkerLeft,
+  emptyConstraintValueIsNaN,
+  lowerOnlyRange,
+  upperOnlyRange
 }));
 """
         script_path = self.directory / "weighted_fit_test.js"
@@ -239,6 +251,9 @@ console.log(JSON.stringify({
         )
         self.assertEqual(result["compactTick"], "0.09")
         self.assertEqual(result["clampedScaleMarkerLeft"], 876)
+        self.assertTrue(result["emptyConstraintValueIsNaN"])
+        self.assertEqual(result["lowerOnlyRange"], [True, False])
+        self.assertEqual(result["upperOnlyRange"], [True, False])
         self.assertEqual(
             result["protonAxisVisibility"],
             [

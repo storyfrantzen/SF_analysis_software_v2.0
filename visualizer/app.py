@@ -1648,6 +1648,10 @@ canvas.fit-range-picker {{
 }}
 .filter-row > :first-child {{ min-width: 0; overflow: hidden; text-overflow: ellipsis; }}
 .filter-row input {{ width: 100%; }}
+.constraint-status {{
+  margin: -2px 0 4px;
+}}
+.constraint-status:empty {{ display: none; }}
 .operation-grid {{
   display: flex;
   flex-direction: column;
@@ -1667,34 +1671,11 @@ canvas.fit-range-picker {{
   white-space: nowrap;
   width: 100%;
 }}
-.operation-feedback {{
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 4px 7px;
-  align-items: center;
-  min-height: 20px;
-  padding-top: 6px;
-  border-top: 1px solid var(--border);
+.operation-status {{
+  margin-top: 2px;
+  font-size: 11px;
 }}
-.operation-feedback-label {{
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}}
-.operation-preview {{
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-}}
-.operation-feedback .subtle {{
-  grid-column: 1 / -1;
-  text-align: left;
-}}
-.operation-feedback .subtle:empty {{ display: none; }}
+.operation-status:empty {{ display: none; }}
 .toolbar-tile {{
   display: inline-flex;
   align-items: center;
@@ -2027,6 +2008,7 @@ th:first-child, td:first-child {{ text-align: left; }}
         <input id="rangeMax" type="number" step="any" placeholder="max">
         <button type="button" id="addRange">Add</button>
       </div>
+      <div class="subtle constraint-status" id="constraintStatus" role="status" aria-live="polite"></div>
       <div id="rangeFilters"></div>
       <div class="sidebar-derived">
         <h2>Derived Operations</h2>
@@ -2042,11 +2024,7 @@ th:first-child, td:first-child {{ text-align: left; }}
             </select></label>
             <button type="button" id="addDerived">Add derived</button>
           </div>
-          <div class="operation-feedback">
-            <span class="operation-feedback-label">Preview</span>
-            <div class="operation-preview" id="opPreview"></div>
-            <div class="subtle" id="opStatus"></div>
-          </div>
+          <div class="subtle operation-status" id="opStatus"></div>
         </div>
       </div>
     </div>
@@ -2167,6 +2145,7 @@ th:first-child, td:first-child {{ text-align: left; }}
         <div class="fit-tools">
           <label class="chip"><input id="fitRangeClick" type="checkbox"> click endpoints</label>
           <button type="button" id="clearFitRange">Clear range</button>
+          <button type="button" id="toggleFitAnnotations" aria-pressed="true">Hide canvas fit results</button>
         </div>
         <label id="fitScanDetailControl">
           <span>Unbinned scan detail: <strong id="fitScanDetailValue">balanced</strong></span>
@@ -2693,6 +2672,7 @@ function makePanel(key, xvar, yvar) {{
     fitMethod: "unweighted",
     fitScanDetail: 3,
     fitRangeClick: false,
+    showFitAnnotations: true,
     fitRangeMin: NaN,
     fitRangeMax: NaN,
     fitSummary: "No fit",
@@ -2754,7 +2734,6 @@ function fillOperationSelects() {{
   const currentRight = right.value || matchingGeneratedName(currentLeft) || firstPresent(["gen_theta_deg", "gen_theta", payload.defaultX]);
   fillSelect(left, currentLeft);
   fillSelect(right, currentRight);
-  updateOperationPreview();
 }}
 
 function firstPresent(names) {{
@@ -2774,15 +2753,6 @@ function matchingGeneratedName(name) {{
     if (columns[candidate]) return candidate;
   }}
   return "";
-}}
-
-function updateOperationPreview() {{
-  const preview = el("opPreview");
-  if (!preview) return;
-  const leftName = el("opLeft").value;
-  const rightName = el("opRight").value;
-  const kind = el("opKind").value;
-  preview.textContent = leftName && rightName && kind ? derivedLabel(leftName, rightName, kind) : "";
 }}
 
 function addDerivedVariable() {{
@@ -2839,7 +2809,6 @@ function addDerivedVariable() {{
   currentPanel().xmin = min;
   currentPanel().xmax = max;
   el("opStatus").textContent = `Added ${{label}}`;
-  updateOperationPreview();
   syncControlsFromPanel();
   update();
 }}
@@ -3258,7 +3227,6 @@ function attachEvents() {{
   el("loadSelectedRemote").addEventListener("click", loadSelectedRemoteFiles);
   ["opLeft","opRight","opKind"].forEach(id => {{
     el(id).addEventListener("change", () => {{
-      updateOperationPreview();
       el("opStatus").textContent = "";
     }});
   }});
@@ -3277,10 +3245,19 @@ function attachEvents() {{
   el("removeXVar").addEventListener("click", () => removeAdditionalVariable("x"));
   el("removeYVar").addEventListener("click", () => removeAdditionalVariable("y"));
   el("addRange").addEventListener("click", addRangeFilter);
+  ["rangeVar", "rangeMin", "rangeMax"].forEach(id => {{
+    el(id).addEventListener("input", () => {{ el("constraintStatus").textContent = ""; }});
+  }});
   el("resetFilters").addEventListener("click", resetFilters);
   el("resetRanges").addEventListener("click", () => {{ resetAxisRanges(currentPanel()); syncControlsFromPanel(); update(); }});
   el("savePng").addEventListener("click", savePng);
   el("clearFitRange").addEventListener("click", () => {{ clearFitRange(currentPanel()); syncControlsFromPanel(); update(); }});
+  el("toggleFitAnnotations").addEventListener("click", () => {{
+    const panel = currentPanel();
+    panel.showFitAnnotations = !(panel.showFitAnnotations !== false);
+    syncFitAnnotationButton(panel);
+    update();
+  }});
   el("quickCategoryFilter").addEventListener("change", renderQuickCategory);
   el("quickCategoryAll").addEventListener("click", () => setCurrentCategoryValues(true));
   el("quickCategoryNone").addEventListener("click", () => setCurrentCategoryValues(false));
@@ -3374,6 +3351,7 @@ function syncControlsFromPanel() {{
   el("fitScanDetailValue").textContent = fitScanDetailLabel(panel.fitScanDetail);
   syncFitMethodControls(panel);
   el("fitRangeClick").checked = panel.fitRangeClick;
+  syncFitAnnotationButton(panel);
   el("fitRangeSummary").textContent = fitRangeSummaryText(panel);
   el("fitSummary").textContent = panel.fitSummary || "No fit";
   renderPanelTabs();
@@ -3479,6 +3457,16 @@ function syncFitMethodControls(panel) {{
   el("fitMethodNote").textContent = showUnbinnedControls
     ? "Background degree 0-5 uses the same selector as binned fits; unbinned PDFs use a positive Bernstein polynomial of that degree."
     : "";
+}}
+
+function syncFitAnnotationButton(panel) {{
+  const button = el("toggleFitAnnotations");
+  const visible = panel.showFitAnnotations !== false;
+  button.textContent = visible ? "Hide canvas fit results" : "Show canvas fit results";
+  button.setAttribute("aria-pressed", String(visible));
+  button.title = visible
+    ? "Hide fit optimization result boxes without disabling the fit"
+    : "Show fit optimization result boxes on the canvas";
 }}
 
 function fitModelInfo(model) {{
@@ -3662,7 +3650,17 @@ function addRangeFilter() {{
   const name = el("rangeVar").value;
   const min = parseNumber(el("rangeMin").value);
   const max = parseNumber(el("rangeMax").value);
+  const status = el("constraintStatus");
+  if (!Number.isFinite(min) && !Number.isFinite(max)) {{
+    status.textContent = "Enter a minimum, a maximum, or both.";
+    return;
+  }}
+  if (Number.isFinite(min) && Number.isFinite(max) && min > max) {{
+    status.textContent = "Minimum cannot exceed maximum.";
+    return;
+  }}
   activeRanges.push({{name, min, max}});
+  status.textContent = "";
   el("rangeMin").value = "";
   el("rangeMax").value = "";
   renderRangeFilters();
@@ -3680,11 +3678,13 @@ function renderRangeFilters() {{
     const min = document.createElement("input");
     min.type = "number";
     min.step = "any";
+    min.placeholder = "no minimum";
     min.value = Number.isFinite(filter.min) ? filter.min : "";
     min.addEventListener("input", () => {{ filter.min = parseNumber(min.value); update(); }});
     const max = document.createElement("input");
     max.type = "number";
     max.step = "any";
+    max.placeholder = "no maximum";
     max.value = Number.isFinite(filter.max) ? filter.max : "";
     max.addEventListener("input", () => {{ filter.max = parseNumber(max.value); update(); }});
     const remove = document.createElement("button");
@@ -3704,13 +3704,22 @@ function resetFilters() {{
   renderCategoryFilters();
   document.querySelectorAll("input[data-text-filter]").forEach(input => input.value = "");
   activeRanges = [];
+  el("constraintStatus").textContent = "";
   renderRangeFilters();
   update();
 }}
 
 function parseNumber(value) {{
-  const number = Number(value);
+  const text = value === null || value === undefined ? "" : String(value).trim();
+  if (!text) return NaN;
+  const number = Number(text);
   return Number.isFinite(number) ? number : NaN;
+}}
+
+function valuePassesRange(value, min, max) {{
+  return Number.isFinite(value)
+    && (!Number.isFinite(min) || value >= min)
+    && (!Number.isFinite(max) || value <= max);
 }}
 
 function selectedMask() {{
@@ -3729,7 +3738,7 @@ function selectedMask() {{
     if (!values) continue;
     for (let i = 0; i < rowCount; i++) {{
       const value = values[i];
-      if (mask[i] && (!Number.isFinite(value) || (Number.isFinite(filter.min) && value < filter.min) || (Number.isFinite(filter.max) && value > filter.max))) mask[i] = 0;
+      if (mask[i] && !valuePassesRange(value, filter.min, filter.max)) mask[i] = 0;
     }}
   }}
   document.querySelectorAll("input[data-text-filter]").forEach(input => {{
@@ -4192,7 +4201,7 @@ function draw1dFacets(panel, mask, splitName) {{
       const fit = make1dFit(facet.counts, xMin, xMax, panel, null, facet.fitValues);
       if (fit.predict) {{
         drawFitResult(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, fit, panel);
-        drawFitAnnotation(ctx, facetAreaInfo, fit);
+        drawFitAnnotation(ctx, facetAreaInfo, fit, panel);
       }}
       fitSummaries.push(`${{facet.shortLabel}}: ${{fit.summary}}`);
     }}
@@ -4329,7 +4338,7 @@ function draw2dFacets(panel, mask, splitName) {{
       const fit = make2dFit(facet.fitXs, facet.fitYs, panel);
       if (fit.predict) {{
         drawFitResult(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, fit, panel);
-        drawFitAnnotation(ctx, facetAreaInfo, fit);
+        drawFitAnnotation(ctx, facetAreaInfo, fit, panel);
       }}
       fitSummaries.push(`${{facet.shortLabel}}: ${{fit.summary}}; n=${{facet.fitXs.length.toLocaleString()}}`);
     }}
@@ -4531,7 +4540,7 @@ function draw1dFit(ctx, area, panel, counts, xMin, xMax, yMin, yMax, unbinnedVal
   const fit = make1dFit(counts, xMin, xMax, panel, null, unbinnedValues);
   if (!fit.predict) return fit.summary;
   drawFitResult(ctx, area, xMin, xMax, yMin, yMax, fit, panel);
-  drawFitAnnotation(ctx, area, fit);
+  drawFitAnnotation(ctx, area, fit, panel);
   return fit.summary;
 }}
 
@@ -4595,7 +4604,7 @@ function draw2dFit(ctx, area, panel, mask, xValues, yValues, xMin, xMax, yMin, y
   const fit = make2dFit(xs, ys, panel);
   if (!fit.predict) return fit.summary;
   drawFitResult(ctx, area, xMin, xMax, yMin, yMax, fit, panel);
-  drawFitAnnotation(ctx, area, fit);
+  drawFitAnnotation(ctx, area, fit, panel);
   return `${{fit.summary}}; n=${{xs.length.toLocaleString()}}`;
 }}
 
@@ -4705,8 +4714,8 @@ function drawFitRangeIndicator(ctx, area, panel, xMin, xMax) {{
   ctx.restore();
 }}
 
-function drawFitAnnotation(ctx, area, fit) {{
-  if (!fit || !fit.predict) return;
+function drawFitAnnotation(ctx, area, fit, panel = null) {{
+  if (!fit || !fit.predict || panel?.showFitAnnotations === false) return;
   const lines = fit.annotation || [fit.summary];
   const c = colors();
   const x = area.left + 6;
