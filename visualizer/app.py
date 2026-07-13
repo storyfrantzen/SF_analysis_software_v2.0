@@ -1532,9 +1532,12 @@ button.active {{
 }}
 .fit-panel-layout {{
   display: grid;
-  grid-template-columns: minmax(470px, 0.98fr) minmax(0, 1.02fr);
+  grid-template-columns: 1fr;
   gap: 12px;
   align-items: start;
+}}
+.fit-panel-layout.engaged {{
+  grid-template-columns: minmax(470px, 0.98fr) minmax(0, 1.02fr);
 }}
 .fit-controls {{
   min-width: 0;
@@ -1745,7 +1748,15 @@ canvas.fit-range-picker {{
   background: transparent;
 }}
 .action-tile button + button {{ border-left: 1px solid var(--border); border-radius: 0 4px 4px 0; }}
-.count-tile {{ margin-left: auto; gap: 0; }}
+.header-utility-stack {{
+  display: grid;
+  gap: 4px;
+  margin-left: auto;
+}}
+.header-utility-stack .toolbar-tile {{
+  justify-content: center;
+}}
+.count-tile {{ gap: 0; }}
 .count-stat {{
   display: inline-flex;
   gap: 4px;
@@ -1757,7 +1768,7 @@ canvas.fit-range-picker {{
 .count-stat strong {{ font-size: 12px; font-weight: 650; }}
 .canvas-toolbar {{
   display: flex;
-  justify-content: flex-end;
+  justify-content: center;
   align-items: center;
   gap: 6px;
   min-height: 28px;
@@ -1997,12 +2008,13 @@ table {{ border-collapse: collapse; width: 100%; font-size: 12px; }}
 th, td {{ border-bottom: 1px solid var(--border); padding: 5px 7px; text-align: right; white-space: nowrap; }}
 th:first-child, td:first-child {{ text-align: left; }}
 @media (max-width: 1250px) {{
-  .fit-panel-layout {{ grid-template-columns: 1fr; }}
+  .fit-panel-layout.engaged {{ grid-template-columns: 1fr; }}
 }}
 @media (max-width: 820px) {{
   main {{ grid-template-columns: 1fr; }}
   aside {{ border-right: 0; border-bottom: 1px solid var(--border); }}
   .control-deck {{ grid-template-columns: 1fr; }}
+  .header-utility-stack {{ margin-left: 0; }}
   #categoryFilters {{ column-width: auto; }}
   .plot-grid.compare {{ grid-template-columns: 1fr; }}
   canvas {{ min-height: 340px; height: 58vh; }}
@@ -2116,10 +2128,17 @@ th:first-child, td:first-child {{ text-align: left; }}
         <span class="subtle" id="datasetStatus"></span>
         <label class="chip"><input id="splitView" type="checkbox"> split view</label>
       </div>
-      <div class="toolbar-tile count-tile" aria-label="Event counts">
-        <div class="count-stat"><span class="subtle">selected</span><strong id="selectedCount">0</strong></div>
-        <div class="count-stat"><span class="subtle">embedded</span><strong id="embeddedCount">0</strong></div>
-        <div class="subtle" id="samplingNote"></div>
+      <div class="header-utility-stack">
+        <div class="toolbar-tile count-tile" aria-label="Event counts">
+          <div class="count-stat"><span class="subtle">selected</span><strong id="selectedCount">0</strong></div>
+          <div class="count-stat"><span class="subtle">embedded</span><strong id="embeddedCount">0</strong></div>
+          <div class="subtle" id="samplingNote"></div>
+        </div>
+        <div class="toolbar-tile action-tile" aria-label="Plot actions">
+          <button type="button" id="resetFilters">Reset filters</button>
+          <button type="button" id="resetRanges">Reset axes</button>
+          <button type="button" id="savePng">Save PNG</button>
+        </div>
       </div>
       <span id="meanX" hidden>-</span>
       <span id="meanY" hidden>-</span>
@@ -2150,11 +2169,6 @@ th:first-child, td:first-child {{ text-align: left; }}
         <label class="chip"><input id="logz" type="checkbox"> log color</label>
         <label class="chip"><input id="density" type="checkbox"> density</label>
         <label class="chip" id="colorScaleChip"><input id="colorScale" type="checkbox"> color scale</label>
-      </div>
-      <div class="toolbar-tile action-tile" aria-label="Plot actions">
-        <button type="button" id="resetFilters">Reset filters</button>
-        <button type="button" id="resetRanges">Reset axes</button>
-        <button type="button" id="savePng">Save PNG</button>
       </div>
     </div>
     <div class="plot-grid" id="plotGrid">
@@ -2215,9 +2229,9 @@ th:first-child, td:first-child {{ text-align: left; }}
               <input id="fitScanDetail" type="range" min="1" max="5" step="1" value="3">
             </label>
             <div class="subtle" id="fitMethodNote"></div>
-          <div class="subtle fit-range-summary" id="fitRangeSummary">Fit range: full X range</div>
+          <div class="subtle fit-range-summary" id="fitRangeSummary" hidden>Fit range: full X range</div>
           </div>
-          <div class="fit-summary" id="fitSummary" aria-live="polite"></div>
+          <div class="fit-summary" id="fitSummary" aria-live="polite" hidden></div>
         </div>
       </div>
       <div class="control-panel text-panel" id="textFilterPanel">
@@ -3536,6 +3550,17 @@ function syncFitAnnotationButton(panel) {{
 
 function renderFitSummary(panel) {{
   const target = el("fitSummary");
+  const rangeSummary = el("fitRangeSummary");
+  const layout = target.closest(".fit-panel-layout");
+  const engaged = panelHasFit(panel);
+  layout?.classList.toggle("engaged", engaged);
+  target.hidden = !engaged;
+  rangeSummary.hidden = !engaged;
+  if (!engaged) {{
+    target.innerHTML = "";
+    target.classList.remove("multi", "sector");
+    return;
+  }}
   const summary = panel?.fitSummary || "No fit";
   const entries = summary.split(/\\s+\\|\\s+/).map(value => value.trim()).filter(Boolean);
   const items = entries.length ? entries : ["No fit"];

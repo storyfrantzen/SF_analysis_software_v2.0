@@ -68,7 +68,9 @@ the statistics grid in a distinct right column. A single fit gets one summary
 cell, while proton-sector fits use exactly three result columns so `S1`-`S3`
 and `S4`-`S6` form two aligned rows; a sector-0 `CD` result is centered on a
 third row. The two major columns stack only when the window becomes too narrow,
-and the sector results reduce to one column on phone-sized screens.
+and the sector results reduce to one column on phone-sized screens. When both
+signal and background are set to `none`, the fit-range and result cells are
+hidden and the controls reclaim the full card width.
 
 Default axis ranges are quantity-aware. Discrete detector codes such as `eDet`
 receive half-category padding so the first and last detector bins are fully
@@ -94,10 +96,11 @@ and maximum are independently optional, allowing lower-only (`x >= min`),
 upper-only (`x <= max`), or bounded cuts. At least one bound is required when a
 constraint is added.
 Selected and embedded counts share one compact toolbar tile, while active-axis
-means are hidden from the default interface. Reset/export actions share a
-separate tile beside the display options. Log color, density, color scale,
-reset, and PNG controls sit beneath the active panel title and immediately
-above its canvas. Hover coordinates and bin values appear beneath the canvas.
+means are hidden from the default interface. Reset/export actions occupy a
+second tile directly beneath the event counts. Log color, density, and color
+scale remain panel-specific and are centered beneath the active quantity title,
+immediately above its canvas. Hover coordinates and bin values appear beneath
+the canvas.
 Color-scale hover readouts are clamped inside the plot pane so their numeric
 values remain visible at the right edge.
 
