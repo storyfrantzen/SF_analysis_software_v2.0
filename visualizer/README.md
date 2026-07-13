@@ -111,6 +111,9 @@ equal-size reset/export tile sits immediately to its right; the two tiles are
 spaced and centered as a group above the canvas, wrapping only when the pane is
 too narrow to hold them side by side. Hover coordinates and bin values appear
 beneath the canvas.
+In split view, both facets reserve an equal-height, title-width toolbar rail.
+The single toolbar moves between those rails with the active panel, so changing
+panels never shifts one canvas below the other.
 New panels start with log color and the color-scale readout enabled. The compact
 topology filter starts collapsed and can be expanded with its adjacent button.
 Color-scale hover readouts are clamped inside the plot pane so their numeric

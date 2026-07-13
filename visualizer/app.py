@@ -1822,7 +1822,7 @@ canvas.fit-range-picker {{
   gap: 10px;
   width: min(100%, 570px);
   min-height: 34px;
-  margin: 0 auto 6px;
+  margin: 0 auto;
 }}
 .canvas-toolbar .toolbar-tile {{
   box-sizing: border-box;
@@ -1830,6 +1830,11 @@ canvas.fit-range-picker {{
   min-width: 0;
   min-height: 34px;
   justify-content: center;
+}}
+.canvas-toolbar-slot {{
+  width: 100%;
+  min-width: 0;
+  margin-bottom: 6px;
 }}
 .canvas-toolbar-slot:empty {{ display: none; }}
 .display-tile .chip {{
@@ -1863,6 +1868,11 @@ canvas {{
 }}
 .plot-grid.compare {{
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}}
+.plot-grid.compare .canvas-toolbar-slot {{ display: block; }}
+.plot-grid.compare .canvas-toolbar {{
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
 }}
 .plot-pane {{
   position: relative;
@@ -4257,14 +4267,28 @@ function visiblePanelKeys() {{
 
 function updatePanelVisibility() {{
   const visible = visiblePanelKeys();
-  el("plotGrid").classList.toggle("compare", visible.length > 1);
+  const plotGrid = el("plotGrid");
+  const comparing = visible.length > 1;
+  plotGrid.classList.toggle("compare", comparing);
+  plotGrid.dataset.activePanel = activePanel;
+  for (const key of panelKeys) {{
+    el("plotPane" + key).classList.toggle("hidden", !visible.includes(key));
+  }}
   const canvasToolbar = el("canvasToolbar");
   const toolbarSlot = el("canvasToolbarSlot" + activePanel);
   if (canvasToolbar && toolbarSlot && canvasToolbar.parentElement !== toolbarSlot) {{
     toolbarSlot.appendChild(canvasToolbar);
   }}
+  syncCanvasToolbarRail(comparing, canvasToolbar);
+}}
+
+function syncCanvasToolbarRail(comparing, canvasToolbar) {{
+  const toolbarRailHeight = canvasToolbar
+    ? Math.max(34, Math.ceil(canvasToolbar.getBoundingClientRect().height))
+    : 34;
   for (const key of panelKeys) {{
-    el("plotPane" + key).classList.toggle("hidden", !visible.includes(key));
+    const slot = el("canvasToolbarSlot" + key);
+    if (slot) slot.style.minHeight = comparing ? `${{toolbarRailHeight}}px` : "";
   }}
 }}
 
