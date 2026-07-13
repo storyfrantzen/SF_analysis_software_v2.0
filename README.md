@@ -122,6 +122,11 @@ The compact MC flow is:
 See `analysis/README.md` for commands, artifact schemas, storage guidance, and
 the legacy-file fallback.
 
+For an isolated, non-destructive RGK 6.535 GeV start-to-finish run on ifarm,
+see `docs/rgk_6535_clean_run.md`. The provided runner creates a fresh build and
+keeps every generated ROOT, NPZ, plot, log, and provenance file under a new
+user-selected work directory.
+
 ## Cut strategy
 
 Use hipo-to-ROOT conversion for stable, IO-saving preselection and branch building. Use ROOT post-processing for tuneable physics selections such as fiducial and exclusivity cuts.
