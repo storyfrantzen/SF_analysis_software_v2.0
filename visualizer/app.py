@@ -1407,7 +1407,6 @@ aside {{
 section {{
   padding: 12px;
   min-width: 0;
-  container: plot-section / inline-size;
 }}
 .control-deck {{
   display: grid;
@@ -1428,9 +1427,8 @@ section {{
   grid-column: 1 / -1;
 }}
 .analysis-tools {{
-  grid-template-columns: repeat(2, minmax(460px, 1fr));
+  grid-template-columns: 1fr;
   gap: 12px;
-  align-items: stretch;
 }}
 .analysis-tools .control-panel {{
   min-width: 0;
@@ -1443,16 +1441,10 @@ section {{
   margin-top: 0;
 }}
 .analysis-tools .text-panel {{
-  grid-column: 1 / -1;
+  grid-column: 1;
 }}
 .analysis-tools .fit-panel {{ order: 1; }}
-.analysis-tools .derived-panel {{ order: 2; }}
-.analysis-tools .text-panel {{ order: 3; }}
-.analysis-tools .fit-panel,
-.analysis-tools .derived-panel {{
-  display: flex;
-  flex-direction: column;
-}}
+.analysis-tools .text-panel {{ order: 2; }}
 h1 {{
   font-size: 16px;
   font-weight: 600;
@@ -1572,6 +1564,12 @@ canvas.fit-range-picker {{
 .constraints-panel h2 {{
   margin-top: 0;
 }}
+.sidebar-derived {{
+  margin-top: 8px;
+}}
+.sidebar-derived h2 {{
+  margin: 0 0 6px;
+}}
 .filter-details {{
   border-top: 1px solid var(--border);
   padding: 6px 0;
@@ -1652,16 +1650,14 @@ canvas.fit-range-picker {{
 .filter-row input {{ width: 100%; }}
 .operation-grid {{
   display: flex;
-  flex: 1;
   flex-direction: column;
   gap: 6px;
 }}
 .operation-builder {{
   display: grid;
-  grid-template-columns: minmax(130px, 220px) minmax(100px, 160px) minmax(130px, 220px) auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   align-items: end;
-  justify-content: start;
 }}
 .operation-builder label {{
   margin: 0;
@@ -1669,15 +1665,15 @@ canvas.fit-range-picker {{
 }}
 .operation-builder button {{
   white-space: nowrap;
+  width: 100%;
 }}
 .operation-feedback {{
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 7px;
   align-items: center;
   min-height: 20px;
-  margin-top: auto;
-  padding-top: 10px;
+  padding-top: 6px;
   border-top: 1px solid var(--border);
 }}
 .operation-feedback-label {{
@@ -1695,9 +1691,10 @@ canvas.fit-range-picker {{
   font-size: 12px;
 }}
 .operation-feedback .subtle {{
-  flex: 0 1 auto;
-  text-align: right;
+  grid-column: 1 / -1;
+  text-align: left;
 }}
+.operation-feedback .subtle:empty {{ display: none; }}
 .toolbar-tile {{
   display: inline-flex;
   align-items: center;
@@ -1910,22 +1907,6 @@ button.remote-entry {{
   text-overflow: ellipsis;
   white-space: nowrap;
 }}
-.plot-head {{
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: baseline;
-  margin-bottom: 5px;
-}}
-.plot-title {{
-  font-weight: 600;
-  font-size: 13px;
-}}
-.plot-summary {{
-  color: var(--muted);
-  font-size: 12px;
-  text-align: right;
-}}
 .quantity-banner {{
   display: flex;
   align-items: center;
@@ -1980,21 +1961,10 @@ button.remote-entry {{
 table {{ border-collapse: collapse; width: 100%; font-size: 12px; }}
 th, td {{ border-bottom: 1px solid var(--border); padding: 5px 7px; text-align: right; white-space: nowrap; }}
 th:first-child, td:first-child {{ text-align: left; }}
-@container plot-section (max-width: 975px) {{
-  .analysis-tools {{ grid-template-columns: 1fr; }}
-  .analysis-tools .text-panel {{ grid-column: 1; }}
-}}
 @media (max-width: 820px) {{
   main {{ grid-template-columns: 1fr; }}
   aside {{ border-right: 0; border-bottom: 1px solid var(--border); }}
   .control-deck {{ grid-template-columns: 1fr; }}
-  .operation-builder {{ grid-template-columns: 1fr; }}
-  .operation-builder button {{ width: 100%; }}
-  .operation-feedback {{
-    display: grid;
-    gap: 2px;
-  }}
-  .operation-feedback .subtle {{ text-align: left; }}
   #categoryFilters {{ column-width: auto; }}
   .plot-grid.compare {{ grid-template-columns: 1fr; }}
   canvas {{ min-height: 340px; height: 58vh; }}
@@ -2058,6 +2028,27 @@ th:first-child, td:first-child {{ text-align: left; }}
         <button type="button" id="addRange">Add</button>
       </div>
       <div id="rangeFilters"></div>
+      <div class="sidebar-derived">
+        <h2>Derived Operations</h2>
+        <div class="operation-grid">
+          <div class="operation-builder">
+            <label>Left <select id="opLeft"></select></label>
+            <label>Right <select id="opRight"></select></label>
+            <label>Operator <select id="opKind">
+              <option value="subtract">left - right</option>
+              <option value="add">left + right</option>
+              <option value="ratio">left / right</option>
+              <option value="fractional">(left - right) / right</option>
+            </select></label>
+            <button type="button" id="addDerived">Add derived</button>
+          </div>
+          <div class="operation-feedback">
+            <span class="operation-feedback-label">Preview</span>
+            <div class="operation-preview" id="opPreview"></div>
+            <div class="subtle" id="opStatus"></div>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="row">
       <label>X bins <input id="xbins" type="number" min="5" max="400" value="80"></label>
@@ -2129,10 +2120,6 @@ th:first-child, td:first-child {{ text-align: left; }}
     </div>
     <div class="plot-grid" id="plotGrid">
       <div class="plot-pane" id="plotPaneA">
-        <div class="plot-head">
-          <div class="plot-title" id="plotTitleA">Panel 1</div>
-          <div class="plot-summary" id="panelSummaryA"></div>
-        </div>
         <div class="quantity-banner" id="quantityBannerA"><span class="quantity-mode"></span><strong></strong><span class="quantity-detail"></span></div>
         <div class="filter-badge" id="filterBadgeA"><strong></strong><span></span></div>
         <div class="canvas-toolbar-slot" id="canvasToolbarSlotA"></div>
@@ -2143,10 +2130,6 @@ th:first-child, td:first-child {{ text-align: left; }}
         <div class="hover-info" id="hoverInfoA"></div>
       </div>
       <div class="plot-pane hidden" id="plotPaneB">
-        <div class="plot-head">
-          <div class="plot-title" id="plotTitleB">Panel 2</div>
-          <div class="plot-summary" id="panelSummaryB"></div>
-        </div>
         <div class="quantity-banner" id="quantityBannerB"><span class="quantity-mode"></span><strong></strong><span class="quantity-detail"></span></div>
         <div class="filter-badge" id="filterBadgeB"><strong></strong><span></span></div>
         <div class="canvas-toolbar-slot" id="canvasToolbarSlotB"></div>
@@ -2158,27 +2141,6 @@ th:first-child, td:first-child {{ text-align: left; }}
       </div>
     </div>
     <div class="control-deck analysis-tools">
-      <div class="control-panel derived-panel">
-        <h2>Derived Operations</h2>
-        <div class="operation-grid">
-          <div class="operation-builder">
-            <label>Left <select id="opLeft"></select></label>
-            <label>Operator <select id="opKind">
-              <option value="subtract">left - right</option>
-              <option value="add">left + right</option>
-              <option value="ratio">left / right</option>
-              <option value="fractional">(left - right) / right</option>
-            </select></label>
-            <label>Right <select id="opRight"></select></label>
-            <button type="button" id="addDerived">Add</button>
-          </div>
-          <div class="operation-feedback">
-            <span class="operation-feedback-label">Preview</span>
-            <div class="operation-preview" id="opPreview"></div>
-            <div class="subtle" id="opStatus"></div>
-          </div>
-        </div>
-      </div>
       <div class="control-panel fit-panel">
         <h2>Fit</h2>
         <div class="fit-model-grid">
@@ -3359,21 +3321,21 @@ function addPanelTab(activate = true) {{
 function renderPanelTabs() {{
   const target = el("panelTabs");
   target.innerHTML = "";
-  for (const key of enabledPanels) {{
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "panel-tab";
-    button.textContent = panelLabels[key] || key;
-    button.classList.toggle("active", key === activePanel);
-    button.addEventListener("click", () => setActivePanel(key));
-    target.appendChild(button);
+  const showPanelTabs = enabledPanels.length > 1;
+  target.style.display = showPanelTabs ? "flex" : "none";
+  if (showPanelTabs) {{
+    for (const key of enabledPanels) {{
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "panel-tab";
+      button.textContent = panelLabels[key] || key;
+      button.classList.toggle("active", key === activePanel);
+      button.addEventListener("click", () => setActivePanel(key));
+      target.appendChild(button);
+    }}
   }}
   el("addPanel").style.display = enabledPanels.length < panelKeys.length ? "" : "none";
   el("splitView").checked = compareMode;
-  for (const key of panelKeys) {{
-    const title = el("plotTitle" + key);
-    if (title) title.textContent = panelLabels[key] || key;
-  }}
 }}
 
 function syncControlsFromPanel() {{
@@ -5399,7 +5361,6 @@ function savePng() {{
     summary: [
       panelPrimaryQuantity(panels[key]),
       panelOverlayQuantity(panels[key]),
-      el("panelSummary" + key).textContent || "",
       badge ? `Filters: ${{badge.count}} active - ${{badge.detail}}` : ""
     ].filter(Boolean).join(" | ")
   }}));
@@ -5774,14 +5735,6 @@ function histogramMax(...arrays) {{
 function setPanelStats(panel, selected, meanX, meanY) {{
   panel.stats = {{selected, meanX, meanY}};
   updateQuantityBanner(panel);
-  const overlayLabel = panel.mode === "1d" && panel.x2var && panel.x2var !== panel.xvar && byName[panel.x2var]
-      ? ` + ${{byName[panel.x2var].label}}`
-      : "";
-  const overlay2d = panel.mode === "2d" && ((panel.x2var && panel.x2var !== panel.xvar && byName[panel.x2var]) || (panel.y2var && panel.y2var !== panel.yvar && byName[panel.y2var]))
-    ? ` + ${{overlay2dLabel({{xName: panel.xvar, x2Name: panel.x2var, yName: panel.yvar, y2Name: panel.y2var}})}}`
-    : "";
-  const yLabel = panel.mode === "2d" ? `${{byName[panel.yvar]?.label || panel.yvar}} vs ` : "";
-  el("panelSummary" + panel.key).textContent = `${{yLabel}}${{byName[panel.xvar]?.label || panel.xvar}}${{panel.mode === "1d" ? overlayLabel : overlay2d}}; selected ${{selected.toLocaleString()}}`;
 }}
 
 function updateActiveStats() {{

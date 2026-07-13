@@ -86,13 +86,12 @@ above its canvas. Hover coordinates and bin values appear beneath the canvas.
 Color-scale hover readouts are clamped inside the plot pane so their numeric
 values remain visible at the right edge.
 
-Fit and Derived Operations use compact side-by-side cards, with Fit on the left
-and the wider derivation builder on the right. Their dropdowns are content-sized
-and capped instead of stretching across the cards. The cards share a common
-height, and the derived-expression preview is anchored in a separated footer so
-the additional space remains useful and visually balanced. Text Filters spans
-the row beneath them. When the plot section is narrower than 975 pixels, the two
-cards stack automatically with Fit first.
+Derived Operations uses a compact two-row builder in the sidebar beneath
+Constraints, before the sidebar's axis-range separator. Its preview remains
+visible in a small footer without consuming canvas width. Fit and Text Filters
+use full-width cards beneath the plots. The quantity banner now leads each plot
+directly; redundant panel-name and selected-quantity summaries above it are
+omitted. The active-panel tab is also hidden until a second panel exists.
 
 ## Source layout
 
