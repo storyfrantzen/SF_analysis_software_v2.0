@@ -2202,10 +2202,10 @@ th:first-child, td:first-child {{ text-align: left; }}
       <label>Manual edges (optional)<input id="sliceEdges" type="text" placeholder="e.g. 0, 0.2, 0.5, 1"></label>
       <div class="subtle slice-status" id="sliceStatus" role="status" aria-live="polite"></div>
     </div>
-    <div class="quick-category" id="quickCategoryBlock">
+    <div class="quick-category collapsed" id="quickCategoryBlock">
       <div class="quick-category-head">
         <label>Filter topology <select id="quickCategoryFilter"></select></label>
-        <button type="button" class="collapse-button" id="toggleTopology" aria-expanded="true" aria-controls="quickCategoryBody">v</button>
+        <button type="button" class="collapse-button" id="toggleTopology" aria-expanded="false" aria-controls="quickCategoryBody" aria-label="Expand filter topology">&gt;</button>
       </div>
       <div id="quickCategoryBody">
         <div class="chips" id="quickCategoryChips"></div>
@@ -2460,7 +2460,7 @@ let compareMode = false;
 let contextMenuPanelKey = "A";
 let referenceCurveId = 0;
 let activeRanges = [];
-let topologyCollapsed = false;
+let topologyCollapsed = true;
 const categoryState = {{}};
 const panels = {{
   A: makePanel("A", payload.defaultX, payload.defaultY),
@@ -2928,9 +2928,9 @@ function makePanel(key, xvar, yvar) {{
     xmax: xInfo.max,
     ymin: yInfo.min,
     ymax: yInfo.max,
-    logz: false,
+    logz: true,
     density: false,
-    colorScale: false,
+    colorScale: true,
     fitModel: "none",
     signalModel: "none",
     backgroundModel: "none",
