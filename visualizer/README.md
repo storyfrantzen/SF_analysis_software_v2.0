@@ -63,6 +63,12 @@ the active panel without disabling the fit curves or the textual Fit summary.
 Each panel retains its own annotation visibility setting, which is useful when
 fit boxes would obscure a dense facet layout.
 
+The Fit output uses the panel width as a responsive stats grid. A single fit
+gets one full-width summary cell, while split fits receive one labeled cell per
+facet (for example `S1` through `S6` and `CD`) arranged into as many columns as
+fit comfortably. The fit-range summary occupies a compact companion cell and
+the layout stacks on narrow screens.
+
 Default axis ranges are quantity-aware. Discrete detector codes such as `eDet`
 receive half-category padding so the first and last detector bins are fully
 visible. Missing-mass-squared quantities use padded 1st-to-99th-percentile

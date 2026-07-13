@@ -1530,6 +1530,51 @@ button.active {{
 .fit-tools button {{
   flex: 0 0 auto;
 }}
+.fit-output {{
+  display: grid;
+  grid-template-columns: minmax(170px, 0.45fr) minmax(0, 2.55fr);
+  gap: 8px 12px;
+  align-items: start;
+  margin-top: 8px;
+}}
+.fit-range-summary {{
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}}
+.fit-summary {{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 6px;
+  min-width: 0;
+}}
+.fit-summary-item {{
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  overflow-wrap: anywhere;
+}}
+.fit-summary:not(.multi) .fit-summary-item {{
+  grid-column: 1 / -1;
+}}
+.fit-summary-label {{
+  display: block;
+  margin-bottom: 2px;
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}}
+.fit-summary-detail {{
+  display: block;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+}}
 canvas.fit-range-picker {{
   cursor: crosshair;
 }}
@@ -1946,6 +1991,7 @@ th:first-child, td:first-child {{ text-align: left; }}
   main {{ grid-template-columns: 1fr; }}
   aside {{ border-right: 0; border-bottom: 1px solid var(--border); }}
   .control-deck {{ grid-template-columns: 1fr; }}
+  .fit-output {{ grid-template-columns: 1fr; }}
   #categoryFilters {{ column-width: auto; }}
   .plot-grid.compare {{ grid-template-columns: 1fr; }}
   canvas {{ min-height: 340px; height: 58vh; }}
@@ -2152,8 +2198,10 @@ th:first-child, td:first-child {{ text-align: left; }}
           <input id="fitScanDetail" type="range" min="1" max="5" step="1" value="3">
         </label>
         <div class="subtle" id="fitMethodNote"></div>
-        <div class="subtle" id="fitRangeSummary">Fit range: full X range</div>
-        <div class="subtle" id="fitSummary">No fit</div>
+        <div class="fit-output">
+          <div class="subtle fit-range-summary" id="fitRangeSummary">Fit range: full X range</div>
+          <div class="fit-summary" id="fitSummary" aria-live="polite"></div>
+        </div>
       </div>
       <div class="control-panel text-panel" id="textFilterPanel">
         <h2>Text Filters</h2>
@@ -3353,7 +3401,7 @@ function syncControlsFromPanel() {{
   el("fitRangeClick").checked = panel.fitRangeClick;
   syncFitAnnotationButton(panel);
   el("fitRangeSummary").textContent = fitRangeSummaryText(panel);
-  el("fitSummary").textContent = panel.fitSummary || "No fit";
+  renderFitSummary(panel);
   renderPanelTabs();
   el("mode1d").classList.toggle("active", panel.mode === "1d");
   el("mode2d").classList.toggle("active", panel.mode === "2d");
@@ -3467,6 +3515,34 @@ function syncFitAnnotationButton(panel) {{
   button.title = visible
     ? "Hide fit optimization result boxes without disabling the fit"
     : "Show fit optimization result boxes on the canvas";
+}}
+
+function renderFitSummary(panel) {{
+  const target = el("fitSummary");
+  const summary = panel?.fitSummary || "No fit";
+  const entries = summary.split(/\\s+\\|\\s+/).map(value => value.trim()).filter(Boolean);
+  const items = entries.length ? entries : ["No fit"];
+  const multi = items.length > 1;
+  target.innerHTML = "";
+  target.classList.toggle("multi", multi);
+  for (const text of items) {{
+    const item = document.createElement("div");
+    item.className = "fit-summary-item";
+    const separator = multi ? text.indexOf(":") : -1;
+    if (separator > 0 && separator < 24) {{
+      const label = document.createElement("span");
+      label.className = "fit-summary-label";
+      label.textContent = text.slice(0, separator);
+      const detail = document.createElement("span");
+      detail.className = "fit-summary-detail";
+      detail.textContent = text.slice(separator + 1).trim();
+      item.append(label, detail);
+    }} else {{
+      item.classList.add("fit-summary-detail");
+      item.textContent = text;
+    }}
+    target.appendChild(item);
+  }}
 }}
 
 function fitModelInfo(model) {{
@@ -5751,7 +5827,7 @@ function updateActiveStats() {{
   el("selectedCount").textContent = stats.selected.toLocaleString();
   el("meanX").textContent = fmt(stats.meanX);
   el("meanY").textContent = fmt(stats.meanY);
-  el("fitSummary").textContent = currentPanel().fitSummary || "No fit";
+  renderFitSummary(currentPanel());
 }}
 
 function renderPreview(mask) {{
