@@ -117,9 +117,11 @@ by the reset/export tile. All three tiles span the full title width as one
 flush, spaced group above the canvas, with responsive wrapping when a pane is
 too narrow. Hover
 coordinates and bin values appear beneath the canvas.
-In split view, both facets reserve an equal-height, title-width toolbar rail.
-The single toolbar moves between those rails with the active panel, so changing
-panels never shifts one canvas below the other.
+In split view, the single toolbar moves between panel-specific rails with the
+active panel. `Hide plot controls` collapses that rail and leaves a persistent
+`Show plot controls` action in the panel controls. The rails compensate for
+different title and active-filter badge heights, keeping the 1D and 2D canvases
+flush whether the toolbar is expanded or collapsed.
 The panel control block provides separate `split view` and `shared panel
 filters` buttons. Filter sharing is enabled by default. Disabling it gives each
 panel its own topology selections, numeric constraints, and text searches;

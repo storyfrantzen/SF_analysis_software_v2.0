@@ -1853,6 +1853,7 @@ canvas.fit-range-picker {{
   min-height: 34px;
   margin: 0 auto;
 }}
+.canvas-toolbar[hidden] {{ display: none; }}
 .canvas-toolbar .toolbar-tile {{
   box-sizing: border-box;
   width: 100%;
@@ -1890,6 +1891,8 @@ canvas.fit-range-picker {{
   margin-bottom: 6px;
 }}
 .canvas-toolbar-slot:empty {{ display: none; }}
+.canvas-toolbar-slot.controls-collapsed {{ margin-bottom: 0; }}
+.plot-grid:not(.compare) .canvas-toolbar-slot.controls-collapsed {{ display: none; }}
 .display-tile .chip {{
   border: 0;
   border-radius: 4px;
@@ -2321,6 +2324,7 @@ th:first-child, td:first-child {{ text-align: left; }}
           <button type="button" id="splitView" aria-pressed="false">split view</button>
           <button type="button" id="sharedPanelFilters" class="active" aria-pressed="true" title="Apply the same topology, constraints, and text filters to both panels">shared panel filters</button>
         </div>
+        <button type="button" id="toggleCanvasToolbar" aria-expanded="true" aria-controls="canvasToolbar">Hide plot controls</button>
       </div>
       <div class="header-utility-stack">
         <span class="subtle" id="samplingNote"></span>
@@ -2532,6 +2536,7 @@ let contextMenuPanelKey = "A";
 let contextMenuProfileBin = null;
 let referenceCurveId = 0;
 let topologyCollapsed = true;
+let canvasToolbarCollapsed = false;
 const sharedFilterState = makeFilterState();
 let sharedPanelFilters = true;
 let activeRanges = sharedFilterState.ranges;
@@ -3753,6 +3758,7 @@ function attachEvents() {{
     update();
   }});
   el("sharedPanelFilters").addEventListener("click", toggleSharedPanelFilters);
+  el("toggleCanvasToolbar").addEventListener("click", toggleCanvasToolbar);
   el("mode1d").addEventListener("click", () => setMode("1d"));
   el("mode2d").addEventListener("click", () => setMode("2d"));
   el("addXVar").addEventListener("click", () => addAdditionalVariable("x"));
@@ -3876,6 +3882,24 @@ function syncPanelViewButtons() {{
   el("sharedPanelFilters").title = sharedPanelFilters
     ? "Apply the same topology, constraints, and text filters to both panels"
     : "Each panel keeps its own topology, constraints, text filters, and axis ranges";
+}}
+
+function toggleCanvasToolbar() {{
+  canvasToolbarCollapsed = !canvasToolbarCollapsed;
+  syncCanvasToolbarVisibility();
+  updatePanelVisibility();
+}}
+
+function syncCanvasToolbarVisibility() {{
+  const toolbar = el("canvasToolbar");
+  const button = el("toggleCanvasToolbar");
+  if (!toolbar || !button) return;
+  toolbar.hidden = canvasToolbarCollapsed;
+  button.textContent = canvasToolbarCollapsed ? "Show plot controls" : "Hide plot controls";
+  button.setAttribute("aria-expanded", canvasToolbarCollapsed ? "false" : "true");
+  button.title = canvasToolbarCollapsed
+    ? "Show axis, display, and plot-action controls"
+    : "Collapse axis, display, and plot-action controls";
 }}
 
 function renderPanelTabs() {{
@@ -4427,8 +4451,8 @@ function activeFilterSummaries(state = filterStateForPanel(activePanel)) {{
 
 function update() {{
   readControlsToPanel();
-  updatePanelVisibility();
   updateFilterBadges();
+  updatePanelVisibility();
   let activeMask = null;
   for (const key of visiblePanelKeys()) {{
     clearHoverOverlay(key);
@@ -4462,16 +4486,50 @@ function updatePanelVisibility() {{
   if (canvasToolbar && toolbarSlot && canvasToolbar.parentElement !== toolbarSlot) {{
     toolbarSlot.appendChild(canvasToolbar);
   }}
+  syncCanvasToolbarVisibility();
   syncCanvasToolbarRail(comparing, canvasToolbar);
 }}
 
 function syncCanvasToolbarRail(comparing, canvasToolbar) {{
-  const toolbarRailHeight = canvasToolbar
-    ? Math.max(34, Math.ceil(canvasToolbar.getBoundingClientRect().height))
-    : 34;
+  const visible = visiblePanelKeys();
   for (const key of panelKeys) {{
     const slot = el("canvasToolbarSlot" + key);
-    if (slot) slot.style.minHeight = comparing ? `${{toolbarRailHeight}}px` : "";
+    if (!slot) continue;
+    slot.style.minHeight = "";
+    slot.classList.toggle("controls-collapsed", canvasToolbarCollapsed);
+  }}
+  if (!comparing) return;
+  const toolbarRailHeight = !canvasToolbarCollapsed && canvasToolbar
+    ? Math.max(34, Math.ceil(canvasToolbar.getBoundingClientRect().height))
+    : 0;
+  const headerHeights = Object.fromEntries(visible.map(key => {{
+    const pane = el("plotPane" + key);
+    const slot = el("canvasToolbarSlot" + key);
+    return [key, slot && pane
+      ? slot.getBoundingClientRect().top - pane.getBoundingClientRect().top
+      : 0];
+  }}));
+  const tallestHeader = Math.max(0, ...Object.values(headerHeights));
+  for (const key of visible) {{
+    const slot = el("canvasToolbarSlot" + key);
+    if (slot) slot.style.minHeight = `${{toolbarRailHeight + tallestHeader - headerHeights[key]}}px`;
+  }}
+  alignVisibleCanvasTops(visible);
+  requestAnimationFrame(() => {{
+    if (compareMode) alignVisibleCanvasTops(visiblePanelKeys());
+  }});
+}}
+
+function alignVisibleCanvasTops(visible) {{
+  if (visible.length < 2) return;
+  const canvasTops = Object.fromEntries(visible.map(key => [key, el("plot" + key)?.getBoundingClientRect().top || 0]));
+  const lowestCanvasTop = Math.max(0, ...Object.values(canvasTops));
+  for (const key of visible) {{
+    const slot = el("canvasToolbarSlot" + key);
+    const adjustment = lowestCanvasTop - canvasTops[key];
+    if (slot && adjustment > 0.5) {{
+      slot.style.minHeight = `${{slot.getBoundingClientRect().height + adjustment}}px`;
+    }}
   }}
 }}
 
