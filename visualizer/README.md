@@ -115,6 +115,13 @@ beneath the canvas.
 In split view, both facets reserve an equal-height, title-width toolbar rail.
 The single toolbar moves between those rails with the active panel, so changing
 panels never shifts one canvas below the other.
+The panel control block provides separate `split view` and `shared panel
+filters` buttons. Filter sharing is enabled by default. Disabling it gives each
+panel its own topology selections, numeric constraints, and text searches;
+switching panels restores the corresponding sidebar state, plot mask, filter
+badge, and exported filter summary. Re-enabling sharing adopts the active
+panel's filters for both panels. Plot variables and axis display ranges remain
+panel-specific.
 New panels start with log color and the color-scale readout enabled. The compact
 topology filter starts collapsed and can be expanded with its adjacent button.
 Color-scale hover readouts are clamped inside the plot pane so their numeric

@@ -1711,6 +1711,29 @@ canvas.fit-range-picker {{
   flex-wrap: wrap;
   align-items: center;
 }}
+.panel-view-options {{
+  margin: 0;
+  gap: 0;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+}}
+.panel-view-options button {{
+  border-color: transparent;
+  background: transparent;
+}}
+.panel-view-options button + button {{
+  border-left-color: var(--border);
+  border-radius: 0 4px 4px 0;
+}}
+.panel-view-options button:first-child {{
+  border-radius: 4px 0 0 4px;
+}}
+.panel-view-options button.active {{
+  border-color: var(--accent);
+  background: var(--accent);
+}}
 .panel-tabs {{
   display: flex;
   gap: 6px;
@@ -2282,7 +2305,10 @@ th:first-child, td:first-child {{ text-align: left; }}
       <div class="plot-panel-controls">
         <div class="panel-tabs" id="panelTabs"></div>
         <button type="button" id="addPanel">+ panel</button>
-        <label class="chip"><input id="splitView" type="checkbox"> split view</label>
+        <div class="segmented panel-view-options" aria-label="Panel view options">
+          <button type="button" id="splitView" aria-pressed="false">split view</button>
+          <button type="button" id="sharedPanelFilters" class="active" aria-pressed="true" title="Apply the same topology, constraints, and text filters to both panels">shared panel filters</button>
+        </div>
       </div>
       <div class="header-utility-stack">
         <span class="subtle" id="samplingNote"></span>
@@ -2476,9 +2502,11 @@ let activePanel = "A";
 let compareMode = false;
 let contextMenuPanelKey = "A";
 let referenceCurveId = 0;
-let activeRanges = [];
 let topologyCollapsed = true;
-const categoryState = {{}};
+const sharedFilterState = makeFilterState();
+let sharedPanelFilters = true;
+let activeRanges = sharedFilterState.ranges;
+let categoryState = sharedFilterState.categories;
 const panels = {{
   A: makePanel("A", payload.defaultX, payload.defaultY),
   B: makePanel("B", comparisonDefaultX(), payload.defaultY)
@@ -2968,11 +2996,39 @@ function makePanel(key, xvar, yvar) {{
     fitRangeMin: NaN,
     fitRangeMax: NaN,
     fitSummary: "No fit",
+    filterState: makeFilterState(),
     ghostPlot: null,
     referenceCurves: [],
     lastPlot: null,
     stats: {{selected: 0, meanX: NaN, meanY: NaN}}
   }};
+}}
+
+function makeFilterState() {{
+  return {{categories: {{}}, ranges: [], text: {{}}}};
+}}
+
+function allFilterStates() {{
+  return [sharedFilterState, ...panelKeys.map(key => panels[key].filterState)];
+}}
+
+function filterStateForPanel(key = activePanel) {{
+  return sharedPanelFilters ? sharedFilterState : panels[key].filterState;
+}}
+
+function useActiveFilterState() {{
+  const state = filterStateForPanel(activePanel);
+  categoryState = state.categories;
+  activeRanges = state.ranges;
+  return state;
+}}
+
+function copyFilterState(target, source) {{
+  target.categories = Object.fromEntries(
+    Object.entries(source.categories).map(([name, values]) => [name, new Set(values)])
+  );
+  target.ranges = source.ranges.map(filter => ({{...filter}}));
+  target.text = {{...source.text}};
 }}
 
 function currentPanel() {{
@@ -3326,22 +3382,27 @@ function init() {{
 }}
 
 function initializeCategoryState() {{
-  for (const filter of payload.categoricalFilters) {{
-    if (!categoryState[filter.name]) {{
-      categoryState[filter.name] = new Set(filter.values.map(value => Number(value)));
+  for (const state of allFilterStates()) {{
+    for (const filter of payload.categoricalFilters) {{
+      if (!state.categories[filter.name]) {{
+        state.categories[filter.name] = new Set(filter.values.map(value => Number(value)));
+      }}
     }}
   }}
+  useActiveFilterState();
 }}
 
 function rebuildCategoricalFilters(preserveSelections = true) {{
-  const previous = {{}};
   const previousValues = {{}};
+  const previousByState = new Map();
   if (preserveSelections) {{
     for (const filter of payload.categoricalFilters || []) {{
       previousValues[filter.name] = new Set(filter.values.map(value => Number(value)));
     }}
-    for (const [name, values] of Object.entries(categoryState)) {{
-      previous[name] = new Set(values);
+    for (const state of allFilterStates()) {{
+      previousByState.set(state, Object.fromEntries(
+        Object.entries(state.categories).map(([name, values]) => [name, new Set(values)])
+      ));
     }}
   }}
   const filters = [];
@@ -3353,19 +3414,23 @@ function rebuildCategoricalFilters(preserveSelections = true) {{
   }}
   filters.sort(compareCategoricalFilters);
   payload.categoricalFilters = filters;
-  for (const filter of filters) {{
-    const prior = previous[filter.name];
-    const knownValues = previousValues[filter.name];
-    const next = new Set();
-    for (const value of filter.values) {{
-      const numeric = Number(value);
-      if (!prior || prior.has(numeric) || !knownValues || !knownValues.has(numeric)) next.add(numeric);
+  for (const state of allFilterStates()) {{
+    const previous = previousByState.get(state) || {{}};
+    for (const filter of filters) {{
+      const prior = previous[filter.name];
+      const knownValues = previousValues[filter.name];
+      const next = new Set();
+      for (const value of filter.values) {{
+        const numeric = Number(value);
+        if (!prior || prior.has(numeric) || !knownValues || !knownValues.has(numeric)) next.add(numeric);
+      }}
+      state.categories[filter.name] = next;
     }}
-    categoryState[filter.name] = next;
+    for (const name of Object.keys(state.categories)) {{
+      if (!filters.some(filter => filter.name === name)) delete state.categories[name];
+    }}
   }}
-  for (const name of Object.keys(categoryState)) {{
-    if (!filters.some(filter => filter.name === name)) delete categoryState[name];
-  }}
+  useActiveFilterState();
 }}
 
 function categoricalFilterFromColumn(variable, values) {{
@@ -3594,6 +3659,7 @@ function categorySummaryText(filter) {{
 function renderTextFilters() {{
   const panel = el("textFilterPanel");
   const target = el("textFilters");
+  const state = filterStateForPanel(activePanel);
   target.innerHTML = "";
   panel.style.display = payload.textFilters.length ? "" : "none";
   for (const filter of payload.textFilters) {{
@@ -3603,9 +3669,22 @@ function renderTextFilters() {{
     input.type = "search";
     input.placeholder = "contains...";
     input.dataset.textFilter = filter.name;
+    input.value = state.text[filter.name] || "";
+    input.addEventListener("input", () => {{
+      state.text[filter.name] = input.value;
+      update();
+    }});
     label.appendChild(input);
     target.appendChild(label);
   }}
+}}
+
+function renderActiveFilterControls() {{
+  useActiveFilterState();
+  renderCategoryFilters();
+  renderQuickCategory();
+  renderTextFilters();
+  renderRangeFilters();
 }}
 
 function attachEvents() {{
@@ -3636,12 +3715,14 @@ function attachEvents() {{
   }});
   el("addDerived").addEventListener("click", addDerivedVariable);
   el("addPanel").addEventListener("click", addPanelTab);
-  el("splitView").addEventListener("input", () => {{
-    if (el("splitView").checked && enabledPanels.length < panelKeys.length) addPanelTab(false);
-    compareMode = el("splitView").checked && enabledPanels.length > 1;
+  el("splitView").addEventListener("click", () => {{
+    const next = !compareMode;
+    if (next && enabledPanels.length < panelKeys.length) addPanelTab(false);
+    compareMode = next && enabledPanels.length > 1;
     renderPanelTabs();
     update();
   }});
+  el("sharedPanelFilters").addEventListener("click", toggleSharedPanelFilters);
   el("mode1d").addEventListener("click", () => setMode("1d"));
   el("mode2d").addEventListener("click", () => setMode("2d"));
   el("addXVar").addEventListener("click", () => addAdditionalVariable("x"));
@@ -3689,7 +3770,6 @@ function attachEvents() {{
   el("referenceCurveEditor").addEventListener("click", event => {{
     if (event.target === el("referenceCurveEditor")) hideReferenceCurveEditor();
   }});
-  document.querySelectorAll("input[data-text-filter]").forEach(input => input.addEventListener("input", update));
   for (const key of panelKeys) {{
     el("plot" + key).addEventListener("mousemove", event => showHoverInfo(event, key));
     el("plot" + key).addEventListener("click", event => handleFitRangeClick(event, key));
@@ -3716,6 +3796,7 @@ function attachEvents() {{
 function setActivePanel(key) {{
   if (!enabledPanels.includes(key)) return;
   activePanel = key;
+  renderActiveFilterControls();
   syncControlsFromPanel();
   update();
 }}
@@ -3729,8 +3810,34 @@ function addPanelTab(activate = true) {{
     compareMode = false;
   }}
   renderPanelTabs();
+  renderActiveFilterControls();
   syncControlsFromPanel();
   update();
+}}
+
+function toggleSharedPanelFilters() {{
+  if (sharedPanelFilters) {{
+    for (const key of panelKeys) copyFilterState(panels[key].filterState, sharedFilterState);
+    sharedPanelFilters = false;
+  }} else {{
+    copyFilterState(sharedFilterState, panels[activePanel].filterState);
+    sharedPanelFilters = true;
+  }}
+  renderActiveFilterControls();
+  renderPanelTabs();
+  update();
+}}
+
+function syncPanelViewButtons() {{
+  const states = {{splitView: compareMode, sharedPanelFilters}};
+  for (const [id, active] of Object.entries(states)) {{
+    const button = el(id);
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  }}
+  el("sharedPanelFilters").title = sharedPanelFilters
+    ? "Apply the same topology, constraints, and text filters to both panels"
+    : "Each panel keeps its own topology, constraints, text filters, and axis ranges";
 }}
 
 function renderPanelTabs() {{
@@ -3750,7 +3857,7 @@ function renderPanelTabs() {{
     }}
   }}
   el("addPanel").style.display = enabledPanels.length < panelKeys.length ? "" : "none";
-  el("splitView").checked = compareMode;
+  syncPanelViewButtons();
 }}
 
 function syncControlsFromPanel() {{
@@ -4095,6 +4202,7 @@ function handleFitRangeClick(event, key) {{
       panel.fitRangeMax = tmp;
     }}
   }}
+  renderActiveFilterControls();
   syncControlsFromPanel();
   update();
 }}
@@ -4183,13 +4291,15 @@ function renderRangeFilters() {{
 }}
 
 function resetFilters() {{
+  const state = filterStateForPanel(activePanel);
   for (const filter of payload.categoricalFilters) {{
     categoryState[filter.name] = new Set(filter.values.map(value => Number(value)));
   }}
   renderQuickCategory();
   renderCategoryFilters();
-  document.querySelectorAll("input[data-text-filter]").forEach(input => input.value = "");
-  activeRanges = [];
+  state.text = {{}};
+  renderTextFilters();
+  activeRanges.length = 0;
   el("constraintStatus").textContent = "";
   renderRangeFilters();
   update();
@@ -4208,18 +4318,18 @@ function valuePassesRange(value, min, max) {{
     && (!Number.isFinite(max) || value <= max);
 }}
 
-function selectedMask() {{
+function selectedMask(state = filterStateForPanel(activePanel)) {{
   const mask = new Uint8Array(rowCount);
   mask.fill(1);
   for (const filter of payload.categoricalFilters) {{
-    const allowed = categoryState[filter.name];
+    const allowed = state.categories[filter.name];
     const values = columns[filter.name];
     if (!allowed || !values) continue;
     for (let i = 0; i < rowCount; i++) {{
       if (mask[i] && !allowed.has(Math.round(values[i]))) mask[i] = 0;
     }}
   }}
-  for (const filter of activeRanges) {{
+  for (const filter of state.ranges) {{
     const values = columns[filter.name];
     if (!values) continue;
     for (let i = 0; i < rowCount; i++) {{
@@ -4227,56 +4337,57 @@ function selectedMask() {{
       if (mask[i] && !valuePassesRange(value, filter.min, filter.max)) mask[i] = 0;
     }}
   }}
-  document.querySelectorAll("input[data-text-filter]").forEach(input => {{
-    const needle = input.value.trim().toLowerCase();
-    if (!needle) return;
-    const values = textColumns[input.dataset.textFilter];
-    if (!values) return;
+  for (const filter of payload.textFilters) {{
+    const needle = String(state.text[filter.name] || "").trim().toLowerCase();
+    if (!needle) continue;
+    const values = textColumns[filter.name];
+    if (!values) continue;
     for (let i = 0; i < rowCount; i++) {{
       if (mask[i] && !String(values[i]).toLowerCase().includes(needle)) mask[i] = 0;
     }}
-  }});
+  }}
   return mask;
 }}
 
-function activeFilterSummaries() {{
+function activeFilterSummaries(state = filterStateForPanel(activePanel)) {{
   const summaries = [];
   for (const filter of payload.categoricalFilters) {{
-    const selected = categoryState[filter.name]?.size ?? filter.values.length;
+    const selected = state.categories[filter.name]?.size ?? filter.values.length;
     if (selected < filter.values.length) summaries.push(`${{filter.label}} ${{selected}}/${{filter.values.length}}`);
   }}
-  for (const filter of activeRanges) {{
+  for (const filter of state.ranges) {{
     const label = byName[filter.name]?.label || filter.name;
     const bounds = [];
     if (Number.isFinite(filter.min)) bounds.push(`>=${{fmt(filter.min)}}`);
     if (Number.isFinite(filter.max)) bounds.push(`<=${{fmt(filter.max)}}`);
     if (bounds.length) summaries.push(`${{label}} ${{bounds.join(" ")}}`);
   }}
-  document.querySelectorAll("input[data-text-filter]").forEach(input => {{
-    const needle = input.value.trim();
+  for (const filter of payload.textFilters) {{
+    const needle = String(state.text[filter.name] || "").trim();
     if (needle) {{
-      const filter = payload.textFilters.find(item => item.name === input.dataset.textFilter);
-      summaries.push(`${{filter?.label || input.dataset.textFilter}} contains "${{needle}}"`);
+      summaries.push(`${{filter.label || filter.name}} contains "${{needle}}"`);
     }}
-  }});
+  }}
   return summaries;
 }}
 
 function update() {{
   readControlsToPanel();
-  const mask = selectedMask();
   updatePanelVisibility();
   updateFilterBadges();
+  let activeMask = null;
   for (const key of visiblePanelKeys()) {{
     clearHoverOverlay(key);
     hideColorScaleMarker(key);
     const panel = panels[key];
     if (!columns[panel.xvar]) continue;
+    const mask = selectedMask(filterStateForPanel(key));
+    if (key === activePanel) activeMask = mask;
     if (panel.mode === "1d") draw1d(panel, mask);
     else draw2d(panel, mask);
   }}
   updateActiveStats();
-  renderPreview(mask);
+  renderPreview(activeMask || selectedMask(filterStateForPanel(activePanel)));
 }}
 
 function visiblePanelKeys() {{
@@ -4874,18 +4985,18 @@ function drawReferenceCurveLegend(ctx, area, curves) {{
   ctx.restore();
 }}
 
-function filterBadgeText() {{
-  const summaries = activeFilterSummaries();
+function filterBadgeText(state = filterStateForPanel(activePanel)) {{
+  const summaries = activeFilterSummaries(state);
   if (!summaries.length) return null;
   const detail = summaries.slice(0, 2).join("; ") + (summaries.length > 2 ? `; +${{summaries.length - 2}} more` : "");
   return {{count: summaries.length, detail: truncateText(detail, 96)}};
 }}
 
 function updateFilterBadges() {{
-  const badge = filterBadgeText();
   for (const key of panelKeys) {{
     const node = el("filterBadge" + key);
     if (!node) continue;
+    const badge = filterBadgeText(filterStateForPanel(key));
     if (!badge) {{
       node.style.display = "none";
       continue;
@@ -6436,17 +6547,19 @@ function solveLinearSystem(matrix, rhs) {{
 function savePng() {{
   update();
   const keys = visiblePanelKeys();
-  const badge = filterBadgeText();
-  const plots = keys.map(key => ({{
-    key,
-    canvas: el("plot" + key),
-    title: panelLabels[key] || key,
-    summary: [
-      panelPrimaryQuantity(panels[key]),
-      panelOverlayQuantity(panels[key]),
-      badge ? `Filters: ${{badge.count}} active - ${{badge.detail}}` : ""
-    ].filter(Boolean).join(" | ")
-  }}));
+  const plots = keys.map(key => {{
+    const badge = filterBadgeText(filterStateForPanel(key));
+    return {{
+      key,
+      canvas: el("plot" + key),
+      title: panelLabels[key] || key,
+      summary: [
+        panelPrimaryQuantity(panels[key]),
+        panelOverlayQuantity(panels[key]),
+        badge ? `Filters: ${{badge.count}} active - ${{badge.detail}}` : ""
+      ].filter(Boolean).join(" | ")
+    }};
+  }});
   if (!plots.length) return;
   const horizontal = plots.length > 1;
   const pad = 28;
