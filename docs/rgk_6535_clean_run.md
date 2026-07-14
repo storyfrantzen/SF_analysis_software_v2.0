@@ -22,7 +22,7 @@ production run:
 ./scripts/run_rgk_6535_pipeline.sh \
   --work-dir /volatile/clas12/osg/storyf/rgk_6.535_runs/clean_20260713_v1 \
   --data /path/to/rgk/6.535/data \
-  --mc /volatile/clas12/osg/storyf/11285 \
+  --mc /path/to/rgk/6.535/gemc \
   --born-lund /path/to/aao_norad/lund \
   --radiative-lund /path/to/aao_rad/lund \
   --born-norm /path/to/aao_norad/norm \

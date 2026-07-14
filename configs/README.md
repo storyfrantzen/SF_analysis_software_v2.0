@@ -213,11 +213,11 @@ For calibrated RGK 6.535 GeV acceptance studies, use the compact acceptance
 processing config together with the acceptance post config. The processing
 config applies the `6.535RGK_clasdisP2` proton energy-loss corrections; the
 post config extends the nominal RGK EPPI0 base selection and loads the
-`6.535RGK_clasdisGEMC_11285` sampling-fraction parameters:
+`6.535RGK_INCLUSIVE_GEMC_100M` sampling-fraction parameters:
 
 ```bash
 ./build/hipo2root configs/processing/rgk/6.535/eppi0_mc_acceptance.json \
-  /volatile/clas12/osg/storyf/11285 0 1000000
+  /path/to/rgk/6.535/gemc 0 1000000
 
 ./build/post_process configs/post/rgk/6.535/eppi0_mc_acceptance.json \
   6.535_rgk_eppi0_mc_acceptance.root 1000000

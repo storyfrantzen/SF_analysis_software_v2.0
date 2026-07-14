@@ -3,7 +3,7 @@
     "outputFile": "6.535_rgk_eppi0_mc_acceptance_selected.root",
     "samplingFraction": {
         "sigma": {
-            "paramsFile": "../../../../parameters/sampling_fraction/SF_sigma_cut_params_6.535RGK_clasdisGEMC_11285.json"
+            "paramsFile": "../../../../parameters/sampling_fraction/SF_sigma_cut_params_6.535RGK_INCLUSIVE_GEMC_100M.json"
         }
     }
 }
