@@ -9,6 +9,11 @@
         "enabled": false
     },
 
+    "inputValidation": {
+        "enabled": true,
+        "skipMalformed": true
+    },
+
     "generatedEventTree": {
         "enabled": true,
         "treeName": "GeneratedEvents"
