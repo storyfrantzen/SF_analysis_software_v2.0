@@ -162,7 +162,9 @@ On a two-dimensional canvas, right-click inside a bin and choose `Profile X` or
 distribution selected by the clicked Y bin; `Profile Y` plots the Y distribution
 selected by the clicked X bin. The tool opens split view, makes panel filters
 independent, copies the source panel's active filters into Panel 2, and adds the
-clicked bin as an editable numeric constraint. Profiles created inside a facet
+clicked bin as an editable numeric constraint. Plot controls collapse by default
+so the one- and two-dimensional canvases remain aligned; restore them with the
+`Show plot controls` button or right-click action. Profiles created inside a facet
 also retain that facet's categorical or numeric slice. Bin upper edges are
 exclusive except for the final bin, matching the two-dimensional histogram's
 bin membership exactly.

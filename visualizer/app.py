@@ -4824,6 +4824,7 @@ function launchBinProfile(axis) {{
   if (!enabledPanels.includes("B")) enabledPanels.push("B");
   activePanel = "B";
   compareMode = true;
+  canvasToolbarCollapsed = true;
   renderActiveFilterControls();
   syncControlsFromPanel();
   update();

@@ -110,6 +110,7 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn("function launchBinProfile(axis)", html)
         self.assertIn('activePanel = "B"', html)
         self.assertIn("compareMode = true", html)
+        self.assertIn("canvasToolbarCollapsed = true", html)
         self.assertIn("maxExclusive", html)
         self.assertIn("function drawGhost1d", html)
         self.assertIn("function drawGhost2d", html)
