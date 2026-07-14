@@ -211,9 +211,9 @@ python3 analysis/export_selected_data.py \
 
 For calibrated RGK 6.535 GeV acceptance studies, use the compact acceptance
 processing config together with the acceptance post config. The processing
-config applies the `6.535RGK_clasdisP2` proton energy-loss corrections; the
-post config extends the nominal RGK EPPI0 base selection and loads the
-`6.535RGK_INCLUSIVE_GEMC_100M` sampling-fraction parameters:
+config applies the `6.535RGK_INCLUSIVE_GEMC_100M` proton energy-loss
+corrections; the post config extends the nominal RGK EPPI0 base selection and
+loads the `6.535RGK_INCLUSIVE_GEMC_100M` sampling-fraction parameters:
 
 ```bash
 ./build/hipo2root configs/processing/rgk/6.535/eppi0_mc_acceptance.json \
