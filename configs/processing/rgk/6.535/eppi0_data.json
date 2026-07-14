@@ -17,7 +17,7 @@
         "allowMiscRuns": []
     },
 
-    "kinematicCorrections": "../../../../parameters/proton_energy_loss/6.535RGK_clasdisP2.json",
+    "kinematicCorrections": "../../../../parameters/proton_energy_loss/6.535RGK_INCLUSIVE_GEMC_100M.json",
 
     "finalState": [
         { "pid": 11, "count": 1, "mode": "atleast" },

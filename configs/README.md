@@ -190,8 +190,8 @@ loose photon selection with a very low reconstructed photon momentum threshold,
 so the comparison is sensitive to the generated `EG` threshold scan.
 
 For RGK 6.535 GeV data processing, use the data config pair. The processing
-config enables QADB, applies the `6.535RGK_clasdisP2` proton energy-loss
-corrections, and records accumulated beam charge for cross-section
+config enables QADB, applies the `6.535RGK_INCLUSIVE_GEMC_100M` proton
+energy-loss corrections, and records accumulated beam charge for cross-section
 normalization. The post config extends the nominal RGK EPPI0 base selection and
 loads the data-side `6.535RGKSKIM1` sampling-fraction parameters:
 
@@ -314,15 +314,15 @@ For proton energy loss:
 
 python3 scripts/derive_proton_energy_loss.py \
   6.535_rgk_proton_energy_loss_mc.root \
-  --output parameters/proton_energy_loss/6.535RGK_clasdisP2.json \
-  --plot-dir calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2 \
-  --dataset-tag 6.535RGK_clasdisP2 \
+  --output parameters/proton_energy_loss/6.535RGK_INCLUSIVE_GEMC_100M.json \
+  --plot-dir calibration_plots/proton_energy_loss/6.535RGK_INCLUSIVE_GEMC_100M \
+  --dataset-tag 6.535RGK_INCLUSIVE_GEMC_100M \
   --beam-energy 6.535
 ```
 
 To compare against a fiducial-volume derivation, first filter the matched
 proton rows through post-processing while preserving the `event`, `rec`, and
-`gen` branches:
+`gen` branches, then write comparison products to a scratch output path:
 
 ```bash
 ./build/post_process \
@@ -331,21 +331,21 @@ proton rows through post-processing while preserving the `event`, `rec`, and
 
 python3 scripts/derive_proton_energy_loss.py \
   6.535_rgk_proton_energy_loss_mc_fiducial.root \
-  --output parameters/proton_energy_loss/6.535RGK_clasdisP2_fiducial.json \
-  --plot-dir calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2_fiducial \
-  --dataset-tag 6.535RGK_clasdisP2_fiducial \
+  --output /path/to/scratch/6.535RGK_fiducial_test.json \
+  --plot-dir /path/to/scratch/rgk_6.535_fiducial_test \
+  --dataset-tag 6.535RGK_fiducial_test \
   --beam-energy 6.535
 
 python3 scripts/compare_proton_energy_loss.py \
   6.535_rgk_proton_energy_loss_mc_fiducial.root \
-  parameters/proton_energy_loss/6.535RGK_clasdisP2.json \
-  parameters/proton_energy_loss/6.535RGK_clasdisP2_fiducial.json \
-  --baseline-label standard \
+  parameters/proton_energy_loss/6.535RGK_INCLUSIVE_GEMC_100M.json \
+  /path/to/scratch/6.535RGK_fiducial_test.json \
+  --baseline-label inclusive \
   --updated-label fiducial \
-  --output calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2_compare/residual_summary.csv \
-  --binned-output calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2_compare/residual_summary_binned.csv \
-  --plot-dir calibration_plots/proton_energy_loss/rgk_6.535_clasdisP2_compare \
-  --dataset-tag 6.535RGK_clasdisP2_compare \
+  --output /path/to/scratch/rgk_6.535_fiducial_compare/residual_summary.csv \
+  --binned-output /path/to/scratch/rgk_6.535_fiducial_compare/residual_summary_binned.csv \
+  --plot-dir /path/to/scratch/rgk_6.535_fiducial_compare \
+  --dataset-tag 6.535RGK_fiducial_compare \
   --beam-energy 6.535
 ```
 

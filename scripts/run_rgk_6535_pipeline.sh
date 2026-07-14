@@ -365,10 +365,8 @@ if ((DRY_RUN == 0)); then
             "$PROVENANCE_DIR/post-data-config.json"
         cp "$REPO_ROOT/configs/post/rgk/6.535/eppi0_mc_acceptance.json" \
             "$PROVENANCE_DIR/post-mc-config.json"
-        cp "$REPO_ROOT/parameters/proton_energy_loss/6.535RGK_clasdisP2.json" \
-            "$PROVENANCE_DIR/proton-energy-loss-data.json"
         cp "$REPO_ROOT/parameters/proton_energy_loss/6.535RGK_INCLUSIVE_GEMC_100M.json" \
-            "$PROVENANCE_DIR/proton-energy-loss-mc.json"
+            "$PROVENANCE_DIR/proton-energy-loss.json"
         cp "$REPO_ROOT/parameters/sampling_fraction/SF_sigma_cut_params_6.535RGKSKIM1.json" \
             "$PROVENANCE_DIR/sampling-fraction-data.json"
         cp "$REPO_ROOT/parameters/sampling_fraction/SF_sigma_cut_params_6.535RGK_INCLUSIVE_GEMC_100M.json" \
