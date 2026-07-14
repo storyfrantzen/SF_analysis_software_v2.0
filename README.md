@@ -31,7 +31,7 @@ RGA data run looks like:
 ```
 
 Production configurations are organized by run group and energy. The complete
-RGA 10.604 GeV EPPI0 data/nonradiative-MC set lives under
+RGA 10.604 GeV EPPI0 data/acceptance-MC set lives under
 `configs/{processing,post}/rga/10.604/`, with its numerical analysis settings at
 `configs/analysis/rga/10.604.json`. See `configs/README.md` for the layout.
 

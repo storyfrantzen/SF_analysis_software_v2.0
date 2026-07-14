@@ -22,9 +22,9 @@ target, and normalization settings.
 The complete RGA 10.604 GeV EPPI0 pair is:
 
 - `processing/rga/10.604/eppi0_data.json`;
-- `processing/rga/10.604/eppi0_mc_nonradiative.json`;
+- `processing/rga/10.604/eppi0_mc_acceptance.json`;
 - `post/rga/10.604/eppi0_data.json`;
-- `post/rga/10.604/eppi0_mc_nonradiative.json`;
+- `post/rga/10.604/eppi0_mc_acceptance.json`;
 - `analysis/rga/10.604.json`.
 
 Both post-processing files extend `post/rga/10.604/eppi0_base.json` so the
@@ -101,14 +101,14 @@ From the repository root:
 ./build/hipo2root configs/processing/rga/10.604/eppi0_data.json \
   /path/to/rga/eppi0/data
 
-./build/hipo2root configs/processing/rga/10.604/eppi0_mc_nonradiative.json \
-  /path/to/rga/nonradiative/gemc
+./build/hipo2root configs/processing/rga/10.604/eppi0_mc_acceptance.json \
+  /path/to/rga/gemc
 
 ./build/post_process configs/post/rga/10.604/eppi0_data.json \
   10.604_rga_eppi0_data.root
 
-./build/post_process configs/post/rga/10.604/eppi0_mc_nonradiative.json \
-  10.604_rga_eppi0_mc_nonradiative.root
+./build/post_process configs/post/rga/10.604/eppi0_mc_acceptance.json \
+  10.604_rga_eppi0_mc_acceptance.root
 
 ./build/post_process configs/post/rga/10.604/eppi0_cut_diagnostics.json \
   10.604_rga_eppi0_data.root

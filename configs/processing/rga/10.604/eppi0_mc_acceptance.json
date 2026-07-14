@@ -1,5 +1,5 @@
 {
-    "outputFile": "10.604_rga_eppi0_mc_nonradiative.root",
+    "outputFile": "10.604_rga_eppi0_mc_acceptance.root",
     "treeName": "Events",
 
     "beamEnergy": 10.604,
