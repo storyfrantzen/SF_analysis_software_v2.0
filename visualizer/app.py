@@ -1624,6 +1624,26 @@ body {{
 }}
 .startup-loading-content strong {{ font-size: 16px; }}
 .startup-loading-content span {{ color: var(--muted); }}
+.startup-loading-progress {{
+  width: min(320px, 72vw);
+  height: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+}}
+.startup-loading-progress-bar {{
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 120ms ease-out;
+}}
+.startup-loading-percent {{
+  min-width: 4ch;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}}
 @keyframes startup-spin {{ to {{ transform: rotate(360deg); }} }}
 @media (prefers-reduced-motion: reduce) {{
   .startup-loading {{ transition: none; }}
@@ -2446,7 +2466,11 @@ th:first-child, td:first-child {{ text-align: left; }}
   <div class="startup-loading-content">
     <div class="startup-loading-spinner" aria-hidden="true"></div>
     <strong>Loading visualizer</strong>
-    <span>Reading embedded data…</span>
+    <div class="startup-loading-progress" role="progressbar" aria-label="Visualizer startup progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div class="startup-loading-progress-bar" id="startupProgressBar"></div>
+    </div>
+    <span class="startup-loading-percent" id="startupProgressPercent">0%</span>
+    <span id="startupProgressStage">Reading embedded data…</span>
   </div>
 </div>
 <main id="app">
@@ -2723,16 +2747,6 @@ const payload = {payload_json};
 const columns = {{}};
 const textColumns = {{}};
 let rowCount = payload.rowCount;
-for (const [name, value] of Object.entries(payload.columns)) {{
-  if (value && value.dtype === "float32") {{
-    const binary = atob(value.data);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    columns[name] = new Float32Array(bytes.buffer);
-  }} else {{
-    textColumns[name] = value;
-  }}
-}}
 const variables = payload.variables;
 const byName = Object.fromEntries(variables.map(v => [v.name, v]));
 const integerVariables = new Set(variables.filter(v => v.integer).map(v => v.name));
@@ -2766,6 +2780,45 @@ const fmtColumn = (name, value) => integerVariables.has(name) && Number.isFinite
 const fmtTickTarget = value => Number.isInteger(value) ? String(value) : value.toFixed(1);
 const canonicalPlotAspect = value => clamp(Number(value) || 1.5, 0.75, 2.5);
 const plotAspectLabel = value => `${{Number(canonicalPlotAspect(value).toFixed(2))}}:1`;
+
+function setStartupProgress(percent, stage) {{
+  const normalized = Math.max(0, Math.min(100, Math.round(percent)));
+  const overlay = document.getElementById("startupLoading");
+  const bar = document.getElementById("startupProgressBar");
+  const percentLabel = document.getElementById("startupProgressPercent");
+  const stageLabel = document.getElementById("startupProgressStage");
+  if (bar) bar.style.width = `${{normalized}}%`;
+  if (percentLabel) percentLabel.textContent = `${{normalized}}%`;
+  if (stageLabel && stage) stageLabel.textContent = stage;
+  const progress = overlay?.querySelector('[role="progressbar"]');
+  if (progress) progress.setAttribute("aria-valuenow", String(normalized));
+}}
+
+function yieldStartupFrame() {{
+  return new Promise(resolve => requestAnimationFrame(() => resolve()));
+}}
+
+async function decodeInitialPayloadColumns() {{
+  const entries = Object.entries(payload.columns || {{}});
+  setStartupProgress(2, `Preparing ${{entries.length.toLocaleString()}} columns…`);
+  await yieldStartupFrame();
+  for (let index = 0; index < entries.length; index++) {{
+    const [name, value] = entries[index];
+    if (value && value.dtype === "float32") {{
+      const binary = atob(value.data);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      columns[name] = new Float32Array(bytes.buffer);
+    }} else {{
+      textColumns[name] = value;
+    }}
+    setStartupProgress(
+      5 + 55 * (index + 1) / Math.max(entries.length, 1),
+      `Decoding column ${{index + 1}} of ${{entries.length}}: ${{name}}`
+    );
+    await yieldStartupFrame();
+  }}
+}}
 
 function sampleLabel(source) {{
   const clean = String(source || "").split(/[\\\\/]/).pop() || "sample";
@@ -3601,7 +3654,9 @@ function shortFacetLabel(filter, value, index) {{
   return filter.labels[index] || String(value);
 }}
 
-function init() {{
+async function init() {{
+  setStartupProgress(64, "Building dataset controls…");
+  await yieldStartupFrame();
   document.querySelector("h1").textContent = payload.title;
   el("source").textContent = payload.source;
   el("source").title = payload.source;
@@ -3614,6 +3669,8 @@ function init() {{
   rebuildCategoricalFilters(false);
   rebuildSplitOptions();
   updateDatasetStatus();
+  setStartupProgress(74, "Preparing filters and quantities…");
+  await yieldStartupFrame();
   fillSelect(el("rangeVar"), payload.defaultX);
   fillOperationSelects();
   initializeCategoryState();
@@ -3624,7 +3681,11 @@ function init() {{
   attachEvents();
   renderPanelTabs();
   syncControlsFromPanel();
+  setStartupProgress(90, "Rendering the initial histogram…");
+  await yieldStartupFrame();
   update();
+  setStartupProgress(100, "Ready");
+  await yieldStartupFrame();
   const startupLoading = el("startupLoading");
   document.body.removeAttribute("aria-busy");
   requestAnimationFrame(() => {{
@@ -7580,7 +7641,16 @@ function renderPreview(mask) {{
   }}
 }}
 
-init();
+async function startVisualizer() {{
+  await decodeInitialPayloadColumns();
+  await init();
+}}
+
+startVisualizer().catch(error => {{
+  console.error(error);
+  setStartupProgress(100, `Could not load visualizer: ${{error.message || error}}`);
+  document.body.removeAttribute("aria-busy");
+}});
 </script>
 </body>
 </html>

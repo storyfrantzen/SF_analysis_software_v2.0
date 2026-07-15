@@ -267,6 +267,15 @@ def parser() -> argparse.ArgumentParser:
         default=98.0,
         help="Robust absolute-value percentile used for the stitched quilt y scale",
     )
+    harmonic_plots.add_argument(
+        "--quilt-scale-mode",
+        choices=("global", "panel"),
+        default="global",
+        help=(
+            "Use one percentile-based y scale for the quilt or independently scale "
+            "each panel like its corresponding coefficient page (default: global)"
+        ),
+    )
 
     xsec_plots = commands.add_parser("cross-section-plots", help="Plot reduced cross section vs phi with harmonic fits")
     xsec_plots.add_argument("cross_section", type=Path)
@@ -1861,6 +1870,7 @@ def command_harmonic_plots(args: argparse.Namespace) -> None:
         args.output_dir / "harmonic_coefficients_summary.csv",
         include_quilt=args.quilt,
         quilt_scale_percentile=args.quilt_scale_percentile,
+        quilt_scale_mode=args.quilt_scale_mode,
     )
     print(f"Successful fits: {int(fit_mask.sum())}")
     print(f"Coefficient pages: {pages}")
@@ -2655,6 +2665,7 @@ def _plot_harmonic_coefficients_vs_t(
     csv_path: Path,
     include_quilt: bool = False,
     quilt_scale_percentile: float = 98.0,
+    quilt_scale_mode: str = "global",
 ) -> int:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
@@ -2682,6 +2693,7 @@ def _plot_harmonic_coefficients_vs_t(
                 names,
                 colors,
                 quilt_scale_percentile,
+                quilt_scale_mode,
             )
         for iq2 in range(parameters.shape[0]):
             for ixb in range(parameters.shape[1]):
@@ -2765,6 +2777,7 @@ def _plot_harmonic_coefficient_quilt_vs_t(
     names: tuple[str, ...],
     colors: tuple[str, str, str],
     scale_percentile: float,
+    scale_mode: str,
 ) -> int:
     import matplotlib.pyplot as plt
 
@@ -2773,6 +2786,8 @@ def _plot_harmonic_coefficient_quilt_vs_t(
         return 0
     if not 0.0 < scale_percentile <= 100.0:
         raise ValueError("--quilt-scale-percentile must be in the range (0, 100]")
+    if scale_mode not in ("global", "panel"):
+        raise ValueError("--quilt-scale-mode must be global or panel")
 
     t_centers = 0.5 * (t_edges[:-1] + t_edges[1:])
     q2_labels = _edge_labels(q2_edges)
@@ -2800,7 +2815,7 @@ def _plot_harmonic_coefficient_quilt_vs_t(
         nxb,
         figsize=(max(9.0, 1.65 * nxb), max(7.0, 1.2 * nq2)),
         sharex=True,
-        sharey=True,
+        sharey=scale_mode == "global",
         squeeze=False,
     )
     for iq2 in range(nq2):
@@ -2812,7 +2827,24 @@ def _plot_harmonic_coefficient_quilt_vs_t(
                 continue
             ax.axhline(0.0, color="black", linewidth=0.45, alpha=0.35)
             ax.set_xlim(float(t_edges[0]), float(t_edges[-1]))
-            ax.set_ylim(*ylim)
+            if scale_mode == "global":
+                ax.set_ylim(*ylim)
+            else:
+                local_low = []
+                local_high = []
+                for coeff_index in range(3):
+                    local_values = parameters[iq2, ixb, mask, coeff_index]
+                    local_errors = coeff_errors[iq2, ixb, mask, coeff_index]
+                    finite = np.isfinite(local_values) & np.isfinite(local_errors)
+                    if np.any(finite):
+                        local_low.extend((local_values[finite] - local_errors[finite]).tolist())
+                        local_high.extend((local_values[finite] + local_errors[finite]).tolist())
+                if local_low and local_high:
+                    lower = min(0.0, float(np.min(local_low)))
+                    upper = max(0.0, float(np.max(local_high)))
+                    span = upper - lower
+                    padding = 0.08 * span if span > 0.0 else max(abs(lower), abs(upper), 1.0) * 0.08
+                    ax.set_ylim(lower - padding, upper + padding)
             ax.grid(True, alpha=0.16, linewidth=0.45)
             for coeff_index in range(3):
                 ax.errorbar(
@@ -2825,7 +2857,10 @@ def _plot_harmonic_coefficient_quilt_vs_t(
                     markersize=2.4,
                     color=colors[coeff_index],
                 )
-            ax.tick_params(axis="both", labelsize=6, length=2)
+            ax.tick_params(axis="both", labelsize=6, length=2, labelleft=True)
+            if scale_mode == "panel":
+                ax.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2), useMathText=True)
+                ax.yaxis.get_offset_text().set_fontsize(5)
             if iq2 == 0:
                 ax.set_xlabel("-t [GeV^2]", fontsize=7)
             if ixb == 0:
@@ -2848,7 +2883,12 @@ def _plot_harmonic_coefficient_quilt_vs_t(
     fig.legend(handles=handles, loc="upper center", ncol=3, fontsize="small")
     fig.suptitle(
         "Harmonic coefficients vs -t quilt\n"
-        f"Q2 increases bottom to top; xB increases left to right; y scale uses p{scale_percentile:g}",
+        "Q2 increases bottom to top; xB increases left to right; "
+        + (
+            "each panel uses its corresponding page scale"
+            if scale_mode == "panel"
+            else f"y scale uses p{scale_percentile:g}"
+        ),
         y=0.985,
     )
     fig.supylabel("Harmonic coefficient [nb/(GeV^2 rad)]")
