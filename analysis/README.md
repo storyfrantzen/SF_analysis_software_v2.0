@@ -258,6 +258,26 @@ python3 analysis/build_event_sample.py \
   6.535_rgk_eppi0_mc_acceptance.root selected_mc.root mc_events.npz
 ```
 
+For generated-versus-reconstructed visualization of a large production, use
+the reverse join instead of materializing one output row per generated event:
+
+```bash
+python3 analysis/build_event_sample.py \
+  6.535_rgk_eppi0_mc_acceptance.root \
+  6.535_rgk_eppi0_mc_acceptance_selected.root \
+  samples/rgk_6.535_matched_mc_events.npz \
+  --dictionary build/libROOTBranchesDict.so \
+  --matched-only --chunk-size 250000 --progress-chunks 4
+```
+
+`--matched-only` uses selected reconstructed candidates as the left table and
+streams `GeneratedEvents` in chunks. It joins on
+`(sourceFileId, sourceEventIndex)` and exports only candidates with valid
+generated topology and kinematics. Every output row therefore has
+`rec_selected=true` and carries both the generated and reconstructed scalar
+columns used by the visualizer. This artifact is intended for reconstruction
+diagnostics, not as the generated denominator for response construction.
+
 `derive_exclusivity.py` preserves the legacy sequential variable order and
 global/per-bin modes. The nominal legacy-faithful procedure is to derive
 separate `n`-sigma windows for data and GEMC. GEMC exclusivity peaks are often

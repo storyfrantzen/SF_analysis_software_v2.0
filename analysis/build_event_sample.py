@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+from typing import Iterable
 
 import numpy as np
 
@@ -95,11 +96,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dictionary", type=Path, help="Optional ROOT dictionary shared library")
     parser.add_argument("--tree", default="Events")
     parser.add_argument("--generated-tree", default="GeneratedEvents")
+    parser.add_argument(
+        "--matched-only",
+        action="store_true",
+        help=(
+            "Reverse the join for visualization: stream GeneratedEvents and write only "
+            "selected REC candidates with a valid generated-event match"
+        ),
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=250_000,
+        help="GeneratedEvents rows per chunk in --matched-only mode (default: 250000)",
+    )
+    parser.add_argument(
+        "--progress-chunks",
+        type=int,
+        default=4,
+        help="Print matched-only progress every N chunks; use 0 to disable (default: 4)",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.chunk_size <= 0:
+        raise ValueError("--chunk-size must be positive")
+    if args.progress_chunks < 0:
+        raise ValueError("--progress-chunks must be non-negative")
     import ROOT  # type: ignore
 
     ROOT.gROOT.SetBatch(True)
@@ -121,7 +146,84 @@ def main() -> int:
         name for name in GENERATED_EVENT_PARTICLE_COLUMNS
         if has_generated_tree and generated_tree.GetBranch(name)
     ]
+    generated_entries = int(generated_tree.GetEntries()) if has_generated_tree else 0
     input_file.Close()
+
+    selected_path = str(args.selected_root.resolve())
+    selected_file = ROOT.TFile.Open(selected_path, "READ")
+    if not selected_file or selected_file.IsZombie():
+        raise RuntimeError(f"Could not open selected ROOT file: {selected_path}")
+    selected_tree = selected_file.Get(args.tree)
+    if not selected_tree:
+        selected_file.Close()
+        raise RuntimeError(f"Could not find tree {args.tree} in {selected_path}")
+    has_source_key = all(selected_tree.GetBranch(name) for name in REC_SOURCE_COLUMNS)
+    requested_rec_columns = scalar_branch_names(selected_tree)
+    selected_file.Close()
+    missing_keys = [name for name in ("runNum", "eventNum") if name not in requested_rec_columns]
+    if missing_keys:
+        raise RuntimeError(f"Selected tree is missing required branches: {missing_keys}")
+    if has_source_key:
+        for name in REC_SOURCE_COLUMNS:
+            if name not in requested_rec_columns:
+                requested_rec_columns.append(name)
+    rec = ROOT.RDataFrame(args.tree, selected_path).AsNumpy(requested_rec_columns)
+    rec_values = reconstructed_columns(rec, requested_rec_columns)
+
+    if args.matched_only:
+        if not has_generated_tree:
+            raise ValueError("--matched-only requires the compact GeneratedEvents tree")
+        if not has_generated_source_key or not has_source_key:
+            raise ValueError(
+                "--matched-only requires sourceFileId and sourceEventIndex in both ROOT trees"
+            )
+        requested_gen_columns = (
+            GENERATED_EVENT_COLUMNS + GENERATED_SOURCE_COLUMNS + generated_event_particle_columns
+        )
+        chunks = generated_tree_chunks(
+            ROOT,
+            args.generated_tree,
+            matched_path,
+            requested_gen_columns,
+            generated_entries,
+            args.chunk_size,
+            args.progress_chunks,
+        )
+        sample, stats = reverse_join_selected_events(
+            rec,
+            rec_values,
+            chunks,
+            generated_event_particle_columns,
+        )
+        metadata = {
+            "beam_energy": args.beam_energy,
+            "generated_source": args.generated_tree,
+            "generated_particle_columns": [
+                f"gen_{name}" for name in generated_event_particle_columns
+            ],
+            "matched_root": str(args.matched_root.resolve()),
+            "selected_root": str(args.selected_root.resolve()),
+            "join_mode": "selected-left matched-only",
+            "generated_events_scanned": stats["generated_events_scanned"],
+            "valid_generated_events": stats["valid_generated_events"],
+            "selected_reconstructed_events": stats["selected_reconstructed_events"],
+            "matched_generated_events": stats["matched_generated_events"],
+            "unmatched_selected_events": stats["unmatched_selected_events"],
+            "invalid_generated_matches": stats["invalid_generated_matches"],
+            "reconstructed_columns": sorted(rec_values),
+            "schema_version": 5,
+        }
+        write_sample(args.output, sample, metadata)
+        print(f"Generated events scanned: {stats['generated_events_scanned']}")
+        print(f"Valid generated events: {stats['valid_generated_events']}")
+        print(f"Selected REC candidates: {stats['selected_reconstructed_events']}")
+        print(f"Matched rows exported: {stats['matched_generated_events']}")
+        print(f"Selected candidates without GEN row: {stats['unmatched_selected_events']}")
+        print(f"Selected candidates with invalid GEN topology: {stats['invalid_generated_matches']}")
+        print(f"GEN particle variables carried: {len(generated_event_particle_columns)}")
+        print(f"REC variables carried: {len(rec_values)}")
+        print(f"Wrote {args.output}")
+        return 0
 
     if has_generated_tree:
         requested_gen_columns = (
@@ -179,25 +281,6 @@ def main() -> int:
             prefer_source_keys=has_generated_source_key,
         )
 
-    selected_path = str(args.selected_root.resolve())
-    selected_file = ROOT.TFile.Open(selected_path, "READ")
-    if not selected_file or selected_file.IsZombie():
-        raise RuntimeError(f"Could not open selected ROOT file: {selected_path}")
-    selected_tree = selected_file.Get(args.tree)
-    if not selected_tree:
-        raise RuntimeError(f"Could not find tree {args.tree} in {selected_path}")
-    has_source_key = all(selected_tree.GetBranch(name) for name in REC_SOURCE_COLUMNS)
-    requested_rec_columns = scalar_branch_names(selected_tree)
-    selected_file.Close()
-    missing_keys = [name for name in ("runNum", "eventNum") if name not in requested_rec_columns]
-    if missing_keys:
-        raise RuntimeError(f"Selected tree is missing required branches: {missing_keys}")
-    if has_source_key:
-        for name in REC_SOURCE_COLUMNS:
-            if name not in requested_rec_columns:
-                requested_rec_columns.append(name)
-    rec = ROOT.RDataFrame(args.tree, selected_path).AsNumpy(requested_rec_columns)
-    rec_values = reconstructed_columns(rec, requested_rec_columns)
     sample = join_reconstructed(
         generated,
         rec["runNum"],
@@ -218,14 +301,141 @@ def main() -> int:
         "reconstructed_columns": sorted(rec_values),
         "schema_version": 4,
     }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(args.output, **sample, metadata_json=json.dumps(metadata, sort_keys=True))
+    write_sample(args.output, sample, metadata)
     print(f"Generated events: {generated.run.size}")
     print(f"Selected REC matches: {sample['rec_selected'].sum()}")
     print(f"GEN particle variables carried: {len(generated_values)}")
     print(f"REC variables carried: {len(rec_values)}")
     print(f"Wrote {args.output}")
     return 0
+
+
+def generated_tree_chunks(
+    ROOT,
+    tree_name: str,
+    root_path: str,
+    columns: list[str],
+    entries: int,
+    chunk_size: int,
+    progress_chunks: int,
+) -> Iterable[dict[str, np.ndarray]]:
+    chunks = (entries + chunk_size - 1) // chunk_size
+    for chunk_index, start in enumerate(range(0, entries, chunk_size), start=1):
+        stop = min(start + chunk_size, entries)
+        yield ROOT.RDataFrame(tree_name, root_path).Range(start, stop).AsNumpy(columns)
+        if progress_chunks and (chunk_index % progress_chunks == 0 or chunk_index == chunks):
+            print(f"GeneratedEvents chunks: {chunk_index}/{chunks} ({stop}/{entries} rows)")
+
+
+def reverse_join_selected_events(
+    rec: dict[str, np.ndarray],
+    rec_values: dict[str, np.ndarray],
+    generated_chunks: Iterable[dict[str, np.ndarray]],
+    particle_columns: list[str],
+) -> tuple[dict[str, np.ndarray], dict[str, int]]:
+    """Left-join chunked GeneratedEvents data onto selected REC candidates."""
+    selected_source_file_id = np.asarray(rec["sourceFileId"], dtype=np.uint64)
+    selected_source_event_index = np.asarray(rec["sourceEventIndex"], dtype=np.uint64)
+    selected_rows = selected_source_file_id.size
+    if selected_source_event_index.shape != selected_source_file_id.shape:
+        raise ValueError("selected source-event key branches must have equal shapes")
+    selected_keys = source_keys(selected_source_file_id, selected_source_event_index)
+    if np.unique(selected_keys).size != selected_rows:
+        raise ValueError("selected REC sample contains duplicate (sourceFileId,sourceEventIndex) keys")
+    selected_order = np.argsort(selected_keys, order=selected_keys.dtype.names)
+    sorted_selected_keys = selected_keys[selected_order]
+
+    sample: dict[str, np.ndarray] = {
+        "source_file_id": selected_source_file_id.copy(),
+        "source_event_index": selected_source_event_index.copy(),
+        "run": np.full(selected_rows, -999, dtype=np.int64),
+        "event": np.full(selected_rows, -999, dtype=np.int64),
+        "gen_Q2": np.full(selected_rows, np.nan),
+        "gen_xB": np.full(selected_rows, np.nan),
+        "gen_minus_t": np.full(selected_rows, np.nan),
+        "gen_trento_phi": np.full(selected_rows, np.nan),
+        "gen_radiative": np.zeros(selected_rows, dtype=bool),
+        "gen_weight": np.full(selected_rows, np.nan),
+        "rec_selected": np.ones(selected_rows, dtype=bool),
+    }
+    for name in particle_columns:
+        sample[f"gen_{name}"] = np.full(selected_rows, np.nan)
+    for name, values in rec_values.items():
+        values = np.asarray(values)
+        if values.shape != selected_source_file_id.shape:
+            raise ValueError(f"REC column {name} does not match selected event keys")
+        sample[name] = values.copy()
+
+    seen = np.zeros(selected_rows, dtype=bool)
+    valid_matches = np.zeros(selected_rows, dtype=bool)
+    generated_events_scanned = 0
+    valid_generated_events = 0
+    branch_map = {
+        "runNum": "run",
+        "eventNum": "event",
+        "Q2": "gen_Q2",
+        "xB": "gen_xB",
+        "minusT": "gen_minus_t",
+        "trentoPhi": "gen_trento_phi",
+        "radiative": "gen_radiative",
+        "weight": "gen_weight",
+    }
+
+    for gen in generated_chunks:
+        chunk_rows = np.asarray(gen["sourceFileId"]).size
+        generated_events_scanned += chunk_rows
+        for name, values in gen.items():
+            if np.asarray(values).size != chunk_rows:
+                raise ValueError(f"GeneratedEvents chunk column {name} has inconsistent size")
+        valid = generated_event_mask(gen)
+        valid_generated_events += int(np.count_nonzero(valid))
+        chunk_keys = source_keys(gen["sourceFileId"], gen["sourceEventIndex"])
+        positions = np.searchsorted(sorted_selected_keys, chunk_keys)
+        bounded = positions < sorted_selected_keys.size
+        matched = np.zeros(chunk_rows, dtype=bool)
+        matched[bounded] = sorted_selected_keys[positions[bounded]] == chunk_keys[bounded]
+        if not np.any(matched):
+            continue
+        target_rows = selected_order[positions[matched]]
+        if np.unique(target_rows).size != target_rows.size or np.any(seen[target_rows]):
+            raise ValueError("GeneratedEvents contains duplicate selected source-event keys")
+        seen[target_rows] = True
+        matched_chunk_rows = np.flatnonzero(matched)
+        matched_valid = valid[matched_chunk_rows]
+        target_rows = target_rows[matched_valid]
+        source_rows = matched_chunk_rows[matched_valid]
+        valid_matches[target_rows] = True
+        for source_name, output_name in branch_map.items():
+            sample[output_name][target_rows] = np.asarray(gen[source_name])[source_rows]
+        for name in particle_columns:
+            sample[f"gen_{name}"][target_rows] = np.asarray(gen[name], dtype=float)[source_rows]
+
+    keep = valid_matches
+    filtered = {name: np.asarray(values)[keep] for name, values in sample.items()}
+    stats = {
+        "generated_events_scanned": generated_events_scanned,
+        "valid_generated_events": valid_generated_events,
+        "selected_reconstructed_events": selected_rows,
+        "matched_generated_events": int(np.count_nonzero(keep)),
+        "unmatched_selected_events": int(np.count_nonzero(~seen)),
+        "invalid_generated_matches": int(np.count_nonzero(seen & ~valid_matches)),
+    }
+    return filtered, stats
+
+
+def source_keys(source_file_id: np.ndarray, source_event_index: np.ndarray) -> np.ndarray:
+    keys = np.empty(
+        np.asarray(source_file_id).size,
+        dtype=[("source_file_id", "<u8"), ("source_event_index", "<u8")],
+    )
+    keys["source_file_id"] = np.asarray(source_file_id, dtype=np.uint64)
+    keys["source_event_index"] = np.asarray(source_event_index, dtype=np.uint64)
+    return keys
+
+
+def write_sample(output: Path, sample: dict[str, np.ndarray], metadata: dict) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(output, **sample, metadata_json=json.dumps(metadata, sort_keys=True))
 
 
 def generated_event_mask(gen: dict[str, np.ndarray]) -> np.ndarray:

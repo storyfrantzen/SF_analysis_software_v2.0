@@ -42,7 +42,7 @@ from run_analysis import (
     _read_generator_integrated_cross_section,
     _read_generator_normalization_summary,
 )
-from build_event_sample import reconstructed_columns
+from build_event_sample import reconstructed_columns, reverse_join_selected_events
 
 
 class BinningTests(unittest.TestCase):
@@ -147,6 +147,60 @@ class ResponseTests(unittest.TestCase):
 
 
 class EventSampleTests(unittest.TestCase):
+    def test_reverse_join_exports_only_valid_selected_matches(self) -> None:
+        rec = {
+            "runNum": np.array([11, 11, 11, 11]),
+            "eventNum": np.array([1, 1, 2, 3]),
+            "sourceFileId": np.array([1001, 1002, 1001, 1001], dtype=np.uint64),
+            "sourceEventIndex": np.array([0, 0, 1, 2], dtype=np.uint64),
+        }
+        rec_values = {"rec_Q2": np.array([1.51, 1.61, 1.71, 1.81])}
+        chunks = [
+            {
+                "sourceFileId": np.array([1001, 1001], dtype=np.uint64),
+                "sourceEventIndex": np.array([1, 2], dtype=np.uint64),
+                "runNum": np.array([11, 11]),
+                "eventNum": np.array([2, 3]),
+                "topologyValid": np.array([True, False]),
+                "Q2": np.array([1.7, np.nan]),
+                "xB": np.array([0.2, np.nan]),
+                "minusT": np.array([0.3, np.nan]),
+                "trentoPhi": np.array([0.4, np.nan]),
+                "radiative": np.array([True, True]),
+                "weight": np.array([1.0, 1.0]),
+                "electronP": np.array([4.2, np.nan]),
+            },
+            {
+                "sourceFileId": np.array([1002, 9999], dtype=np.uint64),
+                "sourceEventIndex": np.array([0, 0], dtype=np.uint64),
+                "runNum": np.array([11, 11]),
+                "eventNum": np.array([1, 99]),
+                "topologyValid": np.array([True, True]),
+                "Q2": np.array([1.6, 2.0]),
+                "xB": np.array([0.21, 0.3]),
+                "minusT": np.array([0.31, 0.5]),
+                "trentoPhi": np.array([0.41, 0.6]),
+                "radiative": np.array([True, True]),
+                "weight": np.array([2.0, 1.0]),
+                "electronP": np.array([4.1, 5.0]),
+            },
+        ]
+        sample, stats = reverse_join_selected_events(
+            rec, rec_values, chunks, ["electronP"]
+        )
+        np.testing.assert_array_equal(sample["source_file_id"], [1002, 1001])
+        np.testing.assert_array_equal(sample["source_event_index"], [0, 1])
+        np.testing.assert_allclose(sample["gen_Q2"], [1.6, 1.7])
+        np.testing.assert_allclose(sample["rec_Q2"], [1.61, 1.71])
+        np.testing.assert_allclose(sample["gen_electronP"], [4.1, 4.2])
+        np.testing.assert_array_equal(sample["rec_selected"], [True, True])
+        self.assertEqual(stats["generated_events_scanned"], 4)
+        self.assertEqual(stats["valid_generated_events"], 3)
+        self.assertEqual(stats["selected_reconstructed_events"], 4)
+        self.assertEqual(stats["matched_generated_events"], 2)
+        self.assertEqual(stats["unmatched_selected_events"], 1)
+        self.assertEqual(stats["invalid_generated_matches"], 1)
+
     def test_compact_generated_tree_filters_invalid_topology(self) -> None:
         sample = generated_sample_from_tree(
             np.array([1001, 1002], dtype=np.uint64),
