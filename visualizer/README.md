@@ -34,6 +34,12 @@ python3 analysis/interactive_histograms.py INPUT --output OUTPUT.html
 
 ## Histogram fits
 
+One-dimensional histograms are drawn at bin centers as points with capped
+Poisson error bars. Count-mode uncertainties use `sqrt(N)` for each bin. In
+density mode the same uncertainty is rescaled by the selected total, so a bin
+with raw count `N` is displayed with uncertainty `sqrt(N) / N_selected`.
+Overlaid and faceted one-dimensional histograms use the same convention.
+
 The Fit panel supports ordinary least squares, Poisson-weighted least squares,
 and conditional unbinned likelihood fits. `Poisson WLS (Pearson)` iteratively
 solves the normal equations with per-bin variance `max(expected count, 1)` and

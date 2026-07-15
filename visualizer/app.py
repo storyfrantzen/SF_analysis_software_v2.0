@@ -5583,6 +5583,71 @@ function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel, xTickCount,
   }}
 }}
 
+function poissonBinError(value, total, density) {{
+  if (!(value >= 0)) return 0;
+  if (!density) return Math.sqrt(value);
+  if (!(total > 0)) return 0;
+  return Math.sqrt(Math.max(0, value * total)) / total;
+}}
+
+function histogramPointScaleMax(series, ghostCounts = null) {{
+  let maximum = 0;
+  for (const item of series) {{
+    if (!item?.values) continue;
+    for (let index = 0; index < item.values.length; index++) {{
+      const value = item.values[index];
+      if (!Number.isFinite(value) || value < 0) continue;
+      maximum = Math.max(maximum, value + poissonBinError(value, item.total, item.density));
+    }}
+  }}
+  if (ghostCounts) {{
+    for (let index = 0; index < ghostCounts.length; index++) {{
+      const value = ghostCounts[index];
+      if (Number.isFinite(value)) maximum = Math.max(maximum, value);
+    }}
+  }}
+  return maximum > 0 ? maximum * 1.06 : 1;
+}}
+
+function draw1dPoints(ctx, area, values, yMax, total, density, color, alpha = 1) {{
+  if (!values || !values.length || !(yMax > 0)) return;
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  const binWidth = pw / values.length;
+  const capHalfWidth = Math.min(4, Math.max(1.5, binWidth * 0.22));
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(area.left, area.top, pw, ph + 3);
+  ctx.clip();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.globalAlpha = alpha;
+  ctx.lineWidth = 1.2;
+  for (let index = 0; index < values.length; index++) {{
+    const value = values[index];
+    if (!Number.isFinite(value) || value < 0) continue;
+    const error = poissonBinError(value, total, density);
+    const x = area.left + (index + 0.5) * binWidth;
+    const y = area.top + ph - value / yMax * ph;
+    if (error > 0) {{
+      const yHigh = area.top + ph - (value + error) / yMax * ph;
+      const yLow = area.top + ph - Math.max(0, value - error) / yMax * ph;
+      ctx.beginPath();
+      ctx.moveTo(x, yHigh);
+      ctx.lineTo(x, yLow);
+      ctx.moveTo(x - capHalfWidth, yHigh);
+      ctx.lineTo(x + capHalfWidth, yHigh);
+      ctx.moveTo(x - capHalfWidth, yLow);
+      ctx.lineTo(x + capHalfWidth, yLow);
+      ctx.stroke();
+    }}
+    ctx.beginPath();
+    ctx.arc(x, y, 2.6, 0, 2 * Math.PI);
+    ctx.fill();
+  }}
+  ctx.restore();
+}}
+
 function draw1d(panel, mask) {{
   const splitName = panel.splitVar;
   if (splitName) {{
@@ -5625,35 +5690,21 @@ function draw1d(panel, mask) {{
     normalizeHistogram(overlayCounts, overlaySelected);
   }}
   const ghost = compatibleGhost(panel, "1d", {{xName}});
-  const maxCount = histogramMax(counts, overlayCounts, ghost?.counts);
+  const maxCount = histogramPointScaleMax([
+    {{values: counts, total: selected, density: panel.density}},
+    {{values: overlayCounts, total: overlaySelected, density: panel.density}}
+  ], ghost?.counts);
   const canvas = el("plot" + panel.key);
   const area = plotArea(canvas);
-  const {{ctx, width, height, left, right, top, bottom}} = area;
+  const {{ctx, width, height}} = area;
   const c = colors();
   ctx.clearRect(0, 0, width, height);
-  const pw = width - left - right;
-  const ph = height - top - bottom;
-  ctx.fillStyle = c.mark;
-  for (let i = 0; i < bins; i++) {{
-    const barH = counts[i] / maxCount * ph;
-    const x0 = left + i / bins * pw;
-    const x1 = left + (i + 1) / bins * pw;
-    ctx.fillRect(x0, top + ph - barH, Math.max(1, x1 - x0 - 1), barH);
-  }}
-  if (overlayCounts) {{
-    ctx.save();
-    ctx.globalAlpha = 0.64;
-    ctx.fillStyle = overlayHeatColor(0.82);
-    for (let i = 0; i < bins; i++) {{
-      const barH = overlayCounts[i] / maxCount * ph;
-      const binW = pw / bins;
-      const x0 = left + i * binW + binW * 0.2;
-      ctx.fillRect(x0, top + ph - barH, Math.max(1, binW * 0.6), barH);
-    }}
-    ctx.restore();
-  }}
   drawAxes(ctx, area, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks);
-  if (x2Name) drawOverlayLegend(ctx, area, byName[xName].label, byName[x2Name].label);
+  draw1dPoints(ctx, area, counts, maxCount, selected, panel.density, c.mark);
+  if (overlayCounts) {{
+    draw1dPoints(ctx, area, overlayCounts, maxCount, overlaySelected, panel.density, overlayHeatColor(0.82), 0.78);
+  }}
+  if (x2Name) draw1dOverlayLegend(ctx, area, byName[xName].label, byName[x2Name].label);
   if (ghost) drawGhost1d(ctx, area, ghost, ghost.counts, xMin, xMax, maxCount);
   drawFitRangeIndicator(ctx, area, panel, xMin, xMax);
   panel.fitSummary = draw1dFit(ctx, area, panel, counts, xMin, xMax, 0, maxCount, fitValues);
@@ -5820,11 +5871,13 @@ function draw1dFacets(panel, mask, splitName) {{
     }}
   }}
   const ghost = compatibleGhost(panel, "1d-facet", {{xName, splitName, splitSignature}});
-  const maxCount = histogramMax(
-    ...facets.map(f => f.counts),
-    ...facets.map(f => f.overlayCounts).filter(Boolean),
-    ...(ghost?.facets || []).map(f => f.counts)
-  );
+  const pointSeries = [];
+  for (const facet of facets) {{
+    pointSeries.push({{values: facet.counts, total: facet.selected, density: panel.density}});
+    if (facet.overlayCounts) pointSeries.push({{values: facet.overlayCounts, total: facet.overlaySelected, density: panel.density}});
+  }}
+  const ghostCounts = (ghost?.facets || []).flatMap(facet => Array.from(facet.counts));
+  const maxCount = histogramPointScaleMax(pointSeries, ghostCounts);
   const canvas = el("plot" + panel.key);
   prepareFacetCanvas(canvas, panel, facets.length, splitName, facets);
   const area = plotArea(canvas);
@@ -5836,30 +5889,13 @@ function draw1dFacets(panel, mask, splitName) {{
   for (let index = 0; index < facets.length; index++) {{
     const facet = facets[index];
     const facetAreaInfo = panelArea(area, layout, index);
-    const pw = facetAreaInfo.width - facetAreaInfo.left - facetAreaInfo.right;
-    const ph = facetAreaInfo.height - facetAreaInfo.top - facetAreaInfo.bottom;
-    ctx.fillStyle = c.mark;
-    for (let i = 0; i < bins; i++) {{
-      const barH = facet.counts[i] / maxCount * ph;
-      const x0 = facetAreaInfo.left + i / bins * pw;
-      const x1 = facetAreaInfo.left + (i + 1) / bins * pw;
-      ctx.fillRect(x0, facetAreaInfo.top + ph - barH, Math.max(1, x1 - x0 - 1), barH);
-    }}
-    if (facet.overlayCounts) {{
-      ctx.save();
-      ctx.globalAlpha = 0.64;
-      ctx.fillStyle = overlayHeatColor(0.82);
-      for (let i = 0; i < bins; i++) {{
-        const barH = facet.overlayCounts[i] / maxCount * ph;
-        const binW = pw / bins;
-        const x0 = facetAreaInfo.left + i * binW + binW * 0.2;
-        ctx.fillRect(x0, facetAreaInfo.top + ph - barH, Math.max(1, binW * 0.6), barH);
-      }}
-      ctx.restore();
-    }}
     const axisVisibility = facetAxisVisibility(layout, index, facets.length);
     drawAxes(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks, axisVisibility);
-    if (x2Name && index === 0) drawOverlayLegend(ctx, facetAreaInfo, byName[xName].label, byName[x2Name].label);
+    draw1dPoints(ctx, facetAreaInfo, facet.counts, maxCount, facet.selected, panel.density, c.mark);
+    if (facet.overlayCounts) {{
+      draw1dPoints(ctx, facetAreaInfo, facet.overlayCounts, maxCount, facet.overlaySelected, panel.density, overlayHeatColor(0.82), 0.78);
+    }}
+    if (x2Name && index === 0) draw1dOverlayLegend(ctx, facetAreaInfo, byName[xName].label, byName[x2Name].label);
     const savedFacet = ghostFacet(ghost, facet.value);
     if (savedFacet) drawGhost1d(ctx, facetAreaInfo, {{...ghost, selected: savedFacet.selected}}, savedFacet.counts, xMin, xMax, maxCount, index === 0);
     drawFacetTitle(ctx, facetAreaInfo, `${{facet.label}} (${{facet.selected.toLocaleString()}})`);
@@ -6143,6 +6179,42 @@ function drawOverlayLegend(ctx, area, primaryLabel, overlayLabel) {{
   ctx.globalAlpha = 1;
   ctx.fillStyle = c.fg;
   ctx.fillText(overlayLabel, x + 15, y);
+  ctx.restore();
+}}
+
+function draw1dOverlayLegend(ctx, area, primaryLabel, overlayLabel) {{
+  const c = colors();
+  const pw = area.width - area.left - area.right;
+  const x = area.left + pw - 150;
+  let y = area.top + 10;
+  ctx.save();
+  ctx.font = "12px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  for (const item of [
+    {{label: primaryLabel, color: c.mark, alpha: 1}},
+    {{label: overlayLabel, color: overlayHeatColor(0.82), alpha: 0.78}}
+  ]) {{
+    ctx.globalAlpha = item.alpha;
+    ctx.strokeStyle = item.color;
+    ctx.fillStyle = item.color;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(x + 5, y - 5);
+    ctx.lineTo(x + 5, y + 5);
+    ctx.moveTo(x + 2, y - 5);
+    ctx.lineTo(x + 8, y - 5);
+    ctx.moveTo(x + 2, y + 5);
+    ctx.lineTo(x + 8, y + 5);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x + 5, y, 2.5, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = c.fg;
+    ctx.fillText(item.label, x + 15, y);
+    y += 16;
+  }}
   ctx.restore();
 }}
 

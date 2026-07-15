@@ -119,6 +119,11 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn("maxExclusive", html)
         self.assertIn("function drawGhost1d", html)
         self.assertIn("function drawGhost2d", html)
+        self.assertIn("function poissonBinError", html)
+        self.assertIn("function histogramPointScaleMax", html)
+        self.assertIn("function draw1dPoints", html)
+        self.assertIn("function draw1dOverlayLegend", html)
+        self.assertIn("value + poissonBinError(value, item.total, item.density)", html)
         self.assertIn("function compileMathExpression", html)
         self.assertIn("function referenceLineDash", html)
         self.assertIn("function drawReferenceCurves", html)
@@ -387,6 +392,10 @@ const referenceStyles = [
   referenceLineWidth({lineWidth: 1.25}),
   referenceLineWidth({lineWidth: 9})
 ];
+const poissonErrors = [
+  poissonBinError(9, 9, false),
+  poissonBinError(0.3, 10, true)
+];
 let rejectedExpression = false;
 try { compileMathExpression("window.alert(1)", "x"); } catch (_) { rejectedExpression = true; }
 console.log(JSON.stringify({
@@ -421,6 +430,7 @@ console.log(JSON.stringify({
   automaticSliceCount: automaticSlices.edges.length - 1,
   calculatorValues,
   referenceStyles,
+  poissonErrors,
   rejectedExpression
 }));
 """
@@ -484,6 +494,10 @@ console.log(JSON.stringify({
         self.assertEqual(
             result["referenceStyles"],
             [[], [7, 4], [1.25, 3], [8, 3, 1.25, 3], 1.25, 3],
+        )
+        self.assertAlmostEqual(result["poissonErrors"][0], 3.0)
+        self.assertAlmostEqual(
+            result["poissonErrors"][1], np.sqrt(3.0) / 10.0
         )
         self.assertTrue(result["rejectedExpression"])
         self.assertEqual(
