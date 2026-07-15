@@ -2829,7 +2829,8 @@ def _plot_harmonic_coefficient_quilt_vs_t(
         for ixb in range(nxb)
         if np.any(fit_mask[iq2, ixb, :])
     ]
-    nrows, ncols = _compact_quilt_shape(len(populated_panels))
+    active_q2, ncols, panel_positions = _ordered_quilt_axes(populated_panels)
+    nrows = len(active_q2)
     fig, axes = plt.subplots(
         nrows,
         ncols,
@@ -2838,8 +2839,8 @@ def _plot_harmonic_coefficient_quilt_vs_t(
         sharey=scale_mode == "global",
         squeeze=False,
     )
-    for panel_index, (iq2, ixb) in enumerate(populated_panels):
-            row, column = divmod(panel_index, ncols)
+    for iq2, ixb in populated_panels:
+            row, column = panel_positions[(iq2, ixb)]
             ax = axes[row, column]
             mask = fit_mask[iq2, ixb, :]
             ax.axhline(0.0, color="black", linewidth=0.45, alpha=0.35)
@@ -2878,16 +2879,18 @@ def _plot_harmonic_coefficient_quilt_vs_t(
             if scale_mode == "panel":
                 ax.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2), useMathText=True)
                 ax.yaxis.get_offset_text().set_fontsize(5)
-            if row == nrows - 1:
+            if iq2 == active_q2[0]:
                 ax.set_xlabel("-t [GeV^2]", fontsize=7)
             ax.set_title(
                 f"Q2 {q2_labels[iq2]}; xB {xb_labels[ixb]}",
                 fontsize=7,
                 pad=2,
             )
-    for panel_index in range(len(populated_panels), nrows * ncols):
-        row, column = divmod(panel_index, ncols)
-        axes[row, column].set_axis_off()
+    occupied_positions = set(panel_positions.values())
+    for row in range(nrows):
+        for column in range(ncols):
+            if (row, column) not in occupied_positions:
+                axes[row, column].set_axis_off()
 
     handles = [
         plt.Line2D(
@@ -2910,7 +2913,7 @@ def _plot_harmonic_coefficient_quilt_vs_t(
     )
     fig.suptitle(
         "Harmonic coefficients vs -t quilt\n"
-        "populated Q2/xB panels in ascending bin order; "
+        "Q2 increases bottom to top; xB increases left to right; "
         + (
             "each panel uses its corresponding page scale"
             if scale_mode == "panel"
@@ -3123,7 +3126,8 @@ def _plot_cross_section_quilts_vs_phi(
 
         global_ylim = _padded_plot_limits(global_low, global_high, include_zero=True)
         populated_panels = sorted(panel_data)
-        nrows, ncols = _compact_quilt_shape(len(populated_panels))
+        active_q2, ncols, panel_positions = _ordered_quilt_axes(populated_panels)
+        nrows = len(active_q2)
         fig, axes = plt.subplots(
             nrows,
             ncols,
@@ -3132,8 +3136,8 @@ def _plot_cross_section_quilts_vs_phi(
             sharey=scale_mode == "global",
             squeeze=False,
         )
-        for panel_index, (iq2, ixb) in enumerate(populated_panels):
-                row, column = divmod(panel_index, ncols)
+        for iq2, ixb in populated_panels:
+                row, column = panel_positions[(iq2, ixb)]
                 ax = axes[row, column]
                 item = panel_data[(iq2, ixb)]
                 valid, y, fit_curve = item
@@ -3163,16 +3167,18 @@ def _plot_cross_section_quilts_vs_phi(
                 if scale_mode == "panel":
                     ax.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2), useMathText=True)
                     ax.yaxis.get_offset_text().set_fontsize(5)
-                if row == nrows - 1:
+                if iq2 == active_q2[0]:
                     ax.set_xlabel("phi [deg]", fontsize=7)
                 ax.set_title(
                     f"Q2 {q2_labels[iq2]}; xB {xb_labels[ixb]}",
                     fontsize=7,
                     pad=2,
                 )
-        for panel_index in range(len(populated_panels), nrows * ncols):
-            row, column = divmod(panel_index, ncols)
-            axes[row, column].set_axis_off()
+        occupied_positions = set(panel_positions.values())
+        for row in range(nrows):
+            for column in range(ncols):
+                if (row, column) not in occupied_positions:
+                    axes[row, column].set_axis_off()
 
         handles = [
             plt.Line2D([0], [0], color="#1f78b4", marker="o", linewidth=0.8,
@@ -3190,7 +3196,7 @@ def _plot_cross_section_quilts_vs_phi(
         fig.suptitle(
             "Reduced cross section vs phi quilt\n"
             f"-t {t_edges[it]:g}-{t_edges[it + 1]:g} GeV^2; "
-            "populated Q2/xB panels in ascending bin order; "
+            "Q2 increases bottom to top; xB increases left to right; "
             + ("independent panel scales" if scale_mode == "panel" else "shared page scale"),
             y=0.955,
         )
@@ -3216,13 +3222,22 @@ def _plot_cross_section_quilts_vs_phi(
     return pages
 
 
-def _compact_quilt_shape(panel_count: int) -> tuple[int, int]:
-    """Return a compact, mildly landscape grid for populated quilt panels."""
-    if panel_count <= 0:
-        return 1, 1
-    columns = min(6, max(1, int(np.ceil(np.sqrt(panel_count * 1.5)))))
-    rows = int(np.ceil(panel_count / columns))
-    return rows, columns
+def _ordered_quilt_axes(
+    panels: list[tuple[int, int]],
+) -> tuple[list[int], int, dict[tuple[int, int], tuple[int, int]]]:
+    """Pack xB-ordered panels into Q2-ordered rows without phase-space gaps."""
+    if not panels:
+        return [0], 1, {}
+    active_q2 = sorted({iq2 for iq2, _ in panels})
+    q2_rows = {iq2: len(active_q2) - 1 - index for index, iq2 in enumerate(active_q2)}
+    positions: dict[tuple[int, int], tuple[int, int]] = {}
+    columns = 1
+    for iq2 in active_q2:
+        row_panels = sorted(ixb for panel_q2, ixb in panels if panel_q2 == iq2)
+        columns = max(columns, len(row_panels))
+        for column, ixb in enumerate(row_panels):
+            positions[(iq2, ixb)] = (q2_rows[iq2], column)
+    return active_q2, columns, positions
 
 
 def _padded_plot_limits(
