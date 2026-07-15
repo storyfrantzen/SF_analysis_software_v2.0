@@ -2829,8 +2829,8 @@ def _plot_harmonic_coefficient_quilt_vs_t(
         for ixb in range(nxb)
         if np.any(fit_mask[iq2, ixb, :])
     ]
-    active_q2, ncols, panel_positions = _ordered_quilt_axes(populated_panels)
-    nrows = len(active_q2)
+    active_q2, active_xb, panel_positions = _ordered_quilt_axes(populated_panels)
+    nrows, ncols = len(active_q2), len(active_xb)
     fig, axes = plt.subplots(
         nrows,
         ncols,
@@ -3126,8 +3126,8 @@ def _plot_cross_section_quilts_vs_phi(
 
         global_ylim = _padded_plot_limits(global_low, global_high, include_zero=True)
         populated_panels = sorted(panel_data)
-        active_q2, ncols, panel_positions = _ordered_quilt_axes(populated_panels)
-        nrows = len(active_q2)
+        active_q2, active_xb, panel_positions = _ordered_quilt_axes(populated_panels)
+        nrows, ncols = len(active_q2), len(active_xb)
         fig, axes = plt.subplots(
             nrows,
             ncols,
@@ -3224,20 +3224,19 @@ def _plot_cross_section_quilts_vs_phi(
 
 def _ordered_quilt_axes(
     panels: list[tuple[int, int]],
-) -> tuple[list[int], int, dict[tuple[int, int], tuple[int, int]]]:
-    """Pack xB-ordered panels into Q2-ordered rows without phase-space gaps."""
+) -> tuple[list[int], list[int], dict[tuple[int, int], tuple[int, int]]]:
+    """Preserve shared xB columns and Q2 rows, trimming empty outer bins."""
     if not panels:
-        return [0], 1, {}
+        return [0], [0], {}
     active_q2 = sorted({iq2 for iq2, _ in panels})
+    active_xb = sorted({ixb for _, ixb in panels})
     q2_rows = {iq2: len(active_q2) - 1 - index for index, iq2 in enumerate(active_q2)}
-    positions: dict[tuple[int, int], tuple[int, int]] = {}
-    columns = 1
-    for iq2 in active_q2:
-        row_panels = sorted(ixb for panel_q2, ixb in panels if panel_q2 == iq2)
-        columns = max(columns, len(row_panels))
-        for column, ixb in enumerate(row_panels):
-            positions[(iq2, ixb)] = (q2_rows[iq2], column)
-    return active_q2, columns, positions
+    xb_columns = {ixb: index for index, ixb in enumerate(active_xb)}
+    positions = {
+        (iq2, ixb): (q2_rows[iq2], xb_columns[ixb])
+        for iq2, ixb in panels
+    }
+    return active_q2, active_xb, positions
 
 
 def _padded_plot_limits(
