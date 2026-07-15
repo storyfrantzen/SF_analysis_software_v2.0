@@ -766,18 +766,17 @@ def add_cut_result_quantities(arrays: dict[str, Any]) -> None:
 
         reference = arrays.get(evaluated_name, arrays.get(failed_name))
         rows = len(np.asarray(reference))
-        evaluated_values = np.asarray(
-            arrays.get(evaluated_name, np.full(rows, "", dtype=str)), dtype=str
-        )
-        failed_values = np.asarray(
-            arrays.get(failed_name, np.full(rows, "", dtype=str)), dtype=str
-        )
+        # PyROOT may expose std::string branches as per-row character arrays
+        # rather than a rectangular NumPy string array.  Keep the rows in their
+        # original representation and normalize each value individually.
+        evaluated_values = arrays.get(evaluated_name, np.full(rows, "", dtype=str))
+        failed_values = arrays.get(failed_name, np.full(rows, "", dtype=str))
         evaluated_sets: list[set[str]] = []
         failed_sets: list[set[str]] = []
         cut_names: set[str] = set()
         for row in range(rows):
-            evaluated = csv_name_set(evaluated_values[row])
-            failed = csv_name_set(failed_values[row])
+            evaluated = csv_name_set(root_text_value(evaluated_values[row]))
+            failed = csv_name_set(root_text_value(failed_values[row]))
             evaluated.update(failed)  # Supports older files with failedCuts only.
             evaluated_sets.append(evaluated)
             failed_sets.append(failed)
@@ -801,6 +800,29 @@ def add_cut_result_quantities(arrays: dict[str, Any]) -> None:
 
 def csv_name_set(value: Any) -> set[str]:
     return {name.strip() for name in str(value).split(",") if name.strip()}
+
+
+def root_text_value(value: Any) -> str:
+    """Normalize scalar text and PyROOT's per-row string representations."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", errors="replace").rstrip("\x00")
+    if isinstance(value, np.ndarray) and value.ndim == 0:
+        return root_text_value(value.item())
+    try:
+        items = list(value)
+    except TypeError:
+        return str(value)
+    if not items:
+        return ""
+    if all(isinstance(item, (int, np.integer)) for item in items):
+        return bytes(int(item) for item in items if int(item) != 0).decode(
+            "utf-8", errors="replace"
+        )
+    text_items = [root_text_value(item) for item in items]
+    separator = "" if all(len(item) <= 1 for item in text_items) else ","
+    return separator.join(text_items)
 
 
 def sanitize_cut_name(name: str) -> str:

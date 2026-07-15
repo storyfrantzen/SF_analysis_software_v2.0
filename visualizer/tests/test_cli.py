@@ -303,6 +303,24 @@ class VisualizerCliTests(unittest.TestCase):
             filters["passCut_electron_fiducial"]["labels"], ["fail", "pass"]
         )
 
+    def test_pyroot_character_arrays_expand_to_cut_quantities(self) -> None:
+        arrays = add_derived_quantities({
+            "Q2": np.array([1.0, 2.0]),
+            "evaluatedCuts": np.array([
+                np.array(list("electron.fiducial,proton.fiducial")),
+                np.array(list("electron.fiducial")),
+            ], dtype=object),
+            "failedCuts": np.array([
+                np.frombuffer(b"proton.fiducial", dtype=np.uint8),
+                np.array([], dtype=np.uint8),
+            ], dtype=object),
+        })
+        np.testing.assert_allclose(
+            arrays["passCut_electron_fiducial"], [1.0, 1.0]
+        )
+        self.assertEqual(arrays["passCut_proton_fiducial"][0], 0.0)
+        self.assertTrue(np.isnan(arrays["passCut_proton_fiducial"][1]))
+
     def test_legacy_entry_point_remains_compatible(self) -> None:
         package_html = self.run_visualizer(
             [sys.executable, "-m", "visualizer"], "package.html"
