@@ -10,7 +10,12 @@ import unittest
 
 import numpy as np
 
-from visualizer.app import add_derived_quantities, build_payload, label_for
+from visualizer.app import (
+    add_derived_quantities,
+    build_payload,
+    label_for,
+    normalize_visual_columns,
+)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -223,12 +228,31 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertLess(variables["m2_miss"]["max"], 1.0)
         self.assertIn("pSector", {item["name"] for item in payload["sectorSplits"]})
 
-    def test_particle_quantity_labels_follow_branch_names(self) -> None:
-        self.assertEqual(label_for("electronP"), "electronP")
-        self.assertEqual(label_for("protonP"), "protonP")
-        self.assertEqual(label_for("electronTheta_deg"), "electronTheta deg")
-        self.assertEqual(label_for("protonTheta_deg"), "protonTheta deg")
-        self.assertEqual(label_for("pi0_theta_deg"), "pi0_theta deg")
+    def test_particle_quantity_labels_are_standardized(self) -> None:
+        self.assertEqual(label_for("electronP"), "electron p")
+        self.assertEqual(label_for("protonP"), "proton p")
+        self.assertEqual(label_for("rec_eIdx"), "REC electron index")
+        self.assertEqual(label_for("rec_electronIdx"), "REC electron index")
+        self.assertEqual(label_for("rec_pDet"), "REC proton detector")
+        self.assertEqual(label_for("rec_gamma1Sector"), "REC gamma 1 sector")
+        self.assertEqual(label_for("gen_gamma2P"), "GEN gamma 2 p")
+        self.assertEqual(label_for("electronTheta_deg"), "electron theta deg")
+        self.assertEqual(label_for("protonTheta_deg"), "proton theta deg")
+        self.assertEqual(label_for("pi0_theta_deg"), "pi0 theta deg")
+        self.assertEqual(label_for("rec_electronEECIN"), "REC electron E ECIN")
+
+    def test_prefixed_particle_aliases_are_deduplicated(self) -> None:
+        values = np.array([1.0, 2.0])
+        normalized = normalize_visual_columns({
+            "rec_eIdx": values,
+            "rec_electronIdx": values,
+            "rec_g1Sector": values,
+            "rec_gamma1Sector": values,
+        })
+        self.assertNotIn("rec_eIdx", normalized)
+        self.assertIn("rec_electronIdx", normalized)
+        self.assertNotIn("rec_g1Sector", normalized)
+        self.assertIn("rec_gamma1Sector", normalized)
 
     def test_tagged_cut_sets_expand_to_filterable_pass_quantities(self) -> None:
         arrays = add_derived_quantities({

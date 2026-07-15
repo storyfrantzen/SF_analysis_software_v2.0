@@ -194,7 +194,94 @@ REDUNDANT_COLUMNS = (
     ("gamma1Sector", "g1Sector"),
     ("gamma2Sector", "g2Sector"),
     ("rec_proton_detector", "pDet"),
+    ("rec_eIdx", "rec_electronIdx"),
+    ("rec_eDet", "rec_electronDet"),
+    ("rec_eSector", "rec_electronSector"),
+    ("rec_pIdx", "rec_protonIdx"),
+    ("rec_pDet", "rec_protonDet"),
+    ("rec_pSector", "rec_protonSector"),
+    ("rec_g1Idx", "rec_gamma1Idx"),
+    ("rec_g1Det", "rec_gamma1Det"),
+    ("rec_g1Sector", "rec_gamma1Sector"),
+    ("rec_g2Idx", "rec_gamma2Idx"),
+    ("rec_g2Det", "rec_gamma2Det"),
+    ("rec_g2Sector", "rec_gamma2Sector"),
+    ("gen_eIdx", "gen_electronIdx"),
+    ("gen_eDet", "gen_electronDet"),
+    ("gen_eSector", "gen_electronSector"),
+    ("gen_pIdx", "gen_protonIdx"),
+    ("gen_pDet", "gen_protonDet"),
+    ("gen_pSector", "gen_protonSector"),
+    ("gen_g1Idx", "gen_gamma1Idx"),
+    ("gen_g1Det", "gen_gamma1Det"),
+    ("gen_g1Sector", "gen_gamma1Sector"),
+    ("gen_g2Idx", "gen_gamma2Idx"),
+    ("gen_g2Det", "gen_gamma2Det"),
+    ("gen_g2Sector", "gen_gamma2Sector"),
 )
+
+
+PARTICLE_DISPLAY_PREFIXES = (
+    ("electron", "electron"),
+    ("proton", "proton"),
+    ("gamma1", "gamma 1"),
+    ("gamma2", "gamma 2"),
+    ("gamma", "gamma"),
+    ("pi0", "pi0"),
+    ("g1", "gamma 1"),
+    ("g2", "gamma 2"),
+    ("e", "electron"),
+    ("p", "proton"),
+)
+
+
+PARTICLE_QUANTITY_DISPLAY_NAMES = {
+    "idx": "index",
+    "index": "index",
+    "particleidx": "index",
+    "matchedgenidx": "matched GEN index",
+    "matchangledeg": "match angle deg",
+    "pid": "pid",
+    "charge": "charge",
+    "status": "status",
+    "det": "detector",
+    "detector": "detector",
+    "sector": "sector",
+    "p": "p",
+    "px": "px",
+    "py": "py",
+    "pz": "pz",
+    "praw": "p raw",
+    "theta": "theta",
+    "thetadeg": "theta deg",
+    "thetaraw": "theta raw",
+    "thetarawdeg": "theta raw deg",
+    "phi": "phi",
+    "phideg": "phi deg",
+    "phiraw": "phi raw",
+    "phirawdeg": "phi raw deg",
+    "deltap": "delta p",
+    "deltatheta": "delta theta",
+    "deltaphi": "delta phi",
+    "beta": "beta",
+    "chi2pid": "chi2 pid",
+    "trackchi2": "track chi2",
+    "trackndf": "track NDF",
+    "trackchi2n": "track chi2/NDF",
+    "vx": "vx",
+    "vy": "vy",
+    "vz": "vz",
+    "time": "time",
+    "epcal": "E PCAL",
+    "eecin": "E ECIN",
+    "eecout": "E ECOUT",
+    "samplingfraction": "SF",
+    "samplingfractionpcal": "SF PCAL",
+    "samplingfractionecin": "SF ECIN",
+    "samplingfractionecout": "SF ECOUT",
+    "samplingfractionecal": "SF ECAL",
+    "passfiducial": "fiducial",
+}
 
 
 DISPLAY_NAMES = {
@@ -1402,9 +1489,34 @@ def is_integer_category(name: str) -> bool:
 
 
 def label_for(name: str) -> str:
+    particle_label = particle_display_label(name)
+    if particle_label is not None:
+        return particle_label
     if name in DISPLAY_NAMES:
         return DISPLAY_NAMES[name]
     return name.replace("_", " ")
+
+
+def particle_display_label(name: str) -> str | None:
+    lowered = name.lower()
+    source = ""
+    base = name
+    if lowered.startswith("rec_"):
+        source = "REC"
+        base = name[4:]
+    elif lowered.startswith("gen_"):
+        source = "GEN"
+        base = name[4:]
+
+    canonical = base.replace("_", "").lower()
+    for prefix, particle in PARTICLE_DISPLAY_PREFIXES:
+        if not canonical.startswith(prefix):
+            continue
+        quantity = PARTICLE_QUANTITY_DISPLAY_NAMES.get(canonical[len(prefix):])
+        if quantity is None:
+            continue
+        return " ".join(part for part in (source, particle, quantity) if part)
+    return None
 
 
 def first_present(

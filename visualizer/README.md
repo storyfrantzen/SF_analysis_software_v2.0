@@ -79,6 +79,12 @@ limits to keep rare extreme tails from dominating the initial display; the
 events remain embedded and available through manually entered axis limits and
 constraints.
 
+Particle quantities use a consistent selector vocabulary regardless of whether
+the input branch uses a short alias (`eIdx`, `pDet`, `g1Sector`) or a full name
+(`electronIdx`, `protonDet`, `gamma1Sector`). Display labels use `REC`/`GEN`, the
+full particle name, and a normalized quantity, while the underlying branch keys
+remain unchanged. Duplicate short/full aliases are shown only once.
+
 Proton-sector split views distinguish FD sectors 1-6 from sector 0, which
 denotes CD protons. The FD facets occupy the first two three-column rows in
 sector order, and the CD facet is centered by itself in the third row.
