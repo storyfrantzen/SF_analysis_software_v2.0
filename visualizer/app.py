@@ -2728,6 +2728,7 @@ let contextMenuProfileBin = null;
 let referenceCurveId = 0;
 let topologyCollapsed = true;
 let canvasToolbarCollapsed = false;
+let canvasToolbarExpandedHeight = 0;
 const sharedFilterState = makeFilterState();
 let sharedPanelFilters = true;
 let activeRanges = sharedFilterState.ranges;
@@ -4084,14 +4085,17 @@ function syncPanelViewButtons() {{
 
 function toggleCanvasToolbar() {{
   canvasToolbarCollapsed = !canvasToolbarCollapsed;
-  syncCanvasToolbarVisibility();
-  updatePanelVisibility();
+  update();
 }}
 
 function syncCanvasToolbarVisibility() {{
   const toolbar = el("canvasToolbar");
   const button = el("toggleCanvasToolbar");
   if (!toolbar || !button) return;
+  if (!toolbar.hidden) {{
+    const measuredHeight = Math.ceil(toolbar.getBoundingClientRect().height);
+    if (measuredHeight > 0) canvasToolbarExpandedHeight = measuredHeight;
+  }}
   toolbar.hidden = canvasToolbarCollapsed;
   const actionLabel = canvasToolbarCollapsed ? "Show plot controls" : "Hide plot controls";
   button.textContent = actionLabel;
@@ -5356,8 +5360,9 @@ function preparePanelCanvas(panel) {{
   const canvas = el("plot" + panel.key);
   const width = canvas.getBoundingClientRect().width;
   const aspect = canonicalPlotAspect(panel.plotAspect);
+  const reclaimedHeight = canvasToolbarCollapsed ? canvasToolbarExpandedHeight : 0;
   canvas.style.minHeight = "0";
-  canvas.style.height = `${{clamp(width / aspect, 180, 1400)}}px`;
+  canvas.style.height = `${{clamp(width / aspect + reclaimedHeight, 180, 1400)}}px`;
 }}
 
 function colors() {{
@@ -6103,8 +6108,9 @@ function prepareFacetCanvas(canvas, panel, facetCount, splitName = "", facets = 
   const cellWidth = Math.max(120, (width - gapWidth - 16) / Math.max(1, columns));
   const plotWidth = Math.max(80, cellWidth - 60);
   const cellHeight = plotWidth / canonicalPlotAspect(panel.plotAspect) + 64;
+  const reclaimedHeight = canvasToolbarCollapsed ? canvasToolbarExpandedHeight : 0;
   canvas.style.minHeight = "0";
-  canvas.style.height = `${{clamp(rows * cellHeight + Math.max(0, rows - 1) * 30 + 12, 320, 2800)}}px`;
+  canvas.style.height = `${{clamp(rows * cellHeight + Math.max(0, rows - 1) * 30 + 12 + reclaimedHeight, 320, 2800)}}px`;
 }}
 
 function panelArea(area, layout, index, colorScaleSlots = 0) {{

@@ -136,7 +136,9 @@ In split view, the single toolbar moves between panel-specific rails with the
 active panel. `Hide plot controls` collapses that rail and leaves a persistent
 `Show plot controls` action in the panel controls. The rails compensate for
 different title and active-filter badge heights, keeping the 1D and 2D canvases
-flush whether the toolbar is expanded or collapsed.
+flush whether the toolbar is expanded or collapsed. When controls are hidden,
+the canvas reclaims the toolbar's measured height, enlarging the plotting area
+without altering the panel's stored plot-aspect setting.
 The panel control block provides separate `split view` and `shared panel
 filters` buttons. Filter sharing is enabled by default. Disabling it gives each
 panel its own topology selections, numeric constraints, and text searches;
