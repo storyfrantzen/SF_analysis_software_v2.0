@@ -2904,8 +2904,22 @@ def _plot_harmonic_coefficient_quilt_vs_t(
         ),
         y=0.985,
     )
-    fig.supylabel("Harmonic coefficient [nb/(GeV^2 rad)]")
-    fig.tight_layout(rect=(0.02, 0.03, 0.995, 0.94))
+    fig.text(
+        0.012,
+        0.5,
+        "Harmonic coefficient [nb/(GeV^2 rad)]",
+        rotation="vertical",
+        va="center",
+        fontsize=9,
+    )
+    fig.subplots_adjust(
+        left=0.052,
+        right=0.995,
+        bottom=0.045,
+        top=0.915,
+        wspace=0.16,
+        hspace=0.18,
+    )
     pdf.savefig(fig)
     plt.close(fig)
     return 1
@@ -3115,7 +3129,7 @@ def _plot_cross_section_quilts_vs_phi(
                     phi_centers[valid],
                     y[valid],
                     yerr=yerr[valid],
-                    fmt="o-",
+                    fmt="o",
                     capsize=1.0,
                     linewidth=0.7,
                     markersize=2.2,
@@ -3157,8 +3171,22 @@ def _plot_cross_section_quilts_vs_phi(
             + ("independent panel scales" if scale_mode == "panel" else "shared page scale"),
             y=0.987,
         )
-        fig.supylabel(f"Reduced cross section [{units}]")
-        fig.tight_layout(rect=(0.025, 0.03, 0.995, 0.935))
+        fig.text(
+            0.012,
+            0.5,
+            f"Reduced cross section [{units}]",
+            rotation="vertical",
+            va="center",
+            fontsize=9,
+        )
+        fig.subplots_adjust(
+            left=0.052,
+            right=0.995,
+            bottom=0.045,
+            top=0.91,
+            wspace=0.16,
+            hspace=0.18,
+        )
         pdf.savefig(fig)
         plt.close(fig)
         pages += 1
