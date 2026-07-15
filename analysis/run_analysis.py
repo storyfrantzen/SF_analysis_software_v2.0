@@ -282,6 +282,17 @@ def parser() -> argparse.ArgumentParser:
     xsec_plots.add_argument("harmonics", type=Path)
     xsec_plots.add_argument("--output-dir", type=Path, required=True)
     xsec_plots.add_argument("--min-points", type=int, default=4)
+    xsec_plots.add_argument(
+        "--quilt",
+        action="store_true",
+        help="Prepend one stitched Q2-by-xB reduced-cross-section quilt per -t bin",
+    )
+    xsec_plots.add_argument(
+        "--quilt-scale-mode",
+        choices=("global", "panel"),
+        default="panel",
+        help="Use one y scale per -t quilt or independently scale every panel (default: panel)",
+    )
 
     acceptance = commands.add_parser("acceptance-plots", help="Plot acceptance diagnostics from response metadata")
     acceptance.add_argument("response_meta", type=Path)
@@ -1915,6 +1926,8 @@ def command_cross_section_plots(args: argparse.Namespace) -> None:
         args.min_points,
         args.output_dir / "reduced_cross_section_vs_phi_with_fits.pdf",
         args.output_dir / "reduced_cross_section_vs_phi_summary.csv",
+        include_quilt=args.quilt,
+        quilt_scale_mode=args.quilt_scale_mode,
     )
     print(f"Cross-section phi pages: {pages}")
     print(f"Wrote cross-section plots under {args.output_dir}")
@@ -2912,6 +2925,8 @@ def _plot_cross_section_vs_phi(
     min_points: int,
     pdf_path: Path,
     csv_path: Path,
+    include_quilt: bool = False,
+    quilt_scale_mode: str = "panel",
 ) -> int:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
@@ -2926,6 +2941,22 @@ def _plot_cross_section_vs_phi(
     ]
 
     with PdfPages(pdf_path) as pdf:
+        if include_quilt:
+            pages += _plot_cross_section_quilts_vs_phi(
+                pdf,
+                values,
+                uncertainties,
+                units,
+                phi_edges,
+                parameters,
+                chi2_ndf,
+                points,
+                q2_edges,
+                xb_edges,
+                t_edges,
+                min_points,
+                quilt_scale_mode,
+            )
         for iq2 in range(values.shape[0]):
             for ixb in range(values.shape[1]):
                 for it in range(values.shape[2]):
@@ -3006,6 +3037,154 @@ def _plot_cross_section_vs_phi(
 
     csv_path.write_text("\n".join(csv_lines) + "\n", encoding="utf-8")
     return pages
+
+
+def _plot_cross_section_quilts_vs_phi(
+    pdf,
+    values: np.ndarray,
+    uncertainties: np.ndarray,
+    units: str,
+    phi_edges: np.ndarray,
+    parameters: np.ndarray,
+    chi2_ndf: np.ndarray,
+    points: np.ndarray,
+    q2_edges: np.ndarray,
+    xb_edges: np.ndarray,
+    t_edges: np.ndarray,
+    min_points: int,
+    scale_mode: str,
+) -> int:
+    import matplotlib.pyplot as plt
+
+    if scale_mode not in ("global", "panel"):
+        raise ValueError("--quilt-scale-mode must be global or panel")
+    nq2, nxb, nt = values.shape[:3]
+    phi_centers = 0.5 * (phi_edges[:-1] + phi_edges[1:])
+    phi_curve = np.linspace(float(phi_edges[0]), float(phi_edges[-1]), 361)
+    radians = np.deg2rad(phi_curve)
+    q2_labels = _edge_labels(q2_edges)
+    xb_labels = _edge_labels(xb_edges)
+    pages = 0
+
+    for it in range(nt):
+        panel_data: dict[tuple[int, int], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        global_low: list[float] = []
+        global_high: list[float] = []
+        for iq2 in range(nq2):
+            for ixb in range(nxb):
+                y = values[iq2, ixb, it, :]
+                yerr = uncertainties[iq2, ixb, it, :]
+                p = parameters[iq2, ixb, it, :]
+                valid = np.isfinite(y) & np.isfinite(yerr) & (yerr > 0.0)
+                fit_valid = (
+                    np.all(np.isfinite(p))
+                    and np.isfinite(chi2_ndf[iq2, ixb, it])
+                    and points[iq2, ixb, it] >= min_points
+                )
+                if not fit_valid or not np.any(valid):
+                    continue
+                fit_curve = p[0] + p[1] * np.cos(radians) + p[2] * np.cos(2.0 * radians)
+                panel_data[(iq2, ixb)] = (valid, y, fit_curve)
+                finite_fit = fit_curve[np.isfinite(fit_curve)]
+                global_low.extend((y[valid] - yerr[valid]).tolist())
+                global_high.extend((y[valid] + yerr[valid]).tolist())
+                global_low.extend(finite_fit.tolist())
+                global_high.extend(finite_fit.tolist())
+        if not panel_data:
+            continue
+
+        global_ylim = _padded_plot_limits(global_low, global_high, include_zero=True)
+        fig, axes = plt.subplots(
+            nq2,
+            nxb,
+            figsize=(max(10.0, 1.8 * nxb), max(7.5, 1.3 * nq2)),
+            sharex=True,
+            sharey=scale_mode == "global",
+            squeeze=False,
+        )
+        for iq2 in range(nq2):
+            for ixb in range(nxb):
+                ax = axes[nq2 - 1 - iq2, ixb]
+                item = panel_data.get((iq2, ixb))
+                if item is None:
+                    ax.set_axis_off()
+                    continue
+                valid, y, fit_curve = item
+                yerr = uncertainties[iq2, ixb, it, :]
+                ax.errorbar(
+                    phi_centers[valid],
+                    y[valid],
+                    yerr=yerr[valid],
+                    fmt="o-",
+                    capsize=1.0,
+                    linewidth=0.7,
+                    markersize=2.2,
+                    color="#1f78b4",
+                )
+                ax.plot(phi_curve, fit_curve, color="#d95f02", linewidth=0.9)
+                ax.axhline(0.0, color="black", linewidth=0.4, alpha=0.3)
+                ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
+                if scale_mode == "global":
+                    ax.set_ylim(*global_ylim)
+                else:
+                    finite_fit = fit_curve[np.isfinite(fit_curve)]
+                    local_low = (y[valid] - yerr[valid]).tolist() + finite_fit.tolist()
+                    local_high = (y[valid] + yerr[valid]).tolist() + finite_fit.tolist()
+                    ax.set_ylim(*_padded_plot_limits(local_low, local_high, include_zero=True))
+                ax.grid(True, alpha=0.16, linewidth=0.45)
+                ax.tick_params(axis="both", labelsize=6, length=2, labelleft=True)
+                if scale_mode == "panel":
+                    ax.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2), useMathText=True)
+                    ax.yaxis.get_offset_text().set_fontsize(5)
+                if iq2 == 0:
+                    ax.set_xlabel("phi [deg]", fontsize=7)
+                if ixb == 0:
+                    ax.set_ylabel(f"Q2 {q2_labels[iq2]}", fontsize=7)
+                if iq2 == nq2 - 1:
+                    ax.set_title(f"xB {xb_labels[ixb]}", fontsize=7)
+
+        handles = [
+            plt.Line2D([0], [0], color="#1f78b4", marker="o", linewidth=0.8,
+                       markersize=3, label="reduced cross section"),
+            plt.Line2D([0], [0], color="#d95f02", linewidth=1.1,
+                       label="A + B cos(phi) + C cos(2phi)"),
+        ]
+        fig.legend(handles=handles, loc="upper center", ncol=2, fontsize="small")
+        fig.suptitle(
+            "Reduced cross section vs phi quilt\n"
+            f"-t {t_edges[it]:g}-{t_edges[it + 1]:g} GeV^2; "
+            "Q2 increases bottom to top; xB increases left to right; "
+            + ("independent panel scales" if scale_mode == "panel" else "shared page scale"),
+            y=0.987,
+        )
+        fig.supylabel(f"Reduced cross section [{units}]")
+        fig.tight_layout(rect=(0.025, 0.03, 0.995, 0.935))
+        pdf.savefig(fig)
+        plt.close(fig)
+        pages += 1
+    return pages
+
+
+def _padded_plot_limits(
+    lower_values: list[float],
+    upper_values: list[float],
+    *,
+    include_zero: bool,
+) -> tuple[float, float]:
+    finite_lower = np.asarray(lower_values, dtype=float)
+    finite_upper = np.asarray(upper_values, dtype=float)
+    finite_lower = finite_lower[np.isfinite(finite_lower)]
+    finite_upper = finite_upper[np.isfinite(finite_upper)]
+    if not finite_lower.size or not finite_upper.size:
+        return (-1.0, 1.0)
+    lower = float(np.min(finite_lower))
+    upper = float(np.max(finite_upper))
+    if include_zero:
+        lower = min(0.0, lower)
+        upper = max(0.0, upper)
+    span = upper - lower
+    padding = 0.08 * span if span > 0.0 else max(abs(lower), abs(upper), 1.0) * 0.08
+    return lower - padding, upper + padding
 
 
 def _plot_heatmap(
