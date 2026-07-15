@@ -203,9 +203,13 @@ also derive total and PCAL/ECIN/ECOUT electron sampling fractions from the store
 calorimeter energies divided by `electronP`.
 Joined generated/reconstructed event samples made by `build_event_sample.py`
 carry every scalar branch from the selected reconstructed tree with a `rec_`
-prefix, so MC acceptance visualizers expose the same reconstructed filters and
-kinematic branches as the selected data visualizers after the `.npz` and HTML
-are regenerated. Newly converted MC files store complete per-particle GEN/LUND
+prefix. The generic `selectedRoles` and role-aligned selected-particle vectors
+are also expanded symmetrically into scalar quantities such as
+`rec_electronP`, `rec_protonP`, `rec_gamma1P`, and `rec_gamma2P`, with matching
+index, PID, detector, sector, theta, and phi fields. Thus MC acceptance
+visualizers expose the same reconstructed filters and kinematic branches as the
+selected data visualizers after the `.npz` and HTML are regenerated. Newly
+converted MC files store complete per-particle GEN/LUND
 kinematics in `GeneratedEvents`; `build_event_sample.py` carries those columns,
 including `gen_electronP`, `gen_protonTheta`, `gen_gamma1Phi`, `gen_gamma2P`,
 and `gen_pi0P`, so generated-vs-reconstructed residuals can be built directly

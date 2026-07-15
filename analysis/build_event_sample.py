@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Iterable
 
@@ -67,6 +68,27 @@ GENERATED_EVENT_PARTICLE_COLUMNS = [
 REC_SOURCE_COLUMNS = ["sourceFileId", "sourceEventIndex"]
 
 REC_KEY_COLUMNS = {"runNum", "eventNum", *REC_SOURCE_COLUMNS}
+
+SELECTED_PARTICLE_COLUMNS = (
+    "selectedRoles",
+    "selectedIdx",
+    "selectedPid",
+    "selectedDet",
+    "selectedSector",
+    "selectedP",
+    "selectedTheta",
+    "selectedPhi",
+)
+
+SELECTED_PARTICLE_FIELDS = (
+    ("selectedIdx", "Idx", np.int64, -999),
+    ("selectedPid", "Pid", np.int64, -999),
+    ("selectedDet", "Det", np.int64, -999),
+    ("selectedSector", "Sector", np.int64, -999),
+    ("selectedP", "P", float, np.nan),
+    ("selectedTheta", "Theta", float, np.nan),
+    ("selectedPhi", "Phi", float, np.nan),
+)
 
 REC_COLUMN_ALIASES = {
     "Q2": "rec_Q2",
@@ -159,6 +181,9 @@ def main() -> int:
         raise RuntimeError(f"Could not find tree {args.tree} in {selected_path}")
     has_source_key = all(selected_tree.GetBranch(name) for name in REC_SOURCE_COLUMNS)
     requested_rec_columns = scalar_branch_names(selected_tree)
+    selected_particle_columns = [
+        name for name in SELECTED_PARTICLE_COLUMNS if selected_tree.GetBranch(name)
+    ]
     selected_file.Close()
     missing_keys = [name for name in ("runNum", "eventNum") if name not in requested_rec_columns]
     if missing_keys:
@@ -167,8 +192,12 @@ def main() -> int:
         for name in REC_SOURCE_COLUMNS:
             if name not in requested_rec_columns:
                 requested_rec_columns.append(name)
-    rec = ROOT.RDataFrame(args.tree, selected_path).AsNumpy(requested_rec_columns)
+    rec_input_columns = requested_rec_columns + [
+        name for name in selected_particle_columns if name not in requested_rec_columns
+    ]
+    rec = ROOT.RDataFrame(args.tree, selected_path).AsNumpy(rec_input_columns)
     rec_values = reconstructed_columns(rec, requested_rec_columns)
+    rec_values.update(expand_selected_particle_columns(rec))
 
     if args.matched_only:
         if not has_generated_tree:
@@ -211,7 +240,7 @@ def main() -> int:
             "unmatched_selected_events": stats["unmatched_selected_events"],
             "invalid_generated_matches": stats["invalid_generated_matches"],
             "reconstructed_columns": sorted(rec_values),
-            "schema_version": 5,
+            "schema_version": 6,
         }
         write_sample(args.output, sample, metadata)
         print(f"Generated events scanned: {stats['generated_events_scanned']}")
@@ -299,7 +328,7 @@ def main() -> int:
         "generated_events": int(generated.run.size),
         "selected_reconstructed_events": int(sample["rec_selected"].sum()),
         "reconstructed_columns": sorted(rec_values),
-        "schema_version": 4,
+        "schema_version": 5,
     }
     write_sample(args.output, sample, metadata)
     print(f"Generated events: {generated.run.size}")
@@ -506,6 +535,73 @@ def reconstructed_columns(rec: dict[str, np.ndarray], columns: list[str]) -> dic
         output_name = REC_COLUMN_ALIASES.get(name, f"rec_{name}")
         output.setdefault(output_name, rec[name])
     return output
+
+
+def expand_selected_particle_columns(rec: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Expand role-aligned selected-particle vectors into symmetric REC scalars."""
+    if "selectedRoles" not in rec:
+        return {}
+    roles_by_row = [vector_values(value) for value in rec["selectedRoles"]]
+    row_count = len(roles_by_row)
+    available_fields = [field for field in SELECTED_PARTICLE_FIELDS if field[0] in rec]
+    for branch_name, _, _, _ in available_fields:
+        if len(rec[branch_name]) != row_count:
+            raise ValueError(f"REC vector column {branch_name} does not match selectedRoles")
+
+    maximum_occurrences: dict[str, int] = {}
+    sanitized_roles: list[list[str]] = []
+    for roles in roles_by_row:
+        row_roles = [sanitize_role_name(role) for role in roles]
+        sanitized_roles.append(row_roles)
+        row_counts: dict[str, int] = {}
+        for role in row_roles:
+            if not role:
+                continue
+            row_counts[role] = row_counts.get(role, 0) + 1
+        for role, count in row_counts.items():
+            maximum_occurrences[role] = max(maximum_occurrences.get(role, 0), count)
+
+    output: dict[str, np.ndarray] = {}
+    for role, count in maximum_occurrences.items():
+        for occurrence in range(1, count + 1):
+            role_name = role if count == 1 else f"{role}{occurrence}"
+            for _, suffix, dtype, missing in available_fields:
+                output[f"rec_{role_name}{suffix}"] = np.full(row_count, missing, dtype=dtype)
+
+    vectors = {
+        branch_name: [vector_values(value) for value in rec[branch_name]]
+        for branch_name, _, _, _ in available_fields
+    }
+    for row, roles in enumerate(sanitized_roles):
+        occurrences: dict[str, int] = {}
+        for index, role in enumerate(roles):
+            if not role:
+                continue
+            occurrence = occurrences.get(role, 0) + 1
+            occurrences[role] = occurrence
+            role_name = role if maximum_occurrences[role] == 1 else f"{role}{occurrence}"
+            for branch_name, suffix, dtype, _ in available_fields:
+                values = vectors[branch_name][row]
+                if index >= len(values):
+                    continue
+                try:
+                    output[f"rec_{role_name}{suffix}"][row] = dtype(values[index])
+                except (TypeError, ValueError, OverflowError):
+                    continue
+    return output
+
+
+def vector_values(value) -> list:
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    try:
+        return list(value)
+    except TypeError:
+        return []
+
+
+def sanitize_role_name(value) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", str(value)).strip("_")
 
 
 if __name__ == "__main__":

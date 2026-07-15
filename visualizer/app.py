@@ -199,6 +199,7 @@ REDUNDANT_COLUMNS = (
     ("rec_eSector", "rec_electronSector"),
     ("rec_pIdx", "rec_protonIdx"),
     ("rec_pDet", "rec_protonDet"),
+    ("rec_proton_detector", "rec_protonDet"),
     ("rec_pSector", "rec_protonSector"),
     ("rec_g1Idx", "rec_gamma1Idx"),
     ("rec_g1Det", "rec_gamma1Det"),

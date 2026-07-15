@@ -234,7 +234,9 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertEqual(label_for("rec_eIdx"), "REC electron index")
         self.assertEqual(label_for("rec_electronIdx"), "REC electron index")
         self.assertEqual(label_for("rec_pDet"), "REC proton detector")
+        self.assertEqual(label_for("rec_protonP"), "REC proton p")
         self.assertEqual(label_for("rec_gamma1Sector"), "REC gamma 1 sector")
+        self.assertEqual(label_for("rec_gamma1P"), "REC gamma 1 p")
         self.assertEqual(label_for("gen_gamma2P"), "GEN gamma 2 p")
         self.assertEqual(label_for("electronTheta_deg"), "electron theta deg")
         self.assertEqual(label_for("protonTheta_deg"), "proton theta deg")
@@ -248,11 +250,15 @@ class VisualizerCliTests(unittest.TestCase):
             "rec_electronIdx": values,
             "rec_g1Sector": values,
             "rec_gamma1Sector": values,
+            "rec_proton_detector": values,
+            "rec_protonDet": values,
         })
         self.assertNotIn("rec_eIdx", normalized)
         self.assertIn("rec_electronIdx", normalized)
         self.assertNotIn("rec_g1Sector", normalized)
         self.assertIn("rec_gamma1Sector", normalized)
+        self.assertNotIn("rec_proton_detector", normalized)
+        self.assertIn("rec_protonDet", normalized)
 
     def test_tagged_cut_sets_expand_to_filterable_pass_quantities(self) -> None:
         arrays = add_derived_quantities({
