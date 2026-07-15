@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -7,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -151,12 +153,6 @@ struct CandidateOutput {
 
     double charge = NAN;
 
-    int electronIdx = -999;
-    int electronDet = -999;
-    int electronSector = -999;
-    double electronP = NAN;
-    double electronTheta = NAN;
-    double electronPhi = NAN;
     double electronEPCAL = NAN;
     double electronEECIN = NAN;
     double electronEECOUT = NAN;
@@ -225,12 +221,6 @@ struct CandidateOutput {
         tree.Branch("selectedP", &selectedP);
         tree.Branch("selectedTheta", &selectedTheta);
         tree.Branch("selectedPhi", &selectedPhi);
-        tree.Branch("electronIdx", &electronIdx, "electronIdx/I");
-        tree.Branch("electronDet", &electronDet, "electronDet/I");
-        tree.Branch("electronSector", &electronSector, "electronSector/I");
-        tree.Branch("electronP", &electronP, "electronP/D");
-        tree.Branch("electronTheta", &electronTheta, "electronTheta/D");
-        tree.Branch("electronPhi", &electronPhi, "electronPhi/D");
         tree.Branch("electronEPCAL", &electronEPCAL, "electronEPCAL/D");
         tree.Branch("electronEECIN", &electronEECIN, "electronEECIN/D");
         tree.Branch("electronEECOUT", &electronEECOUT, "electronEECOUT/D");
@@ -293,6 +283,116 @@ struct CandidateOutput {
     }
 };
 
+std::string branchRoleName(const std::string& role) {
+    std::string name;
+    bool previousUnderscore = false;
+    for (const unsigned char character : role) {
+        if (std::isalnum(character)) {
+            name.push_back(static_cast<char>(character));
+            previousUnderscore = false;
+        } else if (!name.empty() && !previousUnderscore) {
+            name.push_back('_');
+            previousUnderscore = true;
+        }
+    }
+    while (!name.empty() && name.back() == '_') name.pop_back();
+    if (name.empty()) throw std::runtime_error("Particle role cannot produce an empty branch name");
+    if (std::isdigit(static_cast<unsigned char>(name.front()))) name = "role_" + name;
+    return name;
+}
+
+struct SelectedRoleBranch {
+    std::string role;
+    int occurrence = 1;
+    std::string branchBase;
+    int idx = -999;
+    int pid = -999;
+    int det = -999;
+    int sector = -999;
+    double p = NAN;
+    double theta = NAN;
+    double phi = NAN;
+
+    void reset() {
+        idx = pid = det = sector = -999;
+        p = theta = phi = NAN;
+    }
+};
+
+class SelectedRoleBranches {
+public:
+    explicit SelectedRoleBranches(const PostCutConfig& cfg) {
+        size_t totalRoles = 0;
+        for (const auto& role : cfg.channel.particles) {
+            totalRoles += static_cast<size_t>(std::max(role.count, 0));
+        }
+        slots_.reserve(totalRoles);
+        std::map<std::string, std::string> branchOwners;
+        for (const auto& role : cfg.channel.particles) {
+            const std::string roleName = branchRoleName(role.role);
+            for (int occurrence = 1; occurrence <= role.count; ++occurrence) {
+                const std::string branchBase = role.count == 1
+                    ? roleName
+                    : roleName + std::to_string(occurrence);
+                const auto [owner, inserted] = branchOwners.emplace(branchBase, role.role);
+                if (!inserted) {
+                    throw std::runtime_error(
+                        "Particle roles '" + owner->second + "' and '" + role.role +
+                        "' produce the same branch prefix '" + branchBase + "'"
+                    );
+                }
+                lookup_[{role.role, occurrence}] = slots_.size();
+                slots_.push_back({role.role, occurrence, branchBase});
+            }
+        }
+    }
+
+    void registerBranches(TTree& tree) {
+        for (auto& slot : slots_) {
+            registerInt(tree, slot.branchBase + "Idx", slot.idx);
+            registerInt(tree, slot.branchBase + "Pid", slot.pid);
+            registerInt(tree, slot.branchBase + "Det", slot.det);
+            registerInt(tree, slot.branchBase + "Sector", slot.sector);
+            registerDouble(tree, slot.branchBase + "P", slot.p);
+            registerDouble(tree, slot.branchBase + "Theta", slot.theta);
+            registerDouble(tree, slot.branchBase + "Phi", slot.phi);
+        }
+    }
+
+    void fill(const CandidateOutput& candidate) {
+        for (auto& slot : slots_) slot.reset();
+        std::map<std::string, int> occurrences;
+        for (size_t index = 0; index < candidate.selectedRoles.size(); ++index) {
+            const std::string& role = candidate.selectedRoles[index];
+            const int occurrence = ++occurrences[role];
+            const auto found = lookup_.find({role, occurrence});
+            if (found == lookup_.end()) continue;
+            SelectedRoleBranch& slot = slots_[found->second];
+            if (index < candidate.selectedIdx.size()) slot.idx = candidate.selectedIdx[index];
+            if (index < candidate.selectedPid.size()) slot.pid = candidate.selectedPid[index];
+            if (index < candidate.selectedDet.size()) slot.det = candidate.selectedDet[index];
+            if (index < candidate.selectedSector.size()) slot.sector = candidate.selectedSector[index];
+            if (index < candidate.selectedP.size()) slot.p = candidate.selectedP[index];
+            if (index < candidate.selectedTheta.size()) slot.theta = candidate.selectedTheta[index];
+            if (index < candidate.selectedPhi.size()) slot.phi = candidate.selectedPhi[index];
+        }
+    }
+
+private:
+    static void registerInt(TTree& tree, const std::string& name, int& value) {
+        const std::string leaf = name + "/I";
+        tree.Branch(name.c_str(), &value, leaf.c_str());
+    }
+
+    static void registerDouble(TTree& tree, const std::string& name, double& value) {
+        const std::string leaf = name + "/D";
+        tree.Branch(name.c_str(), &value, leaf.c_str());
+    }
+
+    std::vector<SelectedRoleBranch> slots_;
+    std::map<std::pair<std::string, int>, size_t> lookup_;
+};
+
 const RecBranches* firstParticle(const Selection& selection, const std::string& role) {
     const auto it = selection.find(role);
     if (it == selection.end() || it->second.empty()) return nullptr;
@@ -320,15 +420,9 @@ void fillSelectedParticleBranches(const Selection& selection,
     }
 }
 
-void fillElectronBranches(const Selection& selection,
-                          CandidateOutput& out) {
+void fillElectronCalorimeterBranches(const Selection& selection,
+                                     CandidateOutput& out) {
     if (const RecBranches* electron = firstParticle(selection, "electron")) {
-        out.electronIdx = electron->particleIdx;
-        out.electronDet = electron->det;
-        out.electronSector = electron->sector;
-        out.electronP = electron->p;
-        out.electronTheta = electron->theta;
-        out.electronPhi = electron->phi;
         out.electronEPCAL = electron->E_PCAL;
         out.electronEECIN = electron->E_ECIN;
         out.electronEECOUT = electron->E_ECOUT;
@@ -418,7 +512,7 @@ void fillGenericCandidate(const EventRows& rows,
     out.charge = rows.event.charge;
     out.passTopology = 1;
     fillSelectedParticleBranches(selection, cfg, out);
-    fillElectronBranches(selection, out);
+    fillElectronCalorimeterBranches(selection, out);
     fillDISBranches(selection, cfg, out);
 }
 
@@ -772,6 +866,8 @@ int main(int argc, char** argv) {
 
     CandidateOutput out;
     out.registerBranches(outTree, supportsEppi0Logic(cfg));
+    SelectedRoleBranches selectedRoleBranches(cfg);
+    selectedRoleBranches.registerBranches(outTree);
 
     EventRows rows;
     ProcessingStats stats;
@@ -788,6 +884,7 @@ int main(int argc, char** argv) {
         CandidateOutput candidate;
         if (processEvent(rows, cuts, candidate, stats)) {
             out = candidate;
+            selectedRoleBranches.fill(out);
             outTree.Fill();
             ++nWritten;
         }

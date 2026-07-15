@@ -43,7 +43,6 @@ from run_analysis import (
     _read_generator_normalization_summary,
 )
 from build_event_sample import (
-    expand_selected_particle_columns,
     reconstructed_columns,
     reverse_join_selected_events,
 )
@@ -290,6 +289,8 @@ class EventSampleTests(unittest.TestCase):
             "t": np.array([0.3, 0.4]),
             "passSamplingFraction": np.array([1, 0]),
             "electronP": np.array([3.0, 3.2]),
+            "protonP": np.array([1.0, 1.1]),
+            "gamma1P": np.array([0.8, 0.9]),
         }
         values = reconstructed_columns(rec, list(rec))
         self.assertNotIn("rec_runNum", values)
@@ -298,42 +299,8 @@ class EventSampleTests(unittest.TestCase):
         np.testing.assert_allclose(values["rec_minus_t"], [0.3, 0.4])
         np.testing.assert_array_equal(values["rec_passSamplingFraction"], [1, 0])
         np.testing.assert_allclose(values["rec_electronP"], [3.0, 3.2])
-
-    def test_selected_particle_vectors_expand_symmetrically_by_role(self) -> None:
-        rec = {
-            "selectedRoles": np.array([
-                ["electron", "proton", "gamma", "gamma", "kaon"],
-                ["electron", "proton", "gamma", "gamma", "kaon"],
-            ], dtype=object),
-            "selectedIdx": np.array([[0, 1, 2, 3, 4], [5, 6, 7, 8, 9]], dtype=object),
-            "selectedPid": np.array([
-                [11, 2212, 22, 22, 321],
-                [11, 2212, 22, 22, 321],
-            ], dtype=object),
-            "selectedDet": np.array([[1, 2, 1, 1, 2], [1, 1, 1, 1, 2]], dtype=object),
-            "selectedSector": np.array([[2, 0, 3, 4, 0], [5, 6, 1, 2, 0]], dtype=object),
-            "selectedP": np.array([
-                [4.0, 1.0, 0.8, 0.7, 1.3],
-                [4.1, 1.1, 0.9, 0.6, 1.4],
-            ], dtype=object),
-            "selectedTheta": np.array([
-                [0.2, 0.6, 0.3, 0.4, 0.7],
-                [0.21, 0.61, 0.31, 0.41, 0.71],
-            ], dtype=object),
-            "selectedPhi": np.array([
-                [0.1, 2.0, 1.0, 1.2, 2.2],
-                [0.2, 2.1, 1.1, 1.3, 2.3],
-            ], dtype=object),
-        }
-        values = expand_selected_particle_columns(rec)
-        np.testing.assert_allclose(values["rec_electronP"], [4.0, 4.1])
         np.testing.assert_allclose(values["rec_protonP"], [1.0, 1.1])
         np.testing.assert_allclose(values["rec_gamma1P"], [0.8, 0.9])
-        np.testing.assert_allclose(values["rec_gamma2P"], [0.7, 0.6])
-        np.testing.assert_allclose(values["rec_kaonP"], [1.3, 1.4])
-        np.testing.assert_array_equal(values["rec_protonSector"], [0, 6])
-        np.testing.assert_array_equal(values["rec_gamma2Idx"], [3, 8])
-        self.assertNotIn("rec_gammaP", values)
 
     def test_generated_particle_columns_align_to_generated_events(self) -> None:
         run = np.full(8, 11)
