@@ -219,7 +219,11 @@ class EventSampleTests(unittest.TestCase):
             "sourceFileId": np.array([1001, 1002, 1001, 1001], dtype=np.uint64),
             "sourceEventIndex": np.array([0, 0, 1, 2], dtype=np.uint64),
         }
-        rec_values = {"rec_Q2": np.array([1.51, 1.61, 1.71, 1.81])}
+        rec_values = {
+            "rec_Q2": np.array([1.51, 1.61, 1.71, 1.81]),
+            "rec_y": np.array([0.30, 0.33, 0.34, 0.35]),
+            "rec_W": np.array([2.20, 2.23, 2.24, 2.25]),
+        }
         chunks = [
             {
                 "sourceFileId": np.array([1001, 1001], dtype=np.uint64),
@@ -229,6 +233,8 @@ class EventSampleTests(unittest.TestCase):
                 "topologyValid": np.array([True, False]),
                 "Q2": np.array([1.7, np.nan]),
                 "xB": np.array([0.2, np.nan]),
+                "y": np.array([0.31, np.nan]),
+                "W": np.array([2.21, np.nan]),
                 "minusT": np.array([0.3, np.nan]),
                 "trentoPhi": np.array([0.4, np.nan]),
                 "radiative": np.array([True, True]),
@@ -243,6 +249,8 @@ class EventSampleTests(unittest.TestCase):
                 "topologyValid": np.array([True, True]),
                 "Q2": np.array([1.6, 2.0]),
                 "xB": np.array([0.21, 0.3]),
+                "y": np.array([0.32, 0.4]),
+                "W": np.array([2.22, 2.5]),
                 "minusT": np.array([0.31, 0.5]),
                 "trentoPhi": np.array([0.41, 0.6]),
                 "radiative": np.array([True, True]),
@@ -257,6 +265,10 @@ class EventSampleTests(unittest.TestCase):
         np.testing.assert_array_equal(sample["source_event_index"], [0, 1])
         np.testing.assert_allclose(sample["gen_Q2"], [1.6, 1.7])
         np.testing.assert_allclose(sample["rec_Q2"], [1.61, 1.71])
+        np.testing.assert_allclose(sample["gen_y"], [0.32, 0.31])
+        np.testing.assert_allclose(sample["gen_W"], [2.22, 2.21])
+        np.testing.assert_allclose(sample["rec_y"], [0.33, 0.34])
+        np.testing.assert_allclose(sample["rec_W"], [2.23, 2.24])
         np.testing.assert_allclose(sample["gen_electronP"], [4.1, 4.2])
         np.testing.assert_array_equal(sample["rec_selected"], [True, True])
         self.assertEqual(stats["generated_events_scanned"], 4)
