@@ -447,6 +447,28 @@ and a PNG showing reliable-bin growth, relative-difference histograms/CDFs,
 adjacent-`N` convergence, and where the largest tail sits in phi and kinematic
 bin index.
 
+To plot `C_BC` versus phi with one stitched `Q2`-by-`xB` quilt per `-t` bin:
+
+```bash
+python3 analysis/run_analysis.py bin-centering-plots results/C_BC_N30.npz \
+  --output results/C_BC_N30_quilts.pdf --quilt
+```
+
+Optionally overlay every available merged N artifact in a convergence-scan
+directory:
+
+```bash
+python3 analysis/run_analysis.py bin-centering-plots results/C_BC_N30.npz \
+  --output results/C_BC_Nscan_quilts.pdf --quilt \
+  --overlay-n-directory results/bin_centering_convergence/rgk_6.535 \
+  --quilt-scale-mode panel
+```
+
+Files are discovered with `C_BC*.npz`, labeled using their stored
+`samples_per_dimension`, sorted by N, and symlink aliases are deduplicated.
+Only reliable, computed phi bins are drawn. The PDF also contains detailed phi
+pages for the primary positional artifact.
+
 ## Legacy behavior intentionally corrected
 
 - reconstructed failures never remove generated events from the denominator;

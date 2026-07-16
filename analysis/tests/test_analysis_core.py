@@ -41,6 +41,7 @@ from run_analysis import (
     command_unfold,
     command_response_plots,
     command_bin_centering_merge,
+    _load_bin_centering_plot_artifacts,
     _normalization_npz_fields,
     _read_generator_integrated_cross_section,
     _read_generator_normalization_summary,
@@ -746,6 +747,26 @@ class BinCenteringTests(unittest.TestCase):
             np.testing.assert_array_equal(merged["reliable"], full.reliable)
             np.testing.assert_array_equal(merged["computed"], full.computed)
 
+    def test_plot_artifact_scan_deduplicates_symlinks_and_sorts_n(self) -> None:
+        bins = AnalysisBinning([1.2, 1.4], [0.25, 0.35], [0.15, 0.25], [0.0, 180.0])
+
+        def flat_d4sigma(points: np.ndarray) -> np.ndarray:
+            flux = virtual_photon_flux(points[:, 1], points[:, 0], 6.535)
+            return np.divide(1.0, flux, out=np.full(points.shape[0], np.nan), where=flux > 0.0)
+
+        result = compute_bin_centering(bins, 6.535, flat_d4sigma, samples_per_dimension=2)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            n2 = tmpdir / "C_BC_rgk_N2.npz"
+            n4 = tmpdir / "C_BC_rgk_N4.npz"
+            alias = tmpdir / "C_BC_N2.npz"
+            _write_bin_centering_test_artifact(n2, bins, result, bin_start=0, bin_stop=1, n_value=2)
+            _write_bin_centering_test_artifact(n4, bins, result, bin_start=0, bin_stop=1, n_value=4)
+            alias.symlink_to(n2.name)
+            scan = _load_bin_centering_plot_artifacts(alias, overlay_directory=tmpdir)
+            self.assertEqual(list(scan), [2, 4])
+            np.testing.assert_array_equal(scan[2]["valid"], result.reliable & result.computed)
+
 
 def _write_bin_centering_test_artifact(
     path: Path,
@@ -754,6 +775,7 @@ def _write_bin_centering_test_artifact(
     *,
     bin_start: int,
     bin_stop: int,
+    n_value: int = 2,
 ) -> None:
     np.savez_compressed(
         path,
@@ -776,7 +798,7 @@ def _write_bin_centering_test_artifact(
         t_edges=bins.t_edges,
         phi_edges=bins.phi_edges,
         beam_energy=6.535,
-        samples_per_dimension=2,
+        samples_per_dimension=n_value,
         max_failure_fraction=0.0,
         theory=5,
         channel=1,

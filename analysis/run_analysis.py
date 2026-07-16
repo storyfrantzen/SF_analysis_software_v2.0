@@ -270,6 +270,29 @@ def parser() -> argparse.ArgumentParser:
     bin_centering_merge.add_argument("partials", nargs="+", type=Path)
     bin_centering_merge.add_argument("--output", type=Path, required=True)
 
+    bin_centering_plots = commands.add_parser(
+        "bin-centering-plots",
+        help="Plot C_BC vs phi, optionally overlaying an N scan in -t quilts",
+    )
+    bin_centering_plots.add_argument("correction", type=Path)
+    bin_centering_plots.add_argument("--output", type=Path, required=True)
+    bin_centering_plots.add_argument(
+        "--quilt",
+        action="store_true",
+        help="Prepend one stitched Q2-by-xB C_BC-vs-phi quilt per -t bin",
+    )
+    bin_centering_plots.add_argument(
+        "--overlay-n-directory",
+        type=Path,
+        help="Overlay every distinct merged C_BC*.npz N artifact found in this directory on quilt panels",
+    )
+    bin_centering_plots.add_argument(
+        "--quilt-scale-mode",
+        choices=("global", "panel"),
+        default="panel",
+        help="Use one y scale per -t quilt or independently scale every panel (default: panel)",
+    )
+
     harmonics = commands.add_parser("fit-harmonics", help="Fit A + B cos(phi) + C cos(2 phi)")
     harmonics.add_argument("cross_section", type=Path)
     harmonics.add_argument("--output", type=Path, required=True)
@@ -1791,6 +1814,160 @@ def command_bin_centering_merge(args: argparse.Namespace) -> None:
     print(f"Computed phi bins: {computed_phi}/{fields['computed'].size}")
     print(f"Reliable C_BC bins: {reliable_phi}/{fields['reliable'].size}")
     print(f"Wrote {args.output}")
+
+
+def command_bin_centering_plots(args: argparse.Namespace) -> None:
+    if args.overlay_n_directory is not None and not args.quilt:
+        raise ValueError("--overlay-n-directory requires --quilt")
+    scan = _load_bin_centering_plot_artifacts(
+        args.correction,
+        overlay_directory=args.overlay_n_directory,
+    )
+    pages = _plot_bin_centering_diagnostics(
+        scan,
+        args.correction,
+        args.output,
+        include_quilt=args.quilt,
+        quilt_scale_mode=args.quilt_scale_mode,
+    )
+    print("Bin-centering N values: " + ", ".join(str(n) for n in scan))
+    print(f"Wrote bin-centering PDF with {pages} pages: {args.output}")
+
+
+def _load_bin_centering_plot_artifacts(
+    primary_path: Path,
+    *,
+    overlay_directory: Path | None = None,
+) -> dict[int, dict[str, np.ndarray]]:
+    if not primary_path.is_file():
+        raise FileNotFoundError(f"bin-centering artifact not found: {primary_path}")
+    candidates = [primary_path]
+    if overlay_directory is not None:
+        if not overlay_directory.is_dir():
+            raise NotADirectoryError(f"N-scan directory not found: {overlay_directory}")
+        candidates.extend(sorted(overlay_directory.glob("C_BC*.npz")))
+
+    artifacts: dict[int, dict[str, np.ndarray]] = {}
+    source_by_n: dict[int, Path] = {}
+    seen_paths: set[Path] = set()
+    reference_edges: tuple[np.ndarray, ...] | None = None
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved in seen_paths:
+            continue
+        seen_paths.add(resolved)
+        with np.load(path, allow_pickle=False) as data:
+            required = ("C_BC", "reliable", "q2_edges", "xb_edges", "t_edges", "phi_edges")
+            missing = [name for name in required if name not in data.files]
+            if missing:
+                raise ValueError(f"{path} is missing bin-centering fields: {', '.join(missing)}")
+            if "samples_per_dimension" not in data.files:
+                raise ValueError(f"{path} does not store samples_per_dimension")
+            n_value = int(np.asarray(data["samples_per_dimension"]).item())
+            edges = tuple(
+                np.asarray(data[name], dtype=float)
+                for name in ("q2_edges", "xb_edges", "t_edges", "phi_edges")
+            )
+            shape = tuple(edge.size - 1 for edge in edges)
+            c_bc = np.asarray(data["C_BC"], dtype=float)
+            reliable = np.asarray(data["reliable"], dtype=bool)
+            computed = (
+                np.asarray(data["computed"], dtype=bool)
+                if "computed" in data.files else np.ones(shape, dtype=bool)
+            )
+            if c_bc.shape != shape or reliable.shape != shape or computed.shape != shape:
+                raise ValueError(f"{path} arrays do not match its bin edges; expected {shape}")
+            if reference_edges is None:
+                reference_edges = edges
+            elif any(actual.shape != expected.shape or not np.allclose(actual, expected)
+                     for actual, expected in zip(edges, reference_edges)):
+                raise ValueError(f"{path} bin edges do not match {primary_path}")
+            if n_value in artifacts:
+                raise ValueError(
+                    f"multiple distinct artifacts store N={n_value}: "
+                    f"{source_by_n[n_value]} and {path}"
+                )
+            artifacts[n_value] = {
+                "C_BC": c_bc,
+                "valid": reliable & computed & np.isfinite(c_bc),
+                "q2_edges": edges[0],
+                "xb_edges": edges[1],
+                "t_edges": edges[2],
+                "phi_edges": edges[3],
+            }
+            source_by_n[n_value] = path
+    return dict(sorted(artifacts.items()))
+
+
+def _plot_bin_centering_diagnostics(
+    scan: dict[int, dict[str, np.ndarray]],
+    primary_path: Path,
+    pdf_path: Path,
+    *,
+    include_quilt: bool,
+    quilt_scale_mode: str,
+) -> int:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    if not scan:
+        raise ValueError("no bin-centering artifacts were loaded")
+    with np.load(primary_path, allow_pickle=False) as primary_data:
+        primary_n = int(np.asarray(primary_data["samples_per_dimension"]).item())
+    primary = scan[primary_n]
+    phi_edges = primary["phi_edges"]
+    phi_centers = 0.5 * (phi_edges[:-1] + phi_edges[1:])
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    pages = 0
+
+    with PdfPages(pdf_path) as pdf:
+        if include_quilt:
+            quantities = {
+                f"N={n_value}": (artifact["C_BC"], None, artifact["valid"])
+                for n_value, artifact in scan.items()
+            }
+            pages += _plot_quantity_quilts_vs_phi(
+                pdf,
+                quantities,
+                phi_edges,
+                primary["q2_edges"],
+                primary["xb_edges"],
+                primary["t_edges"],
+                title="Bin-centering correction vs phi quilt",
+                ylabel="C_BC",
+                scale_mode=quilt_scale_mode,
+                reference_lines=(1.0,),
+            )
+        values = primary["C_BC"]
+        valid4 = primary["valid"]
+        for iq2 in range(values.shape[0]):
+            for ixb in range(values.shape[1]):
+                for it in range(values.shape[2]):
+                    valid = valid4[iq2, ixb, it, :]
+                    if not np.any(valid):
+                        continue
+                    fig, ax = plt.subplots(figsize=(8, 5))
+                    ax.plot(phi_centers[valid], values[iq2, ixb, it, valid], "o-",
+                            color="#4c78a8", markersize=4, linewidth=1.2,
+                            label=f"C_BC, N={primary_n}")
+                    ax.axhline(1.0, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
+                    ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
+                    ax.set_xlabel("phi [deg]")
+                    ax.set_ylabel("C_BC")
+                    ax.set_title(
+                        "Bin-centering correction vs phi\n"
+                        f"Q2 {primary['q2_edges'][iq2]:g}-{primary['q2_edges'][iq2 + 1]:g}, "
+                        f"xB {primary['xb_edges'][ixb]:g}-{primary['xb_edges'][ixb + 1]:g}, "
+                        f"-t {primary['t_edges'][it]:g}-{primary['t_edges'][it + 1]:g}"
+                    )
+                    ax.grid(True, alpha=0.25)
+                    ax.legend(loc="best", fontsize="small")
+                    fig.tight_layout()
+                    pdf.savefig(fig)
+                    plt.close(fig)
+                    pages += 1
+    return pages
 
 
 def command_cross_section(args: argparse.Namespace) -> None:
@@ -3336,7 +3513,10 @@ def _plot_quantity_quilts_vs_phi(
         if errors is not None and errors.shape != expected_shape:
             raise ValueError(f"quilt uncertainty {label} does not match the common 4D shape")
 
-    colors = ("#4c78a8", "#7b3294", "#f58518", "#222222", "#1b9e77")
+    colors = (
+        "#4c78a8", "#7b3294", "#f58518", "#222222", "#1b9e77",
+        "#e45756", "#72b7b2", "#b279a2", "#ff9da6", "#9d755d",
+    )
     linestyles = ("-", "--", "-.", ":", "-")
     phi_centers = 0.5 * (phi_edges[:-1] + phi_edges[1:])
     q2_labels = _edge_labels(q2_edges)
@@ -3768,6 +3948,8 @@ def main() -> int:
         command_bin_centering(args)
     elif args.command == "bin-centering-merge":
         command_bin_centering_merge(args)
+    elif args.command == "bin-centering-plots":
+        command_bin_centering_plots(args)
     elif args.command == "cross-section":
         command_cross_section(args)
     elif args.command == "fit-harmonics":
