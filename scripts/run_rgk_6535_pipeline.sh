@@ -264,7 +264,8 @@ stage_radiative_correction() {
         "${limit_args[@]}" \
         --progress-chunks 1 \
         --diagnostic-pdf "$RESULTS_DIR/C_rad_diagnostics.pdf" \
-        --diagnostic-csv "$RESULTS_DIR/C_rad_diagnostics.csv"
+        --diagnostic-csv "$RESULTS_DIR/C_rad_diagnostics.csv" \
+        --diagnostic-quilt
 }
 
 stage_unfold() {
@@ -311,7 +312,7 @@ stage_plots() {
     run_command "$log_file" python3 "$REPO_ROOT/analysis/run_analysis.py" acceptance-plots \
         "$RESULTS_DIR/response/response_meta.npz" \
         --response-matrix "$RESULTS_DIR/response/response_matrix.npz" \
-        --output-dir "$RESULTS_DIR/plots/acceptance"
+        --output-dir "$RESULTS_DIR/plots/acceptance" --quilt
     run_command "$log_file" python3 "$REPO_ROOT/analysis/run_analysis.py" response-plots \
         "$RESULTS_DIR/response/response_matrix.npz" \
         "$RESULTS_DIR/response/response_meta.npz" \

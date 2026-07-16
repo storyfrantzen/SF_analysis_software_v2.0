@@ -140,6 +140,17 @@ def parser() -> argparse.ArgumentParser:
         help="Optional CSV summary for the diagnostic PDF phi pages",
     )
     radcorr.add_argument(
+        "--diagnostic-quilt",
+        action="store_true",
+        help="Prepend one stitched Q2-by-xB C_rad-vs-phi quilt per -t bin",
+    )
+    radcorr.add_argument(
+        "--diagnostic-quilt-scale-mode",
+        choices=("global", "panel"),
+        default="panel",
+        help="Use one y scale per diagnostic quilt or independently scale every panel (default: panel)",
+    )
+    radcorr.add_argument(
         "--normalization-ratio",
         type=float,
         help="Override all automatic normalization with this global factor",
@@ -180,6 +191,17 @@ def parser() -> argparse.ArgumentParser:
         "--csv",
         type=Path,
         help="Optional CSV summary for the per-(Q2,xB,-t) phi pages",
+    )
+    radcorr_plots.add_argument(
+        "--quilt",
+        action="store_true",
+        help="Prepend one stitched Q2-by-xB C_rad-vs-phi quilt per -t bin",
+    )
+    radcorr_plots.add_argument(
+        "--quilt-scale-mode",
+        choices=("global", "panel"),
+        default="panel",
+        help="Use one y scale per -t quilt or independently scale every panel (default: panel)",
     )
 
     xsec = commands.add_parser("cross-section", help="Normalize unfolded yields")
@@ -313,6 +335,17 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="Minimum number of above-threshold phi bins required to include a 3D bin in the phi PDF",
+    )
+    acceptance.add_argument(
+        "--quilt",
+        action="store_true",
+        help="Prepend one stitched Q2-by-xB acceptance-vs-phi quilt per -t bin",
+    )
+    acceptance.add_argument(
+        "--quilt-scale-mode",
+        choices=("global", "panel"),
+        default="global",
+        help="Use one y scale per -t quilt or independently scale every panel (default: global)",
     )
     response_plots = commands.add_parser(
         "response-plots",
@@ -677,6 +710,8 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
             args.output,
             args.diagnostic_pdf,
             csv_path=args.diagnostic_csv,
+            include_quilt=args.diagnostic_quilt,
+            quilt_scale_mode=args.diagnostic_quilt_scale_mode,
         )
         print(f"Wrote radiative-correction diagnostic PDF with {pages} pages: {args.diagnostic_pdf}")
     reliable_bins = int(np.count_nonzero(result.reliable))
@@ -936,7 +971,13 @@ def _normalization_npz_fields(
 
 
 def command_radiative_correction_plots(args: argparse.Namespace) -> None:
-    pages = _plot_radiative_correction_diagnostics(args.correction, args.output, csv_path=args.csv)
+    pages = _plot_radiative_correction_diagnostics(
+        args.correction,
+        args.output,
+        csv_path=args.csv,
+        include_quilt=args.quilt,
+        quilt_scale_mode=args.quilt_scale_mode,
+    )
     print(f"Wrote radiative-correction diagnostic PDF with {pages} pages: {args.output}")
 
 
@@ -944,6 +985,8 @@ def _plot_radiative_correction_diagnostics(
     correction_path: Path,
     pdf_path: Path,
     csv_path: Path | None = None,
+    include_quilt: bool = False,
+    quilt_scale_mode: str = "panel",
 ) -> int:
     _prepare_matplotlib_cache()
     import matplotlib.pyplot as plt
@@ -1043,6 +1086,20 @@ def _plot_radiative_correction_diagnostics(
 
         _plot_radcorr_t_phi_projection(pdf, c_rad, reliable, t_edges, phi_edges)
         pages += 1
+
+        if include_quilt:
+            pages += _plot_quantity_quilts_vs_phi(
+                pdf,
+                {"C_rad": (c_rad, delta_c, reliable)},
+                phi_edges,
+                q2_edges,
+                xb_edges,
+                t_edges,
+                title="Radiative correction vs phi quilt",
+                ylabel="C_rad",
+                scale_mode=quilt_scale_mode,
+                reference_lines=(1.0,),
+            )
 
         for iq2 in range(c_rad.shape[0]):
             for ixb in range(c_rad.shape[1]):
@@ -2090,6 +2147,8 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
         args.phi_min_passing_bins,
         args.output_dir / "acceptance_vs_phi_by_3d_bin.pdf",
         args.output_dir / "acceptance_vs_phi_by_3d_bin.csv",
+        include_quilt=args.quilt,
+        quilt_scale_mode=args.quilt_scale_mode,
     )
 
     print(f"Truth-populated bins: {int(populated.sum())}")
@@ -3247,6 +3306,142 @@ def _plot_cross_section_quilts_vs_phi(
     return pages
 
 
+def _plot_quantity_quilts_vs_phi(
+    pdf,
+    quantities: dict[str, tuple[np.ndarray, np.ndarray | None, np.ndarray]],
+    phi_edges: np.ndarray,
+    q2_edges: np.ndarray,
+    xb_edges: np.ndarray,
+    t_edges: np.ndarray,
+    *,
+    title: str,
+    ylabel: str,
+    scale_mode: str,
+    reference_lines: tuple[float, ...] = (),
+    include_zero: bool = False,
+) -> int:
+    """Draw one cross-section-style Q2-by-xB quilt per -t bin."""
+    import matplotlib.pyplot as plt
+
+    if scale_mode not in ("global", "panel"):
+        raise ValueError("--quilt-scale-mode must be global or panel")
+    if not quantities:
+        return 0
+    first_values = next(iter(quantities.values()))[0]
+    nq2, nxb, nt, _ = first_values.shape
+    expected_shape = first_values.shape
+    for label, (values, errors, valid) in quantities.items():
+        if values.shape != expected_shape or valid.shape != expected_shape:
+            raise ValueError(f"quilt quantity {label} does not match the common 4D shape")
+        if errors is not None and errors.shape != expected_shape:
+            raise ValueError(f"quilt uncertainty {label} does not match the common 4D shape")
+
+    colors = ("#4c78a8", "#7b3294", "#f58518", "#222222", "#1b9e77")
+    linestyles = ("-", "--", "-.", ":", "-")
+    phi_centers = 0.5 * (phi_edges[:-1] + phi_edges[1:])
+    q2_labels = _edge_labels(q2_edges)
+    xb_labels = _edge_labels(xb_edges)
+    pages = 0
+
+    for it in range(nt):
+        panels: dict[tuple[int, int], list[tuple[str, np.ndarray, np.ndarray | None, np.ndarray]]] = {}
+        global_low: list[float] = []
+        global_high: list[float] = []
+        for iq2 in range(nq2):
+            for ixb in range(nxb):
+                series = []
+                for label, (values, errors, valid4) in quantities.items():
+                    y = values[iq2, ixb, it, :]
+                    yerr = errors[iq2, ixb, it, :] if errors is not None else None
+                    valid = valid4[iq2, ixb, it, :] & np.isfinite(y)
+                    if yerr is not None:
+                        valid &= np.isfinite(yerr) & (yerr >= 0.0)
+                    if not np.any(valid):
+                        continue
+                    series.append((label, y, yerr, valid))
+                    low = y[valid] - yerr[valid] if yerr is not None else y[valid]
+                    high = y[valid] + yerr[valid] if yerr is not None else y[valid]
+                    global_low.extend(low.tolist())
+                    global_high.extend(high.tolist())
+                if series:
+                    panels[(iq2, ixb)] = series
+        if not panels:
+            continue
+
+        global_ylim = _padded_plot_limits(global_low, global_high, include_zero=include_zero)
+        active_q2, active_xb, positions = _ordered_quilt_axes(sorted(panels))
+        fig, axes = plt.subplots(
+            len(active_q2),
+            len(active_xb),
+            figsize=(max(8.5, 3.25 * len(active_xb)), max(5.5, 2.35 * len(active_q2))),
+            sharex=True,
+            sharey=scale_mode == "global",
+            squeeze=False,
+        )
+        label_order = list(quantities)
+        for (iq2, ixb), series in panels.items():
+            row, column = positions[(iq2, ixb)]
+            ax = axes[row, column]
+            local_low: list[float] = []
+            local_high: list[float] = []
+            for label, y, yerr, valid in series:
+                index = label_order.index(label)
+                kwargs = dict(
+                    color=colors[index % len(colors)],
+                    linestyle=linestyles[index % len(linestyles)],
+                    linewidth=0.9,
+                )
+                if yerr is None:
+                    ax.plot(phi_centers[valid], y[valid], marker="o", markersize=2.2, **kwargs)
+                    low = high = y[valid]
+                else:
+                    ax.errorbar(
+                        phi_centers[valid], y[valid], yerr=yerr[valid], fmt="o",
+                        markersize=2.2, capsize=1.0, elinewidth=0.7, **kwargs,
+                    )
+                    low, high = y[valid] - yerr[valid], y[valid] + yerr[valid]
+                local_low.extend(low.tolist())
+                local_high.extend(high.tolist())
+            for value in reference_lines:
+                ax.axhline(value, color="red" if value != 1.0 else "black",
+                           linestyle="--", linewidth=0.65, alpha=0.65)
+            ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
+            ax.set_ylim(*(global_ylim if scale_mode == "global" else
+                          _padded_plot_limits(local_low, local_high, include_zero=include_zero)))
+            ax.grid(True, alpha=0.16, linewidth=0.45)
+            ax.tick_params(axis="both", labelsize=6, length=2, labelleft=True)
+            if iq2 == active_q2[0]:
+                ax.set_xlabel("phi [deg]", fontsize=7)
+            ax.set_title(f"Q2 {q2_labels[iq2]}; xB {xb_labels[ixb]}", fontsize=7, pad=2)
+        occupied = set(positions.values())
+        for row in range(len(active_q2)):
+            for column in range(len(active_xb)):
+                if (row, column) not in occupied:
+                    axes[row, column].set_axis_off()
+
+        handles = [
+            plt.Line2D([0], [0], color=colors[index % len(colors)],
+                       linestyle=linestyles[index % len(linestyles)], marker="o",
+                       linewidth=1.1, markersize=3, label=label)
+            for index, label in enumerate(label_order)
+        ]
+        fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.995),
+                   ncol=min(4, len(handles)), fontsize="small")
+        fig.suptitle(
+            f"{title}\n-t {t_edges[it]:g}-{t_edges[it + 1]:g} GeV^2; "
+            "Q2 increases bottom to top; xB increases left to right; "
+            + ("independent panel scales" if scale_mode == "panel" else "shared page scale"),
+            y=0.955,
+        )
+        fig.text(0.012, 0.5, ylabel, rotation="vertical", va="center", fontsize=9)
+        fig.subplots_adjust(left=0.052, right=0.995, bottom=0.045, top=0.89,
+                            wspace=0.16, hspace=0.18)
+        pdf.savefig(fig)
+        plt.close(fig)
+        pages += 1
+    return pages
+
+
 def _ordered_quilt_axes(
     panels: list[tuple[int, int]],
 ) -> tuple[list[int], list[int], dict[tuple[int, int], tuple[int, int]]]:
@@ -3329,6 +3524,8 @@ def _plot_acceptance_vs_phi(
     min_passing_bins: int,
     pdf_path: Path,
     csv_path: Path,
+    include_quilt: bool = False,
+    quilt_scale_mode: str = "global",
 ) -> int:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
@@ -3345,6 +3542,29 @@ def _plot_acceptance_vs_phi(
     ]
 
     with PdfPages(pdf_path) as pdf:
+        if include_quilt:
+            populated4 = truth > 0
+            quantities = {
+                "epsilon_i total efficiency": (efficiency, None, populated4),
+                "A_i bin-by-bin acceptance": (acceptance, None, populated4),
+            }
+            if purity is not None:
+                quantities["P_i purity"] = (purity, None, populated4)
+            if same_bin_efficiency is not None:
+                quantities["E_i same-bin efficiency"] = (same_bin_efficiency, None, populated4)
+            pages += _plot_quantity_quilts_vs_phi(
+                pdf,
+                quantities,
+                phi_edges,
+                q2_edges,
+                xb_edges,
+                t_edges,
+                title="Acceptance diagnostics vs phi quilt",
+                ylabel="Migration/acceptance diagnostic",
+                scale_mode=quilt_scale_mode,
+                reference_lines=(minimum_acceptance,),
+                include_zero=True,
+            )
         for iq2 in range(efficiency.shape[0]):
             for ixb in range(efficiency.shape[1]):
                 for it in range(efficiency.shape[2]):

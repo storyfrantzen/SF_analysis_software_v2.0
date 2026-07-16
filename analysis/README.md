@@ -233,7 +233,9 @@ with `N_same,i = N(rec i and gen i)`, they are:
 
 The default phi overlay includes `A_i`, `E_i`, and `epsilon_i`. Add
 `--include-purity` to include `P_i`, whose scale can differ substantially from
-the other three diagnostics.
+the other three diagnostics. Add `--quilt` to prepend one stitched `Q2`-by-`xB`
+page per `-t` bin to the phi PDF. Quilts share a page-wide y scale by default;
+use `--quilt-scale-mode panel` for independent panel scales.
 
 The full unfolding still uses the migration matrix `R[j,i]`, not any one of
 these scalar diagnostics alone.
@@ -383,13 +385,16 @@ report later without rereading LUND files:
 
 ```bash
 python3 analysis/run_analysis.py radiative-correction-plots results/C_rad.npz \
-  --output results/C_rad_diagnostics.pdf --csv results/C_rad_diagnostics.csv
+  --output results/C_rad_diagnostics.pdf --csv results/C_rad_diagnostics.csv \
+  --quilt
 ```
 
 The PDF includes summary/support pages, a clipped `0<C_rad<2` summary
 histogram, projection heatmaps of median reliable `C_rad` and reliable-bin
 fraction in `(xB,Q2)` and `(phi,-t)`, and then detailed per-`(Q2,xB,-t)` phi
-pages.
+pages. With `--quilt`, one stitched `Q2`-by-`xB` `C_rad`-vs-phi page per `-t`
+bin is inserted before the detailed pages. Use `--quilt-scale-mode global` for
+a common y scale across every panel on a page.
 
 ## Bin-centering correction
 
