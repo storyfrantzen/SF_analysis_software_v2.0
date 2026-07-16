@@ -461,13 +461,13 @@ directory:
 python3 analysis/run_analysis.py bin-centering-plots results/C_BC_N30.npz \
   --output results/C_BC_Nscan_quilts.pdf --quilt \
   --overlay-n-directory results/bin_centering_convergence/rgk_6.535 \
-  --quilt-scale-mode panel
+  --quilt-scale-mode panel --quilts-only
 ```
 
 Files are discovered with `C_BC*.npz`, labeled using their stored
 `samples_per_dimension`, sorted by N, and symlink aliases are deduplicated.
 Only reliable, computed phi bins are drawn. The PDF also contains detailed phi
-pages for the primary positional artifact.
+pages for the primary positional artifact unless `--quilts-only` is passed.
 
 ## Legacy behavior intentionally corrected
 

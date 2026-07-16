@@ -282,6 +282,11 @@ def parser() -> argparse.ArgumentParser:
         help="Prepend one stitched Q2-by-xB C_BC-vs-phi quilt per -t bin",
     )
     bin_centering_plots.add_argument(
+        "--quilts-only",
+        action="store_true",
+        help="Write only the stitched -t quilt pages; requires --quilt",
+    )
+    bin_centering_plots.add_argument(
         "--overlay-n-directory",
         type=Path,
         help="Overlay every distinct merged C_BC*.npz N artifact found in this directory on quilt panels",
@@ -1819,6 +1824,8 @@ def command_bin_centering_merge(args: argparse.Namespace) -> None:
 def command_bin_centering_plots(args: argparse.Namespace) -> None:
     if args.overlay_n_directory is not None and not args.quilt:
         raise ValueError("--overlay-n-directory requires --quilt")
+    if args.quilts_only and not args.quilt:
+        raise ValueError("--quilts-only requires --quilt")
     scan = _load_bin_centering_plot_artifacts(
         args.correction,
         overlay_directory=args.overlay_n_directory,
@@ -1829,6 +1836,7 @@ def command_bin_centering_plots(args: argparse.Namespace) -> None:
         args.output,
         include_quilt=args.quilt,
         quilt_scale_mode=args.quilt_scale_mode,
+        quilts_only=args.quilts_only,
     )
     print("Bin-centering N values: " + ", ".join(str(n) for n in scan))
     print(f"Wrote bin-centering PDF with {pages} pages: {args.output}")
@@ -1906,6 +1914,7 @@ def _plot_bin_centering_diagnostics(
     *,
     include_quilt: bool,
     quilt_scale_mode: str,
+    quilts_only: bool = False,
 ) -> int:
     _prepare_matplotlib_cache()
     import matplotlib.pyplot as plt
@@ -1939,34 +1948,35 @@ def _plot_bin_centering_diagnostics(
                 scale_mode=quilt_scale_mode,
                 reference_lines=(1.0,),
             )
-        values = primary["C_BC"]
-        valid4 = primary["valid"]
-        for iq2 in range(values.shape[0]):
-            for ixb in range(values.shape[1]):
-                for it in range(values.shape[2]):
-                    valid = valid4[iq2, ixb, it, :]
-                    if not np.any(valid):
-                        continue
-                    fig, ax = plt.subplots(figsize=(8, 5))
-                    ax.plot(phi_centers[valid], values[iq2, ixb, it, valid], "o-",
-                            color="#4c78a8", markersize=4, linewidth=1.2,
-                            label=f"C_BC, N={primary_n}")
-                    ax.axhline(1.0, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
-                    ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
-                    ax.set_xlabel("phi [deg]")
-                    ax.set_ylabel("C_BC")
-                    ax.set_title(
-                        "Bin-centering correction vs phi\n"
-                        f"Q2 {primary['q2_edges'][iq2]:g}-{primary['q2_edges'][iq2 + 1]:g}, "
-                        f"xB {primary['xb_edges'][ixb]:g}-{primary['xb_edges'][ixb + 1]:g}, "
-                        f"-t {primary['t_edges'][it]:g}-{primary['t_edges'][it + 1]:g}"
-                    )
-                    ax.grid(True, alpha=0.25)
-                    ax.legend(loc="best", fontsize="small")
-                    fig.tight_layout()
-                    pdf.savefig(fig)
-                    plt.close(fig)
-                    pages += 1
+        if not quilts_only:
+            values = primary["C_BC"]
+            valid4 = primary["valid"]
+            for iq2 in range(values.shape[0]):
+                for ixb in range(values.shape[1]):
+                    for it in range(values.shape[2]):
+                        valid = valid4[iq2, ixb, it, :]
+                        if not np.any(valid):
+                            continue
+                        fig, ax = plt.subplots(figsize=(8, 5))
+                        ax.plot(phi_centers[valid], values[iq2, ixb, it, valid], "o-",
+                                color="#4c78a8", markersize=4, linewidth=1.2,
+                                label=f"C_BC, N={primary_n}")
+                        ax.axhline(1.0, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
+                        ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
+                        ax.set_xlabel("phi [deg]")
+                        ax.set_ylabel("C_BC")
+                        ax.set_title(
+                            "Bin-centering correction vs phi\n"
+                            f"Q2 {primary['q2_edges'][iq2]:g}-{primary['q2_edges'][iq2 + 1]:g}, "
+                            f"xB {primary['xb_edges'][ixb]:g}-{primary['xb_edges'][ixb + 1]:g}, "
+                            f"-t {primary['t_edges'][it]:g}-{primary['t_edges'][it + 1]:g}"
+                        )
+                        ax.grid(True, alpha=0.25)
+                        ax.legend(loc="best", fontsize="small")
+                        fig.tight_layout()
+                        pdf.savefig(fig)
+                        plt.close(fig)
+                        pages += 1
     return pages
 
 
