@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import sys
 from pathlib import Path
 import tempfile
@@ -32,9 +33,11 @@ from eppi0.radiative_correction import (
     histogram_lund,
     support_status_codes,
 )
+from eppi0.root_response import _truth_inside_mask
 from eppi0.phase_space import AnalysisPhaseSpace
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
 from run_analysis import (
+    command_response,
     command_unfold,
     command_response_plots,
     command_bin_centering_merge,
@@ -108,6 +111,64 @@ class ResponseTests(unittest.TestCase):
         np.testing.assert_allclose(counted.efficiency, dense.efficiency)
         self.assertAlmostEqual(counted.feed_in_fraction, dense.feed_in_fraction)
         np.testing.assert_allclose(counted.feed_in_shape, dense.feed_in_shape)
+
+    def test_response_command_applies_analysis_phase_space_to_truth(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            config_path = tmpdir / "analysis.json"
+            sample_path = tmpdir / "sample.npz"
+            output_dir = tmpdir / "response"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "beam_energy": 6.535,
+                        "binning": {
+                            "Q2": [1.0, 1.5],
+                            "xB": [0.1, 0.3],
+                            "minus_t": [0.1, 0.3],
+                            "phi_deg": [0.0, 360.0],
+                        },
+                        "phase_space": {"y_max": 0.3},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            np.savez_compressed(
+                sample_path,
+                gen_Q2=np.array([1.2]),
+                gen_xB=np.array([0.2]),
+                gen_minus_t=np.array([0.2]),
+                gen_trento_phi=np.array([0.0]),
+                rec_Q2=np.array([1.2]),
+                rec_xB=np.array([0.2]),
+                rec_minus_t=np.array([0.2]),
+                rec_trento_phi=np.array([0.0]),
+                rec_selected=np.array([True]),
+            )
+            args = argparse.Namespace(
+                sample=sample_path,
+                config=config_path,
+                output_dir=output_dir,
+                selection_mask=None,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_response(args)
+            metadata = np.load(output_dir / "response_meta.npz", allow_pickle=False)
+        np.testing.assert_allclose(metadata["truth_total"], [0.0])
+        np.testing.assert_allclose(metadata["reconstructed_total"], [1.0])
+        self.assertEqual(float(metadata["feed_in_fraction"]), 1.0)
+
+    def test_root_response_truth_mask_applies_analysis_phase_space(self) -> None:
+        mask = _truth_inside_mask(
+            topology_valid=np.array([True, True, True]),
+            truth_flat=np.array([0, 0, -1]),
+            q2=np.array([1.2, 1.2, 1.2]),
+            xb=np.array([0.2, 0.8, 0.8]),
+            number_of_bins=1,
+            phase_space=AnalysisPhaseSpace(y_max=0.3),
+            beam_energy=6.535,
+        )
+        np.testing.assert_array_equal(mask, [False, True, False])
 
     def test_response_plots_writes_pdf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

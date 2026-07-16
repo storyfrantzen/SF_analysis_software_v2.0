@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from .binning import AnalysisBinning
+from .phase_space import AnalysisPhaseSpace
 from .response import ResponseResult, build_response_from_counts
 
 
@@ -48,6 +49,8 @@ def build_response_from_root(
     chunk_size: int = 1_000_000,
     selection_mask: np.ndarray | None = None,
     progress_chunks: int = 10,
+    phase_space: AnalysisPhaseSpace | None = None,
+    beam_energy: float | None = None,
 ) -> RootResponseSummary:
     """Build a response directly from ROOT files without a dense event-level NPZ."""
     import ROOT  # type: ignore
@@ -112,7 +115,15 @@ def build_response_from_root(
             chunk["Q2"], chunk["xB"], chunk["minusT"], chunk["trentoPhi"]
         )
         weights = np.asarray(chunk["weight"], dtype=float)
-        truth_inside = valid & (truth_flat >= 0) & (truth_flat < number_of_bins)
+        truth_inside = _truth_inside_mask(
+            valid,
+            truth_flat,
+            chunk["Q2"],
+            chunk["xB"],
+            number_of_bins,
+            phase_space=phase_space,
+            beam_energy=beam_energy,
+        )
         truth_total += np.bincount(
             truth_flat[truth_inside], weights=weights[truth_inside], minlength=number_of_bins
         )
@@ -216,3 +227,25 @@ def _concat_or_empty(items: list[np.ndarray], dtype=np.int64) -> np.ndarray:
     if not items:
         return np.empty(0, dtype=dtype)
     return np.concatenate(items).astype(dtype, copy=False)
+
+
+def _truth_inside_mask(
+    topology_valid: np.ndarray,
+    truth_flat: np.ndarray,
+    q2: np.ndarray,
+    xb: np.ndarray,
+    number_of_bins: int,
+    *,
+    phase_space: AnalysisPhaseSpace | None = None,
+    beam_energy: float | None = None,
+) -> np.ndarray:
+    inside = (
+        np.asarray(topology_valid, dtype=bool)
+        & (np.asarray(truth_flat) >= 0)
+        & (np.asarray(truth_flat) < number_of_bins)
+    )
+    if phase_space is not None and phase_space.enabled:
+        if beam_energy is None:
+            raise ValueError("beam_energy is required when phase_space is enabled")
+        inside &= phase_space.mask(q2, xb, beam_energy)
+    return inside

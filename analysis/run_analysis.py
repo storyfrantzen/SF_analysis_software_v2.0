@@ -339,9 +339,14 @@ def load_config(path: Path) -> dict:
 def command_response(args: argparse.Namespace) -> None:
     sample = np.load(args.sample, allow_pickle=False)
     binning = from_config(args.config)
+    config = load_config(args.config)
+    phase_space = AnalysisPhaseSpace.from_config(config)
     truth_flat = binning.coordinates_to_flat(
         sample["gen_Q2"], sample["gen_xB"], sample["gen_minus_t"], sample["gen_trento_phi"]
     )
+    if phase_space.enabled:
+        truth_phase = phase_space.mask(sample["gen_Q2"], sample["gen_xB"], float(config["beam_energy"]))
+        truth_flat = np.where(truth_phase, truth_flat, -1)
     rec_flat = binning.coordinates_to_flat(
         sample["rec_Q2"], sample["rec_xB"], sample["rec_minus_t"], sample["rec_trento_phi"]
     )
@@ -367,16 +372,26 @@ def command_response(args: argparse.Namespace) -> None:
         xb_edges=binning.xb_edges,
         t_edges=binning.t_edges,
         phi_edges=binning.phi_edges,
+        phase_space_definition=(
+            "4D bin"
+            if not phase_space.enabled
+            else f"4D bin and {phase_space.description()}"
+        ),
+        **phase_space.as_npz_fields(),
     )
     print(f"Truth events in range: {response.truth_total.sum():.0f}")
     print(f"Selected REC events in range: {response.reconstructed_total.sum():.0f}")
     print(f"Feed-in fraction: {response.feed_in_fraction:.6f}")
+    if phase_space.enabled:
+        print(f"Analysis phase space: 4D bin and {phase_space.description()}")
     print(f"Wrote {matrix_path}")
     print(f"Wrote {metadata_path}")
 
 
 def command_response_root(args: argparse.Namespace) -> None:
     binning = from_config(args.config)
+    config = load_config(args.config)
+    phase_space = AnalysisPhaseSpace.from_config(config)
     mask = None
     if args.selection_mask:
         mask = np.asarray(np.load(args.selection_mask), dtype=bool)
@@ -390,6 +405,8 @@ def command_response_root(args: argparse.Namespace) -> None:
         chunk_size=args.chunk_size,
         selection_mask=mask,
         progress_chunks=args.progress_chunks,
+        phase_space=phase_space,
+        beam_energy=float(config["beam_energy"]),
     )
     response = summary.response
 
@@ -412,6 +429,12 @@ def command_response_root(args: argparse.Namespace) -> None:
         generated_rows=summary.generated_rows,
         selected_rows=summary.selected_rows,
         matched_selected_rows=summary.matched_selected_rows,
+        phase_space_definition=(
+            "4D bin"
+            if not phase_space.enabled
+            else f"4D bin and {phase_space.description()}"
+        ),
+        **phase_space.as_npz_fields(),
     )
     print(f"Generated rows scanned: {summary.generated_rows}")
     print(f"Selected rows read: {summary.selected_rows}")
@@ -419,6 +442,8 @@ def command_response_root(args: argparse.Namespace) -> None:
     print(f"Truth events in range: {response.truth_total.sum():.0f}")
     print(f"Selected REC events in range: {response.reconstructed_total.sum():.0f}")
     print(f"Feed-in fraction: {response.feed_in_fraction:.6f}")
+    if phase_space.enabled:
+        print(f"Analysis phase space: 4D bin and {phase_space.description()}")
     print(f"Wrote {matrix_path}")
     print(f"Wrote {metadata_path}")
 
