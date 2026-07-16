@@ -2704,6 +2704,7 @@ th:first-child, td:first-child {{ text-align: left; }}
   <button type="button" id="makeGhost" role="menuitem">Make ghost</button>
   <button type="button" id="clearGhost" role="menuitem">Clear ghost</button>
   <button type="button" id="toggleCanvasToolbarContext" role="menuitem">Hide plot controls</button>
+  <button type="button" id="toggleMeanGuides" role="menuitemcheckbox" aria-checked="false">Show mean guides</button>
   <button type="button" id="profileX" role="menuitem">Profile X</button>
   <button type="button" id="profileY" role="menuitem">Profile Y</button>
   <button type="button" id="addFunctionCurve" role="menuitem">Add function curve…</button>
@@ -3297,6 +3298,7 @@ function makePanel(key, xvar, yvar) {{
     fitScanDetail: 3,
     fitRangeClick: false,
     showFitAnnotations: true,
+    showMeanGuides: false,
     fitRangeMin: NaN,
     fitRangeMax: NaN,
     fitSummary: "No fit",
@@ -4072,6 +4074,12 @@ function attachEvents() {{
   el("toggleCanvasToolbarContext").addEventListener("click", () => {{
     toggleCanvasToolbar();
     hideCanvasContextMenu();
+  }});
+  el("toggleMeanGuides").addEventListener("click", () => {{
+    const panel = panels[contextMenuPanelKey];
+    panel.showMeanGuides = !Boolean(panel.showMeanGuides);
+    hideCanvasContextMenu();
+    update();
   }});
   el("profileX").addEventListener("click", () => {{
     launchBinProfile("x");
@@ -4900,12 +4908,16 @@ function showCanvasContextMenu(event, key) {{
   const manageCurves = el("manageReferenceCurves");
   const profileX = el("profileX");
   const profileY = el("profileY");
+  const meanGuides = el("toggleMeanGuides");
   el("toggleCanvasToolbarContext").textContent = canvasToolbarCollapsed
     ? "Show plot controls"
     : "Hide plot controls";
   make.textContent = panel.ghostPlot ? "Replace ghost" : "Make ghost";
   make.disabled = !panel.lastPlot;
   clear.disabled = !panel.ghostPlot;
+  meanGuides.textContent = panel.showMeanGuides ? "Hide mean guides" : "Show mean guides";
+  meanGuides.setAttribute("aria-checked", panel.showMeanGuides ? "true" : "false");
+  meanGuides.disabled = !panel.lastPlot;
   profileX.disabled = !contextMenuProfileBin;
   profileY.disabled = !contextMenuProfileBin;
   profileX.title = profileMenuTitle("x", contextMenuProfileBin);
@@ -4958,7 +4970,8 @@ function configureProfilePanel(target, source, hit, axis) {{
     xticks: source.xticks,
     yticks: source.yticks,
     density: source.density,
-    plotAspect: source.plotAspect
+    plotAspect: source.plotAspect,
+    showMeanGuides: source.showMeanGuides
   }};
   const variableName = profileX ? hit.xName : hit.yName;
   const sliceName = profileX ? hit.yName : hit.xName;
@@ -4981,6 +4994,7 @@ function configureProfilePanel(target, source, hit, axis) {{
   target.xmax = profileX ? hit.xMax : hit.yMax;
   target.density = sourceSettings.density;
   target.plotAspect = canonicalPlotAspect(sourceSettings.plotAspect);
+  target.showMeanGuides = Boolean(sourceSettings.showMeanGuides);
   target.fitModel = "none";
   target.signalModel = "none";
   target.backgroundModel = "none";
@@ -5671,6 +5685,37 @@ function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel, xTickCount,
   }}
 }}
 
+function drawMeanGuides(ctx, area, panel, meanX, meanY, xMin, xMax, yMin, yMax) {{
+  if (!panel?.showMeanGuides) return;
+  const drawX = Number.isFinite(meanX) && xMax > xMin && meanX >= xMin && meanX <= xMax;
+  const drawY = panel.mode === "2d" && Number.isFinite(meanY) && yMax > yMin && meanY >= yMin && meanY <= yMax;
+  if (!drawX && !drawY) return;
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  const c = colors();
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(area.left, area.top, pw, ph);
+  ctx.clip();
+  ctx.strokeStyle = c.fg;
+  ctx.globalAlpha = 0.76;
+  ctx.lineWidth = 1.25;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  if (drawX) {{
+    const x = area.left + (meanX - xMin) / (xMax - xMin) * pw;
+    ctx.moveTo(x, area.top);
+    ctx.lineTo(x, area.top + ph);
+  }}
+  if (drawY) {{
+    const y = area.top + ph - (meanY - yMin) / (yMax - yMin) * ph;
+    ctx.moveTo(area.left, y);
+    ctx.lineTo(area.left + pw, y);
+  }}
+  ctx.stroke();
+  ctx.restore();
+}}
+
 function poissonBinError(value, total, density) {{
   if (!(value >= 0)) return 0;
   if (!density) return Math.sqrt(value);
@@ -5788,6 +5833,7 @@ function draw1d(panel, mask) {{
   const c = colors();
   ctx.clearRect(0, 0, width, height);
   drawAxes(ctx, area, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks);
+  drawMeanGuides(ctx, area, panel, sumX / selected, NaN, xMin, xMax, 0, maxCount);
   draw1dPoints(ctx, area, counts, maxCount, selected, panel.density, c.mark);
   if (overlayCounts) {{
     draw1dPoints(ctx, area, overlayCounts, maxCount, overlaySelected, panel.density, overlayHeatColor(0.82), 0.78);
@@ -5896,6 +5942,7 @@ function draw2d(panel, mask) {{
   const xAxisLabel = x2Name ? `${{byName[xName].label}} / ${{byName[x2Name].label}}` : byName[xName].label;
   const yAxisLabel = y2Name ? `${{byName[yName].label}} / ${{byName[y2Name].label}}` : byName[yName].label;
   drawAxes(ctx, area, xMin, xMax, yMin, yMax, axisDisplayLabel(panel, "x", xAxisLabel), axisDisplayLabel(panel, "y", yAxisLabel), panel.xticks, panel.yticks);
+  drawMeanGuides(ctx, area, panel, sumX / selected, sumY / selected, xMin, xMax, yMin, yMax);
   if (x2Name || y2Name) drawOverlayLegend(ctx, area, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
   const colorScale = panel.colorScale ? draw2dColorScale(ctx, area, maxCount, overlayCounts ? overlayMaxCount : 0, panel) : null;
   if (ghost) drawGhost2d(ctx, area, ghost, ghost.counts, xMin, xMax, yMin, yMax);
@@ -5950,7 +5997,7 @@ function draw1dFacets(panel, mask, splitName) {{
     totalSelected += selected;
     totalOverlaySelected += overlaySelected;
     sumXAll += sumX;
-    facets.push({{value: definition.value, label: definition.label, shortLabel: definition.shortLabel, counts, overlayCounts, fitValues, selected, overlaySelected}});
+    facets.push({{value: definition.value, label: definition.label, shortLabel: definition.shortLabel, counts, overlayCounts, fitValues, selected, overlaySelected, meanX: sumX / selected}});
   }}
   if (panel.density) {{
     for (const facet of facets) {{
@@ -5979,6 +6026,7 @@ function draw1dFacets(panel, mask, splitName) {{
     const facetAreaInfo = panelArea(area, layout, index);
     const axisVisibility = facetAxisVisibility(layout, index, facets.length);
     drawAxes(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks, axisVisibility);
+    drawMeanGuides(ctx, facetAreaInfo, panel, facet.meanX, NaN, xMin, xMax, 0, maxCount);
     draw1dPoints(ctx, facetAreaInfo, facet.counts, maxCount, facet.selected, panel.density, c.mark);
     if (facet.overlayCounts) {{
       draw1dPoints(ctx, facetAreaInfo, facet.overlayCounts, maxCount, facet.overlaySelected, panel.density, overlayHeatColor(0.82), 0.78);
@@ -6064,7 +6112,7 @@ function draw2dFacets(panel, mask, splitName) {{
     totalOverlaySelected += overlaySelected;
     sumXAll += sumX;
     sumYAll += sumY;
-    facets.push({{...definition, counts, overlayCounts, selected, overlaySelected, fitXs, fitYs, maxCount: 1, overlayMaxCount: 0, colorScale: null}});
+    facets.push({{...definition, counts, overlayCounts, selected, overlaySelected, meanX: sumX / selected, meanY: sumY / selected, fitXs, fitYs, maxCount: 1, overlayMaxCount: 0, colorScale: null}});
   }}
   if (panel.density) {{
     for (const facet of facets) {{
@@ -6124,6 +6172,7 @@ function draw2dFacets(panel, mask, splitName) {{
     const yAxisLabel = y2Name ? `${{byName[yName].label}} / ${{byName[y2Name].label}}` : byName[yName].label;
     const axisVisibility = facetAxisVisibility(layout, index, facets.length);
     drawAxes(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, axisDisplayLabel(panel, "x", xAxisLabel), axisDisplayLabel(panel, "y", yAxisLabel), panel.xticks, panel.yticks, axisVisibility);
+    drawMeanGuides(ctx, facetAreaInfo, panel, facet.meanX, facet.meanY, xMin, xMax, yMin, yMax);
     if ((x2Name || y2Name) && index === 0) drawOverlayLegend(ctx, facetAreaInfo, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
     const savedFacet = ghostFacet(ghost, facet.value);
     if (savedFacet) drawGhost2d(ctx, facetAreaInfo, {{...ghost, selected: savedFacet.selected}}, savedFacet.counts, xMin, xMax, yMin, yMax, index === 0);

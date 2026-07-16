@@ -163,7 +163,11 @@ display toggle.
 
 Right-clicking either canvas opens a plot menu with the ghost actions and a
 `Hide plot controls` / `Show plot controls` action that mirrors the persistent
-toolbar toggle. A ghost snapshots the active panel's current histogram bins and
+toolbar toggle. `Show mean guides` adds a vertical dashed line at the selected
+events' mean X and, for two-dimensional plots, a horizontal dashed line at mean
+Y. The toggle is panel-specific, follows the active filters and axis ranges,
+uses each facet's own means, and is included in saved PNGs. A ghost snapshots
+the active panel's current histogram bins and
 remains fixed while filters change. One-dimensional
 ghosts use a dashed orange step outline; two-dimensional ghosts use
 intensity-weighted orange cell outlines so the live heat map remains readable.
