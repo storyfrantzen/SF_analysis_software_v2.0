@@ -2620,7 +2620,10 @@ th:first-child, td:first-child {{ text-align: left; }}
       <div class="toolbar-tile action-tile" aria-label="Plot actions">
         <button type="button" id="resetFilters">Reset filters</button>
         <button type="button" id="resetRanges">Reset axes</button>
+        <button type="button" id="plotTools" aria-haspopup="menu" aria-expanded="false">Plot tools…</button>
         <button type="button" id="savePng">Save PNG</button>
+        <button type="button" id="saveWorkspace">Save workspace</button>
+        <button type="button" id="restoreWorkspace">Restore saved</button>
       </div>
     </div>
     <div class="plot-grid" id="plotGrid">
@@ -2752,6 +2755,8 @@ const variables = payload.variables;
 const byName = Object.fromEntries(variables.map(v => [v.name, v]));
 const integerVariables = new Set(variables.filter(v => v.integer).map(v => v.name));
 const SAMPLE_COLUMN = "__sampleId";
+const WORKSPACE_STORAGE_VERSION = 1;
+const WORKSPACE_STORAGE_KEY = `sf-visualizer:${{payload.source || payload.title}}`;
 const loadedSamples = [{{id: 0, label: sampleLabel(payload.source || "sample 1"), rows: rowCount}}];
 let remoteDirectoryUrl = null;
 const remoteSelections = new Map();
@@ -2766,6 +2771,8 @@ let referenceCurveId = 0;
 let topologyCollapsed = true;
 let canvasToolbarCollapsed = false;
 let canvasToolbarExpandedHeight = 0;
+let workspaceSaveTimer = null;
+let updateFrame = null;
 const sharedFilterState = makeFilterState();
 let sharedPanelFilters = true;
 let activeRanges = sharedFilterState.ranges;
@@ -3315,6 +3322,121 @@ function makeFilterState() {{
   return {{categories: {{}}, ranges: [], text: {{}}}};
 }}
 
+const persistedPanelKeys = [
+  "mode", "xvar", "x2var", "yvar", "y2var", "xLabel", "yLabel", "splitVar",
+  "sliceBins", "sliceEdges", "xbins", "ybins", "xticks", "yticks", "xmin", "xmax",
+  "ymin", "ymax", "logz", "density", "colorScale", "plotAspect", "signalModel",
+  "backgroundModel", "fitMethod", "fitScanDetail", "fitRangeClick", "showFitAnnotations",
+  "showMeanGuides", "fitRangeMin", "fitRangeMax", "referenceCurves"
+];
+
+function serializableFilterState(state) {{
+  return {{
+    categories: Object.fromEntries(
+      Object.entries(state.categories).map(([name, values]) => [name, Array.from(values)])
+    ),
+    ranges: state.ranges.map(filter => ({{...filter}})),
+    text: {{...state.text}}
+  }};
+}}
+
+function serializablePanel(panel) {{
+  const saved = Object.fromEntries(persistedPanelKeys.map(key => [key, panel[key]]));
+  saved.filterState = serializableFilterState(panel.filterState);
+  return saved;
+}}
+
+function workspaceSnapshot() {{
+  return {{
+    version: WORKSPACE_STORAGE_VERSION,
+    enabledPanels: [...enabledPanels],
+    activePanel,
+    compareMode,
+    sharedPanelFilters,
+    topologyCollapsed,
+    canvasToolbarCollapsed,
+    sharedFilterState: serializableFilterState(sharedFilterState),
+    panels: Object.fromEntries(panelKeys.map(key => [key, serializablePanel(panels[key])]))
+  }};
+}}
+
+function applySavedFilterState(target, saved) {{
+  if (!saved || typeof saved !== "object") return;
+  target.categories = Object.fromEntries(
+    Object.entries(saved.categories || {{}}).map(([name, values]) => [name, new Set(values.map(Number))])
+  );
+  target.ranges = Array.isArray(saved.ranges)
+    ? saved.ranges.filter(filter => columns[filter.name]).map(filter => ({{...filter}}))
+    : [];
+  target.text = {{...(saved.text || {{}})}};
+}}
+
+function restoreWorkspace(showStatus = false) {{
+  let saved;
+  try {{
+    saved = JSON.parse(localStorage.getItem(WORKSPACE_STORAGE_KEY) || "null");
+  }} catch (error) {{
+    if (showStatus) el("datasetStatus").textContent = "Saved workspace could not be read.";
+    return false;
+  }}
+  if (!saved || saved.version !== WORKSPACE_STORAGE_VERSION) {{
+    if (showStatus) el("datasetStatus").textContent = "No saved workspace for this dataset.";
+    return false;
+  }}
+  applySavedFilterState(sharedFilterState, saved.sharedFilterState);
+  for (const key of panelKeys) {{
+    const savedPanel = saved.panels?.[key];
+    if (!savedPanel) continue;
+    for (const name of persistedPanelKeys) {{
+      if (savedPanel[name] !== undefined) panels[key][name] = savedPanel[name];
+    }}
+    if (!columns[panels[key].xvar]) panels[key].xvar = payload.defaultX;
+    if (!columns[panels[key].yvar]) panels[key].yvar = payload.defaultY;
+    if (panels[key].x2var && !columns[panels[key].x2var]) panels[key].x2var = "";
+    if (panels[key].y2var && !columns[panels[key].y2var]) panels[key].y2var = "";
+    if (panels[key].splitVar && !columns[panels[key].splitVar]) panels[key].splitVar = "";
+    for (const curve of panels[key].referenceCurves || []) {{
+      referenceCurveId = Math.max(referenceCurveId, Number(curve.id) || 0);
+    }}
+    applySavedFilterState(panels[key].filterState, savedPanel.filterState);
+  }}
+  enabledPanels = (saved.enabledPanels || ["A"]).filter(key => panelKeys.includes(key));
+  if (!enabledPanels.length) enabledPanels = ["A"];
+  activePanel = enabledPanels.includes(saved.activePanel) ? saved.activePanel : enabledPanels[0];
+  compareMode = Boolean(saved.compareMode && enabledPanels.length > 1);
+  sharedPanelFilters = saved.sharedPanelFilters !== false;
+  topologyCollapsed = saved.topologyCollapsed !== false;
+  canvasToolbarCollapsed = Boolean(saved.canvasToolbarCollapsed);
+  useActiveFilterState();
+  initializeCategoryState();
+  if (showStatus) el("datasetStatus").textContent = "Saved workspace restored.";
+  return true;
+}}
+
+function saveWorkspace(showStatus = false) {{
+  try {{
+    localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(workspaceSnapshot()));
+    if (showStatus) el("datasetStatus").textContent = "Workspace saved in this browser.";
+    return true;
+  }} catch (error) {{
+    if (showStatus) el("datasetStatus").textContent = "Workspace could not be saved in this browser.";
+    return false;
+  }}
+}}
+
+function scheduleWorkspaceSave() {{
+  window.clearTimeout(workspaceSaveTimer);
+  workspaceSaveTimer = window.setTimeout(() => saveWorkspace(false), 250);
+}}
+
+function scheduleUpdate() {{
+  if (updateFrame !== null) cancelAnimationFrame(updateFrame);
+  updateFrame = requestAnimationFrame(() => {{
+    updateFrame = null;
+    update();
+  }});
+}}
+
 function allFilterStates() {{
   return [sharedFilterState, ...panelKeys.map(key => panels[key].filterState)];
 }}
@@ -3676,6 +3798,7 @@ async function init() {{
   fillSelect(el("rangeVar"), payload.defaultX);
   fillOperationSelects();
   initializeCategoryState();
+  restoreWorkspace(false);
   renderCategoryFilters();
   renderQuickCategoryOptions();
   renderQuickCategory();
@@ -4004,7 +4127,7 @@ function renderActiveFilterControls() {{
 
 function attachEvents() {{
   ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","sliceBins","sliceEdges","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","plotAspect","signalModel","backgroundModel","fitMethod","fitScanDetail","fitRangeClick"].forEach(id => {{
-    el(id).addEventListener("input", () => {{ readControlsToPanel(); update(); }});
+    el(id).addEventListener("input", () => {{ readControlsToPanel(); scheduleUpdate(); }});
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
   el("yvar").addEventListener("change", () => {{ setPanelVariable("y"); update(); }});
@@ -4051,7 +4174,23 @@ function attachEvents() {{
   }});
   el("resetFilters").addEventListener("click", resetFilters);
   el("resetRanges").addEventListener("click", () => {{ resetAxisRanges(currentPanel()); syncControlsFromPanel(); update(); }});
+  el("plotTools").addEventListener("click", event => {{
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    showCanvasContextMenu({{
+      preventDefault() {{}},
+      clientX: bounds.left,
+      clientY: bounds.bottom + 4
+    }}, activePanel);
+  }});
   el("savePng").addEventListener("click", savePng);
+  el("saveWorkspace").addEventListener("click", () => saveWorkspace(true));
+  el("restoreWorkspace").addEventListener("click", () => {{
+    if (!restoreWorkspace(true)) return;
+    renderActiveFilterControls();
+    syncControlsFromPanel();
+    update();
+  }});
   el("clearFitRange").addEventListener("click", () => {{ clearFitRange(currentPanel()); syncControlsFromPanel(); update(); }});
   el("toggleFitAnnotations").addEventListener("click", () => {{
     const panel = currentPanel();
@@ -4124,7 +4263,7 @@ function attachEvents() {{
     }}
   }});
   window.addEventListener("blur", hideCanvasContextMenu);
-  window.addEventListener("resize", update);
+  window.addEventListener("resize", scheduleUpdate);
 }}
 
 function setActivePanel(key) {{
@@ -4767,6 +4906,7 @@ function update() {{
   }}
   updateActiveStats();
   renderPreview(activeMask || selectedMask(filterStateForPanel(activePanel)));
+  scheduleWorkspaceSave();
 }}
 
 function visiblePanelKeys() {{
@@ -4926,6 +5066,7 @@ function showCanvasContextMenu(event, key) {{
   addCurve.title = addCurve.disabled ? "Function curves require a 2D plot" : "";
   manageCurves.disabled = !(panel.referenceCurves || []).length;
   menu.hidden = false;
+  el("plotTools").setAttribute("aria-expanded", "true");
   const padding = 6;
   menu.style.left = clamp(event.clientX, padding, Math.max(padding, window.innerWidth - menu.offsetWidth - padding)) + "px";
   menu.style.top = clamp(event.clientY, padding, Math.max(padding, window.innerHeight - menu.offsetHeight - padding)) + "px";
@@ -4933,6 +5074,7 @@ function showCanvasContextMenu(event, key) {{
 
 function hideCanvasContextMenu() {{
   el("canvasContextMenu").hidden = true;
+  el("plotTools").setAttribute("aria-expanded", "false");
 }}
 
 function addProfileRange(state, name, minimum, maximum, maxExclusive, profileAxisSlice = false) {{

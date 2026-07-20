@@ -6,6 +6,12 @@ artifacts or selected ROOT trees into a self-contained HTML application. The
 generated file embeds its event data and does not require a JavaScript build or
 application server.
 
+Plot and filter settings are saved automatically in the browser for each source
+dataset. The Plot actions toolbar also provides explicit Save workspace and
+Restore saved controls. Plot tools such as ghost overlays, mean guides, profiles,
+and reference curves are available from the visible Plot tools button as well as
+the canvas context menu.
+
 ## Usage
 
 Run the package from the repository root:
