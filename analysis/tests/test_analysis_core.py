@@ -17,7 +17,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from eppi0.binning import AnalysisBinning, from_config, legacy_binning
 from eppi0.bin_centering import compute_bin_centering, physical_mask
-from eppi0.cross_section import integrated_luminosity_fb, virtual_photon_flux
+from eppi0.cross_section import (
+    integrated_luminosity_fb,
+    physical_bin_volumes,
+    virtual_photon_flux,
+)
 from eppi0.event_sample import (
     build_generated_sample,
     generated_particle_columns,
@@ -41,6 +45,7 @@ from run_analysis import (
     command_unfold,
     command_response_plots,
     command_bin_centering_merge,
+    command_cross_section,
     _load_bin_centering_plot_artifacts,
     _normalization_npz_fields,
     _read_generator_integrated_cross_section,
@@ -693,6 +698,93 @@ class NormalizationTests(unittest.TestCase):
         self.assertGreater(integrated_luminosity_fb(1.0e-3), 0.0)
         flux = virtual_photon_flux(np.array([2.0]), np.array([0.3]), 6.535)
         self.assertGreater(flux[0], 0.0)
+
+    def test_physical_bin_volume_includes_exclusive_t_overlap(self) -> None:
+        bins = AnalysisBinning(
+            [1.49, 1.51],
+            [0.295, 0.305],
+            [0.0, 2.0],
+            [0.0, 360.0],
+        )
+        volumes = physical_bin_volumes(
+            bins,
+            6.535,
+            q2_minimum=0.0,
+            w_minimum=1.0,
+            y_maximum=1.0,
+            integration_points=100,
+        )
+        rectangular = 0.02 * 0.01 * 2.0 * 2.0 * np.pi
+        self.assertGreater(volumes[0, 0, 0, 0], 0.0)
+        self.assertLess(volumes[0, 0, 0, 0], rectangular)
+
+    def test_cross_section_uses_bin_centering_reference_for_flux(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            config_path = tmpdir / "config.json"
+            unfolding_path = tmpdir / "unfolding.npz"
+            centering_path = tmpdir / "C_BC.npz"
+            output_path = tmpdir / "cross_section.npz"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "beam_energy": 6.535,
+                        "target_length_cm": 5.0,
+                        "target_density_g_cm3": 0.071,
+                        "target_molar_mass_g": 1.008,
+                        "pi0_to_gg_branching_ratio": 0.988,
+                        "minimum_acceptance": 0.005,
+                        "phase_space": {"Q2_min": 1.0, "W_min": 2.0, "y_max": 0.8},
+                        "binning": {
+                            "Q2": [1.2, 1.4],
+                            "xB": [0.2, 0.3],
+                            "minus_t": [0.2, 0.3],
+                            "phi_deg": [0.0, 180.0],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            np.savez_compressed(
+                unfolding_path,
+                beam_charge_c=1.0e-3,
+                efficiency=np.asarray([1.0]),
+                corrected_yield=np.asarray([100.0]),
+                corrected_uncertainty=np.asarray([10.0]),
+                Q2_mean=np.asarray([1.35]),
+                xB_mean=np.asarray([0.28]),
+            )
+            shape = (1, 1, 1, 1)
+            np.savez_compressed(
+                centering_path,
+                C_BC=np.full(shape, 2.0),
+                reliable=np.ones(shape, dtype=bool),
+                q2_center=np.full(shape, 1.25),
+                xB_center=np.full(shape, 0.24),
+            )
+            args = argparse.Namespace(
+                unfolding_result=unfolding_path,
+                config=config_path,
+                output=output_path,
+                bin_centering=centering_path,
+                global_normalization=1.0,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_cross_section(args)
+            output = np.load(output_path, allow_pickle=False)
+
+        flux = virtual_photon_flux(np.asarray([1.25]), np.asarray([0.24]), 6.535)[0]
+        expected = (
+            100.0
+            * 1.0e-6
+            / (float(output["luminosity_fb"]) * 0.988 * output["bin_volume"].item() * flux)
+            / 2.0
+        )
+        self.assertAlmostEqual(output["reduced_cross_section"].item(), expected)
+        self.assertEqual(output["flux_q2_mean"].item(), 1.25)
+        self.assertEqual(output["flux_xb_mean"].item(), 0.24)
+        self.assertEqual(output["uncentered_q2_mean"].item(), 1.35)
+        self.assertEqual(output["uncentered_xb_mean"].item(), 0.28)
 
 
 class BinCenteringTests(unittest.TestCase):

@@ -5,11 +5,13 @@ from dataclasses import dataclass
 import numpy as np
 
 from .binning import AnalysisBinning
+from .exclusive_kinematics import t_limits_pi0
 
 
 ELECTRON_CHARGE_C = 1.602176634e-19
 AVOGADRO = 6.02214076e23
 ALPHA_EM = 1.0 / 137.035999084
+DEFAULT_VOLUME_INTEGRATION_POINTS = 400
 
 
 @dataclass(frozen=True)
@@ -53,26 +55,55 @@ def physical_bin_volumes(
     q2_minimum: float = 1.0,
     w_minimum: float = 2.0,
     y_maximum: float = 0.8,
-    integration_points: int = 100,
+    integration_points: int = DEFAULT_VOLUME_INTEGRATION_POINTS,
 ) -> np.ndarray:
-    """Return `(Q2, xB, t, phi)` volumes in GeV^4 rad."""
+    """Return selected exclusive `(Q2, xB, t, phi)` volumes in GeV^4 rad."""
+    if integration_points <= 0:
+        raise ValueError("integration_points must be positive")
     nq2, nxb, nt, nphi = binning.shape
-    qx_area = np.zeros((nq2, nxb), dtype=float)
+    qxt_volume = np.zeros((nq2, nxb, nt), dtype=float)
     for iq2 in range(nq2):
         q_low, q_high = binning.q2_edges[iq2 : iq2 + 2]
+        dq = (q_high - q_low) / integration_points
+        q2 = q_low + (np.arange(integration_points) + 0.5) * dq
         for ixb in range(nxb):
             x_low, x_high = binning.xb_edges[ixb : ixb + 2]
             dx = (x_high - x_low) / integration_points
             x = x_low + (np.arange(integration_points) + 0.5) * dx
-            physical_low = np.maximum(
-                q2_minimum, (w_minimum**2 - proton_mass**2) / (1.0 / x - 1.0)
+            q2_mesh, xb_mesh = np.meshgrid(q2, x, indexing="ij")
+            w2 = proton_mass**2 + q2_mesh * (1.0 / xb_mesh - 1.0)
+            y = q2_mesh / (2.0 * proton_mass * beam_energy * xb_mesh)
+            eprime = beam_energy * (1.0 - y)
+            sin2_half = np.divide(
+                q2_mesh,
+                4.0 * beam_energy * eprime,
+                out=np.full_like(q2_mesh, np.nan),
+                where=eprime > 0.0,
             )
-            physical_high = y_maximum * 2.0 * proton_mass * beam_energy * x
-            overlap = np.maximum(0.0, np.minimum(q_high, physical_high) - np.maximum(q_low, physical_low))
-            qx_area[iq2, ixb] = overlap.sum() * dx
-    dt = np.diff(binning.t_edges)
+            selected = (
+                (q2_mesh >= q2_minimum)
+                & (w2 >= w_minimum**2)
+                & (y <= y_maximum)
+                & (eprime > 0.0)
+                & (sin2_half > 0.0)
+                & (sin2_half < 1.0)
+            )
+            t_low, t_high = t_limits_pi0(xb_mesh, q2_mesh)
+            selected &= np.isfinite(t_low) & np.isfinite(t_high)
+            for it, (minus_t_low, minus_t_high) in enumerate(
+                zip(binning.t_edges[:-1], binning.t_edges[1:])
+            ):
+                signed_bin_low = -minus_t_high
+                signed_bin_high = -minus_t_low
+                overlap = np.maximum(
+                    0.0,
+                    np.minimum(t_high, signed_bin_high)
+                    - np.maximum(t_low, signed_bin_low),
+                )
+                overlap = np.where(selected, overlap, 0.0)
+                qxt_volume[iq2, ixb, it] = overlap.sum() * dq * dx
     dphi = np.deg2rad(np.diff(binning.phi_edges))
-    return qx_area[:, :, None, None] * dt[None, None, :, None] * dphi[None, None, None, :]
+    return qxt_volume[:, :, :, None] * dphi[None, None, None, :]
 
 
 def reduced_cross_section(

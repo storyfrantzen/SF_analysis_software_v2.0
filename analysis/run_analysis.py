@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from eppi0.binning import from_config
 from eppi0.bin_centering import AaoExecutableEvaluator, compute_bin_centering
 from eppi0.cross_section import (
+    DEFAULT_VOLUME_INTEGRATION_POINTS,
     Target,
     integrated_luminosity_fb,
     physical_bin_volumes,
@@ -2014,6 +2015,52 @@ def command_cross_section(args: argparse.Namespace) -> None:
     q2_means = np.where(np.isfinite(result["Q2_mean"]), result["Q2_mean"], q2_fallback)
     xb_means = np.where(np.isfinite(result["xB_mean"]), result["xB_mean"], xb_fallback)
     valid = result["efficiency"] > float(config.get("minimum_acceptance", 0.005))
+    flux_q2 = q2_means.copy()
+    flux_xb = xb_means.copy()
+    bin_centering_cbc = None
+    bin_centering_reliable = None
+    bin_centering_q2_center = None
+    bin_centering_xb_center = None
+    cbc_flat = None
+    apply_mask = None
+    if args.bin_centering:
+        bin_centering = np.load(args.bin_centering, allow_pickle=False)
+        required = ("C_BC", "reliable", "q2_center", "xB_center")
+        missing = [name for name in required if name not in bin_centering.files]
+        if missing:
+            raise ValueError(
+                f"bin-centering artifact is missing required fields: {', '.join(missing)}"
+            )
+        bin_centering_cbc = np.asarray(bin_centering["C_BC"], dtype=float)
+        bin_centering_reliable = np.asarray(bin_centering["reliable"], dtype=bool)
+        bin_centering_q2_center = np.asarray(bin_centering["q2_center"], dtype=float)
+        bin_centering_xb_center = np.asarray(bin_centering["xB_center"], dtype=float)
+        for name, values in (
+            ("C_BC", bin_centering_cbc),
+            ("reliable", bin_centering_reliable),
+            ("q2_center", bin_centering_q2_center),
+            ("xB_center", bin_centering_xb_center),
+        ):
+            if values.shape != binning.shape:
+                raise ValueError(
+                    f"bin-centering {name} has shape {values.shape}; expected {binning.shape}"
+                )
+        cbc_flat = binning.flatten_values(bin_centering_cbc)
+        reliable_flat = binning.flatten_values(bin_centering_reliable)
+        q2_center_flat = binning.flatten_values(bin_centering_q2_center)
+        xb_center_flat = binning.flatten_values(bin_centering_xb_center)
+        apply_mask = (
+            reliable_flat
+            & np.isfinite(cbc_flat)
+            & (cbc_flat > 0.0)
+            & np.isfinite(q2_center_flat)
+            & np.isfinite(xb_center_flat)
+            & (q2_center_flat > 0.0)
+            & (xb_center_flat > 0.0)
+        )
+        valid &= apply_mask
+        flux_q2 = np.where(apply_mask, q2_center_flat, q2_means)
+        flux_xb = np.where(apply_mask, xb_center_flat, xb_means)
     yields = result["corrected_yield"] if "corrected_yield" in result.files else result["unfolded"]
     yield_uncertainty = (
         result["corrected_uncertainty"]
@@ -2023,29 +2070,15 @@ def command_cross_section(args: argparse.Namespace) -> None:
     values, errors = reduced_cross_section(
         yields,
         yield_uncertainty,
-        q2_means,
-        xb_means,
+        flux_q2,
+        flux_xb,
         volumes,
         luminosity,
         beam_energy,
         branching_ratio=float(config["pi0_to_gg_branching_ratio"]),
         valid=valid,
     )
-    bin_centering_cbc = None
-    bin_centering_reliable = None
-    if args.bin_centering:
-        bin_centering = np.load(args.bin_centering, allow_pickle=False)
-        bin_centering_cbc = np.asarray(bin_centering["C_BC"], dtype=float)
-        bin_centering_reliable = np.asarray(bin_centering["reliable"], dtype=bool)
-        if bin_centering_cbc.shape != binning.shape:
-            raise ValueError(f"bin-centering C_BC has shape {bin_centering_cbc.shape}; expected {binning.shape}")
-        if bin_centering_reliable.shape != binning.shape:
-            raise ValueError(
-                f"bin-centering reliable has shape {bin_centering_reliable.shape}; expected {binning.shape}"
-            )
-        cbc_flat = binning.flatten_values(bin_centering_cbc)
-        reliable_flat = binning.flatten_values(bin_centering_reliable)
-        apply_mask = reliable_flat & np.isfinite(cbc_flat) & (cbc_flat > 0.0)
+    if cbc_flat is not None and apply_mask is not None:
         values = np.divide(values, cbc_flat, out=np.zeros_like(values), where=apply_mask)
         errors = np.divide(errors, cbc_flat, out=np.zeros_like(errors), where=apply_mask)
     values /= args.global_normalization
@@ -2054,9 +2087,18 @@ def command_cross_section(args: argparse.Namespace) -> None:
     payload = dict(
         reduced_cross_section=binning.unflatten(values),
         uncertainty=binning.unflatten(errors),
-        flux_q2_mean=q2_means,
-        flux_xb_mean=xb_means,
+        flux_q2_mean=flux_q2,
+        flux_xb_mean=flux_xb,
+        flux_q2_coordinate=flux_q2,
+        flux_xb_coordinate=flux_xb,
+        uncentered_q2_mean=q2_means,
+        uncentered_xb_mean=xb_means,
         bin_volume=binning.unflatten(volumes),
+        bin_volume_definition="exclusive physical 4D volume after configured phase-space cuts",
+        bin_volume_integration_points=DEFAULT_VOLUME_INTEGRATION_POINTS,
+        flux_coordinate_definition=(
+            "C_BC reference centroid when bin centering is applied; event mean otherwise"
+        ),
         reduced_cross_section_units="nb/(GeV^2 rad)",
         luminosity_fb=luminosity,
         global_normalization=args.global_normalization,
@@ -2067,18 +2109,28 @@ def command_cross_section(args: argparse.Namespace) -> None:
     )
     payload.update(
         phase_space_definition=(
-            "4D bin"
+            "exclusive physical 4D bin"
             if not phase_space.enabled
-            else f"4D bin and {phase_space.description()}"
+            else f"exclusive physical 4D bin and {phase_space.description()}"
         ),
         **phase_space.as_npz_fields(),
     )
-    if bin_centering_cbc is not None and bin_centering_reliable is not None:
+    if (
+        bin_centering_cbc is not None
+        and bin_centering_reliable is not None
+        and bin_centering_q2_center is not None
+        and bin_centering_xb_center is not None
+    ):
         payload.update(
             bin_centering_C_BC=bin_centering_cbc,
             bin_centering_reliable=bin_centering_reliable,
+            bin_centering_q2_center=bin_centering_q2_center,
+            bin_centering_xB_center=bin_centering_xb_center,
             bin_centering_path=str(args.bin_centering),
-            bin_centering_application="reduced_cross_section and uncertainty divided by C_BC",
+            bin_centering_application=(
+                "flux evaluated at C_BC reference coordinates; reduced cross section "
+                "and uncertainty divided by C_BC"
+            ),
         )
     np.savez_compressed(args.output, **payload)
     print(f"Integrated luminosity: {luminosity:.6g} fb^-1")

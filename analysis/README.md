@@ -409,8 +409,12 @@ coordinates, physical fractions, failed-call fractions, phase-space cuts, and
 reliability mask.
 
 Apply the artifact during normalization with `cross-section --bin-centering`.
-The reduced cross section and uncertainty are divided by `C_BC`; unreliable
-bin-centering bins are suppressed in the output.
+The cross-section stage uses the exclusive physical bin volume, including the
+partial `-t` overlap at the reaction boundary, and evaluates the virtual-photon
+flux at the reference `Q2` and `xB` stored in the `C_BC` artifact. The reduced
+cross section and uncertainty are then divided by `C_BC`; unreliable
+bin-centering bins are suppressed in the output. The uncentered event-mean
+coordinates are retained separately in the cross-section artifact.
 
 For convergence studies or production-sized grids, split the work over
 flattened 3D `(Q2, xB, -t)` bins and merge the partial artifacts. A local chunk
