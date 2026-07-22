@@ -1,0 +1,17 @@
+Wed Jul 22 06:25:13 PM UTC 2026
+ifarm2401.jlab.org
+Linux ifarm2401.jlab.org 5.14.0-611.55.1.el9_7.x86_64 #1 SMP PREEMPT_DYNAMIC Tue May 19 15:19:29 EDT 2026 x86_64 x86_64 x86_64 GNU/Linux
+parent_git_sha:
+b2d7f84185a4e302ba00f5886213067b320967ce
+aao_git_sha:
+a2c256e76592f3078ad02e272d4a4252d05d14f4
+aao_remote:
+https://github.com/storyfrantzen/aao_gen.git
+MAID07_TBL: /group/clas/parms/spp_tbl/maid07-PPpi.tbl
+compiler:
+GNU Fortran (GCC) 11.5.0 20240719 (Red Hat 11.5.0-11)
+python:
+Python 3.13.7
+numpy 2.3.3
+scipy 1.16.2
+matplotlib 3.10.6
