@@ -307,9 +307,13 @@ weight from the filename and the repacker provenance:
 }
 ```
 
-The HIPO basename must retain the canonical
-`...__sNNNNN__gNNNN__pNNNNNN` LUND stem. With the lookup enabled, an unmatched
-input filename is a fatal error rather than a silent unit-weight fallback.
+For portal type-2 submissions, the HIPO basename may use
+`STRINGID-LUNDFILENAME-OSGID-JOBINDEX.hipo`. The converter extracts the
+canonical `sNNNNN__gNNNN__pNNNNNN` token embedded in `LUNDFILENAME` and
+requires exactly one match in the provenance table. A missing, ambiguous, or
+unknown token is a fatal error rather than a silent unit-weight fallback. This
+does not alter the standard LUND event structure. Type-1 generator submissions
+are not yet supported.
 
 Radiative topology is `e p pi0 gamma`; non-radiative topology is `e p gamma
 gamma`. Invalid generator topologies remain represented with

@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <memory>
 #include <optional>
+#include <regex>
 #include <sstream>
 #include <unordered_map>
 
@@ -55,6 +56,28 @@ struct GeneratorFileMetadata {
     double weight = 1.0;
 };
 
+std::string extractCanonicalChunkId(const std::string& filename) {
+    static const std::regex pattern(
+        R"(s[0-9]{5}__g[0-9]{4}__p[0-9]{6})"
+    );
+    std::sregex_iterator match(filename.begin(), filename.end(), pattern);
+    const std::sregex_iterator end;
+    if (match == end) {
+        throw std::runtime_error(
+            "Filename does not contain a canonical AAO chunk ID "
+            "(sNNNNN__gNNNN__pNNNNNN): " + filename
+        );
+    }
+    const std::string identifier = match->str();
+    ++match;
+    if (match != end) {
+        throw std::runtime_error(
+            "Filename contains more than one canonical AAO chunk ID: " + filename
+        );
+    }
+    return identifier;
+}
+
 std::unordered_map<std::string, GeneratorFileMetadata>
 loadGeneratorWeights(const std::string& provenancePath) {
     std::ifstream source(provenancePath);
@@ -73,7 +96,7 @@ loadGeneratorWeights(const std::string& provenancePath) {
     std::unordered_map<std::string, GeneratorFileMetadata> weights;
     for (const auto& chunk : provenance.at("chunks")) {
         const std::string chunkFile = chunk.at("chunk_file").get<std::string>();
-        const std::string stem = fs::path(chunkFile).stem().string();
+        const std::string chunkId = extractCanonicalChunkId(chunkFile);
         const GeneratorFileMetadata metadata{
             chunk.at("flat_index").get<int>(),
             chunk.at("pooled_event_weight_microbarn").get<double>()
@@ -81,9 +104,9 @@ loadGeneratorWeights(const std::string& provenancePath) {
         if (!std::isfinite(metadata.weight) || metadata.weight <= 0.0) {
             throw std::runtime_error("Invalid generator weight for " + chunkFile);
         }
-        if (!weights.emplace(stem, metadata).second) {
+        if (!weights.emplace(chunkId, metadata).second) {
             throw std::runtime_error(
-                "Duplicate generator chunk stem in provenance: " + stem
+                "Duplicate canonical generator chunk ID in provenance: " + chunkId
             );
         }
     }
@@ -591,11 +614,17 @@ int main(int argc, char** argv) {
         int sourceStratumFlatIndex = -1;
         double sourceGeneratorWeight = 1.0;
         if (cfg.generatorWeights.enabled) {
-            const std::string sourceStem = fs::path(sourceBasename).stem().string();
-            const auto weightEntry = generatorWeights.find(sourceStem);
+            std::string sourceChunkId;
+            try {
+                sourceChunkId = extractCanonicalChunkId(sourceBasename);
+            } catch (const std::exception& error) {
+                std::cerr << "[ERROR] " << error.what() << "\n";
+                return 1;
+            }
+            const auto weightEntry = generatorWeights.find(sourceChunkId);
             if (weightEntry == generatorWeights.end()) {
-                std::cerr << "[ERROR] HIPO source stem is absent from generator "
-                          << "chunk provenance: " << sourceStem << "\n";
+                std::cerr << "[ERROR] HIPO canonical chunk ID is absent from "
+                          << "generator chunk provenance: " << sourceChunkId << "\n";
                 return 1;
             }
             sourceStratumFlatIndex = weightEntry->second.stratumFlatIndex;

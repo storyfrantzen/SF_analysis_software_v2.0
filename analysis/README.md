@@ -369,8 +369,11 @@ exactly one stratum and one generator invocation. `chunk_provenance.json` and
 `.tsv` record the source LUND file, pooled stratum weight, event count, and
 identifiers for every chunk.
 
-Configure GEMC/OSG so that its output HIPO basename preserves the input LUND
-stem, then enable the lookup during conversion:
+Submit these files through the portal's type-2 LUND workflow. Its output name
+may wrap the LUND filename as
+`STRINGID-LUNDFILENAME-OSGID-JOBINDEX.hipo`; the canonical
+`sNNNNN__gNNNN__pNNNNNN` token remains embedded in that name. Then enable the
+lookup during conversion:
 
 ```json
 {
@@ -386,12 +389,15 @@ stem, then enable the lookup during conversion:
 }
 ```
 
-`hipo2root` matches each HIPO stem to the provenance table and fills
+`hipo2root` extracts exactly one canonical chunk token from each HIPO basename,
+matches it to the provenance table, and fills
 `GeneratedEvents.stratumFlatIndex` and `GeneratedEvents.weight`. It fails
-rather than silently assigning unit weight when an input HIPO stem is absent
-from an enabled provenance table. The `SourceFiles` tree also stores the
-resolved stratum and weight for file-level auditing. The existing response
-builders consume `weight` directly.
+rather than silently assigning unit weight when the token is missing,
+ambiguous, or absent from an enabled provenance table. This supports both
+directly named local HIPO files and portal type-2 names without changing the
+LUND event structure. Type-1 generator submissions are not yet supported. The
+`SourceFiles` tree also stores the resolved stratum and weight for file-level
+auditing. The existing response builders consume `weight` directly.
 
 The harmonic stage retains the legacy weighted fit
 `A + B cos(phi) + C cos(2 phi)` and stores coefficients, full covariance,
