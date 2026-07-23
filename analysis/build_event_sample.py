@@ -48,6 +48,8 @@ GENERATED_EVENT_COLUMNS = [
     "weight",
 ]
 
+GENERATED_OPTIONAL_COLUMNS = ["stratumFlatIndex"]
+
 GENERATED_EVENT_PARTICLE_COLUMNS = [
     "electronP",
     "electronTheta",
@@ -144,6 +146,10 @@ def main() -> int:
     has_generated_source_key = has_generated_tree and all(
         generated_tree.GetBranch(name) for name in GENERATED_SOURCE_COLUMNS
     )
+    generated_optional_columns = [
+        name for name in GENERATED_OPTIONAL_COLUMNS
+        if has_generated_tree and generated_tree.GetBranch(name)
+    ]
     generated_event_particle_columns = [
         name for name in GENERATED_EVENT_PARTICLE_COLUMNS
         if has_generated_tree and generated_tree.GetBranch(name)
@@ -180,7 +186,10 @@ def main() -> int:
                 "--matched-only requires sourceFileId and sourceEventIndex in both ROOT trees"
             )
         requested_gen_columns = (
-            GENERATED_EVENT_COLUMNS + GENERATED_SOURCE_COLUMNS + generated_event_particle_columns
+            GENERATED_EVENT_COLUMNS
+            + GENERATED_SOURCE_COLUMNS
+            + generated_optional_columns
+            + generated_event_particle_columns
         )
         chunks = generated_tree_chunks(
             ROOT,
@@ -213,7 +222,7 @@ def main() -> int:
             "unmatched_selected_events": stats["unmatched_selected_events"],
             "invalid_generated_matches": stats["invalid_generated_matches"],
             "reconstructed_columns": sorted(rec_values),
-            "schema_version": 6,
+            "schema_version": 7,
         }
         write_sample(args.output, sample, metadata)
         print(f"Generated events scanned: {stats['generated_events_scanned']}")
@@ -231,6 +240,7 @@ def main() -> int:
         requested_gen_columns = (
             GENERATED_EVENT_COLUMNS
             + (GENERATED_SOURCE_COLUMNS if has_generated_source_key else [])
+            + generated_optional_columns
             + generated_event_particle_columns
         )
         gen = ROOT.RDataFrame(args.generated_tree, matched_path).AsNumpy(requested_gen_columns)
@@ -252,6 +262,7 @@ def main() -> int:
             gen["trentoPhi"],
             gen["radiative"],
             gen["weight"],
+            gen["stratumFlatIndex"] if "stratumFlatIndex" in gen else None,
         )
         generated_source = args.generated_tree
         generated_values = {
@@ -301,7 +312,7 @@ def main() -> int:
         "generated_events": int(generated.run.size),
         "selected_reconstructed_events": int(sample["rec_selected"].sum()),
         "reconstructed_columns": sorted(rec_values),
-        "schema_version": 5,
+        "schema_version": 6,
     }
     write_sample(args.output, sample, metadata)
     print(f"Generated events: {generated.run.size}")
@@ -359,6 +370,7 @@ def reverse_join_selected_events(
         "gen_minus_t": np.full(selected_rows, np.nan),
         "gen_trento_phi": np.full(selected_rows, np.nan),
         "gen_radiative": np.zeros(selected_rows, dtype=bool),
+        "gen_stratum_flat_index": np.full(selected_rows, -1, dtype=np.int64),
         "gen_weight": np.full(selected_rows, np.nan),
         "rec_selected": np.ones(selected_rows, dtype=bool),
     }
@@ -384,6 +396,7 @@ def reverse_join_selected_events(
         "minusT": "gen_minus_t",
         "trentoPhi": "gen_trento_phi",
         "radiative": "gen_radiative",
+        "stratumFlatIndex": "gen_stratum_flat_index",
         "weight": "gen_weight",
     }
 
@@ -412,6 +425,8 @@ def reverse_join_selected_events(
         source_rows = matched_chunk_rows[matched_valid]
         valid_matches[target_rows] = True
         for source_name, output_name in branch_map.items():
+            if source_name == "stratumFlatIndex" and source_name not in gen:
+                continue
             sample[output_name][target_rows] = np.asarray(gen[source_name])[source_rows]
         for name in particle_columns:
             sample[f"gen_{name}"][target_rows] = np.asarray(gen[name], dtype=float)[source_rows]

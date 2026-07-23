@@ -29,6 +29,7 @@ void GeneratedEventBranches::reset() {
     eventNum = -999;
     topologyValid = false;
     radiative = false;
+    stratumFlatIndex = -1;
     weight = 1.0;
     Q2 = nu = xB = y = W = minusT = trentoPhi = NAN;
     electronP = electronTheta = electronPhi = NAN;
@@ -45,6 +46,7 @@ void GeneratedEventBranches::registerBranches(TTree& tree) {
     tree.Branch("eventNum", &eventNum, "eventNum/I");
     tree.Branch("topologyValid", &topologyValid, "topologyValid/O");
     tree.Branch("radiative", &radiative, "radiative/O");
+    tree.Branch("stratumFlatIndex", &stratumFlatIndex, "stratumFlatIndex/I");
     tree.Branch("weight", &weight, "weight/D");
     tree.Branch("Q2", &Q2, "Q2/D");
     tree.Branch("nu", &nu, "nu/D");
@@ -75,12 +77,16 @@ void GeneratedEventBranches::fill(clas12::mcparticle* particles,
                                   int eventNumber,
                                   std::uint64_t fileId,
                                   std::uint64_t eventIndex,
-                                  double beamEnergy) {
+                                  double beamEnergy,
+                                  int generatorStratumFlatIndex,
+                                  double generatorWeight) {
     reset();
     sourceFileId = fileId;
     sourceEventIndex = eventIndex;
     runNum = runNumber;
     eventNum = eventNumber;
+    stratumFlatIndex = generatorStratumFlatIndex;
+    weight = generatorWeight;
     if (!particles) return;
 
     TLorentzVector electron;

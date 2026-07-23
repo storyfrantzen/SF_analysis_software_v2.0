@@ -283,7 +283,8 @@ one scalar row per input event with:
 
 - `sourceFileId` and zero-based `sourceEventIndex`;
 - original `runNum`, `eventNum`, `topologyValid`, and `radiative`;
-- `weight` (currently one until generator weights are connected);
+- `stratumFlatIndex` (`-1` without bin-conditional provenance);
+- `weight` (one unless `generatorWeights` is enabled);
 - generated `Q2`, `nu`, `xB`, `y`, `W`, `minusT`, and `trentoPhi`.
 
 `sourceFileId` is a deterministic hash of the input HIPO basename. When a
@@ -293,6 +294,22 @@ the ID-to-name mapping. This source-aware identity is propagated to selected REC
 candidates and is the acceptance join key. It is necessary because GEMC files
 use run 11 and may each restart `eventNum` at one; `(runNum,eventNum)` is
 therefore diagnostic metadata, not a cross-file primary key.
+
+For stratum-preserving AAO chunks, `hipo2root` can resolve the pooled event
+weight from the filename and the repacker provenance:
+
+```json
+{
+  "generatorWeights": {
+    "enabled": true,
+    "chunkProvenance": "/path/to/chunk_provenance.json"
+  }
+}
+```
+
+The HIPO basename must retain the canonical
+`...__sNNNNN__gNNNN__pNNNNNN` LUND stem. With the lookup enabled, an unmatched
+input filename is a fatal error rather than a silent unit-weight fallback.
 
 Radiative topology is `e p pi0 gamma`; non-radiative topology is `e p gamma
 gamma`. Invalid generator topologies remain represented with

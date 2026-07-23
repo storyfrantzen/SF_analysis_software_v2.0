@@ -331,7 +331,8 @@ The converter writes one row for every input MC event:
 - `sourceEventIndex`, the zero-based input-event ordinal within that file;
 - the original `runNum`, `eventNum` for diagnostics;
 - `topologyValid`, `radiative`;
-- `weight` (currently `1.0` until generator weights are connected);
+- `stratumFlatIndex` (`-1` for samples without stratum provenance);
+- `weight` (unit weight unless generator chunk provenance is enabled);
 - `Q2`, `nu`, `xB`, `y`, `W`, `minusT`, `trentoPhi`.
 
 `build_event_sample.py` retains only `topologyValid` rows in the physics sample,
@@ -348,6 +349,49 @@ python3 analysis/check_event_keys.py 6.535_rgk_eppi0_mc_acceptance.root
 
 Repeated `(runNum,eventNum)` keys are expected for the tested GEMC production;
 duplicated source-event keys are an error.
+
+### Bin-conditional OSG weights
+
+After finalizing a bin-conditional AAO campaign, repack its LUND files without
+mixing strata or generator replicas:
+
+```bash
+python3 scripts/repack_lund_for_osg.py \
+  born_rgk_conditional born_rgk_osg \
+  --glob '**/*.lund' \
+  --campaign-weights born_rgk_conditional/campaign_weights.json \
+  --prefix aao_born
+```
+
+Chunk names follow
+`aao_born__sNNNNN__gNNNN__pNNNNNN.lund`. Each chunk contains events from
+exactly one stratum and one generator invocation. `chunk_provenance.json` and
+`.tsv` record the source LUND file, pooled stratum weight, event count, and
+identifiers for every chunk.
+
+Configure GEMC/OSG so that its output HIPO basename preserves the input LUND
+stem, then enable the lookup during conversion:
+
+```json
+{
+  "generatedEventTree": {
+    "enabled": true,
+    "treeName": "GeneratedEvents"
+  },
+  "generatorWeights": {
+    "enabled": true,
+    "chunkProvenance": "/path/to/born_rgk_osg/chunk_provenance.json"
+  },
+  "fillMC": true
+}
+```
+
+`hipo2root` matches each HIPO stem to the provenance table and fills
+`GeneratedEvents.stratumFlatIndex` and `GeneratedEvents.weight`. It fails
+rather than silently assigning unit weight when an input HIPO stem is absent
+from an enabled provenance table. The `SourceFiles` tree also stores the
+resolved stratum and weight for file-level auditing. The existing response
+builders consume `weight` directly.
 
 The harmonic stage retains the legacy weighted fit
 `A + B cos(phi) + C cos(2 phi)` and stores coefficients, full covariance,

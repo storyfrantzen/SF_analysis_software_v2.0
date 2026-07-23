@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cmath>
 #include <exception>
+#include <fstream>
 #include <iomanip>
 #include <memory>
 #include <optional>
@@ -48,6 +49,46 @@ struct HipoOpenCheck {
 };
 
 namespace {
+
+struct GeneratorFileMetadata {
+    int stratumFlatIndex = -1;
+    double weight = 1.0;
+};
+
+std::unordered_map<std::string, GeneratorFileMetadata>
+loadGeneratorWeights(const std::string& provenancePath) {
+    std::ifstream source(provenancePath);
+    if (!source.is_open()) {
+        throw std::runtime_error(
+            "Cannot open generator chunk provenance: " + provenancePath
+        );
+    }
+    nlohmann::json provenance;
+    source >> provenance;
+    if (provenance.value("schema", std::string()) != "aao-osg-stratum-chunks-v1") {
+        throw std::runtime_error(
+            "Unsupported generator chunk provenance schema in " + provenancePath
+        );
+    }
+    std::unordered_map<std::string, GeneratorFileMetadata> weights;
+    for (const auto& chunk : provenance.at("chunks")) {
+        const std::string chunkFile = chunk.at("chunk_file").get<std::string>();
+        const std::string stem = fs::path(chunkFile).stem().string();
+        const GeneratorFileMetadata metadata{
+            chunk.at("flat_index").get<int>(),
+            chunk.at("pooled_event_weight_microbarn").get<double>()
+        };
+        if (!std::isfinite(metadata.weight) || metadata.weight <= 0.0) {
+            throw std::runtime_error("Invalid generator weight for " + chunkFile);
+        }
+        if (!weights.emplace(stem, metadata).second) {
+            throw std::runtime_error(
+                "Duplicate generator chunk stem in provenance: " + stem
+            );
+        }
+    }
+    return weights;
+}
 
 bool isRichDetectorSchemaWarning(const std::string& line) {
     return line.find("hipo::schema getEntryOrder") != std::string::npos &&
@@ -369,6 +410,19 @@ int main(int argc, char** argv) {
         std::cerr << "[ERROR] generatedEventTree.treeName must differ from treeName\n";
         return 1;
     }
+    if (cfg.generatorWeights.enabled && !cfg.generatedEventTree.enabled) {
+        std::cerr << "[ERROR] generatorWeights requires generatedEventTree.enabled=true\n";
+        return 1;
+    }
+    std::unordered_map<std::string, GeneratorFileMetadata> generatorWeights;
+    if (cfg.generatorWeights.enabled) {
+        try {
+            generatorWeights = loadGeneratorWeights(cfg.generatorWeights.chunkProvenance);
+        } catch (const std::exception& error) {
+            std::cerr << "[ERROR] " << error.what() << "\n";
+            return 1;
+        }
+    }
     const ProtonEnergyLossCorrections corrections(cfg.kinematicCorrections);
     std::unique_ptr<QualityAssurance> qa;
     try {
@@ -421,6 +475,11 @@ int main(int argc, char** argv) {
               << "[INFO] Match MC    : " << (cfg.matchMC ? "yes" : "no") << "\n"
               << "[INFO] GEN events  : "
               << (cfg.generatedEventTree.enabled ? cfg.generatedEventTree.treeName : "disabled")
+              << "\n"
+              << "[INFO] GEN weights : "
+              << (cfg.generatorWeights.enabled
+                      ? cfg.generatorWeights.chunkProvenance
+                      : "unit weights")
               << "\n"
               << "[INFO] QADB        : " << (qa->enabled() ? "enabled" : "disabled") << "\n"
               << "[INFO] Input check : "
@@ -478,10 +537,18 @@ int main(int argc, char** argv) {
     TTree* sourceFilesTree = nullptr;
     std::uint64_t catalogSourceFileId = INVALID_SOURCE_ID;
     std::string catalogSourceFileName;
+    int catalogStratumFlatIndex = -1;
+    double catalogGeneratorWeight = 1.0;
     if (cfg.generatedEventTree.enabled) {
         sourceFilesTree = new TTree("SourceFiles", "SourceFiles");
         sourceFilesTree->Branch("sourceFileId", &catalogSourceFileId, "sourceFileId/l");
         sourceFilesTree->Branch("sourceFileName", &catalogSourceFileName);
+        sourceFilesTree->Branch(
+            "stratumFlatIndex", &catalogStratumFlatIndex, "stratumFlatIndex/I"
+        );
+        sourceFilesTree->Branch(
+            "generatorWeight", &catalogGeneratorWeight, "generatorWeight/D"
+        );
     }
 
     EventBranches evBranches;
@@ -521,6 +588,19 @@ int main(int argc, char** argv) {
         }
 
         const std::string sourceBasename = fs::path(hipoPath).filename().string();
+        int sourceStratumFlatIndex = -1;
+        double sourceGeneratorWeight = 1.0;
+        if (cfg.generatorWeights.enabled) {
+            const std::string sourceStem = fs::path(sourceBasename).stem().string();
+            const auto weightEntry = generatorWeights.find(sourceStem);
+            if (weightEntry == generatorWeights.end()) {
+                std::cerr << "[ERROR] HIPO source stem is absent from generator "
+                          << "chunk provenance: " << sourceStem << "\n";
+                return 1;
+            }
+            sourceStratumFlatIndex = weightEntry->second.stratumFlatIndex;
+            sourceGeneratorWeight = weightEntry->second.weight;
+        }
         const std::string sourceFileName = sourceBasenameCounts[sourceBasename] > 1
             ? fs::absolute(fs::path(hipoPath)).lexically_normal().string()
             : sourceBasename;
@@ -536,6 +616,8 @@ int main(int argc, char** argv) {
             if (sourceFilesTree) {
                 catalogSourceFileId = sourceFileId;
                 catalogSourceFileName = sourceFileName;
+                catalogStratumFlatIndex = sourceStratumFlatIndex;
+                catalogGeneratorWeight = sourceGeneratorWeight;
                 sourceFilesTree->Fill();
             }
         }
@@ -574,7 +656,9 @@ int main(int argc, char** argv) {
             if (generatedTree) {
                 generatedEvent.fill(mc, runNum, eventNum,
                                     sourceFileId, currentSourceEventIndex,
-                                    cfg.beamEnergy);
+                                    cfg.beamEnergy,
+                                    sourceStratumFlatIndex,
+                                    sourceGeneratorWeight);
                 generatedTree->Fill();
                 ++nGeneratedEvents;
                 if (generatedEvent.topologyValid) ++nGeneratedTopologyValid;

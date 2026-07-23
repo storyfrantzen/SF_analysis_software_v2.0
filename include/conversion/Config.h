@@ -26,6 +26,11 @@ struct GeneratedEventTreeConfig {
     std::string treeName = "GeneratedEvents";
 };
 
+struct GeneratorWeightsConfig {
+    bool enabled = false;
+    std::string chunkProvenance;
+};
+
 struct InputValidationConfig {
     bool enabled = false;
     bool skipMalformed = true;
@@ -59,6 +64,7 @@ struct Config {
     bool saveUnmatchedMC = true;
     double matchMaxAngleDeg = 3.0;
     GeneratedEventTreeConfig generatedEventTree;
+    GeneratorWeightsConfig generatorWeights;
 
     // ── Data quality ──────────────────────────
     QADBConfig qadb;
@@ -106,6 +112,31 @@ struct Config {
             generatedEventTree.treeName = generated.value("treeName", generatedEventTree.treeName);
             if (generatedEventTree.treeName.empty()) {
                 throw std::runtime_error("generatedEventTree.treeName must not be empty");
+            }
+        }
+
+        if (j.contains("generatorWeights")) {
+            const auto& weights = j["generatorWeights"];
+            if (!weights.is_object()) {
+                throw std::runtime_error("generatorWeights must be a JSON object");
+            }
+            generatorWeights.enabled = weights.value("enabled", generatorWeights.enabled);
+            generatorWeights.chunkProvenance = weights.value(
+                "chunkProvenance", generatorWeights.chunkProvenance
+            );
+            if (generatorWeights.enabled) {
+                if (generatorWeights.chunkProvenance.empty()) {
+                    throw std::runtime_error(
+                        "generatorWeights.chunkProvenance is required when enabled"
+                    );
+                }
+                std::filesystem::path provenancePath =
+                    generatorWeights.chunkProvenance;
+                if (provenancePath.is_relative() && !configDir.empty()) {
+                    provenancePath = configDir / provenancePath;
+                }
+                generatorWeights.chunkProvenance =
+                    provenancePath.lexically_normal().string();
             }
         }
 
