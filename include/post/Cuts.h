@@ -66,6 +66,10 @@ struct ChannelSpec {
     const CompositeSpec* findComposite(const std::string& role) const;
 };
 
+struct CandidateSelectionSpec {
+    std::string method = "compositeDistance";
+};
+
 struct PostCutConfig {
     std::string outputFile = "post_processed.root";
     std::string inputTree = "Events";
@@ -93,6 +97,7 @@ struct PostCutConfig {
     double maxPi0ConeAngleDeg = 4.0;
 
     ChannelSpec channel;
+    CandidateSelectionSpec candidateSelection;
 
     static PostCutConfig fromFile(const std::string& filename);
 };

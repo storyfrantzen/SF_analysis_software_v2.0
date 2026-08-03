@@ -93,6 +93,36 @@ preselection, while tagging electron/proton/photon fiducials, electron
 sampling-fraction cuts, the three CVT phi vetoes, and the pi0 mass window. It
 also retains failed loose-exclusivity candidates.
 
+## Candidate selection
+
+Candidate construction exhaustively visits every particle combination that
+passes the configured role cuts. The optional `candidateSelection` block
+chooses which complete combination is retained. Its backward-compatible
+default is `compositeDistance`, which minimizes the unscaled pair-mass
+distance.
+
+RGK EPPI0 uses an explicit two-stage prescription:
+
+```json
+"candidateSelection": {
+    "method": "pi0MassThenMissingPt"
+}
+```
+
+The algorithm first chooses the photon pair whose invariant mass is closest to
+the configured pi0 mass. For that photon pair, it chooses the proton producing
+the smallest missing transverse momentum. Exact remaining ties are resolved
+lexicographically by the selected particles' input indices. This retains the
+legacy photon-pair preference, adds a physically motivated proton choice, and
+does not require guessed detector resolutions.
+
+Every complete combination that passes required particle and composite
+preselection participates. Loose exclusivity is applied once to the globally
+selected winner; the event is not allowed to choose a different combination
+solely because that alternative passes the downstream exclusivity gate. Data,
+Born MC, radiative MC, and acceptance MC must use the same candidate-selection
+definition when they enter the same correction workflow.
+
 ## RGA 10.604 GeV EPPI0 smoke test
 
 From the repository root:

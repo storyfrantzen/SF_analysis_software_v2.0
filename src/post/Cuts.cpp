@@ -114,6 +114,18 @@ ChannelSpec parseChannelSpec(const json& j) {
     return channel;
 }
 
+CandidateSelectionSpec parseCandidateSelectionSpec(const json& j) {
+    CandidateSelectionSpec selection;
+    selection.method = j.value("method", selection.method);
+    if (selection.method != "compositeDistance" &&
+        selection.method != "pi0MassThenMissingPt") {
+        throw std::runtime_error(
+            "Unsupported candidate-selection method '" + selection.method + "'"
+        );
+    }
+    return selection;
+}
+
 void mergeConfig(json& base, const json& override) {
     for (const auto& item : override.items()) {
         if (item.key() == "extends") continue;
@@ -331,6 +343,10 @@ PostCutConfig PostCutConfig::fromFile(const std::string& filename) {
         cfg.channel = parseChannelSpec(j["channel"]);
     } else if (j.contains("eppi0")) {
         cfg.channel = legacyEppi0Channel(j["eppi0"]);
+    }
+
+    if (j.contains("candidateSelection")) {
+        cfg.candidateSelection = parseCandidateSelectionSpec(j["candidateSelection"]);
     }
 
     if (j.contains("exclusivity")) {

@@ -81,6 +81,10 @@
         ]
     },
 
+    "candidateSelection": {
+        "method": "pi0MassThenMissingPt"
+    },
+
     "exclusivity": {
         "maxAbsMissingEnergy": 2.0,
         "minElectronPhotonAngleDeg": 4.0,

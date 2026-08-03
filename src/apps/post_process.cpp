@@ -110,7 +110,9 @@ void printChannelSummary(const PostCutConfig& cfg) {
         }
         std::cout << ")";
     }
-    std::cout << "\n";
+    std::cout << "\n"
+              << "[INFO] Candidate selection: " << cfg.candidateSelection.method
+              << "\n";
 }
 
 void printProgress(Long64_t currentRow,
@@ -486,6 +488,39 @@ bool evaluateCompositeRank(const Selection& selection,
     return true;
 }
 
+struct CandidateChoiceKey {
+    double compositeDistance = std::numeric_limits<double>::max();
+    double missingPt = 0.0;
+    std::vector<int> particleIndices;
+};
+
+bool makeCandidateChoiceKey(const CandidateOutput& candidate,
+                            const PostCutConfig& cfg,
+                            double compositeDistance,
+                            CandidateChoiceKey& key) {
+    if (!std::isfinite(compositeDistance)) return false;
+    key.compositeDistance = compositeDistance;
+    key.missingPt = 0.0;
+    if (cfg.candidateSelection.method == "pi0MassThenMissingPt") {
+        if (!std::isfinite(candidate.pT_miss)) return false;
+        key.missingPt = candidate.pT_miss;
+    }
+    key.particleIndices = candidate.selectedIdx;
+    return true;
+}
+
+bool candidateChoiceLess(const CandidateChoiceKey& left,
+                         const CandidateChoiceKey& right) {
+    if (left.compositeDistance != right.compositeDistance) {
+        return left.compositeDistance < right.compositeDistance;
+    }
+    if (left.missingPt != right.missingPt) return left.missingPt < right.missingPt;
+    return std::lexicographical_compare(
+        left.particleIndices.begin(), left.particleIndices.end(),
+        right.particleIndices.begin(), right.particleIndices.end()
+    );
+}
+
 bool supportsEppi0Logic(const PostCutConfig& cfg) {
     const auto countForRole = [&](const std::string& role) {
         for (const auto& roleSpec : cfg.channel.particles) {
@@ -621,7 +656,7 @@ bool processEvent(const EventRows& rows,
     const auto& cfg = cuts.config();
     const bool runEppi0 = supportsEppi0Logic(cfg);
 
-    double bestRank = std::numeric_limits<double>::max();
+    CandidateChoiceKey bestKey;
     CandidateOutput best;
     bool found = false;
     Selection selection;
@@ -648,9 +683,9 @@ bool processEvent(const EventRows& rows,
     std::function<void(size_t)> visitRole;
     visitRole = [&](size_t roleIndex) {
         if (roleIndex >= cfg.channel.particles.size()) {
-            double rank = 0.0;
+            double compositeDistance = 0.0;
             CutDecision compositeDecision;
-            if (!evaluateCompositeRank(selection, cfg, rank, compositeDecision)) {
+            if (!evaluateCompositeRank(selection, cfg, compositeDistance, compositeDecision)) {
                 ++stats.compositeFailures;
                 stats.addFailures(compositeDecision);
                 return;
@@ -666,13 +701,11 @@ bool processEvent(const EventRows& rows,
             appendUnique(candidateTaggedFailures, splitCsv(candidate.eppi0_failedCuts));
             candidate.eppi0_evaluatedCuts = joinCsv(candidateTaggedCuts);
             candidate.eppi0_failedCuts = joinCsv(candidateTaggedFailures);
-            if (runEppi0 && !candidate.eppi0_passExclusivity && !cfg.saveFailedCandidates) {
-                ++stats.exclusivityFailures;
-                addCsvFailures(candidate.eppi0_failedCuts, stats);
-                return;
-            }
-            if (!found || rank < bestRank) {
-                bestRank = rank;
+
+            CandidateChoiceKey key;
+            if (!makeCandidateChoiceKey(candidate, cfg, compositeDistance, key)) return;
+            if (!found || candidateChoiceLess(key, bestKey)) {
+                bestKey = std::move(key);
                 best = candidate;
                 found = true;
             }
@@ -720,6 +753,12 @@ bool processEvent(const EventRows& rows,
     visitRole(0);
 
     if (!found) {
+        ++stats.eventsWithoutSavedCandidate;
+        return false;
+    }
+    if (runEppi0 && !best.eppi0_passExclusivity && !cfg.saveFailedCandidates) {
+        ++stats.exclusivityFailures;
+        addCsvFailures(best.eppi0_failedCuts, stats);
         ++stats.eventsWithoutSavedCandidate;
         return false;
     }

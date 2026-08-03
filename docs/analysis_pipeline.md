@@ -114,6 +114,16 @@ This keeps a cut like `removeCVTPhi(min, max)` reusable across channels and syst
 
 The `post_process` workflow reads `channel.particles` in order and recursively builds valid candidate combinations. This makes the topology generic enough for channels beyond eppi0. Every channel gets the generic selected-particle branches such as `selectedRoles`, `selectedIdx`, `selectedPid`, and `selectedP`, plus standardized scalar branches for every configured role. A single proton role writes `protonIdx`, `protonPid`, `protonDet`, `protonSector`, `protonP`, `protonTheta`, and `protonPhi`; repeated roles receive numbered names such as `gamma1P` and `gamma2P`. Electron-derived DIS branches `Q2`, `nu`, and `xB` are added when the `electron` role is selected. Downstream converters can therefore copy scalar branches without interpreting role vectors. Use `firstPidInstance` on the electron role when it must be the trigger/scattered electron, meaning the first particle with that PID in the reconstructed bank.
 
+For EPPI0, all eligible proton-by-photon-pair combinations are evaluated before
+one candidate is retained. RGK uses `candidateSelection.method` set to
+`pi0MassThenMissingPt`: first choose the photon pair closest to the configured
+pi0 mass, then choose the proton that minimizes missing transverse momentum for
+that pair. Selected-particle input indices provide the final deterministic
+tie-break. The trigger-electron choice remains fixed by `firstPidInstance`; it
+does not participate in the combinatorial search. Loose exclusivity is tested
+only after the global winner is known, preventing a failed event from selecting
+a different combination solely to pass that gate.
+
 Post configs may share repeated topology definitions with an `extends` key. The
 parent path is resolved relative to the child config. Object values merge
 recursively, while arrays and scalars replace the parent, so child configs can

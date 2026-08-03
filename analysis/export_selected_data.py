@@ -14,7 +14,13 @@ COLUMNS = [
     "m_gg", "m2_miss", "m2_epX", "m_eggX", "E_miss", "pT_miss",
 ]
 
-OPTIONAL_COLUMNS = ["t_pi0"]
+OPTIONAL_COLUMNS = [
+    "t_pi0",
+    "eIdx",
+    "pIdx",
+    "g1Idx",
+    "g2Idx",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,6 +77,15 @@ def main() -> int:
     )
     if has_t_pi0:
         output["rec_minus_t_pi0"] = arrays["t_pi0"]
+    optional_output_names = {
+        "eIdx": "rec_electron_index",
+        "pIdx": "rec_proton_index",
+        "g1Idx": "rec_gamma1_index",
+        "g2Idx": "rec_gamma2_index",
+    }
+    for column, output_name in optional_output_names.items():
+        if column in arrays:
+            output[output_name] = arrays[column]
     np.savez_compressed(args.output, **output)
     print(f"Selected events: {len(arrays['Q2'])}")
     print(f"Beam charge: {beam_charge_c:.6e} C")

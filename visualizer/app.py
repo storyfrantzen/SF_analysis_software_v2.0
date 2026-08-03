@@ -28,7 +28,6 @@ ROOT_VECTOR_BRANCHES = (
     "selectedP",
     "selectedTheta",
     "selectedPhi",
-    "candidateScorePulls",
 )
 
 ROOT_PREFERRED_BRANCHES = (
@@ -88,13 +87,6 @@ ROOT_PREFERRED_BRANCHES = (
     "theta_e_g1",
     "theta_e_g2",
     "theta_g1_g2",
-    "candidateScore",
-    "candidateSecondScore",
-    "candidateScoreDelta",
-    "candidateCombinationsTested",
-    "candidateCombinationsRanked",
-    "candidateProtonsConsidered",
-    "candidatePhotonPairsConsidered",
     "evaluatedCuts",
     "failedCuts",
 ) + ROOT_VECTOR_BRANCHES
