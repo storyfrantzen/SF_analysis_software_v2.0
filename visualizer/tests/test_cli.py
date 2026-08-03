@@ -15,6 +15,7 @@ from visualizer.app import (
     build_payload,
     label_for,
     normalize_visual_columns,
+    object_branch_aliases,
     sample_event_row_indices,
     sample_row_indices,
 )
@@ -83,6 +84,7 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn("sampled ${payload.downsample.embeddedRows.toLocaleString()} of", html)
         self.assertIn("payload.downsample.unit === \"source-events\"", html)
         self.assertIn("payload.downsample.embeddedEvents.toLocaleString()", html)
+        self.assertIn('samplingNotes.push(`filter: ${payload.downsample.filter}`)', html)
         self.assertIn("seed ${payload.downsample.seed}", html)
         self.assertLess(html.index('id="loadFiles"'), html.index('aria-label="Dataset counts"'))
         self.assertLess(html.index('class="plot-panel-controls"'), html.index('id="loadFiles"'))
@@ -340,10 +342,22 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertEqual(label_for("rec_gamma1Sector"), "REC gamma 1 sector")
         self.assertEqual(label_for("rec_gamma1P"), "REC gamma 1 p")
         self.assertEqual(label_for("gen_gamma2P"), "GEN gamma 2 p")
+        self.assertEqual(label_for("rec.chi2pid"), "REC chi2 pid")
+        self.assertEqual(label_for("gen.pid"), "GEN pid")
         self.assertEqual(label_for("electronTheta_deg"), "electron theta deg")
         self.assertEqual(label_for("protonTheta_deg"), "proton theta deg")
         self.assertEqual(label_for("pi0_theta_deg"), "pi0 theta deg")
         self.assertEqual(label_for("rec_electronEECIN"), "REC electron E ECIN")
+
+    def test_object_branch_columns_keep_qualified_root_names(self) -> None:
+        columns = object_branch_aliases({"event", "rec", "gen"})
+        self.assertEqual(columns["event.runNum"], "event.runNum")
+        self.assertEqual(columns["event.sourceEventIndex"], "event.sourceEventIndex")
+        self.assertEqual(columns["rec.pid"], "rec.pid")
+        self.assertEqual(columns["rec.chi2pid"], "rec.chi2pid")
+        self.assertEqual(columns["gen.pid"], "gen.pid")
+        self.assertNotIn("event_runNum", columns)
+        self.assertNotIn("rec_chi2pid", columns)
 
     def test_prefixed_particle_aliases_are_deduplicated(self) -> None:
         values = np.array([1.0, 2.0])

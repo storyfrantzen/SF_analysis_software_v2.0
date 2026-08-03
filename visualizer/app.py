@@ -28,6 +28,7 @@ ROOT_VECTOR_BRANCHES = (
     "selectedP",
     "selectedTheta",
     "selectedPhi",
+    "candidateScorePulls",
 )
 
 ROOT_PREFERRED_BRANCHES = (
@@ -87,6 +88,13 @@ ROOT_PREFERRED_BRANCHES = (
     "theta_e_g1",
     "theta_e_g2",
     "theta_g1_g2",
+    "candidateScore",
+    "candidateSecondScore",
+    "candidateScoreDelta",
+    "candidateCombinationsTested",
+    "candidateCombinationsRanked",
+    "candidateProtonsConsidered",
+    "candidatePhotonPairsConsidered",
     "evaluatedCuts",
     "failedCuts",
 ) + ROOT_VECTOR_BRANCHES
@@ -415,6 +423,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tree", default="Events", help="ROOT tree name")
     parser.add_argument("--dictionary", type=Path, help="Optional ROOT dictionary shared library")
     parser.add_argument(
+        "--root-filter",
+        help=(
+            "Optional ROOT RDataFrame expression applied before sampling. Converter object "
+            "fields use their qualified branch names, such as event.runNum and rec.pid."
+        ),
+    )
+    parser.add_argument(
         "--columns",
         nargs="+",
         help="Optional ROOT branch allow-list. NPZ input always reads all numeric arrays.",
@@ -453,6 +468,8 @@ def main() -> int:
             raise ValueError("Could not infer input format; pass --format npz or --format root")
 
     if input_format == "npz":
+        if args.root_filter:
+            raise ValueError("--root-filter requires a ROOT input")
         if args.max_source_events is not None:
             raise ValueError("--max-source-events currently requires a ROOT input")
         log(f"Reading NPZ input {args.input}")
@@ -465,6 +482,7 @@ def main() -> int:
             args.columns,
             max_events=args.max_events,
             max_source_events=args.max_source_events,
+            root_filter=args.root_filter,
             seed=args.seed,
         )
 
@@ -490,6 +508,8 @@ def main() -> int:
                     "embeddedEvents": int(metadata["root_events_read"]),
                 }
             )
+    if args.root_filter:
+        downsample["filter"] = args.root_filter
     payload = build_payload(args.input, arrays, metadata, downsample, args.title)
     log(f"Writing {args.output}")
     html = render_html(payload)
@@ -526,6 +546,7 @@ def load_root(
     requested_columns: list[str] | None,
     max_events: int,
     max_source_events: int | None,
+    root_filter: str | None,
     seed: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     import ROOT  # type: ignore
@@ -568,8 +589,10 @@ def load_root(
         columns.extend(name for name in object_aliases if name not in columns)
     root_file.Close()
 
-    event_count: int | None = None
-    event_read_count: int | None = None
+    filtered_entries = entries
+    eligible_entries: np.ndarray | None = None
+    event_starts: np.ndarray | None = None
+    key_expressions = None
     if max_source_events is not None:
         key_expressions = root_event_key_expressions(available, object_aliases)
         if key_expressions is None:
@@ -577,46 +600,75 @@ def load_root(
                 "--max-source-events requires sourceFileId/sourceEventIndex or runNum/eventNum "
                 f"event identifiers in tree {tree_name}"
             )
-        log(f"Scanning {entries} rows for distinct source events")
-        event_starts = read_root_event_starts(
+    if root_filter:
+        log(f"Applying ROOT filter: {root_filter}")
+        eligible_entries, event_starts = read_filtered_root_selection(
             ROOT,
             root_path,
             tree_name,
+            root_filter,
+            object_aliases,
             key_expressions,
         )
-        sample_indices, event_count = sample_event_row_indices(
+        filtered_entries = int(eligible_entries.size)
+        if filtered_entries == 0:
+            raise ValueError(f"ROOT filter selected no rows: {root_filter}")
+        log(f"ROOT filter selected {filtered_entries} of {entries} rows")
+
+    event_count: int | None = None
+    event_read_count: int | None = None
+    if max_source_events is not None:
+        log(f"Scanning {filtered_entries} qualifying rows for distinct source events")
+        if event_starts is None:
+            event_starts = read_root_event_starts(
+                ROOT,
+                root_path,
+                tree_name,
+                key_expressions,
+            )
+        sampled_positions, event_count = sample_event_row_indices(
             event_starts,
-            entries,
+            filtered_entries,
             max_source_events,
             seed,
         )
+        sample_indices = (
+            sampled_positions
+            if eligible_entries is None or sampled_positions is None
+            else eligible_entries[sampled_positions]
+        )
         event_read_count = (
             event_count
-            if sample_indices is None
+            if sampled_positions is None
             else min(max_source_events, event_count)
         )
     else:
-        sample_indices = sample_row_indices(entries, max_events, seed)
-    read_count = entries if sample_indices is None else len(sample_indices)
+        sampled_positions = sample_row_indices(filtered_entries, max_events, seed)
+        sample_indices = (
+            sampled_positions
+            if eligible_entries is None or sampled_positions is None
+            else eligible_entries[sampled_positions]
+        )
+    read_count = filtered_entries if sample_indices is None else len(sample_indices)
     if max_source_events is not None:
         if sample_indices is None:
             log(
                 f"Reading {len(columns)} ROOT columns from all {event_count} source events "
-                f"({entries} rows)"
+                f"({filtered_entries} rows)"
             )
         else:
             log(
                 f"Reading {len(columns)} ROOT columns from a deterministic random sample "
                 f"of {event_read_count} of {event_count} source events "
-                f"({read_count} of {entries} rows, seed {seed})"
+                f"({read_count} of {filtered_entries} qualifying rows, seed {seed})"
             )
     elif sample_indices is not None:
         log(
             f"Reading {len(columns)} ROOT columns from a deterministic random sample "
-            f"of {read_count} of {entries} rows (seed {seed})"
+            f"of {read_count} of {filtered_entries} qualifying rows (seed {seed})"
         )
     else:
-        log(f"Reading {len(columns)} ROOT columns from {entries} rows")
+        log(f"Reading {len(columns)} ROOT columns from {filtered_entries} rows")
     raw = read_root_arrays(
         ROOT,
         root_path,
@@ -624,6 +676,7 @@ def load_root(
         columns,
         aliases=object_branch_aliases(available),
         sample_indices=sample_indices,
+        root_filter=root_filter,
         strict=bool(requested_columns),
     )
     arrays = {name: raw[name] for name in columns}
@@ -631,13 +684,16 @@ def load_root(
     metadata = {"format": "root", "tree": tree_name}
     if loaded_dictionary:
         metadata["dictionary"] = str(loaded_dictionary)
-    if max_source_events is None and max_events > 0 and entries > max_events:
-        metadata["root_rows_total"] = entries
+    if root_filter:
+        metadata["root_filter"] = root_filter
+        metadata["root_rows_before_filter"] = entries
+    if max_source_events is None and max_events > 0 and filtered_entries > max_events:
+        metadata["root_rows_total"] = filtered_entries
         metadata["root_rows_read"] = read_count
         metadata["sampling_seed"] = seed
         metadata["sampling_strategy"] = "deterministic-random"
     if max_source_events is not None:
-        metadata["root_rows_total"] = entries
+        metadata["root_rows_total"] = filtered_entries
         metadata["root_rows_read"] = read_count
         metadata["root_events_total"] = event_count
         metadata["root_events_read"] = event_read_count
@@ -657,18 +713,20 @@ def load_root_dictionary(ROOT: Any, dictionary: Path | None) -> Path | None:
     elif dictionary.suffix == ".so":
         candidates.append(dictionary.with_suffix(".dylib"))
 
+    found_candidate = False
     for candidate in candidates:
         if not candidate.exists():
             continue
+        found_candidate = True
         if ROOT.gSystem.Load(str(candidate.resolve())) >= 0:
             if candidate != dictionary:
                 print(f"Using ROOT dictionary {candidate} instead of {dictionary}", file=sys.stderr)
             return candidate
-        print(f"Warning: could not load ROOT dictionary {candidate}; trying without it", file=sys.stderr)
-        return None
+        print(f"Warning: could not load ROOT dictionary {candidate}; trying alternatives", file=sys.stderr)
 
     tried = ", ".join(str(candidate) for candidate in candidates)
-    print(f"Warning: ROOT dictionary not found ({tried}); continuing without it", file=sys.stderr)
+    problem = "could not be loaded" if found_candidate else "was not found"
+    print(f"Warning: ROOT dictionary {problem} ({tried}); continuing without it", file=sys.stderr)
     return None
 
 
@@ -683,11 +741,11 @@ def is_plain_root_branch(branch: Any) -> bool:
 def object_branch_aliases(available: set[str]) -> dict[str, str]:
     aliases: dict[str, str] = {}
     if "event" in available:
-        aliases.update({f"event_{field}": f"event.{field}" for field in EVENT_OBJECT_FIELDS})
+        aliases.update({f"event.{field}": f"event.{field}" for field in EVENT_OBJECT_FIELDS})
     if "rec" in available:
-        aliases.update({f"rec_{field}": f"rec.{field}" for field in REC_OBJECT_FIELDS})
+        aliases.update({f"rec.{field}": f"rec.{field}" for field in REC_OBJECT_FIELDS})
     if "gen" in available:
-        aliases.update({f"gen_{field}": f"gen.{field}" for field in GEN_OBJECT_FIELDS})
+        aliases.update({f"gen.{field}": f"gen.{field}" for field in GEN_OBJECT_FIELDS})
     return aliases
 
 
@@ -696,11 +754,11 @@ def root_event_key_expressions(
     aliases: dict[str, str],
 ) -> tuple[tuple[str, str], tuple[str, str]] | None:
     candidates = (
-        ("event_sourceFileId", "event_sourceEventIndex"),
+        ("event.sourceFileId", "event.sourceEventIndex"),
         ("sourceFileId", "sourceEventIndex"),
-        ("event_runNum", "event_eventNum"),
+        ("event.runNum", "event.eventNum"),
         ("runNum", "eventNum"),
-        ("rec_runNum", "rec_eventNum"),
+        ("rec.runNum", "rec.eventNum"),
     )
     for primary, secondary in candidates:
         if primary not in available and primary not in aliases:
@@ -712,6 +770,48 @@ def root_event_key_expressions(
             (secondary, aliases.get(secondary, secondary)),
         )
     return None
+
+
+def define_root_aliases(frame: Any, aliases: dict[str, str]) -> Any:
+    for name, expression in aliases.items():
+        if name != expression:
+            frame = frame.Define(name, expression)
+    return frame
+
+
+def read_filtered_root_selection(
+    ROOT: Any,
+    root_path: str,
+    tree_name: str,
+    root_filter: str,
+    aliases: dict[str, str],
+    key_expressions: tuple[tuple[str, str], tuple[str, str]] | None,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    frame = define_root_aliases(ROOT.RDataFrame(tree_name, root_path), aliases)
+    output_names = ["rdfentry_"]
+    key_names = ("__sf_filtered_event_key_primary", "__sf_filtered_event_key_secondary")
+    if key_expressions is not None:
+        for output_name, (logical_name, expression) in zip(key_names, key_expressions):
+            resolved_expression = logical_name if logical_name in aliases else expression
+            frame = frame.Define(
+                output_name,
+                f"static_cast<ULong64_t>({resolved_expression})",
+            )
+        output_names.extend(key_names)
+    try:
+        values = frame.Filter(root_filter).AsNumpy(output_names)
+    except RuntimeError as error:
+        raise RuntimeError(f"ROOT filter failed ({root_filter!r}): {error}") from error
+
+    entries = np.asarray(values["rdfentry_"], dtype=np.uint64)
+    if key_expressions is None or entries.size == 0:
+        return entries, None
+    primary = np.asarray(values[key_names[0]])
+    secondary = np.asarray(values[key_names[1]])
+    boundaries = np.empty(entries.size, dtype=bool)
+    boundaries[0] = True
+    boundaries[1:] = (primary[1:] != primary[:-1]) | (secondary[1:] != secondary[:-1])
+    return entries, np.flatnonzero(boundaries).astype(np.uint64, copy=False)
 
 
 def read_root_event_starts(
@@ -770,6 +870,7 @@ def read_root_arrays(
     *,
     aliases: dict[str, str],
     sample_indices: np.ndarray | None,
+    root_filter: str | None,
     strict: bool,
 ) -> dict[str, Any]:
     remaining = list(columns)
@@ -779,10 +880,15 @@ def read_root_arrays(
         while remaining:
             try:
                 frame = ROOT.RDataFrame(tree_name, root_path)
+                defined_aliases: set[str] = set()
+                if root_filter:
+                    frame = define_root_aliases(frame, aliases)
+                    defined_aliases.update(aliases)
+                    frame = frame.Filter(root_filter)
                 if sample_indices is not None:
                     frame = frame.Filter("SFVisualizerRootSampling::includes(rdfentry_)")
                 for name in remaining:
-                    if name in aliases:
+                    if name in aliases and name not in defined_aliases:
                         frame = frame.Define(name, aliases[name])
                 return frame.AsNumpy(remaining)
             except RuntimeError as error:
@@ -1401,9 +1507,9 @@ def variable_group_rank(name: str) -> int:
         return particle_rank
     if is_mass_or_exclusivity_variable(name):
         return 9
-    if lowered.startswith("rec_"):
+    if lowered.startswith(("rec_", "rec.")):
         return 10
-    if lowered.startswith("gen_"):
+    if lowered.startswith(("gen_", "gen.")):
         return 11
     if is_detector_geometry_variable(name):
         return 12
@@ -1432,11 +1538,11 @@ def variable_group_label(name: str) -> str:
 
 def canonical_variable_name(name: str) -> str:
     lowered = name.lower()
-    for prefix in ("rec_", "gen_"):
+    for prefix in ("rec_", "gen_", "rec.", "gen.", "event."):
         if lowered.startswith(prefix):
             lowered = lowered[len(prefix):]
             break
-    return lowered.replace("_", "")
+    return lowered.replace("_", "").replace(".", "")
 
 
 def particle_variable_group_rank(name: str) -> int | None:
@@ -1461,7 +1567,7 @@ def is_event_variable(name: str) -> bool:
     canonical = canonical_variable_name(name)
     if is_run_number_column(name) or canonical in {"sourcefileid", "sourceeventindex", "eventnum"}:
         return True
-    if lowered.startswith(("rec_", "gen_")):
+    if lowered.startswith(("rec_", "gen_", "rec.", "gen.")):
         return False
     return canonical in {
         "helicity",
@@ -1514,9 +1620,9 @@ def is_detector_geometry_variable(name: str) -> bool:
 
 def source_sort_rank(name: str) -> int:
     lowered = name.lower()
-    if lowered.startswith("rec_"):
+    if lowered.startswith(("rec_", "rec.")):
         return 1
-    if lowered.startswith("gen_"):
+    if lowered.startswith(("gen_", "gen.")):
         return 2
     return 0
 
@@ -1652,7 +1758,7 @@ def categorical_filter_sort_key(filter_info: dict[str, Any]) -> tuple[int, int, 
 
 def category_group_rank(name: str) -> int:
     lowered = name.lower()
-    canonical = lowered.removeprefix("rec_").removeprefix("gen_").replace("_", "")
+    canonical = canonical_variable_name(name)
     if is_run_number_column(name) or canonical in {"sourcefileid", "sourceeventindex", "eventnum", "helicity", "charge"}:
         return 0
     if is_pass_flag(name) or lowered in {"rec_selected", "rec_not_selected"} or "selected" in canonical:
@@ -1696,7 +1802,7 @@ def category_group_label(name: str) -> str:
 
 
 def category_kind_rank(name: str) -> int:
-    canonical = name.lower().removeprefix("rec_").removeprefix("gen_").replace("_", "")
+    canonical = canonical_variable_name(name)
     if is_run_number_column(name):
         return 0
     if canonical.endswith("det") or canonical.endswith("detector"):
@@ -1729,7 +1835,11 @@ def category_label(name: str, value: Any) -> str:
 
 
 def is_pass_flag(name: str) -> bool:
-    core = name.removeprefix("rec_").removeprefix("gen_")
+    core = name
+    for prefix in ("rec_", "gen_", "rec.", "gen.", "event."):
+        if core.lower().startswith(prefix):
+            core = core[len(prefix):]
+            break
     return core.startswith("pass") or bool(
         re.match(r"^(?:electron|proton|gamma1|gamma2|gamma|pi0)Pass", core)
     )
@@ -1766,8 +1876,16 @@ def particle_display_label(name: str) -> str | None:
     elif lowered.startswith("gen_"):
         source = "GEN"
         base = name[4:]
+    elif lowered.startswith("rec."):
+        source = "REC"
+        base = name[4:]
+    elif lowered.startswith("gen."):
+        source = "GEN"
+        base = name[4:]
 
-    canonical = base.replace("_", "").lower()
+    canonical = base.replace("_", "").replace(".", "").lower()
+    if source and canonical in PARTICLE_QUANTITY_DISPLAY_NAMES:
+        return f"{source} {PARTICLE_QUANTITY_DISPLAY_NAMES[canonical]}"
     for prefix, particle in PARTICLE_DISPLAY_PREFIXES:
         if not canonical.startswith(prefix):
             continue
@@ -4012,7 +4130,7 @@ function updateSliceControls(panel) {{
 }}
 
 function isProtonSectorSplit(name) {{
-  const canonical = String(name || "").toLowerCase().replace(/^rec_/, "").replace(/^gen_/, "").replace(/_/g, "");
+  const canonical = String(name || "").toLowerCase().replace(/^(?:rec|gen)[_.]/, "").replace(/[_.]/g, "");
   return canonical === "psector" || canonical === "protonsector";
 }}
 
@@ -4042,16 +4160,19 @@ async function init() {{
   el("source").title = payload.source;
   document.querySelector(".dataset-heading").title = payload.source;
   el("embeddedCount").textContent = rowCount.toLocaleString();
+  const samplingNotes = [];
   if (payload.downsample.sampled) {{
     const seedNote = Number.isInteger(payload.downsample.seed)
       ? `, seed ${{payload.downsample.seed}}`
       : "";
     if (payload.downsample.unit === "source-events") {{
-      el("samplingNote").textContent = `sampled ${{payload.downsample.embeddedEvents.toLocaleString()}} of ${{payload.downsample.originalEvents.toLocaleString()}} source events (${{payload.downsample.embeddedRows.toLocaleString()}} rows)${{seedNote}}`;
+      samplingNotes.push(`sampled ${{payload.downsample.embeddedEvents.toLocaleString()}} of ${{payload.downsample.originalEvents.toLocaleString()}} source events (${{payload.downsample.embeddedRows.toLocaleString()}} rows)${{seedNote}}`);
     }} else {{
-      el("samplingNote").textContent = `sampled ${{payload.downsample.embeddedRows.toLocaleString()}} of ${{payload.downsample.originalRows.toLocaleString()}} rows${{seedNote}}`;
+      samplingNotes.push(`sampled ${{payload.downsample.embeddedRows.toLocaleString()}} of ${{payload.downsample.originalRows.toLocaleString()}} rows${{seedNote}}`);
     }}
   }}
+  if (payload.downsample.filter) samplingNotes.push(`filter: ${{payload.downsample.filter}}`);
+  el("samplingNote").textContent = samplingNotes.join("; ");
   ensureSampleColumn();
   rebuildCategoricalFilters(false);
   rebuildSplitOptions();
@@ -4173,7 +4294,7 @@ function categoricalGroupRank(group) {{
 function categoricalKindRank(name) {{
   if (name === SAMPLE_COLUMN) return 0;
   if (isRunNumberName(name)) return 1;
-  const canonical = name.toLowerCase().replace(/^rec_/, "").replace(/^gen_/, "").replace(/_/g, "");
+  const canonical = name.toLowerCase().replace(/^(?:rec|gen|event)[_.]/, "").replace(/[_.]/g, "");
   if (canonical.endsWith("det") || canonical.endsWith("detector")) return 2;
   if (canonical.includes("sector")) return 3;
   if (isIndexName(name)) return 4;

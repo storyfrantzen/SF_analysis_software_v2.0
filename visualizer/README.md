@@ -43,6 +43,34 @@ row cap is disabled for that run. Event identity prefers
 `sourceFileId + sourceEventIndex` and falls back to `runNum + eventNum` when
 needed. Use `--max-source-events 0` to embed every source event.
 
+Use `--root-filter` to apply a ROOT `RDataFrame` expression before either row
+or source-event sampling. Converter object fields keep their qualified ROOT
+branch names everywhere, including `event.runNum`, `event.eventNum`, `rec.pid`,
+and `rec.chi2pid`. For example, this retains every particle row from run 18480
+and embeds all qualifying source events:
+
+```bash
+python3 -m visualizer converter_rows.root \
+  --format root --root-filter 'event.runNum == 18480' \
+  --max-source-events 0 --seed 12345 \
+  --output results/run_18480.html \
+  --dictionary build/libROOTBranchesDict.so
+```
+
+For quick studies that do not need a persistent HTML artifact, the launcher
+below generates under a temporary directory, serves the visualizer, and removes
+the temporary HTML when the server stops:
+
+```bash
+scripts/visualize.sh converter_rows.root 0 'event.runNum == 18480'
+scripts/visualize.sh converter_rows.root 250000
+```
+
+The second argument is a source-event limit, not a row limit; `0` keeps every
+event passing the optional filter. Sampling still defaults to seed `12345`.
+The standalone `python3 -m visualizer` workflow remains available when a
+portable, comprehensive HTML file is desired.
+
 Then serve a generated file or a directory containing several visualizers:
 
 ```bash
