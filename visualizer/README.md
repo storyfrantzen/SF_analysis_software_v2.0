@@ -23,12 +23,25 @@ python3 -m visualizer data_events.npz \
 python3 -m visualizer selected_data.root \
   --format root --output results/selected_data_histograms.html \
   --dictionary build/libROOTBranchesDict.so
+
+python3 -m visualizer converter_rows.root \
+  --format root --max-source-events 250000 --seed 12345 \
+  --output results/converter_event_sample.html \
+  --dictionary build/libROOTBranchesDict.so
 ```
 
 Inputs larger than `--max-events` are sampled across the complete dataset for
 both NPZ and ROOT files. Sampling is deterministic and defaults to `--seed
 12345`, so repeated runs select the same source rows. Pass a different seed for
 a different reproducible sample, or `--max-events 0` to embed every row.
+
+Converter ROOT trees often contain several particle rows per trigger event. Use
+`--max-source-events N` to sample `N` distinct source events instead of `N`
+rows. Every particle row belonging to each selected event is retained, the
+selection remains deterministic under `--seed`, and the ordinary `--max-events`
+row cap is disabled for that run. Event identity prefers
+`sourceFileId + sourceEventIndex` and falls back to `runNum + eventNum` when
+needed. Use `--max-source-events 0` to embed every source event.
 
 Then serve a generated file or a directory containing several visualizers:
 

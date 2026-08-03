@@ -15,6 +15,7 @@ from visualizer.app import (
     build_payload,
     label_for,
     normalize_visual_columns,
+    sample_event_row_indices,
     sample_row_indices,
 )
 
@@ -80,6 +81,8 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn('<div class="header-utility-stack">', html)
         self.assertIn('id="datasetStatus" role="status" aria-live="polite"', html)
         self.assertIn("sampled ${payload.downsample.embeddedRows.toLocaleString()} of", html)
+        self.assertIn("payload.downsample.unit === \"source-events\"", html)
+        self.assertIn("payload.downsample.embeddedEvents.toLocaleString()", html)
         self.assertIn("seed ${payload.downsample.seed}", html)
         self.assertLess(html.index('id="loadFiles"'), html.index('aria-label="Dataset counts"'))
         self.assertLess(html.index('class="plot-panel-controls"'), html.index('id="loadFiles"'))
@@ -251,6 +254,60 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertTrue(np.all(first[:-1] < first[1:]))
         self.assertIsNone(sample_row_indices(250, 250, 12345))
         self.assertIsNone(sample_row_indices(10_000, 0, 12345))
+
+    def test_source_event_sampling_retains_every_particle_row(self) -> None:
+        event_sizes = np.resize(np.arange(1, 7, dtype=np.int64), 100)
+        source_ids = np.repeat(np.arange(4, dtype=np.int64), 25)
+        source_ids = np.repeat(source_ids, event_sizes)
+        event_indices = np.repeat(np.arange(100, dtype=np.int64), event_sizes)
+        event_starts = np.flatnonzero(
+            np.r_[
+                True,
+                (source_ids[1:] != source_ids[:-1])
+                | (event_indices[1:] != event_indices[:-1]),
+            ]
+        )
+
+        first, event_count = sample_event_row_indices(
+            event_starts,
+            event_indices.size,
+            max_source_events=30,
+            seed=12345,
+        )
+        repeated, repeated_count = sample_event_row_indices(
+            event_starts,
+            event_indices.size,
+            max_source_events=30,
+            seed=12345,
+        )
+        changed, _ = sample_event_row_indices(
+            event_starts,
+            event_indices.size,
+            max_source_events=30,
+            seed=54321,
+        )
+
+        self.assertEqual(event_count, 100)
+        self.assertEqual(repeated_count, 100)
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(repeated)
+        self.assertIsNotNone(changed)
+        np.testing.assert_array_equal(first, repeated)
+        self.assertFalse(np.array_equal(first, changed))
+        selected_event_indices = np.unique(event_indices[first])
+        self.assertEqual(selected_event_indices.size, 30)
+        for event_index in selected_event_indices:
+            expected_rows = np.flatnonzero(event_indices == event_index)
+            actual_rows = first[event_indices[first] == event_index]
+            np.testing.assert_array_equal(actual_rows, expected_rows)
+        all_rows, all_event_count = sample_event_row_indices(
+            event_starts,
+            event_indices.size,
+            max_source_events=0,
+            seed=12345,
+        )
+        self.assertIsNone(all_rows)
+        self.assertEqual(all_event_count, 100)
 
     def test_quantity_aware_default_axis_ranges(self) -> None:
         central_missing_mass = np.linspace(-0.08, 0.08, 100)

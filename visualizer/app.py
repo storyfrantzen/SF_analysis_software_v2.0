@@ -428,6 +428,16 @@ def parse_args() -> argparse.Namespace:
             "deterministically using --seed; use 0 to read all rows."
         ),
     )
+    parser.add_argument(
+        "--max-source-events",
+        type=int,
+        default=None,
+        help=(
+            "Maximum distinct source events embedded from a ROOT input. All particle rows "
+            "belonging to each sampled event are retained. This overrides the --max-events "
+            "row limit; use 0 to read every source event."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--title", default=None, help="Title shown inside the visualizer")
     return parser.parse_args()
@@ -443,6 +453,8 @@ def main() -> int:
             raise ValueError("Could not infer input format; pass --format npz or --format root")
 
     if input_format == "npz":
+        if args.max_source_events is not None:
+            raise ValueError("--max-source-events currently requires a ROOT input")
         log(f"Reading NPZ input {args.input}")
         arrays, metadata = load_npz(args.input)
     else:
@@ -452,6 +464,7 @@ def main() -> int:
             args.dictionary,
             args.columns,
             max_events=args.max_events,
+            max_source_events=args.max_source_events,
             seed=args.seed,
         )
 
@@ -459,7 +472,8 @@ def main() -> int:
     arrays = add_derived_quantities(arrays)
     arrays = normalize_visual_columns(arrays)
     arrays = rectangular_numeric_and_text(arrays)
-    arrays, downsample = downsample_arrays(arrays, args.max_events, args.seed)
+    row_limit = 0 if args.max_source_events is not None else args.max_events
+    arrays, downsample = downsample_arrays(arrays, row_limit, args.seed)
     if input_format == "root" and metadata.get("root_rows_total", 0) > len(next(iter(arrays.values()))):
         downsample = {
             "originalRows": int(metadata["root_rows_total"]),
@@ -468,6 +482,14 @@ def main() -> int:
             "strategy": "deterministic-random",
             "seed": int(args.seed),
         }
+        if metadata.get("sampling_unit") == "source-events":
+            downsample.update(
+                {
+                    "unit": "source-events",
+                    "originalEvents": int(metadata["root_events_total"]),
+                    "embeddedEvents": int(metadata["root_events_read"]),
+                }
+            )
     payload = build_payload(args.input, arrays, metadata, downsample, args.title)
     log(f"Writing {args.output}")
     html = render_html(payload)
@@ -503,6 +525,7 @@ def load_root(
     dictionary: Path | None,
     requested_columns: list[str] | None,
     max_events: int,
+    max_source_events: int | None,
     seed: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     import ROOT  # type: ignore
@@ -545,9 +568,49 @@ def load_root(
         columns.extend(name for name in object_aliases if name not in columns)
     root_file.Close()
 
-    sample_indices = sample_row_indices(entries, max_events, seed)
+    event_count: int | None = None
+    event_read_count: int | None = None
+    if max_source_events is not None:
+        key_expressions = root_event_key_expressions(available, object_aliases)
+        if key_expressions is None:
+            raise RuntimeError(
+                "--max-source-events requires sourceFileId/sourceEventIndex or runNum/eventNum "
+                f"event identifiers in tree {tree_name}"
+            )
+        log(f"Scanning {entries} rows for distinct source events")
+        event_starts = read_root_event_starts(
+            ROOT,
+            root_path,
+            tree_name,
+            key_expressions,
+        )
+        sample_indices, event_count = sample_event_row_indices(
+            event_starts,
+            entries,
+            max_source_events,
+            seed,
+        )
+        event_read_count = (
+            event_count
+            if sample_indices is None
+            else min(max_source_events, event_count)
+        )
+    else:
+        sample_indices = sample_row_indices(entries, max_events, seed)
     read_count = entries if sample_indices is None else len(sample_indices)
-    if sample_indices is not None:
+    if max_source_events is not None:
+        if sample_indices is None:
+            log(
+                f"Reading {len(columns)} ROOT columns from all {event_count} source events "
+                f"({entries} rows)"
+            )
+        else:
+            log(
+                f"Reading {len(columns)} ROOT columns from a deterministic random sample "
+                f"of {event_read_count} of {event_count} source events "
+                f"({read_count} of {entries} rows, seed {seed})"
+            )
+    elif sample_indices is not None:
         log(
             f"Reading {len(columns)} ROOT columns from a deterministic random sample "
             f"of {read_count} of {entries} rows (seed {seed})"
@@ -568,11 +631,20 @@ def load_root(
     metadata = {"format": "root", "tree": tree_name}
     if loaded_dictionary:
         metadata["dictionary"] = str(loaded_dictionary)
-    if max_events > 0 and entries > max_events:
+    if max_source_events is None and max_events > 0 and entries > max_events:
         metadata["root_rows_total"] = entries
         metadata["root_rows_read"] = read_count
         metadata["sampling_seed"] = seed
         metadata["sampling_strategy"] = "deterministic-random"
+    if max_source_events is not None:
+        metadata["root_rows_total"] = entries
+        metadata["root_rows_read"] = read_count
+        metadata["root_events_total"] = event_count
+        metadata["root_events_read"] = event_read_count
+        metadata["sampling_unit"] = "source-events"
+        if sample_indices is not None:
+            metadata["sampling_seed"] = seed
+            metadata["sampling_strategy"] = "deterministic-random"
     return arrays, metadata
 
 
@@ -617,6 +689,77 @@ def object_branch_aliases(available: set[str]) -> dict[str, str]:
     if "gen" in available:
         aliases.update({f"gen_{field}": f"gen.{field}" for field in GEN_OBJECT_FIELDS})
     return aliases
+
+
+def root_event_key_expressions(
+    available: set[str],
+    aliases: dict[str, str],
+) -> tuple[tuple[str, str], tuple[str, str]] | None:
+    candidates = (
+        ("event_sourceFileId", "event_sourceEventIndex"),
+        ("sourceFileId", "sourceEventIndex"),
+        ("event_runNum", "event_eventNum"),
+        ("runNum", "eventNum"),
+        ("rec_runNum", "rec_eventNum"),
+    )
+    for primary, secondary in candidates:
+        if primary not in available and primary not in aliases:
+            continue
+        if secondary not in available and secondary not in aliases:
+            continue
+        return (
+            (primary, aliases.get(primary, primary)),
+            (secondary, aliases.get(secondary, secondary)),
+        )
+    return None
+
+
+def read_root_event_starts(
+    ROOT: Any,
+    root_path: str,
+    tree_name: str,
+    key_expressions: tuple[tuple[str, str], tuple[str, str]],
+) -> np.ndarray:
+    if not hasattr(ROOT, "SFVisualizerEventBoundaries"):
+        declared = ROOT.gInterpreter.Declare(
+            """
+            namespace SFVisualizerEventBoundaries {
+            bool initialized = false;
+            ULong64_t previous_primary = 0;
+            ULong64_t previous_secondary = 0;
+            void reset() {
+                initialized = false;
+                previous_primary = 0;
+                previous_secondary = 0;
+            }
+            bool starts_event(ULong64_t primary, ULong64_t secondary) {
+                const bool starts = !initialized
+                    || primary != previous_primary
+                    || secondary != previous_secondary;
+                initialized = true;
+                previous_primary = primary;
+                previous_secondary = secondary;
+                return starts;
+            }
+            }
+            """
+        )
+        if not declared:
+            raise RuntimeError("Could not initialize ROOT source-event boundary scanner")
+
+    ROOT.SFVisualizerEventBoundaries.reset()
+    frame = ROOT.RDataFrame(tree_name, root_path)
+    output_names = ("__sf_event_key_primary", "__sf_event_key_secondary")
+    for output_name, (_, expression) in zip(output_names, key_expressions):
+        frame = frame.Define(output_name, f"static_cast<ULong64_t>({expression})")
+    try:
+        starts = frame.Filter(
+            "SFVisualizerEventBoundaries::starts_event("
+            f"{output_names[0]}, {output_names[1]})"
+        ).AsNumpy(["rdfentry_"])
+        return np.asarray(starts["rdfentry_"], dtype=np.uint64)
+    finally:
+        ROOT.SFVisualizerEventBoundaries.reset()
 
 
 def read_root_arrays(
@@ -1056,6 +1199,35 @@ def sample_row_indices(row_count: int, max_events: int, seed: int) -> np.ndarray
         return None
     rng = random.Random(seed)
     return np.asarray(sorted(rng.sample(range(row_count), max_events)), dtype=np.uint64)
+
+
+def sample_event_row_indices(
+    event_starts: np.ndarray,
+    row_count: int,
+    max_source_events: int,
+    seed: int,
+) -> tuple[np.ndarray | None, int]:
+    starts = np.asarray(event_starts, dtype=np.int64)
+    if starts.ndim != 1:
+        raise ValueError("ROOT event boundaries must be a one-dimensional array")
+    if row_count < 0:
+        raise ValueError("ROOT row count cannot be negative")
+    if row_count == 0:
+        if starts.size:
+            raise ValueError("An empty ROOT tree cannot contain event boundaries")
+        return None, 0
+    if starts.size == 0 or starts[0] != 0 or np.any(starts[1:] <= starts[:-1]) or starts[-1] >= row_count:
+        raise ValueError("ROOT event boundaries must start at row zero and increase within the tree")
+    event_count = int(starts.size)
+    if max_source_events <= 0 or event_count <= max_source_events:
+        return None, event_count
+
+    rng = random.Random(seed)
+    selected_events = np.zeros(event_count, dtype=bool)
+    selected_events[rng.sample(range(event_count), max_source_events)] = True
+    event_row_counts = np.diff(np.append(starts, row_count))
+    selected_rows = np.flatnonzero(np.repeat(selected_events, event_row_counts))
+    return selected_rows.astype(np.uint64, copy=False), event_count
 
 
 def downsample_arrays(
@@ -3874,7 +4046,11 @@ async function init() {{
     const seedNote = Number.isInteger(payload.downsample.seed)
       ? `, seed ${{payload.downsample.seed}}`
       : "";
-    el("samplingNote").textContent = `sampled ${{payload.downsample.embeddedRows.toLocaleString()}} of ${{payload.downsample.originalRows.toLocaleString()}} rows${{seedNote}}`;
+    if (payload.downsample.unit === "source-events") {{
+      el("samplingNote").textContent = `sampled ${{payload.downsample.embeddedEvents.toLocaleString()}} of ${{payload.downsample.originalEvents.toLocaleString()}} source events (${{payload.downsample.embeddedRows.toLocaleString()}} rows)${{seedNote}}`;
+    }} else {{
+      el("samplingNote").textContent = `sampled ${{payload.downsample.embeddedRows.toLocaleString()}} of ${{payload.downsample.originalRows.toLocaleString()}} rows${{seedNote}}`;
+    }}
   }}
   ensureSampleColumn();
   rebuildCategoricalFilters(false);
