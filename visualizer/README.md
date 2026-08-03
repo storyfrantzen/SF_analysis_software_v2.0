@@ -25,6 +25,11 @@ python3 -m visualizer selected_data.root \
   --dictionary build/libROOTBranchesDict.so
 ```
 
+Inputs larger than `--max-events` are sampled across the complete dataset for
+both NPZ and ROOT files. Sampling is deterministic and defaults to `--seed
+12345`, so repeated runs select the same source rows. Pass a different seed for
+a different reproducible sample, or `--max-events 0` to embed every row.
+
 Then serve a generated file or a directory containing several visualizers:
 
 ```bash
@@ -129,9 +134,10 @@ tick-density controls form one panel-specific tile beneath the active quantity
 title. They use two aligned X/Y rows, with the vertical label pair immediately
 to the right of the tick-density pair. One-dimensional plots pin Y ticks and Y
 label to the same columns used in two-dimensional mode even while the Y-range
-controls are hidden. The display tile includes a panel-specific `plot X:Y`
-slider from 0.75:1 to 2.5:1; lower values make the canvas taller to reduce
-horizontal stretching, and profiles inherit the source panel's ratio. Log color,
+controls are hidden. The display tile includes a panel-specific `plot height`
+slider from 25% to 200% of the available plot width in one-percent steps. This
+provides direct, smooth control from a compact strip to a tall canvas, and
+profiles inherit the source panel's height. Log color,
 density, and color scale share that tile, which sits immediately to the right of
 the axis settings and is followed
 by the reset/export tile. All three tiles span the full title width as one

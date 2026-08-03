@@ -424,8 +424,8 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=250_000,
         help=(
-            "Maximum rows embedded in the HTML. ROOT inputs read at most this many rows "
-            "by default; use 0 to read all rows."
+            "Maximum rows embedded in the HTML. Larger NPZ and ROOT inputs are sampled "
+            "deterministically using --seed; use 0 to read all rows."
         ),
     )
     parser.add_argument("--seed", type=int, default=12345)
@@ -452,6 +452,7 @@ def main() -> int:
             args.dictionary,
             args.columns,
             max_events=args.max_events,
+            seed=args.seed,
         )
 
     log("Preparing embedded data")
@@ -459,6 +460,14 @@ def main() -> int:
     arrays = normalize_visual_columns(arrays)
     arrays = rectangular_numeric_and_text(arrays)
     arrays, downsample = downsample_arrays(arrays, args.max_events, args.seed)
+    if input_format == "root" and metadata.get("root_rows_total", 0) > len(next(iter(arrays.values()))):
+        downsample = {
+            "originalRows": int(metadata["root_rows_total"]),
+            "embeddedRows": int(len(next(iter(arrays.values())))),
+            "sampled": True,
+            "strategy": "deterministic-random",
+            "seed": int(args.seed),
+        }
     payload = build_payload(args.input, arrays, metadata, downsample, args.title)
     log(f"Writing {args.output}")
     html = render_html(payload)
@@ -494,10 +503,13 @@ def load_root(
     dictionary: Path | None,
     requested_columns: list[str] | None,
     max_events: int,
+    seed: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     import ROOT  # type: ignore
 
     ROOT.gROOT.SetBatch(True)
+    if ROOT.IsImplicitMTEnabled():
+        ROOT.DisableImplicitMT()
     log(f"Opening ROOT input {path}")
     loaded_dictionary = load_root_dictionary(ROOT, dictionary)
 
@@ -533,9 +545,13 @@ def load_root(
         columns.extend(name for name in object_aliases if name not in columns)
     root_file.Close()
 
-    read_limit = entries if max_events <= 0 else min(entries, max_events)
-    if read_limit < entries:
-        log(f"Reading {len(columns)} ROOT columns from first {read_limit} of {entries} rows")
+    sample_indices = sample_row_indices(entries, max_events, seed)
+    read_count = entries if sample_indices is None else len(sample_indices)
+    if sample_indices is not None:
+        log(
+            f"Reading {len(columns)} ROOT columns from a deterministic random sample "
+            f"of {read_count} of {entries} rows (seed {seed})"
+        )
     else:
         log(f"Reading {len(columns)} ROOT columns from {entries} rows")
     raw = read_root_arrays(
@@ -544,7 +560,7 @@ def load_root(
         tree_name,
         columns,
         aliases=object_branch_aliases(available),
-        max_events=max_events,
+        sample_indices=sample_indices,
         strict=bool(requested_columns),
     )
     arrays = {name: raw[name] for name in columns}
@@ -554,7 +570,9 @@ def load_root(
         metadata["dictionary"] = str(loaded_dictionary)
     if max_events > 0 and entries > max_events:
         metadata["root_rows_total"] = entries
-        metadata["root_rows_read"] = max_events
+        metadata["root_rows_read"] = read_count
+        metadata["sampling_seed"] = seed
+        metadata["sampling_strategy"] = "deterministic-random"
     return arrays, metadata
 
 
@@ -608,31 +626,65 @@ def read_root_arrays(
     columns: list[str],
     *,
     aliases: dict[str, str],
-    max_events: int,
+    sample_indices: np.ndarray | None,
     strict: bool,
 ) -> dict[str, Any]:
     remaining = list(columns)
-    while remaining:
-        try:
-            frame = ROOT.RDataFrame(tree_name, root_path)
-            for name in remaining:
-                if name in aliases:
-                    frame = frame.Define(name, aliases[name])
-            if max_events > 0:
-                frame = frame.Range(max_events)
-            return frame.AsNumpy(remaining)
-        except RuntimeError as error:
-            match = re.search(r'The column named "([^"]+)"', str(error))
-            if strict or not match or match.group(1) not in remaining:
-                raise
-            column = match.group(1)
-            print(
-                f"Warning: skipping ROOT branch {column!r}; its type needs a dictionary",
-                file=sys.stderr,
-            )
-            remaining.remove(column)
-            columns[:] = remaining
+    if sample_indices is not None:
+        set_root_sample_entries(ROOT, sample_indices)
+    try:
+        while remaining:
+            try:
+                frame = ROOT.RDataFrame(tree_name, root_path)
+                if sample_indices is not None:
+                    frame = frame.Filter("SFVisualizerRootSampling::includes(rdfentry_)")
+                for name in remaining:
+                    if name in aliases:
+                        frame = frame.Define(name, aliases[name])
+                return frame.AsNumpy(remaining)
+            except RuntimeError as error:
+                match = re.search(r'The column named "([^"]+)"', str(error))
+                if strict or not match or match.group(1) not in remaining:
+                    raise
+                column = match.group(1)
+                print(
+                    f"Warning: skipping ROOT branch {column!r}; its type needs a dictionary",
+                    file=sys.stderr,
+                )
+                remaining.remove(column)
+                columns[:] = remaining
+    finally:
+        if sample_indices is not None:
+            ROOT.SFVisualizerRootSampling.clear_entries()
     raise RuntimeError(f"No readable scalar or vector branches found in {tree_name}")
+
+
+def set_root_sample_entries(ROOT: Any, indices: np.ndarray) -> None:
+    if not hasattr(ROOT, "SFVisualizerRootSampling"):
+        declared = ROOT.gInterpreter.Declare(
+            """
+            #include <unordered_set>
+            #include <vector>
+            namespace SFVisualizerRootSampling {
+            std::unordered_set<ULong64_t> entries;
+            void set_entries(const std::vector<ULong64_t>& values) {
+                entries.clear();
+                entries.reserve(values.size());
+                entries.insert(values.begin(), values.end());
+            }
+            void clear_entries() {
+                entries.clear();
+                entries.rehash(0);
+            }
+            bool includes(ULong64_t entry) {
+                return entries.find(entry) != entries.end();
+            }
+            }
+            """
+        )
+        if not declared:
+            raise RuntimeError("Could not initialize the ROOT entry sampler")
+    ROOT.SFVisualizerRootSampling.set_entries(np.asarray(indices, dtype=np.uint64))
 
 
 def extract_selected_particle_quantities(raw: dict[str, Any]) -> dict[str, np.ndarray]:
@@ -999,18 +1051,30 @@ def is_scalar_text(value: Any) -> bool:
     return isinstance(value, (str, bytes, np.str_))
 
 
+def sample_row_indices(row_count: int, max_events: int, seed: int) -> np.ndarray | None:
+    if max_events <= 0 or row_count <= max_events:
+        return None
+    rng = random.Random(seed)
+    return np.asarray(sorted(rng.sample(range(row_count), max_events)), dtype=np.uint64)
+
+
 def downsample_arrays(
     arrays: dict[str, np.ndarray],
     max_events: int,
     seed: int,
 ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     row_count = next(iter(arrays.values())).shape[0]
-    if max_events <= 0 or row_count <= max_events:
+    indices = sample_row_indices(row_count, max_events, seed)
+    if indices is None:
         return arrays, {"originalRows": int(row_count), "embeddedRows": int(row_count), "sampled": False}
-    rng = random.Random(seed)
-    indices = np.asarray(sorted(rng.sample(range(row_count), max_events)), dtype=np.int64)
     sampled = {name: value[indices] for name, value in arrays.items()}
-    return sampled, {"originalRows": int(row_count), "embeddedRows": int(max_events), "sampled": True}
+    return sampled, {
+        "originalRows": int(row_count),
+        "embeddedRows": int(max_events),
+        "sampled": True,
+        "strategy": "deterministic-random",
+        "seed": int(seed),
+    }
 
 
 def build_payload(
@@ -2615,7 +2679,7 @@ th:first-child, td:first-child {{ text-align: left; }}
         <label class="chip" id="logzChip"><input id="logz" type="checkbox"> log color</label>
         <label class="chip"><input id="density" type="checkbox"> density</label>
         <label class="chip" id="colorScaleChip"><input id="colorScale" type="checkbox"> color scale</label>
-        <label class="aspect-control"><span>plot X:Y <span id="plotAspectValue">1.5:1</span></span><input id="plotAspect" type="range" min="0.75" max="2.5" step="0.05" value="1.5"></label>
+        <label class="aspect-control"><span>plot height <span id="plotHeightValue">67%</span></span><input id="plotHeight" type="range" min="0.25" max="2" step="0.01" value="0.67"></label>
       </div>
       <div class="toolbar-tile action-tile" aria-label="Plot actions">
         <button type="button" id="resetFilters">Reset filters</button>
@@ -2755,7 +2819,7 @@ const variables = payload.variables;
 const byName = Object.fromEntries(variables.map(v => [v.name, v]));
 const integerVariables = new Set(variables.filter(v => v.integer).map(v => v.name));
 const SAMPLE_COLUMN = "__sampleId";
-const WORKSPACE_STORAGE_VERSION = 1;
+const WORKSPACE_STORAGE_VERSION = 2;
 const WORKSPACE_STORAGE_KEY = `sf-visualizer:${{payload.source || payload.title}}`;
 const loadedSamples = [{{id: 0, label: sampleLabel(payload.source || "sample 1"), rows: rowCount}}];
 let remoteDirectoryUrl = null;
@@ -2786,8 +2850,8 @@ const el = id => document.getElementById(id);
 const fmt = value => Number.isFinite(value) ? (Math.abs(value) >= 1000 || Math.abs(value) < 0.01 ? value.toExponential(3) : value.toPrecision(4)) : "-";
 const fmtColumn = (name, value) => integerVariables.has(name) && Number.isFinite(value) ? String(Math.round(value)) : fmt(value);
 const fmtTickTarget = value => Number.isInteger(value) ? String(value) : value.toFixed(1);
-const canonicalPlotAspect = value => clamp(Number(value) || 1.5, 0.75, 2.5);
-const plotAspectLabel = value => `${{Number(canonicalPlotAspect(value).toFixed(2))}}:1`;
+const canonicalPlotHeight = value => clamp(Number(value) || 2 / 3, 0.25, 2);
+const plotHeightLabel = value => `${{Math.round(canonicalPlotHeight(value) * 100)}}%`;
 
 function setStartupProgress(percent, stage) {{
   const normalized = Math.max(0, Math.min(100, Math.round(percent)));
@@ -3297,7 +3361,7 @@ function makePanel(key, xvar, yvar) {{
     logz: true,
     density: false,
     colorScale: true,
-    plotAspect: 1.5,
+    plotHeightScale: 2 / 3,
     fitModel: "none",
     signalModel: "none",
     backgroundModel: "none",
@@ -3325,7 +3389,7 @@ function makeFilterState() {{
 const persistedPanelKeys = [
   "mode", "xvar", "x2var", "yvar", "y2var", "xLabel", "yLabel", "splitVar",
   "sliceBins", "sliceEdges", "xbins", "ybins", "xticks", "yticks", "xmin", "xmax",
-  "ymin", "ymax", "logz", "density", "colorScale", "plotAspect", "signalModel",
+  "ymin", "ymax", "logz", "density", "colorScale", "plotHeightScale", "signalModel",
   "backgroundModel", "fitMethod", "fitScanDetail", "fitRangeClick", "showFitAnnotations",
   "showMeanGuides", "fitRangeMin", "fitRangeMax", "referenceCurves"
 ];
@@ -3379,7 +3443,7 @@ function restoreWorkspace(showStatus = false) {{
     if (showStatus) el("datasetStatus").textContent = "Saved workspace could not be read.";
     return false;
   }}
-  if (!saved || saved.version !== WORKSPACE_STORAGE_VERSION) {{
+  if (!saved || ![1, WORKSPACE_STORAGE_VERSION].includes(saved.version)) {{
     if (showStatus) el("datasetStatus").textContent = "No saved workspace for this dataset.";
     return false;
   }}
@@ -3387,6 +3451,9 @@ function restoreWorkspace(showStatus = false) {{
   for (const key of panelKeys) {{
     const savedPanel = saved.panels?.[key];
     if (!savedPanel) continue;
+    if (saved.version === 1 && savedPanel.plotHeightScale === undefined && savedPanel.plotAspect !== undefined) {{
+      savedPanel.plotHeightScale = 1 / Number(savedPanel.plotAspect);
+    }}
     for (const name of persistedPanelKeys) {{
       if (savedPanel[name] !== undefined) panels[key][name] = savedPanel[name];
     }}
@@ -3787,7 +3854,10 @@ async function init() {{
   document.querySelector(".dataset-heading").title = payload.source;
   el("embeddedCount").textContent = rowCount.toLocaleString();
   if (payload.downsample.sampled) {{
-    el("samplingNote").textContent = `downsampled from ${{payload.downsample.originalRows.toLocaleString()}} rows`;
+    const seedNote = Number.isInteger(payload.downsample.seed)
+      ? `, seed ${{payload.downsample.seed}}`
+      : "";
+    el("samplingNote").textContent = `sampled ${{payload.downsample.embeddedRows.toLocaleString()}} of ${{payload.downsample.originalRows.toLocaleString()}} rows${{seedNote}}`;
   }}
   ensureSampleColumn();
   rebuildCategoricalFilters(false);
@@ -4126,7 +4196,7 @@ function renderActiveFilterControls() {{
 }}
 
 function attachEvents() {{
-  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","sliceBins","sliceEdges","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","plotAspect","signalModel","backgroundModel","fitMethod","fitScanDetail","fitRangeClick"].forEach(id => {{
+  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","sliceBins","sliceEdges","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","plotHeight","signalModel","backgroundModel","fitMethod","fitScanDetail","fitRangeClick"].forEach(id => {{
     el(id).addEventListener("input", () => {{ readControlsToPanel(); scheduleUpdate(); }});
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
@@ -4382,9 +4452,9 @@ function syncControlsFromPanel() {{
   el("logz").checked = panel.logz;
   el("density").checked = panel.density;
   el("colorScale").checked = panel.colorScale;
-  panel.plotAspect = canonicalPlotAspect(panel.plotAspect);
-  el("plotAspect").value = panel.plotAspect;
-  el("plotAspectValue").textContent = plotAspectLabel(panel.plotAspect);
+  panel.plotHeightScale = canonicalPlotHeight(panel.plotHeightScale);
+  el("plotHeight").value = panel.plotHeightScale;
+  el("plotHeightValue").textContent = plotHeightLabel(panel.plotHeightScale);
   migratePanelFitSpec(panel);
   el("signalModel").value = panel.signalModel || "none";
   el("backgroundModel").value = panel.backgroundModel || "none";
@@ -4463,8 +4533,8 @@ function readControlsToPanel() {{
   panel.logz = el("logz").checked;
   panel.density = el("density").checked;
   panel.colorScale = el("colorScale").checked;
-  panel.plotAspect = canonicalPlotAspect(el("plotAspect").value);
-  el("plotAspectValue").textContent = plotAspectLabel(panel.plotAspect);
+  panel.plotHeightScale = canonicalPlotHeight(el("plotHeight").value);
+  el("plotHeightValue").textContent = plotHeightLabel(panel.plotHeightScale);
   panel.signalModel = canonicalSignalModel(el("signalModel").value);
   panel.backgroundModel = canonicalBackgroundModel(el("backgroundModel").value);
   panel.fitMethod = canonicalFitMethod(el("fitMethod").value);
@@ -5112,7 +5182,7 @@ function configureProfilePanel(target, source, hit, axis) {{
     xticks: source.xticks,
     yticks: source.yticks,
     density: source.density,
-    plotAspect: source.plotAspect,
+    plotHeightScale: source.plotHeightScale,
     showMeanGuides: source.showMeanGuides
   }};
   const variableName = profileX ? hit.xName : hit.yName;
@@ -5135,7 +5205,7 @@ function configureProfilePanel(target, source, hit, axis) {{
   target.xmin = profileX ? hit.xMin : hit.yMin;
   target.xmax = profileX ? hit.xMax : hit.yMax;
   target.density = sourceSettings.density;
-  target.plotAspect = canonicalPlotAspect(sourceSettings.plotAspect);
+  target.plotHeightScale = canonicalPlotHeight(sourceSettings.plotHeightScale);
   target.showMeanGuides = Boolean(sourceSettings.showMeanGuides);
   target.fitModel = "none";
   target.signalModel = "none";
@@ -5598,10 +5668,10 @@ function plotArea(canvas, showColorScale = false) {{
 function preparePanelCanvas(panel) {{
   const canvas = el("plot" + panel.key);
   const width = canvas.getBoundingClientRect().width;
-  const aspect = canonicalPlotAspect(panel.plotAspect);
+  const heightScale = canonicalPlotHeight(panel.plotHeightScale);
   const reclaimedHeight = canvasToolbarCollapsed ? canvasToolbarExpandedHeight : 0;
   canvas.style.minHeight = "0";
-  canvas.style.height = `${{clamp(width / aspect + reclaimedHeight, 180, 1400)}}px`;
+  canvas.style.height = `${{clamp(width * heightScale + reclaimedHeight, 160, 2000)}}px`;
 }}
 
 function colors() {{
@@ -6381,10 +6451,10 @@ function prepareFacetCanvas(canvas, panel, facetCount, splitName = "", facets = 
   const gapWidth = Math.max(0, columns - 1) * 16;
   const cellWidth = Math.max(120, (width - gapWidth - 16) / Math.max(1, columns));
   const plotWidth = Math.max(80, cellWidth - 60);
-  const cellHeight = plotWidth / canonicalPlotAspect(panel.plotAspect) + 64;
+  const cellHeight = plotWidth * canonicalPlotHeight(panel.plotHeightScale) + 64;
   const reclaimedHeight = canvasToolbarCollapsed ? canvasToolbarExpandedHeight : 0;
   canvas.style.minHeight = "0";
-  canvas.style.height = `${{clamp(rows * cellHeight + Math.max(0, rows - 1) * 30 + 12 + reclaimedHeight, 320, 2800)}}px`;
+  canvas.style.height = `${{clamp(rows * cellHeight + Math.max(0, rows - 1) * 30 + 12 + reclaimedHeight, 240, 4800)}}px`;
 }}
 
 function panelArea(area, layout, index, colorScaleSlots = 0) {{

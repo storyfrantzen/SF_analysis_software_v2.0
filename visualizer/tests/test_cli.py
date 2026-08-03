@@ -15,6 +15,7 @@ from visualizer.app import (
     build_payload,
     label_for,
     normalize_visual_columns,
+    sample_row_indices,
 )
 
 
@@ -78,6 +79,8 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn('<span class="subtle">samples</span><strong id="sampleCount">1</strong>', html)
         self.assertIn('<div class="header-utility-stack">', html)
         self.assertIn('id="datasetStatus" role="status" aria-live="polite"', html)
+        self.assertIn("sampled ${payload.downsample.embeddedRows.toLocaleString()} of", html)
+        self.assertIn("seed ${payload.downsample.seed}", html)
         self.assertLess(html.index('id="loadFiles"'), html.index('aria-label="Dataset counts"'))
         self.assertLess(html.index('class="plot-panel-controls"'), html.index('id="loadFiles"'))
         self.assertLess(html.index('id="sampleCount"'), html.index('id="selectedCount"'))
@@ -86,20 +89,20 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn('id="toggleCanvasToolbar" aria-expanded="true" aria-controls="canvasToolbar"', html)
         self.assertIn('<div class="toolbar-tile axis-tile" aria-label="Axis labels, binning, ranges, and ticks">', html)
         self.assertIn('<div class="toolbar-tile display-tile" aria-label="Display options">', html)
-        self.assertIn('id="plotAspect" type="range" min="0.75" max="2.5" step="0.05" value="1.5"', html)
-        self.assertIn('id="plotAspectValue">1.5:1</span>', html)
+        self.assertIn('id="plotHeight" type="range" min="0.25" max="2" step="0.01" value="0.67"', html)
+        self.assertIn('id="plotHeightValue">67%</span>', html)
         self.assertIn(".canvas-toolbar .display-tile {", html)
         self.assertIn("grid-template-columns: repeat(3, max-content)", html)
         self.assertIn('<label class="chip" id="logzChip">', html)
         self.assertIn('el("logzChip").style.display = panel.mode === "2d"', html)
         self.assertIn("grid-template-columns: minmax(470px, 1.7fr) repeat(2, minmax(240px, 1fr))", html)
         self.assertIn("grid-template-columns: repeat(5, minmax(70px, 1fr))", html)
-        self.assertIn("plotAspect: 1.5", html)
+        self.assertIn("plotHeightScale: 2 / 3", html)
         self.assertIn("function preparePanelCanvas(panel)", html)
-        self.assertIn("width / aspect", html)
-        self.assertIn("clamp(width / aspect + reclaimedHeight, 180, 1400)", html)
+        self.assertIn("width * heightScale", html)
+        self.assertIn("clamp(width * heightScale + reclaimedHeight, 160, 2000)", html)
         self.assertIn("function prepareFacetCanvas(canvas, panel, facetCount", html)
-        self.assertIn("canonicalPlotAspect(panel.plotAspect)", html)
+        self.assertIn("canonicalPlotHeight(panel.plotHeightScale)", html)
         self.assertIn("width: 100%", html)
         self.assertIn('el("yrange").classList.toggle("axis-range-hidden", panel.mode !== "2d")', html)
         self.assertIn(".axis-y-ticks { grid-column: 4; grid-row: 2; }", html)
@@ -199,7 +202,7 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn("function syncCanvasToolbarVisibility()", html)
         self.assertIn("let canvasToolbarExpandedHeight = 0", html)
         self.assertIn("canvasToolbarExpandedHeight = measuredHeight", html)
-        self.assertIn("width / aspect + reclaimedHeight", html)
+        self.assertIn("width * heightScale + reclaimedHeight", html)
         self.assertIn("30 + 12 + reclaimedHeight", html)
         self.assertIn('el("toggleCanvasToolbarContext").addEventListener("click"', html)
         self.assertIn('contextButton.textContent = actionLabel', html)
@@ -230,6 +233,18 @@ class VisualizerCliTests(unittest.TestCase):
 
     def test_package_entry_point_generates_standalone_html(self) -> None:
         self.run_visualizer([sys.executable, "-m", "visualizer"], "package.html")
+
+    def test_sampling_indices_are_seeded_reproducible_and_not_a_prefix(self) -> None:
+        first = sample_row_indices(10_000, 250, 12345)
+        repeated = sample_row_indices(10_000, 250, 12345)
+        changed = sample_row_indices(10_000, 250, 54321)
+        self.assertIsNotNone(first)
+        np.testing.assert_array_equal(first, repeated)
+        self.assertFalse(np.array_equal(first, changed))
+        self.assertFalse(np.array_equal(first, np.arange(250, dtype=np.uint64)))
+        self.assertTrue(np.all(first[:-1] < first[1:]))
+        self.assertIsNone(sample_row_indices(250, 250, 12345))
+        self.assertIsNone(sample_row_indices(10_000, 0, 12345))
 
     def test_quantity_aware_default_axis_ranges(self) -> None:
         central_missing_mass = np.linspace(-0.08, 0.08, 100)
