@@ -2186,6 +2186,13 @@ canvas.fit-range-picker {{
   align-content: center;
   gap: 3px 6px;
 }}
+.canvas-toolbar .action-tile {{
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: center;
+  gap: 2px;
+}}
+.canvas-toolbar .action-tile button {{ min-width: 0; white-space: nowrap; }}
 .display-tile .aspect-control {{
   grid-column: 1 / -1;
   gap: 1px;
@@ -2197,6 +2204,7 @@ canvas.fit-range-picker {{
 canvas {{
   display: block;
   width: 100%;
+  margin-inline: auto;
   height: min(70vh, 700px);
   min-height: 420px;
   border: 1px solid var(--border);
@@ -2679,7 +2687,8 @@ th:first-child, td:first-child {{ text-align: left; }}
         <label class="chip" id="logzChip"><input id="logz" type="checkbox"> log color</label>
         <label class="chip"><input id="density" type="checkbox"> density</label>
         <label class="chip" id="colorScaleChip"><input id="colorScale" type="checkbox"> color scale</label>
-        <label class="aspect-control"><span>plot height <span id="plotHeightValue">67%</span></span><input id="plotHeight" type="range" min="0.25" max="2" step="0.01" value="0.67"></label>
+        <label class="aspect-control"><span>plot height <span id="plotHeightValue">50%</span></span><input id="plotHeight" type="range" min="0.25" max="1" step="0.01" value="0.5"></label>
+        <label class="aspect-control"><span>plot width <span id="plotWidthValue">100%</span></span><input id="plotWidth" type="range" min="0.5" max="1" step="0.01" value="1"></label>
       </div>
       <div class="toolbar-tile action-tile" aria-label="Plot actions">
         <button type="button" id="resetFilters">Reset filters</button>
@@ -2819,7 +2828,7 @@ const variables = payload.variables;
 const byName = Object.fromEntries(variables.map(v => [v.name, v]));
 const integerVariables = new Set(variables.filter(v => v.integer).map(v => v.name));
 const SAMPLE_COLUMN = "__sampleId";
-const WORKSPACE_STORAGE_VERSION = 2;
+const WORKSPACE_STORAGE_VERSION = 3;
 const WORKSPACE_STORAGE_KEY = `sf-visualizer:${{payload.source || payload.title}}`;
 const loadedSamples = [{{id: 0, label: sampleLabel(payload.source || "sample 1"), rows: rowCount}}];
 let remoteDirectoryUrl = null;
@@ -2850,8 +2859,11 @@ const el = id => document.getElementById(id);
 const fmt = value => Number.isFinite(value) ? (Math.abs(value) >= 1000 || Math.abs(value) < 0.01 ? value.toExponential(3) : value.toPrecision(4)) : "-";
 const fmtColumn = (name, value) => integerVariables.has(name) && Number.isFinite(value) ? String(Math.round(value)) : fmt(value);
 const fmtTickTarget = value => Number.isInteger(value) ? String(value) : value.toFixed(1);
-const canonicalPlotHeight = value => clamp(Number(value) || 2 / 3, 0.25, 2);
+const MAX_PLOT_HEIGHT_TO_WIDTH = 2 / 3;
+const canonicalPlotHeight = value => clamp(Number(value) || 0.5, 0.25, 1);
 const plotHeightLabel = value => `${{Math.round(canonicalPlotHeight(value) * 100)}}%`;
+const canonicalPlotWidth = value => clamp(Number(value) || 1, 0.5, 1);
+const plotWidthLabel = value => `${{Math.round(canonicalPlotWidth(value) * 100)}}%`;
 
 function setStartupProgress(percent, stage) {{
   const normalized = Math.max(0, Math.min(100, Math.round(percent)));
@@ -3361,7 +3373,8 @@ function makePanel(key, xvar, yvar) {{
     logz: true,
     density: false,
     colorScale: true,
-    plotHeightScale: 2 / 3,
+    plotHeightFraction: 0.5,
+    plotWidthFraction: 1,
     fitModel: "none",
     signalModel: "none",
     backgroundModel: "none",
@@ -3389,7 +3402,7 @@ function makeFilterState() {{
 const persistedPanelKeys = [
   "mode", "xvar", "x2var", "yvar", "y2var", "xLabel", "yLabel", "splitVar",
   "sliceBins", "sliceEdges", "xbins", "ybins", "xticks", "yticks", "xmin", "xmax",
-  "ymin", "ymax", "logz", "density", "colorScale", "plotHeightScale", "signalModel",
+  "ymin", "ymax", "logz", "density", "colorScale", "plotHeightFraction", "plotWidthFraction", "signalModel",
   "backgroundModel", "fitMethod", "fitScanDetail", "fitRangeClick", "showFitAnnotations",
   "showMeanGuides", "fitRangeMin", "fitRangeMax", "referenceCurves"
 ];
@@ -3443,7 +3456,7 @@ function restoreWorkspace(showStatus = false) {{
     if (showStatus) el("datasetStatus").textContent = "Saved workspace could not be read.";
     return false;
   }}
-  if (!saved || ![1, WORKSPACE_STORAGE_VERSION].includes(saved.version)) {{
+  if (!saved || ![1, 2, WORKSPACE_STORAGE_VERSION].includes(saved.version)) {{
     if (showStatus) el("datasetStatus").textContent = "No saved workspace for this dataset.";
     return false;
   }}
@@ -3451,8 +3464,12 @@ function restoreWorkspace(showStatus = false) {{
   for (const key of panelKeys) {{
     const savedPanel = saved.panels?.[key];
     if (!savedPanel) continue;
-    if (saved.version === 1 && savedPanel.plotHeightScale === undefined && savedPanel.plotAspect !== undefined) {{
-      savedPanel.plotHeightScale = 1 / Number(savedPanel.plotAspect);
+    if (savedPanel.plotHeightFraction === undefined) {{
+      if (saved.version === 1 && savedPanel.plotAspect !== undefined) {{
+        savedPanel.plotHeightFraction = 1 / Number(savedPanel.plotAspect) / MAX_PLOT_HEIGHT_TO_WIDTH;
+      }} else if (saved.version === 2 && savedPanel.plotHeightScale !== undefined) {{
+        savedPanel.plotHeightFraction = Number(savedPanel.plotHeightScale) / MAX_PLOT_HEIGHT_TO_WIDTH;
+      }}
     }}
     for (const name of persistedPanelKeys) {{
       if (savedPanel[name] !== undefined) panels[key][name] = savedPanel[name];
@@ -4196,7 +4213,7 @@ function renderActiveFilterControls() {{
 }}
 
 function attachEvents() {{
-  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","sliceBins","sliceEdges","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","plotHeight","signalModel","backgroundModel","fitMethod","fitScanDetail","fitRangeClick"].forEach(id => {{
+  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","sliceBins","sliceEdges","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","plotHeight","plotWidth","signalModel","backgroundModel","fitMethod","fitScanDetail","fitRangeClick"].forEach(id => {{
     el(id).addEventListener("input", () => {{ readControlsToPanel(); scheduleUpdate(); }});
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
@@ -4452,9 +4469,12 @@ function syncControlsFromPanel() {{
   el("logz").checked = panel.logz;
   el("density").checked = panel.density;
   el("colorScale").checked = panel.colorScale;
-  panel.plotHeightScale = canonicalPlotHeight(panel.plotHeightScale);
-  el("plotHeight").value = panel.plotHeightScale;
-  el("plotHeightValue").textContent = plotHeightLabel(panel.plotHeightScale);
+  panel.plotHeightFraction = canonicalPlotHeight(panel.plotHeightFraction);
+  panel.plotWidthFraction = canonicalPlotWidth(panel.plotWidthFraction);
+  el("plotHeight").value = panel.plotHeightFraction;
+  el("plotHeightValue").textContent = plotHeightLabel(panel.plotHeightFraction);
+  el("plotWidth").value = panel.plotWidthFraction;
+  el("plotWidthValue").textContent = plotWidthLabel(panel.plotWidthFraction);
   migratePanelFitSpec(panel);
   el("signalModel").value = panel.signalModel || "none";
   el("backgroundModel").value = panel.backgroundModel || "none";
@@ -4533,8 +4553,10 @@ function readControlsToPanel() {{
   panel.logz = el("logz").checked;
   panel.density = el("density").checked;
   panel.colorScale = el("colorScale").checked;
-  panel.plotHeightScale = canonicalPlotHeight(el("plotHeight").value);
-  el("plotHeightValue").textContent = plotHeightLabel(panel.plotHeightScale);
+  panel.plotHeightFraction = canonicalPlotHeight(el("plotHeight").value);
+  panel.plotWidthFraction = canonicalPlotWidth(el("plotWidth").value);
+  el("plotHeightValue").textContent = plotHeightLabel(panel.plotHeightFraction);
+  el("plotWidthValue").textContent = plotWidthLabel(panel.plotWidthFraction);
   panel.signalModel = canonicalSignalModel(el("signalModel").value);
   panel.backgroundModel = canonicalBackgroundModel(el("backgroundModel").value);
   panel.fitMethod = canonicalFitMethod(el("fitMethod").value);
@@ -5182,7 +5204,8 @@ function configureProfilePanel(target, source, hit, axis) {{
     xticks: source.xticks,
     yticks: source.yticks,
     density: source.density,
-    plotHeightScale: source.plotHeightScale,
+    plotHeightFraction: source.plotHeightFraction,
+    plotWidthFraction: source.plotWidthFraction,
     showMeanGuides: source.showMeanGuides
   }};
   const variableName = profileX ? hit.xName : hit.yName;
@@ -5205,7 +5228,8 @@ function configureProfilePanel(target, source, hit, axis) {{
   target.xmin = profileX ? hit.xMin : hit.yMin;
   target.xmax = profileX ? hit.xMax : hit.yMax;
   target.density = sourceSettings.density;
-  target.plotHeightScale = canonicalPlotHeight(sourceSettings.plotHeightScale);
+  target.plotHeightFraction = canonicalPlotHeight(sourceSettings.plotHeightFraction);
+  target.plotWidthFraction = canonicalPlotWidth(sourceSettings.plotWidthFraction);
   target.showMeanGuides = Boolean(sourceSettings.showMeanGuides);
   target.fitModel = "none";
   target.signalModel = "none";
@@ -5667,8 +5691,9 @@ function plotArea(canvas, showColorScale = false) {{
 
 function preparePanelCanvas(panel) {{
   const canvas = el("plot" + panel.key);
+  canvas.style.width = `${{canonicalPlotWidth(panel.plotWidthFraction) * 100}}%`;
   const width = canvas.getBoundingClientRect().width;
-  const heightScale = canonicalPlotHeight(panel.plotHeightScale);
+  const heightScale = canonicalPlotHeight(panel.plotHeightFraction) * MAX_PLOT_HEIGHT_TO_WIDTH;
   const reclaimedHeight = canvasToolbarCollapsed ? canvasToolbarExpandedHeight : 0;
   canvas.style.minHeight = "0";
   canvas.style.height = `${{clamp(width * heightScale + reclaimedHeight, 160, 2000)}}px`;
@@ -6445,13 +6470,14 @@ function prepareFacetCanvas(canvas, panel, facetCount, splitName = "", facets = 
   const centeredCd = isProtonSectorSplit(splitName)
     && count === 7
     && [0, 1, 2, 3, 4, 5, 6].every(value => protonValues.includes(value));
+  canvas.style.width = `${{canonicalPlotWidth(panel.plotWidthFraction) * 100}}%`;
   const width = canvas.getBoundingClientRect().width;
   const columns = centeredCd ? 3 : count <= 2 ? count : width >= 900 ? 3 : 2;
   const rows = centeredCd ? 3 : Math.ceil(count / Math.max(1, columns));
   const gapWidth = Math.max(0, columns - 1) * 16;
   const cellWidth = Math.max(120, (width - gapWidth - 16) / Math.max(1, columns));
   const plotWidth = Math.max(80, cellWidth - 60);
-  const cellHeight = plotWidth * canonicalPlotHeight(panel.plotHeightScale) + 64;
+  const cellHeight = plotWidth * canonicalPlotHeight(panel.plotHeightFraction) * MAX_PLOT_HEIGHT_TO_WIDTH + 64;
   const reclaimedHeight = canvasToolbarCollapsed ? canvasToolbarExpandedHeight : 0;
   canvas.style.minHeight = "0";
   canvas.style.height = `${{clamp(rows * cellHeight + Math.max(0, rows - 1) * 30 + 12 + reclaimedHeight, 240, 4800)}}px`;

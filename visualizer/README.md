@@ -134,10 +134,11 @@ tick-density controls form one panel-specific tile beneath the active quantity
 title. They use two aligned X/Y rows, with the vertical label pair immediately
 to the right of the tick-density pair. One-dimensional plots pin Y ticks and Y
 label to the same columns used in two-dimensional mode even while the Y-range
-controls are hidden. The display tile includes a panel-specific `plot height`
-slider from 25% to 200% of the available plot width in one-percent steps. This
-provides direct, smooth control from a compact strip to a tall canvas, and
-profiles inherit the source panel's height. Log color,
+controls are hidden. The display tile includes panel-specific height and width
+sliders in one-percent steps. Height runs from 25% to 100%, where 100% is the
+former baseline canvas height, and now defaults to 50%. Width runs from 50% to
+100% of the available panel and defaults to 100%. Profiles inherit both source
+panel dimensions. Log color,
 density, and color scale share that tile, which sits immediately to the right of
 the axis settings and is followed
 by the reset/export tile. All three tiles span the full title width as one
