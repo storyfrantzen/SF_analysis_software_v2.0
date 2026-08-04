@@ -780,6 +780,7 @@ int main(int argc, char** argv) {
 
     // ── Summary ───────────────────────────────────────────────────────────────
     double accumulatedCharge = qa->accumulatedCharge();
+    const std::vector<RunChargeRecord> runChargeRecords = qa->runChargeRecords();
     const double elapsed = std::chrono::duration<double>(Clock::now() - startTime).count();
     std::cout << "\n[DONE]\n"
               << "  Total events      : " << nTotal    << "\n"
@@ -826,7 +827,35 @@ int main(int argc, char** argv) {
     summary.Branch("GeneratedEventRows", &nGeneratedEvents, "GeneratedEventRows/L");
     summary.Branch("GeneratedTopologyValid", &nGeneratedTopologyValid,
                    "GeneratedTopologyValid/L");
+    long long runChargeRows = static_cast<long long>(runChargeRecords.size());
+    summary.Branch("RunChargeRows", &runChargeRows, "RunChargeRows/L");
     summary.Fill();
+
+    TTree runCharge("RunCharge", "QADB accumulated charge and event counts by run");
+    int chargeRunNum = -999;
+    double runAccumulatedChargeNC = 0.0;
+    long long runTotalEvents = 0;
+    long long runPassedQADBEvents = 0;
+    long long runFailedQADBEvents = 0;
+    runCharge.Branch("runNum", &chargeRunNum, "runNum/I");
+    runCharge.Branch(
+        "accumulatedCharge_nC", &runAccumulatedChargeNC, "accumulatedCharge_nC/D"
+    );
+    runCharge.Branch("totalEvents", &runTotalEvents, "totalEvents/L");
+    runCharge.Branch(
+        "passedQADBEvents", &runPassedQADBEvents, "passedQADBEvents/L"
+    );
+    runCharge.Branch(
+        "failedQADBEvents", &runFailedQADBEvents, "failedQADBEvents/L"
+    );
+    for (const auto& record : runChargeRecords) {
+        chargeRunNum = record.runNum;
+        runAccumulatedChargeNC = record.accumulatedChargeNC;
+        runTotalEvents = record.totalEvents;
+        runPassedQADBEvents = record.passedQADBEvents;
+        runFailedQADBEvents = record.failedQADBEvents;
+        runCharge.Fill();
+    }
 
     TParameter<double> chargeMetadata("AccumulatedCharge", accumulatedCharge);
     chargeMetadata.Write();

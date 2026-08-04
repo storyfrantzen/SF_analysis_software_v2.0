@@ -54,7 +54,13 @@ with `qadb-info misc`; individual acceptable `Misc` runs can then be listed in
 `allowMiscRuns`. QADB is bypassed for simulation (`runNum == 11`). The terminal summary
 reports rejected events and accumulated DAQ-gated charge. The output ROOT file stores the
 processing counters in its `Summary` tree and the file-level charge separately as a
-top-level `TParameter<double>` named `AccumulatedCharge`.
+top-level `TParameter<double>` named `AccumulatedCharge`. It also writes a
+`RunCharge` tree with one row per observed run and the branches `runNum`,
+`accumulatedCharge_nC`, `totalEvents`, `passedQADBEvents`, and
+`failedQADBEvents`. Charge is attributed when QADB first accumulates a new good
+interval, so mixed-run converter files can be normalized after filtering the
+selected candidates by `runNum`. The per-run charge sum reproduces the legacy
+file-level total; the latter remains available for backward compatibility.
 
 Load QADB before configuring and building on JLab, for example `module load qadb/3.1`.
 If QADB is requested by a config but was unavailable at build time, `hipo2root` exits with

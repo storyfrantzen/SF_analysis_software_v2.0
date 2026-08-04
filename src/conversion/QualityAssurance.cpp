@@ -1,5 +1,6 @@
 #include "QualityAssurance.h"
 
+#include <map>
 #include <stdexcept>
 #include <utility>
 
@@ -31,13 +32,29 @@ public:
     }
 
     bool pass(int runNum, int eventNum) {
-        if (!config.enabled || runNum == 11) return true;
+        RunChargeRecord& record = runRecords[runNum];
+        record.runNum = runNum;
+        ++record.totalEvents;
+        if (!config.enabled || runNum == 11) {
+            ++record.passedQADBEvents;
+            return true;
+        }
 #ifdef HAVE_QADB
-        if (!qadb->Pass(runNum, eventNum)) return false;
+        if (!qadb->Pass(runNum, eventNum)) {
+            ++record.failedQADBEvents;
+            return false;
+        }
+        const double chargeBefore = qadb->GetAccumulatedCharge();
         qadb->AccumulateCharge();
+        const double chargeAfter = qadb->GetAccumulatedCharge();
+        // QADB accumulates a QA bin only once. Attribute that bin's signed
+        // change to the run that owns the event which first encountered it.
+        const double increment = chargeAfter - chargeBefore;
+        record.accumulatedChargeNC += increment;
 #else
         (void)eventNum;
 #endif
+        ++record.passedQADBEvents;
         return true;
     }
 
@@ -49,7 +66,15 @@ public:
 #endif
     }
 
+    std::vector<RunChargeRecord> runChargeRecords() const {
+        std::vector<RunChargeRecord> records;
+        records.reserve(runRecords.size());
+        for (const auto& [_, record] : runRecords) records.push_back(record);
+        return records;
+    }
+
     QADBConfig config;
+    std::map<int, RunChargeRecord> runRecords;
 #ifdef HAVE_QADB
     std::unique_ptr<QA::QADB> qadb;
 #endif
@@ -66,6 +91,10 @@ bool QualityAssurance::pass(int runNum, int eventNum) {
 
 double QualityAssurance::accumulatedCharge() const {
     return impl_->accumulatedCharge();
+}
+
+std::vector<RunChargeRecord> QualityAssurance::runChargeRecords() const {
+    return impl_->runChargeRecords();
 }
 
 bool QualityAssurance::enabled() const {

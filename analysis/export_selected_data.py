@@ -43,18 +43,43 @@ def main() -> int:
     selected_path = str(args.selected_root.resolve())
     columns = columns_in_tree(ROOT, selected_path, args.tree, COLUMNS, OPTIONAL_COLUMNS)
     arrays = ROOT.RDataFrame(args.tree, selected_path).AsNumpy(columns)
-    processing_file = ROOT.TFile.Open(str(args.processing_root.resolve()), "READ")
+    processing_path = str(args.processing_root.resolve())
+    processing_file = ROOT.TFile.Open(processing_path, "READ")
+    if not processing_file or processing_file.IsZombie():
+        raise RuntimeError(f"Could not open processing ROOT file: {processing_path}")
     charge_object = processing_file.Get("AccumulatedCharge")
     if not charge_object:
         raise RuntimeError("processing ROOT file has no AccumulatedCharge metadata")
     beam_charge_c = float(charge_object.GetVal()) * 1.0e-9
+    run_charge_tree = processing_file.Get("RunCharge")
+    has_run_charge = bool(run_charge_tree)
+    run_charge_columns = [
+        "runNum",
+        "accumulatedCharge_nC",
+        "totalEvents",
+        "passedQADBEvents",
+        "failedQADBEvents",
+    ]
+    if has_run_charge:
+        missing_run_charge = [
+            name for name in run_charge_columns if not run_charge_tree.GetBranch(name)
+        ]
+        if missing_run_charge:
+            processing_file.Close()
+            raise RuntimeError(f"RunCharge tree is missing branches: {missing_run_charge}")
     processing_file.Close()
+    run_charge = (
+        ROOT.RDataFrame("RunCharge", processing_path).AsNumpy(run_charge_columns)
+        if has_run_charge
+        else {}
+    )
     has_t_pi0 = "t_pi0" in arrays
     metadata = {
         "selected_root": str(args.selected_root.resolve()),
         "processing_root": str(args.processing_root.resolve()),
         "selected_events": int(len(arrays["Q2"])),
-        "schema_version": 2 if has_t_pi0 else 1,
+        "run_charge_metadata": has_run_charge,
+        "schema_version": 3 if has_run_charge else (2 if has_t_pi0 else 1),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     output = dict(
@@ -77,6 +102,20 @@ def main() -> int:
     )
     if has_t_pi0:
         output["rec_minus_t_pi0"] = arrays["t_pi0"]
+    if has_run_charge:
+        output.update(
+            beam_charge_run=np.asarray(run_charge["runNum"], dtype=np.int32),
+            beam_charge_by_run_c=(
+                np.asarray(run_charge["accumulatedCharge_nC"], dtype=float) * 1.0e-9
+            ),
+            run_total_events=np.asarray(run_charge["totalEvents"], dtype=np.int64),
+            run_passed_qadb_events=np.asarray(
+                run_charge["passedQADBEvents"], dtype=np.int64
+            ),
+            run_failed_qadb_events=np.asarray(
+                run_charge["failedQADBEvents"], dtype=np.int64
+            ),
+        )
     optional_output_names = {
         "eIdx": "rec_electron_index",
         "pIdx": "rec_proton_index",
@@ -89,6 +128,8 @@ def main() -> int:
     np.savez_compressed(args.output, **output)
     print(f"Selected events: {len(arrays['Q2'])}")
     print(f"Beam charge: {beam_charge_c:.6e} C")
+    if has_run_charge:
+        print(f"Run charge rows: {len(run_charge['runNum'])}")
     print(f"Wrote {args.output}")
     return 0
 

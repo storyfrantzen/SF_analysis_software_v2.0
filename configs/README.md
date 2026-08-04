@@ -222,7 +222,9 @@ so the comparison is sensitive to the generated `EG` threshold scan.
 For RGK 6.535 GeV data processing, use the data config pair. The processing
 config enables QADB, applies the `6.535RGK_INCLUSIVE_GEMC_100M` proton
 energy-loss corrections, and records accumulated beam charge for cross-section
-normalization. The post config extends the nominal RGK EPPI0 base selection and
+normalization. New converter outputs preserve both the file-level total and a
+run-indexed `RunCharge` tree, so a mixed-run input can be separated after
+conversion. The post config extends the nominal RGK EPPI0 base selection and
 loads the data-side `6.535RGKSKIM1` sampling-fraction parameters:
 
 ```bash

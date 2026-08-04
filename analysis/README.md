@@ -111,7 +111,12 @@ backward compatibility with older particle-level matched files. New files join
 on `(sourceFileId, sourceEventIndex)`, because GEMC files can all have run 11
 and restart their event numbers.
 `export_selected_data.py` creates the compact data artifact and carries the
-converter's accumulated charge into the pipeline.
+converter's accumulated charge into the pipeline. New converter files also
+provide a `RunCharge` tree; the exporter preserves its run numbers, charges,
+and QADB event counters as `beam_charge_run`, `beam_charge_by_run_c`,
+`run_total_events`, `run_passed_qadb_events`, and
+`run_failed_qadb_events`. This permits charge-normalized run filtering without
+splitting the original HIPO production by run.
 
 For interactive cut studies and quick detector/topology comparisons, build a
 standalone histogram browser from either compact NPZ samples or selected ROOT
