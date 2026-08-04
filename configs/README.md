@@ -49,6 +49,7 @@ The active RGK 6.535 GeV files are:
 - `post/rgk/6.535/calibration/electron_sf_candidates_mc.json`;
 - `post/rgk/6.535/calibration/proton_energy_loss_fiducial.json`;
 - `post/rgk/6.535/calibration/electron_sf_selected.json`;
+- `efficiency/rgk/6.535/run_currents.json`;
 - `analysis/rgk/6.535.json`.
 
 RGA calibration inputs are under `processing/rga/10.604/calibration/` and
@@ -239,7 +240,18 @@ python3 analysis/export_selected_data.py \
   6.535_rgk_eppi0_data.root \
   results/data/rgk_6.535_data_events.npz \
   --dictionary build/libROOTBranchesDict.so
+
+python3 analysis/study_data_efficiency.py \
+  results/data/rgk_6.535_data_events.npz \
+  --output-dir results/data_efficiency/rgk_6.535_preliminary
 ```
+
+The efficiency-study command defaults to unflagged P3/P4 runs and counts all
+selected candidates. Supply a fixed event mask with `--selection-mask` for the
+signal-yield study. Add `--include-classes P3 P4 L5` only after confirming L5
+trigger and prescale compatibility. The run-current manifest deliberately
+retains suspect, mixed-trigger, empty-target, and half-torus entries so each
+nominal exclusion remains auditable.
 
 For calibrated RGK 6.535 GeV acceptance studies, use the compact acceptance
 processing config together with the acceptance post config. The processing

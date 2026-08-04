@@ -42,12 +42,14 @@ mass.
   corrections;
 - `eppi0.exclusivity`: topology-aware sequential data/GEMC windows;
 - `eppi0.event_sample`: radiative/non-radiative GEN construction and REC joins;
+- `eppi0.data_efficiency`: run-charge joins, current grouping, and zero-current fits;
 - `eppi0.harmonics`: weighted `A + B cos(phi) + C cos(2 phi)` fits.
 
 ## Dependencies
 
 - Python 3.10 or newer;
 - NumPy and SciPy for the numerical pipeline;
+- Matplotlib for diagnostic PDF output;
 - PyROOT for `build_event_sample.py` and `export_selected_data.py`;
 - the project ROOT dictionary when object branches are not already discoverable.
 
@@ -117,6 +119,60 @@ and QADB event counters as `beam_charge_run`, `beam_charge_by_run_c`,
 `run_total_events`, `run_passed_qadb_events`, and
 `run_failed_qadb_events`. This permits charge-normalized run filtering without
 splitting the original HIPO production by run.
+
+## Data current-efficiency study
+
+`study_data_efficiency.py` joins the selected-event run numbers to the QADB
+charge arrays and `configs/efficiency/rgk/6.535/run_currents.json`. It writes a
+complete per-run audit table, charge-aggregated current-group yields, a linear
+zero-current fit, and a two-page diagnostic PDF. Its conservative default fit
+uses only unflagged P3 and P4 runs:
+
+```bash
+python3 analysis/study_data_efficiency.py \
+  results/data/rgk_6.535_data_events.npz \
+  --output-dir results/data_efficiency/rgk_6.535_preliminary
+```
+
+Without `--selection-mask`, this is explicitly labeled as a raw
+selected-candidate study rather than a background-subtracted signal-efficiency
+measurement. After deriving and freezing one event-level signal mask, apply the
+same mask to every current:
+
+```bash
+python3 analysis/study_data_efficiency.py \
+  results/data/rgk_6.535_data_events.npz \
+  --selection-mask results/data_exclusivity.npy \
+  --include-classes P3 P4 L5 \
+  --output-dir results/data_efficiency/rgk_6.535_fixed_selection
+```
+
+Include L5 only after confirming that its physics trigger and prescale are
+compatible with P3/P4. L4 trigger tests, mixed/random-trigger L6 runs, the E2
+empty-target run, and half-torus T runs are excluded unless explicitly admitted
+with `--include-classes` or `--include-run`. Suspect RCDB currents remain
+excluded unless their label is added with `--include-qualities`.
+
+For each run class, the command sums signal counts and charge before taking the
+ratio. Its effective current is charge weighted. The default fit therefore uses
+
+`N_k = sum_r N_r`, `Q_k = sum_r Q_r`,
+`I_k = sum_r(Q_r I_r) / Q_k`, and `Y_k = N_k / Q_k`.
+
+The output directory contains:
+
+- `run_yields.csv`: every charge-bearing run, its counts, charge, current
+  metadata, inclusion decision, and exclusion reason;
+- `current_group_yields.csv`: charge-aggregated fit points and their relative
+  efficiencies;
+- `fit_summary.json`: inputs, filters, charge validation, fit covariance,
+  warnings, and zero-current result;
+- `data_efficiency_diagnostics.pdf`: current-dependence, fit pulls, and
+  included-run stability plots.
+
+Use `--fit-level runs` only as a diagnostic. The nominal group-level fit avoids
+treating the many runs within one production setting as independent current
+settings.
 
 For interactive cut studies and quick detector/topology comparisons, build a
 standalone histogram browser from either compact NPZ samples or selected ROOT
