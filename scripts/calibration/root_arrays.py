@@ -48,10 +48,16 @@ def load_dataframe(input_file: str | Path, tree: str):
     root_file = ROOT.TFile.Open(path, "READ")
     if not root_file or root_file.IsZombie():
         raise RuntimeError(f"Could not open ROOT file: {path}")
-    resolved = tree
-    if not root_file.Get(resolved) and tree == "ReconstructedParticles" and root_file.Get("Events"):
-        resolved = "Events"
-        print("Warning: using legacy particle tree Events")
+    aliases = {
+        "rParticles": ("rParticles", "ReconstructedParticles", "Events"),
+        "ReconstructedParticles": ("ReconstructedParticles", "rParticles", "Events"),
+    }
+    resolved = next(
+        (name for name in aliases.get(tree, (tree,)) if root_file.Get(name)),
+        tree,
+    )
+    if resolved != tree:
+        print(f"Warning: using compatible particle tree {resolved}")
     root_file.Close()
     return ROOT.RDataFrame(resolved, path)
 

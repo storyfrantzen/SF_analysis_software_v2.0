@@ -19,6 +19,7 @@
 #include "Cuts.h"
 #include "Kinematics.h"
 #include "ROOTBranches.h"
+#include "core/TreeNames.h"
 
 namespace {
 
@@ -401,7 +402,7 @@ public:
             return;
         }
         throw std::runtime_error(
-            "Could not match selected particle event to input ReconstructedEvents row"
+            "Could not match selected particle event to input rEvents row"
         );
     }
 
@@ -1011,33 +1012,46 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::string inputTreeName = cfg.inputTree;
-    auto* inTree = dynamic_cast<TTree*>(input.Get(inputTreeName.c_str()));
-    if (!inTree && inputTreeName == "ReconstructedParticles") {
-        inTree = dynamic_cast<TTree*>(input.Get("Events"));
-        if (inTree) {
-            inputTreeName = "Events";
-            std::cerr << "[WARN] Using legacy particle tree Events; reconvert to obtain "
-                      << "ReconstructedParticles\n";
-        }
+    std::string inputTreeName = TreeNames::rParticles;
+    auto* inTree = dynamic_cast<TTree*>(input.Get(TreeNames::rParticles));
+    if (!inTree) {
+        inputTreeName = TreeNames::legacyRParticles;
+        inTree = dynamic_cast<TTree*>(input.Get(TreeNames::legacyRParticles));
     }
     if (!inTree) {
-        std::cerr << "[ERROR] Could not find input tree: " << cfg.inputTree << "\n";
+        inputTreeName = TreeNames::legacyEvents;
+        inTree = dynamic_cast<TTree*>(input.Get(TreeNames::legacyEvents));
+    }
+    if (!inTree) {
+        std::cerr << "[ERROR] Could not find rParticles or a legacy particle tree\n";
         return 1;
     }
+    if (inputTreeName != TreeNames::rParticles) {
+        std::cerr << "[WARN] Using legacy particle tree " << inputTreeName
+                  << "; reconvert to obtain rParticles\n";
+    }
     const Long64_t nEntries = inTree->GetEntries();
-    auto* inEventTree = dynamic_cast<TTree*>(input.Get(cfg.inputEventTree.c_str()));
+    std::string inputEventTreeName = TreeNames::rEvents;
+    auto* inEventTree = dynamic_cast<TTree*>(input.Get(TreeNames::rEvents));
+    if (!inEventTree) {
+        inputEventTreeName = TreeNames::legacyREvents;
+        inEventTree = dynamic_cast<TTree*>(input.Get(TreeNames::legacyREvents));
+    }
     ReconstructedEventReader reconstructedEventReader(inEventTree);
+
+    const char* outputTreeName = cfg.outputMode == "matchedRows"
+        ? TreeNames::rParticles
+        : TreeNames::sEvents;
 
     std::cout << "[INFO] Config file : " << argv[1] << "\n"
               << "[INFO] Input file  : " << argv[2] << "\n"
               << "[INFO] Input tree  : " << inputTreeName << "\n"
               << "[INFO] Event tree  : "
-              << (reconstructedEventReader.available() ? cfg.inputEventTree : "legacy fallback")
+              << (reconstructedEventReader.available() ? inputEventTreeName : "unavailable")
               << "\n"
               << "[INFO] Input rows  : " << nEntries << "\n"
               << "[INFO] Output file : " << cfg.outputFile << "\n"
-              << "[INFO] Output tree : " << cfg.outputTree << "\n"
+              << "[INFO] Output tree : " << outputTreeName << "\n"
               << "[INFO] Output mode : " << cfg.outputMode << "\n"
               << "[INFO] Beam energy : " << cfg.beamEnergy << " GeV\n"
               << "[INFO] Torus       : " << cfg.torus << "\n"
@@ -1055,7 +1069,7 @@ int main(int argc, char** argv) {
     if (hasGenBranch) inTree->SetBranchAddress("gen", &gen);
 
     TFile output(cfg.outputFile.c_str(), "RECREATE");
-    TTree outTree(cfg.outputTree.c_str(), cfg.outputTree.c_str());
+    TTree outTree(outputTreeName, outputTreeName);
 
     if (cfg.outputMode == "matchedRows") {
         if (cfg.channel.particles.size() != 1) {
@@ -1145,9 +1159,7 @@ int main(int argc, char** argv) {
     selectedRoleBranches.registerBranches(outTree);
     PidMultiplicityBranches pidMultiplicityBranches(cfg);
     pidMultiplicityBranches.registerBranches(outTree);
-    TTree selectedParticleTree(
-        cfg.outputParticleTree.c_str(), cfg.outputParticleTree.c_str()
-    );
+    TTree selectedParticleTree(TreeNames::sParticles, TreeNames::sParticles);
     SelectedParticleOutput selectedParticleOutput;
     selectedParticleOutput.registerBranches(selectedParticleTree);
 

@@ -1,6 +1,4 @@
 {
-    "inputTree": "ReconstructedParticles",
-    "outputTree": "SelectedEvents",
     "outputMode": "candidates",
     "outputFile": "10.604_rga_eppi0_cut_diagnostics.root",
     "beamEnergy": 10.604,

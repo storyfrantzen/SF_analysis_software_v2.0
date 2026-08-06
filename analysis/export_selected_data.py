@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("processing_root", type=Path, help="Converter ROOT file containing AccumulatedCharge")
     parser.add_argument("output", type=Path)
     parser.add_argument("--dictionary", type=Path)
-    parser.add_argument("--tree", default="SelectedEvents")
+    parser.add_argument("--tree", default="sEvents")
     return parser.parse_args()
 
 
@@ -137,15 +137,16 @@ def main() -> int:
 
 
 def columns_in_tree(ROOT, path: str, tree_name: str, required: list[str], optional: list[str]) -> tuple[str, list[str]]:
+    from eppi0.root_trees import resolve
+
     root_file = ROOT.TFile.Open(path, "READ")
     if not root_file or root_file.IsZombie():
         raise RuntimeError(f"Could not open selected ROOT file: {path}")
-    tree = root_file.Get(tree_name)
-    if not tree and tree_name == "SelectedEvents":
-        tree_name = "Events"
-        tree = root_file.Get(tree_name)
-        if tree:
-            print("Warning: using legacy selected tree Events")
+    resolved_tree_name = resolve(root_file, tree_name)
+    tree = root_file.Get(resolved_tree_name)
+    if tree and resolved_tree_name != tree_name:
+        tree_name = resolved_tree_name
+        print(f"Warning: using compatible tree {tree_name}")
     if not tree:
         root_file.Close()
         raise RuntimeError(f"Could not find tree {tree_name} in {path}")

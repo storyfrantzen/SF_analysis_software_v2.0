@@ -284,8 +284,7 @@ studies when `generatedEventTree` is enabled:
 ```json
 {
   "generatedEventTree": {
-    "enabled": true,
-    "treeName": "GeneratedEvents"
+    "enabled": true
   },
   "fillMC": true,
   "matchMC": true,
@@ -293,7 +292,7 @@ studies when `generatedEventTree` is enabled:
 }
 ```
 
-`hipo2root` fills `GeneratedEvents` immediately after reading each MC event and
+`hipo2root` fills `gEvents` immediately after reading each MC event and
 before QADB, reconstructed final-state, or reconstructed DIS decisions. It has
 one scalar row per input event with:
 
@@ -336,7 +335,7 @@ gamma`. Invalid generator topologies remain represented with
 `topologyValid=false` and reset kinematics, making event accounting explicit.
 
 After this row is saved, the normal `finalState` and DIS skim apply only to the
-`ReconstructedParticles` tree. This permits a compact REC numerator without
+`rParticles` tree. This permits a compact REC numerator without
 removing generated events from the denominator. Use
 `configs/processing/rgk/6.535/eppi0_mc_acceptance.json` as the reference.
 

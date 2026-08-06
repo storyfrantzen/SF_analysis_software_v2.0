@@ -72,10 +72,6 @@ struct CandidateSelectionSpec {
 
 struct PostCutConfig {
     std::string outputFile = "post_processed.root";
-    std::string inputTree = "ReconstructedParticles";
-    std::string inputEventTree = "ReconstructedEvents";
-    std::string outputTree = "SelectedEvents";
-    std::string outputParticleTree = "SelectedParticles";
     std::string outputMode = "candidates";
 
     double beamEnergy = 10.6;

@@ -111,13 +111,13 @@ def generated_sample_from_tree(
         q2, xb, minus_t, trento_phi, radiative, weight
     )]
     if len({array.shape for array in arrays}) != 1:
-        raise ValueError("GeneratedEvents branches must have equal shapes")
+        raise ValueError("gEvents branches must have equal shapes")
     valid = np.asarray(topology_valid, dtype=bool)
     valid &= np.isfinite(q2) & np.isfinite(xb) & np.isfinite(minus_t) & np.isfinite(trento_phi)
     if stratum_flat_index is None:
         stratum_flat_index = np.full(np.asarray(weight).shape, -1, dtype=np.int64)
     elif np.asarray(stratum_flat_index).shape != np.asarray(weight).shape:
-        raise ValueError("stratum_flat_index must match GeneratedEvents branches")
+        raise ValueError("stratum_flat_index must match gEvents branches")
     return GeneratedSample(
         source_file_id=np.asarray(source_file_id, dtype=np.uint64)[valid],
         source_event_index=np.asarray(source_event_index, dtype=np.uint64)[valid],

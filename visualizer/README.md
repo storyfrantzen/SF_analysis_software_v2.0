@@ -43,7 +43,7 @@ row cap is disabled for that run. Event identity prefers
 `sourceFileId + sourceEventIndex` and falls back to `runNum + eventNum` when
 needed. Use `--max-source-events 0` to embed every source event.
 
-New converter files provide `ReconstructedEvents` for one-row-per-event
+New converter files provide `rEvents` for one-row-per-event
 diagnostics. Its scalar topology branches include `nPid2212`,
 `nPid2212FD`, and `nPid2212CD`; select that tree when studying reconstructed
 multiplicity without particle-row weighting.

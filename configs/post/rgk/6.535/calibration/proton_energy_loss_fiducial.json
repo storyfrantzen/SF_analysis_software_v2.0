@@ -1,7 +1,5 @@
 {
     "outputFile": "6.535_rgk_proton_energy_loss_mc_fiducial.root",
-    "inputTree": "ReconstructedParticles",
-    "outputTree": "ReconstructedParticles",
     "outputMode": "matchedRows",
     "beamEnergy": 6.535,
     "torus": 1,

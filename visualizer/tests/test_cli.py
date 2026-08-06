@@ -377,13 +377,13 @@ class VisualizerCliTests(unittest.TestCase):
             def Get(self, name):
                 return object() if name in self.names else None
 
-        selected = RootFile({"SelectedEvents", "Events"})
-        converter = RootFile({"ReconstructedParticles", "ReconstructedEvents", "Events"})
+        selected = RootFile({"sEvents", "SelectedEvents", "Events"})
+        converter = RootFile({"rParticles", "rEvents", "Events"})
         legacy = RootFile({"Events"})
-        self.assertEqual(resolve_root_tree_name(selected, None), "SelectedEvents")
-        self.assertEqual(resolve_root_tree_name(converter, None), "ReconstructedParticles")
+        self.assertEqual(resolve_root_tree_name(selected, None), "sEvents")
+        self.assertEqual(resolve_root_tree_name(converter, None), "rParticles")
         self.assertEqual(
-            resolve_root_tree_name(legacy, "ReconstructedParticles"), "Events"
+            resolve_root_tree_name(legacy, "rParticles"), "Events"
         )
 
     def test_prefixed_particle_aliases_are_deduplicated(self) -> None:

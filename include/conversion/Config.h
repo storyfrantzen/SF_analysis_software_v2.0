@@ -4,6 +4,7 @@
 #include <vector>
 #include <fstream>
 #include <stdexcept>
+#include "core/TreeNames.h"
 #include "nlohmann/json.hpp"
 
 // ─── Final state ─────────────────────────────────────────────────────────
@@ -23,12 +24,6 @@ struct QADBConfig {
 
 struct GeneratedEventTreeConfig {
     bool enabled = false;
-    std::string treeName = "GeneratedEvents";
-};
-
-struct ReconstructedEventTreeConfig {
-    bool enabled = true;
-    std::string treeName = "ReconstructedEvents";
 };
 
 struct GeneratorWeightsConfig {
@@ -47,8 +42,6 @@ struct Config {
 
     // ── Output ────────────────────────────────
     std::string outputFile = "output.root";
-    std::string reconstructedParticleTree = "ReconstructedParticles";
-    ReconstructedEventTreeConfig reconstructedEventTree;
 
     // ── Beam ──────────────────────────────────
     double beamEnergy = 10.6;
@@ -95,34 +88,40 @@ struct Config {
         const auto configDir = std::filesystem::path(filename).parent_path();
 
         outputFile = j.value("outputFile", outputFile);
-        if (j.contains("reconstructedParticleTree") && j.contains("treeName")) {
-            throw std::runtime_error(
-                "Use reconstructedParticleTree; do not also set deprecated treeName"
-            );
-        }
-        reconstructedParticleTree = j.value(
-            "reconstructedParticleTree",
-            j.value("treeName", reconstructedParticleTree)
-        );
-        if (reconstructedParticleTree.empty()) {
-            throw std::runtime_error("reconstructedParticleTree must not be empty");
-        }
+        const auto validateParticleTree = [&j](const char* key) {
+            if (!j.contains(key)) return;
+            const auto name = j.at(key).get<std::string>();
+            if (name != TreeNames::rParticles &&
+                name != TreeNames::legacyRParticles &&
+                name != TreeNames::legacyEvents) {
+                throw std::runtime_error(
+                    std::string(key) +
+                    " is no longer configurable; the output tree is rParticles"
+                );
+            }
+        };
+        validateParticleTree("reconstructedParticleTree");
+        validateParticleTree("treeName");
 
         if (j.contains("reconstructedEventTree")) {
-            const auto& reconstructed = j["reconstructedEventTree"];
+            const auto& reconstructed = j.at("reconstructedEventTree");
             if (!reconstructed.is_object()) {
                 throw std::runtime_error("reconstructedEventTree must be a JSON object");
             }
-            reconstructedEventTree.enabled = reconstructed.value(
-                "enabled", reconstructedEventTree.enabled
-            );
-            reconstructedEventTree.treeName = reconstructed.value(
-                "treeName", reconstructedEventTree.treeName
-            );
-            if (reconstructedEventTree.treeName.empty()) {
+            if (reconstructed.contains("enabled") &&
+                !reconstructed.at("enabled").get<bool>()) {
                 throw std::runtime_error(
-                    "reconstructedEventTree.treeName must not be empty"
+                    "rEvents is part of the fixed ROOT schema and cannot be disabled"
                 );
+            }
+            if (reconstructed.contains("treeName")) {
+                const auto name = reconstructed.at("treeName").get<std::string>();
+                if (name != TreeNames::rEvents && name != TreeNames::legacyREvents) {
+                    throw std::runtime_error(
+                        "reconstructedEventTree.treeName is no longer configurable; "
+                        "the output tree is rEvents"
+                    );
+                }
             }
         }
 
@@ -144,9 +143,14 @@ struct Config {
                 throw std::runtime_error("generatedEventTree must be a JSON object");
             }
             generatedEventTree.enabled = generated.value("enabled", generatedEventTree.enabled);
-            generatedEventTree.treeName = generated.value("treeName", generatedEventTree.treeName);
-            if (generatedEventTree.treeName.empty()) {
-                throw std::runtime_error("generatedEventTree.treeName must not be empty");
+            if (generated.contains("treeName")) {
+                const auto name = generated.at("treeName").get<std::string>();
+                if (name != TreeNames::gEvents && name != TreeNames::legacyGEvents) {
+                    throw std::runtime_error(
+                        "generatedEventTree.treeName is no longer configurable; "
+                        "the output tree is gEvents"
+                    );
+                }
             }
         }
 
@@ -237,18 +241,6 @@ struct Config {
                     );
                 }
             }
-        }
-        if (reconstructedEventTree.enabled &&
-            reconstructedEventTree.treeName == reconstructedParticleTree) {
-            throw std::runtime_error(
-                "reconstructedEventTree.treeName must differ from reconstructedParticleTree"
-            );
-        }
-        if (generatedEventTree.enabled && reconstructedEventTree.enabled &&
-            generatedEventTree.treeName == reconstructedEventTree.treeName) {
-            throw std::runtime_error(
-                "generatedEventTree.treeName must differ from reconstructedEventTree.treeName"
-            );
         }
     }
 };

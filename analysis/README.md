@@ -19,15 +19,15 @@ with no accepted reconstructed candidate.  Each row needs:
 - the generated-event weight, defaulting to one.
 
 Reconstructed DIS and final-state cuts may be applied to
-`ReconstructedParticles` only after the converter has filled `GeneratedEvents`.
+`rParticles` only after the converter has filled `gEvents`.
 They define the reconstructed numerator and do not alter the generated denominator.
 Generated phase-space cuts are applied later to the compact truth coordinates.
-For legacy files without `GeneratedEvents`, do not apply reconstructed event
+For legacy files without `gEvents`, do not apply reconstructed event
 filters during conversion because the unmatched particle rows are then the only
 source of the generated denominator.
 
-Use `ReconstructedEvents` for reconstructed event-level bookkeeping and
-topology multiplicities. `ReconstructedParticles` is particle-level and
+Use `rEvents` for reconstructed event-level bookkeeping and
+topology multiplicities. `rParticles` is particle-level and
 repeats a legacy event-key object only for backward compatibility. The full
 schema contract is documented in
 `docs/root_tree_schema.md`.
@@ -111,7 +111,7 @@ python3 analysis/run_analysis.py response-root \
   --dictionary build/libROOTBranchesDict.dylib
 ```
 
-This command histograms the `GeneratedEvents` denominator in chunks, joins only
+This command histograms the `gEvents` denominator in chunks, joins only
 selected REC candidates by `(sourceFileId, sourceEventIndex)`, and writes the
 same `response_matrix.npz` and `response_meta.npz` consumed by `unfold`.
 `build_event_sample.py` remains useful for compact debug samples and for
@@ -277,12 +277,12 @@ theta, and phi fields. Thus the NPZ builder remains schema-agnostic while MC
 acceptance visualizers expose the same reconstructed filters and kinematic
 branches as the selected data visualizers after the ROOT, `.npz`, and HTML are
 regenerated. Newly converted MC files store complete per-particle GEN/LUND
-kinematics in `GeneratedEvents`; `build_event_sample.py` carries those columns,
+kinematics in `gEvents`; `build_event_sample.py` carries those columns,
 including `gen_electronP`, `gen_protonTheta`, `gen_gamma1Phi`, `gen_gamma2P`,
 and `gen_pi0P`, so generated-vs-reconstructed residuals can be built directly
 in the visualizer. Older converter ROOT files fall back to the available
-`ReconstructedParticles.gen` rows, which may be less complete.
-The dictionary is optional for ordinary `SelectedEvents` trees; if the named
+`rParticles.gen` rows, which may be less complete.
+The dictionary is optional for ordinary `sEvents` trees; if the named
 dictionary is missing, the script continues with ROOT's built-in scalar and STL
 branch readers.
 The selected tree's default `t` branch remains the proton-based positive `-t`,
@@ -344,7 +344,7 @@ python3 analysis/build_event_sample.py \
 ```
 
 `--matched-only` uses selected reconstructed candidates as the left table and
-streams `GeneratedEvents` in chunks. It joins on
+streams `gEvents` in chunks. It joins on
 `(sourceFileId, sourceEventIndex)` and exports only candidates with valid
 generated topology and kinematics. Every output row therefore has
 `rec_selected=true` and carries both the generated and reconstructed scalar
@@ -390,7 +390,7 @@ The selected-root mask has one row per selected ROOT candidate, so use it with
 `response-root --selection-mask`. The dense NPZ mask has one row per generated
 event and remains the format expected by `response --selection-mask`.
 
-## Compact `GeneratedEvents` schema
+## Compact `gEvents` schema
 
 The converter writes one row for every input MC event:
 
@@ -445,8 +445,7 @@ lookup during conversion:
 ```json
 {
   "generatedEventTree": {
-    "enabled": true,
-    "treeName": "GeneratedEvents"
+    "enabled": true
   },
   "generatorWeights": {
     "enabled": true,
@@ -458,7 +457,7 @@ lookup during conversion:
 
 `hipo2root` extracts exactly one canonical chunk token from each HIPO basename,
 matches it to the provenance table, and fills
-`GeneratedEvents.stratumFlatIndex` and `GeneratedEvents.weight`. It fails
+`gEvents.stratumFlatIndex` and `gEvents.weight`. It fails
 rather than silently assigning unit weight when the token is missing,
 ambiguous, or absent from an enabled provenance table. This supports both
 directly named local HIPO files and portal type-2 names without changing the
@@ -603,13 +602,13 @@ pages for the primary positional artifact unless `--quilts-only` is passed.
 
 ## Managing MC intermediate size
 
-The preferred converter configuration enables `GeneratedEvents`, applies REC
-topology/DIS skims only to `ReconstructedParticles`, and sets
+The preferred converter configuration enables `gEvents`, applies REC
+topology/DIS skims only to `rParticles`, and sets
 `saveUnmatchedMC` to false. This retains the generated denominator in one
 lightweight scalar row per event. See
 `configs/processing/rgk/6.535/eppi0_mc_acceptance.json`.
 
-For older files without `GeneratedEvents`, an unbiased denominator still
+For older files without `gEvents`, an unbiased denominator still
 requires an unrestricted matched conversion with unmatched particle-level GEN
 rows. Treat that legacy intermediate as a temporary scratch product:
 
@@ -638,5 +637,5 @@ safely combine files whose GEMC event numbers restart. Reconvert those files
 with the current converter before multi-file acceptance production.
 
 Setting `saveUnmatchedMC` to false is safe for acceptance only when
-`GeneratedEvents` is enabled. Without that tree, generated events lacking a
+`gEvents` is enabled. Without that tree, generated events lacking a
 reconstructed match disappear from the denominator.

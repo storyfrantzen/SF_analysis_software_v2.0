@@ -65,19 +65,19 @@ For storage-efficient acceptance production:
 ./build/hipo2root configs/processing/rgk/6.535/eppi0_mc_acceptance.json /path/to/hipo/files
 ```
 
-This writes a lightweight `GeneratedEvents` tree before reconstructed topology
-or DIS filtering. The `ReconstructedParticles` tree may therefore be REC-skimmed
+This writes a lightweight `gEvents` tree before reconstructed topology
+or DIS filtering. The `rParticles` tree may therefore be REC-skimmed
 with `saveUnmatchedMC` disabled without biasing the generated denominator.
 
-Converter files also contain a canonical `ReconstructedEvents` tree with
+Converter files also contain a canonical `rEvents` tree with
 one row per accepted reconstructed event. It stores the complete configured PID
 multiplicities before `outputPids` filtering, including FD/CD splits. Selected
-files propagate those counts through `SelectedEvents` and add a normalized
-`SelectedParticles` tree.
+files propagate those counts through `sEvents` and add a normalized
+`sParticles` tree.
 See [the ROOT tree implementation notes](docs/root_tree_schema.md) for the tree
 contracts and compatibility behavior.
 
-`GeneratedEvents` has one row per input MC event. It stores the source-aware
+`gEvents` has one row per input MC event. It stores the source-aware
 identity `(sourceFileId, sourceEventIndex)`, the original `(runNum, eventNum)`,
 generator-topology validity, a radiative flag, weight, and generated `Q2`, `nu`,
 `xB`, `y`, `W`, `minusT`, and `trentoPhi`. Invalid generator topologies remain

@@ -396,7 +396,7 @@ def parse_args() -> argparse.Namespace:
         description="Derive proton energy-loss correction coefficients from matched REC/GEMC ROOT rows."
     )
     parser.add_argument("input_file", type=Path)
-    parser.add_argument("--tree", default="ReconstructedParticles")
+    parser.add_argument("--tree", default="rParticles")
     parser.add_argument("--detector", choices=["FD", "CD", "both"], default="both")
     parser.add_argument(
         "--output",

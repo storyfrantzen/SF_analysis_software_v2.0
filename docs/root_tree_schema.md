@@ -3,7 +3,7 @@
 The converter separates event-level bookkeeping from particle-level rows. New
 converter files use the following contracts.
 
-## `ReconstructedEvents`
+## `rEvents`
 
 This is the canonical reconstructed event table. It contains one row for every
 event that passes converter QADB, reconstructed final-state, and DIS filtering,
@@ -31,53 +31,61 @@ include `nPid11`, `nPid2212`, and `nPid22`, together with detector suffixes such
 as `nPid2212FD` and `nPid2212CD`. A negative PID uses `Minus` in the branch name,
 for example `nPidMinus211`.
 
-The processing `reconstructedEventTree` block can rename or disable this tree;
-it defaults to enabled with the name `ReconstructedEvents`.
+This tree is part of the fixed schema. It is always written and cannot be
+renamed or disabled.
 
-## Converter particle tree
+## `rParticles`
 
-The processing config's `reconstructedParticleTree` names the reconstructed
-particle table and defaults to `ReconstructedParticles`. It contains one `rec`
-object per retained reconstructed particle and an optional matched `gen`
-object. `rec.particleIdx` is the position in the complete
+This reconstructed-particle table contains one `rec` object per retained
+reconstructed particle and an optional matched `gen` object.
+`rec.particleIdx` is the position in the complete
 `c12.getDetParticles()` list, so PID filtering can leave gaps.
-The converter still accepts `treeName` as a deprecated configuration alias for
-reading old processing configs, but maintained configs use
-`reconstructedParticleTree`.
 
 For backward compatibility, this tree temporarily retains the repeated
 `event` object used by existing post-processing, calibration scripts, and old
-ROOT readers. New event-level diagnostics must use `ReconstructedEvents`; they
+ROOT readers. New event-level diagnostics must use `rEvents`; they
 must not count repeated particle rows as events. The repeated object is a
 compatibility foreign-key snapshot, not the canonical event table.
-Readers fall back to the legacy tree name `Events` when a canonical tree is
-absent; new files do not write an `Events` alias.
+Readers try `rParticles`, then the former `ReconstructedParticles` name, then
+the legacy `Events` name. New files write only `rParticles`.
 
-## `GeneratedEvents`
+## `gEvents`
 
-For configured MC conversion this remains the one-row-per-input-event truth
+For configured MC conversion this is the one-row-per-input-event truth
 denominator. It is filled before QADB and reconstructed topology/DIS filtering,
-so it is intentionally not row-aligned with `ReconstructedEvents`.
-The source-aware key is the join contract.
+so it is intentionally not row-aligned with `rEvents`.
+The source-aware key is the join contract. Set only
+`generatedEventTree.enabled`; its name is fixed.
+
+`gParticles` is reserved for a future generated-particle table. No current
+production path writes it because no such output contract is yet needed.
 
 ## Selected output
 
-The configured `SelectedEvents` tree contains one row per retained candidate.
+The `sEvents` tree contains one row per retained candidate.
 It propagates the converter topology vectors and exposes scalar PID counts such
 as `nPid2212`, `nPid2212FD`, and `nPid2212CD`. When the companion
-`ReconstructedEvents` tree is present, post-processing streams and joins those
+`rEvents` tree is present, post-processing streams and joins those
 counts by source-aware event key. Legacy inputs fall back to counting the
 available particle rows.
 
-`SelectedParticles` is the normalized selected-particle table. It contains one
+`sParticles` is the normalized selected-particle table. It contains one
 row per selected role occurrence with the event key, role, occurrence,
 `particleIdx`, PID, detector, sector, and selected kinematics. The legacy
 selected-role vectors and scalar role branches remain in the candidate tree for
 existing analysis and visualization consumers.
 
-The post config keys `inputTree`, `inputEventTree`, `outputTree`, and
-`outputParticleTree` default to `ReconstructedParticles`,
-`ReconstructedEvents`, `SelectedEvents`, and `SelectedParticles`, respectively.
+Post-processing always reads `rParticles` and `rEvents`, with ordered legacy
+fallbacks, and writes `sEvents` plus `sParticles`. In `matchedRows` mode it
+writes `rParticles`. Tree names are intentionally absent from maintained
+configs.
+
+## Compatibility
+
+The converter and post-config parsers still accept historical tree-name keys
+when they contain a recognized old or canonical name. Those values are ignored:
+they cannot change the fixed output schema. Readers retain ordered fallbacks so
+existing ROOT files remain usable while new files converge on the short names.
 
 ## Proton-multiplicity diagnostic
 

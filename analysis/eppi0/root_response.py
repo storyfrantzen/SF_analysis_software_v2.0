@@ -44,8 +44,8 @@ def build_response_from_root(
     selected_root: Path,
     binning: AnalysisBinning,
     dictionary: Path | None = None,
-    tree: str = "SelectedEvents",
-    generated_tree: str = "GeneratedEvents",
+    tree: str = "sEvents",
+    generated_tree: str = "gEvents",
     chunk_size: int = 1_000_000,
     selection_mask: np.ndarray | None = None,
     progress_chunks: int = 10,
@@ -63,6 +63,7 @@ def build_response_from_root(
 
     converter_path = str(converter_root.resolve())
     selected_path = str(selected_root.resolve())
+    generated_tree = _resolve_selected_tree(ROOT, converter_path, generated_tree)
     _require_tree(ROOT, converter_path, generated_tree, GENERATED_COLUMNS)
     tree = _resolve_selected_tree(ROOT, selected_path, tree)
     selected_entries = _require_tree(ROOT, selected_path, tree, SELECTED_COLUMNS)
@@ -202,16 +203,17 @@ def _require_tree(ROOT, path: str, tree_name: str, columns: list[str]) -> int:
 
 
 def _resolve_selected_tree(ROOT, path: str, tree_name: str) -> str:
+    from .root_trees import resolve
+
     root_file = ROOT.TFile.Open(path, "READ")
     if not root_file or root_file.IsZombie():
         raise RuntimeError(f"Could not open ROOT file: {path}")
-    if root_file.Get(tree_name):
+    resolved = resolve(root_file, tree_name)
+    if root_file.Get(resolved):
         root_file.Close()
-        return tree_name
-    if tree_name == "SelectedEvents" and root_file.Get("Events"):
-        root_file.Close()
-        print("Warning: using legacy selected tree Events")
-        return "Events"
+        if resolved != tree_name:
+            print(f"Warning: using compatible tree {resolved}")
+        return resolved
     root_file.Close()
     return tree_name
 

@@ -1,7 +1,5 @@
 {
     "outputFile": "6.535_rgk_electron_sf_selected.root",
-    "inputTree": "ReconstructedParticles",
-    "outputTree": "SelectedEvents",
     "beamEnergy": 6.535,
     "torus": 1,
     "saveFailedCandidates": false,

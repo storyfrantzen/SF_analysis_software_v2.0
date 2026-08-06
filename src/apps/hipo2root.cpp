@@ -34,6 +34,7 @@
 #include "QualityAssurance.h"
 #include "Kinematics.h"
 #include "ROOTBranches.h"
+#include "core/TreeNames.h"
 
 using namespace clas12;
 namespace fs = std::filesystem;
@@ -543,12 +544,6 @@ int main(int argc, char** argv) {
         std::cerr << "[ERROR] generatedEventTree requires fillMC=true\n";
         return 1;
     }
-    if (cfg.generatedEventTree.enabled &&
-        cfg.generatedEventTree.treeName == cfg.reconstructedParticleTree) {
-        std::cerr << "[ERROR] generatedEventTree.treeName must differ from "
-                  << "reconstructedParticleTree\n";
-        return 1;
-    }
     if (cfg.generatorWeights.enabled && !cfg.generatedEventTree.enabled) {
         std::cerr << "[ERROR] generatorWeights requires generatedEventTree.enabled=true\n";
         return 1;
@@ -608,12 +603,13 @@ int main(int argc, char** argv) {
 
     // ── Echo active config ────────────────────────────────────────────────────
     std::cout << "[INFO] Output file : " << cfg.outputFile << "\n"
-              << "[INFO] Particle tree: " << cfg.reconstructedParticleTree << "\n"
+              << "[INFO] REC trees   : " << TreeNames::rEvents
+              << ", " << TreeNames::rParticles << "\n"
               << "[INFO] Beam energy : " << cfg.beamEnergy << " GeV\n"
               << "[INFO] Fill MC     : " << (cfg.fillMC ? "yes" : "no") << "\n"
               << "[INFO] Match MC    : " << (cfg.matchMC ? "yes" : "no") << "\n"
               << "[INFO] GEN events  : "
-              << (cfg.generatedEventTree.enabled ? cfg.generatedEventTree.treeName : "disabled")
+              << (cfg.generatedEventTree.enabled ? TreeNames::gEvents : "disabled")
               << "\n"
               << "[INFO] GEN weights : "
               << (cfg.generatorWeights.enabled
@@ -665,24 +661,15 @@ int main(int argc, char** argv) {
         std::cerr << "[ERROR] Could not open output file: " << cfg.outputFile << "\n";
         return 1;
     }
-    TTree* tree = new TTree(
-        cfg.reconstructedParticleTree.c_str(), cfg.reconstructedParticleTree.c_str()
-    );
-    TTree* reconstructedEventTree = nullptr;
-    ReconstructedEventOutput reconstructedEvent(cfg.finalState);
-    if (cfg.reconstructedEventTree.enabled) {
-        reconstructedEventTree = new TTree(
-            cfg.reconstructedEventTree.treeName.c_str(),
-            cfg.reconstructedEventTree.treeName.c_str()
-        );
-        reconstructedEvent.registerBranches(*reconstructedEventTree);
-    }
-    TTree* generatedTree = nullptr;
-    GeneratedEventBranches generatedEvent;
+    auto* rParticles = new TTree(TreeNames::rParticles, TreeNames::rParticles);
+    auto* rEvents = new TTree(TreeNames::rEvents, TreeNames::rEvents);
+    ReconstructedEventOutput rEvent(cfg.finalState);
+    rEvent.registerBranches(*rEvents);
+    TTree* gEvents = nullptr;
+    GeneratedEventBranches gEvent;
     if (cfg.generatedEventTree.enabled) {
-        generatedTree = new TTree(cfg.generatedEventTree.treeName.c_str(),
-                                  cfg.generatedEventTree.treeName.c_str());
-        generatedEvent.registerBranches(*generatedTree);
+        gEvents = new TTree(TreeNames::gEvents, TreeNames::gEvents);
+        gEvent.registerBranches(*gEvents);
     }
     TTree* sourceFilesTree = nullptr;
     std::uint64_t catalogSourceFileId = INVALID_SOURCE_ID;
@@ -705,9 +692,9 @@ int main(int argc, char** argv) {
     RecBranches   recBranches;
     GenBranches   genBranches;
 
-    tree->Branch("event", &evBranches);
-    tree->Branch("rec",   &recBranches);
-    if (cfg.fillMC) tree->Branch("gen", &genBranches);
+    rParticles->Branch("event", &evBranches);
+    rParticles->Branch("rec",   &recBranches);
+    if (cfg.fillMC) rParticles->Branch("gen", &genBranches);
 
     // ── Event loop ────────────────────────────────────────────────────────────
     long long nTotal = 0, nQAFail = 0, nFSFail = 0, nSkimFail = 0, nWritten = 0;
@@ -810,15 +797,15 @@ int main(int argc, char** argv) {
 
             // Preserve the generated denominator before any reconstructed QA,
             // final-state, or DIS decision is made.
-            if (generatedTree) {
-                generatedEvent.fill(mc, runNum, eventNum,
-                                    sourceFileId, currentSourceEventIndex,
-                                    cfg.beamEnergy,
-                                    sourceStratumFlatIndex,
-                                    sourceGeneratorWeight);
-                generatedTree->Fill();
+            if (gEvents) {
+                gEvent.fill(mc, runNum, eventNum,
+                            sourceFileId, currentSourceEventIndex,
+                            cfg.beamEnergy,
+                            sourceStratumFlatIndex,
+                            sourceGeneratorWeight);
+                gEvents->Fill();
                 ++nGeneratedEvents;
-                if (generatedEvent.topologyValid) ++nGeneratedTopologyValid;
+                if (gEvent.topologyValid) ++nGeneratedTopologyValid;
             }
 
             if (!qa->pass(runNum, eventNum)) {
@@ -870,7 +857,7 @@ int main(int argc, char** argv) {
                     }
                 }
 
-                tree->Fill();
+                rParticles->Fill();
                 ++nOutputRows;
                 ++writtenRecParticles;
             }
@@ -884,22 +871,20 @@ int main(int argc, char** argv) {
                     }
                     recBranches.reset();
                     genBranches.fill(mc, rn, en, i);
-                    tree->Fill();
+                    rParticles->Fill();
                     ++nOutputRows;
                     ++nUnmatchedGen;
                 }
             }
 
-            if (reconstructedEventTree) {
-                reconstructedEvent.fill(
-                    evBranches,
-                    particles,
-                    writtenRecParticles,
-                    static_cast<int>(nOutputRows - particleRowsBeforeEvent)
-                );
-                reconstructedEventTree->Fill();
-                ++nReconstructedEventRows;
-            }
+            rEvent.fill(
+                evBranches,
+                particles,
+                writtenRecParticles,
+                static_cast<int>(nOutputRows - particleRowsBeforeEvent)
+            );
+            rEvents->Fill();
+            ++nReconstructedEventRows;
 
             ++nWritten;
             maybePrintProgress();

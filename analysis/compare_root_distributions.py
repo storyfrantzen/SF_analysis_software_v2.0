@@ -95,7 +95,7 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Sample as LABEL=path.root. May be repeated.",
     )
-    parser.add_argument("--tree", default="ReconstructedParticles")
+    parser.add_argument("--tree", default="rParticles")
     parser.add_argument("--columns", nargs="+", default=DEFAULT_COLUMNS)
     parser.add_argument("--where", help="Optional ROOT RDataFrame filter expression")
     parser.add_argument("--dictionary", type=Path)
@@ -161,16 +161,17 @@ def read_arrays(ROOT, path: Path, tree: str, columns: list[str], where: str | No
 
 
 def resolve_particle_tree(ROOT, path: str, tree_name: str) -> str:
+    from eppi0.root_trees import resolve
+
     root_file = ROOT.TFile.Open(path, "READ")
     if not root_file or root_file.IsZombie():
         raise RuntimeError(f"Could not open ROOT file: {path}")
-    if root_file.Get(tree_name):
+    resolved = resolve(root_file, tree_name)
+    if root_file.Get(resolved):
         root_file.Close()
-        return tree_name
-    if tree_name == "ReconstructedParticles" and root_file.Get("Events"):
-        root_file.Close()
-        print("Warning: using legacy particle tree Events")
-        return "Events"
+        if resolved != tree_name:
+            print(f"Warning: using compatible tree {resolved}")
+        return resolved
     root_file.Close()
     return tree_name
 

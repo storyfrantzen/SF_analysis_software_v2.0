@@ -145,7 +145,7 @@ From the repository root:
   10.604_rga_eppi0_data.root
 
 python3 -m visualizer 10.604_rga_eppi0_cut_diagnostics.root \
-  --tree SelectedEvents --output 10.604_rga_eppi0_cut_diagnostics.html
+  --tree sEvents --output 10.604_rga_eppi0_cut_diagnostics.html
 ```
 
 The processing stage corrects reconstructed proton momentum and angles before
@@ -312,7 +312,7 @@ dictionary if object branches are not already discoverable:
 
 ```bash
 python3 analysis/compare_root_distributions.py --density \
-  --tree ReconstructedParticles --columns p theta phi \
+  --tree rParticles --columns p theta phi \
   --dictionary build/libROOTBranchesDict.dylib \
   --where 'rec.pid == 22' \
   --sample EG0.005=aao_rad_11221.root \
@@ -398,7 +398,7 @@ The proton energy-loss processing configs use `outputPids: [2212]`. The
 contain at least one reconstructed proton, but the output ROOT tree stores only
 proton rows. This keeps the matched REC/GEN proton calibration sample broad
 without writing every other reconstructed particle in those events.
-The companion `ReconstructedEvents` tree nevertheless records multiplicities
+The companion `rEvents` tree nevertheless records multiplicities
 from the complete reconstructed particle list before `outputPids` is applied.
 
 For the 100M inclusive GEMC sample split across

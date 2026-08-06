@@ -433,8 +433,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tree",
         help=(
-            "ROOT tree name; defaults to SelectedEvents, ReconstructedParticles, "
-            "ReconstructedEvents, then legacy Events"
+            "ROOT tree name; defaults to sEvents, rParticles, rEvents, then gEvents"
         ),
     )
     parser.add_argument("--dictionary", type=Path, help="Optional ROOT dictionary shared library")
@@ -724,20 +723,36 @@ def load_root(
 def resolve_root_tree_name(root_file: Any, requested: str | None) -> str:
     if requested and root_file.Get(requested):
         return requested
-    if requested in {"SelectedEvents", "ReconstructedParticles"} and root_file.Get("Events"):
-        log(f"Warning: using legacy tree Events instead of {requested}")
-        return "Events"
+    aliases = {
+        "sEvents": ("SelectedEvents", "Events"),
+        "SelectedEvents": ("sEvents", "Events"),
+        "rParticles": ("ReconstructedParticles", "Events"),
+        "ReconstructedParticles": ("rParticles", "Events"),
+        "rEvents": ("ReconstructedEvents",),
+        "ReconstructedEvents": ("rEvents",),
+        "gEvents": ("GeneratedEvents",),
+        "GeneratedEvents": ("gEvents",),
+    }
+    for candidate in aliases.get(requested, ()):
+        if root_file.Get(candidate):
+            log(f"Warning: using compatible tree {candidate} instead of {requested}")
+            return candidate
     if requested:
         return requested
     for candidate in (
+        "sEvents",
+        "rParticles",
+        "rEvents",
+        "gEvents",
         "SelectedEvents",
         "ReconstructedParticles",
         "ReconstructedEvents",
+        "GeneratedEvents",
         "Events",
     ):
         if root_file.Get(candidate):
             return candidate
-    return "SelectedEvents"
+    return "sEvents"
 
 
 def load_root_dictionary(ROOT: Any, dictionary: Path | None) -> Path | None:

@@ -19,6 +19,7 @@ from eppi0.event_sample import (
     generated_sample_from_tree,
     join_reconstructed,
 )
+from eppi0.root_trees import G_EVENTS, R_PARTICLES, S_EVENTS, resolve
 
 
 GEN_COLUMNS = [
@@ -98,18 +99,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--beam-energy", type=float,
                         help="Required only for legacy particle-level GEN input")
     parser.add_argument("--dictionary", type=Path, help="Optional ROOT dictionary shared library")
-    parser.add_argument("--selected-tree", default="SelectedEvents")
-    parser.add_argument("--particle-tree", default="ReconstructedParticles")
+    parser.add_argument("--selected-tree", default=S_EVENTS)
+    parser.add_argument("--particle-tree", default=R_PARTICLES)
     parser.add_argument(
         "--tree",
         help="Deprecated: use one legacy tree name for both selected and particle input",
     )
-    parser.add_argument("--generated-tree", default="GeneratedEvents")
+    parser.add_argument("--generated-tree", default=G_EVENTS)
     parser.add_argument(
         "--matched-only",
         action="store_true",
         help=(
-            "Reverse the join for visualization: stream GeneratedEvents and write only "
+            "Reverse the join for visualization: stream gEvents and write only "
             "selected REC candidates with a valid generated-event match"
         ),
     )
@@ -117,7 +118,7 @@ def parse_args() -> argparse.Namespace:
         "--chunk-size",
         type=int,
         default=250_000,
-        help="GeneratedEvents rows per chunk in --matched-only mode (default: 250000)",
+        help="gEvents rows per chunk in --matched-only mode (default: 250000)",
     )
     parser.add_argument(
         "--progress-chunks",
@@ -148,7 +149,8 @@ def main() -> int:
     input_file = ROOT.TFile.Open(matched_path, "READ")
     if not input_file or input_file.IsZombie():
         raise RuntimeError(f"Could not open converter ROOT file: {matched_path}")
-    generated_tree = input_file.Get(args.generated_tree)
+    generated_tree_name = resolve(input_file, args.generated_tree)
+    generated_tree = input_file.Get(generated_tree_name)
     has_generated_tree = bool(generated_tree)
     has_generated_source_key = has_generated_tree and all(
         generated_tree.GetBranch(name) for name in GENERATED_SOURCE_COLUMNS
@@ -168,12 +170,11 @@ def main() -> int:
     selected_file = ROOT.TFile.Open(selected_path, "READ")
     if not selected_file or selected_file.IsZombie():
         raise RuntimeError(f"Could not open selected ROOT file: {selected_path}")
-    selected_tree = selected_file.Get(selected_tree_name)
-    if not selected_tree and selected_tree_name == "SelectedEvents":
-        selected_tree_name = "Events"
-        selected_tree = selected_file.Get(selected_tree_name)
-        if selected_tree:
-            print("Warning: using legacy selected tree Events", file=sys.stderr)
+    resolved_selected_tree = resolve(selected_file, selected_tree_name)
+    selected_tree = selected_file.Get(resolved_selected_tree)
+    if selected_tree and resolved_selected_tree != selected_tree_name:
+        selected_tree_name = resolved_selected_tree
+        print(f"Warning: using compatible tree {selected_tree_name}", file=sys.stderr)
     if not selected_tree:
         selected_file.Close()
         raise RuntimeError(f"Could not find tree {selected_tree_name} in {selected_path}")
@@ -192,7 +193,7 @@ def main() -> int:
 
     if args.matched_only:
         if not has_generated_tree:
-            raise ValueError("--matched-only requires the compact GeneratedEvents tree")
+            raise ValueError("--matched-only requires the compact gEvents tree")
         if not has_generated_source_key or not has_source_key:
             raise ValueError(
                 "--matched-only requires sourceFileId and sourceEventIndex in both ROOT trees"
@@ -205,7 +206,7 @@ def main() -> int:
         )
         chunks = generated_tree_chunks(
             ROOT,
-            args.generated_tree,
+            generated_tree_name,
             matched_path,
             requested_gen_columns,
             generated_entries,
@@ -220,7 +221,7 @@ def main() -> int:
         )
         metadata = {
             "beam_energy": args.beam_energy,
-            "generated_source": args.generated_tree,
+            "generated_source": generated_tree_name,
             "generated_particle_columns": [
                 f"gen_{name}" for name in generated_event_particle_columns
             ],
@@ -255,7 +256,7 @@ def main() -> int:
             + generated_optional_columns
             + generated_event_particle_columns
         )
-        gen = ROOT.RDataFrame(args.generated_tree, matched_path).AsNumpy(requested_gen_columns)
+        gen = ROOT.RDataFrame(generated_tree_name, matched_path).AsNumpy(requested_gen_columns)
         generated_rows = np.asarray(gen["runNum"]).size
         generated_mask = generated_event_mask(gen)
         generated = generated_sample_from_tree(
@@ -276,14 +277,14 @@ def main() -> int:
             gen["weight"],
             gen["stratumFlatIndex"] if "stratumFlatIndex" in gen else None,
         )
-        generated_source = args.generated_tree
+        generated_source = generated_tree_name
         generated_values = {
             f"gen_{name}": np.asarray(gen[name], dtype=float)[generated_mask]
             for name in generated_event_particle_columns
         }
     else:
         if args.beam_energy is None:
-            raise ValueError("--beam-energy is required when GeneratedEvents is absent")
+            raise ValueError("--beam-energy is required when gEvents is absent")
         particle_tree_name = resolve_particle_tree(ROOT, matched_path, particle_tree_name)
         gen = ROOT.RDataFrame(particle_tree_name, matched_path).AsNumpy(GEN_COLUMNS)
         generated = build_generated_sample(
@@ -337,16 +338,17 @@ def main() -> int:
 
 
 def resolve_particle_tree(ROOT, path: str, tree_name: str) -> str:
+    from eppi0.root_trees import resolve
+
     root_file = ROOT.TFile.Open(path, "READ")
     if not root_file or root_file.IsZombie():
         raise RuntimeError(f"Could not open converter ROOT file: {path}")
-    if root_file.Get(tree_name):
+    resolved = resolve(root_file, tree_name)
+    if root_file.Get(resolved):
         root_file.Close()
-        return tree_name
-    if tree_name == "ReconstructedParticles" and root_file.Get("Events"):
-        root_file.Close()
-        print("Warning: using legacy particle tree Events", file=sys.stderr)
-        return "Events"
+        if resolved != tree_name:
+            print(f"Warning: using compatible tree {resolved}", file=sys.stderr)
+        return resolved
     root_file.Close()
     return tree_name
 
@@ -365,7 +367,7 @@ def generated_tree_chunks(
         stop = min(start + chunk_size, entries)
         yield ROOT.RDataFrame(tree_name, root_path).Range(start, stop).AsNumpy(columns)
         if progress_chunks and (chunk_index % progress_chunks == 0 or chunk_index == chunks):
-            print(f"GeneratedEvents chunks: {chunk_index}/{chunks} ({stop}/{entries} rows)")
+            print(f"gEvents chunks: {chunk_index}/{chunks} ({stop}/{entries} rows)")
 
 
 def reverse_join_selected_events(
@@ -374,7 +376,7 @@ def reverse_join_selected_events(
     generated_chunks: Iterable[dict[str, np.ndarray]],
     particle_columns: list[str],
 ) -> tuple[dict[str, np.ndarray], dict[str, int]]:
-    """Left-join chunked GeneratedEvents data onto selected REC candidates."""
+    """Left-join chunked gEvents data onto selected REC candidates."""
     selected_source_file_id = np.asarray(rec["sourceFileId"], dtype=np.uint64)
     selected_source_event_index = np.asarray(rec["sourceEventIndex"], dtype=np.uint64)
     selected_rows = selected_source_file_id.size
@@ -433,7 +435,7 @@ def reverse_join_selected_events(
         generated_events_scanned += chunk_rows
         for name, values in gen.items():
             if np.asarray(values).size != chunk_rows:
-                raise ValueError(f"GeneratedEvents chunk column {name} has inconsistent size")
+                raise ValueError(f"gEvents chunk column {name} has inconsistent size")
         valid = generated_event_mask(gen)
         valid_generated_events += int(np.count_nonzero(valid))
         chunk_keys = source_keys(gen["sourceFileId"], gen["sourceEventIndex"])
@@ -445,7 +447,7 @@ def reverse_join_selected_events(
             continue
         target_rows = selected_order[positions[matched]]
         if np.unique(target_rows).size != target_rows.size or np.any(seen[target_rows]):
-            raise ValueError("GeneratedEvents contains duplicate selected source-event keys")
+            raise ValueError("gEvents contains duplicate selected source-event keys")
         seen[target_rows] = True
         matched_chunk_rows = np.flatnonzero(matched)
         matched_valid = valid[matched_chunk_rows]
