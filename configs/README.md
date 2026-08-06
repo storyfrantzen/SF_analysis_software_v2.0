@@ -398,6 +398,8 @@ The proton energy-loss processing configs use `outputPids: [2212]`. The
 contain at least one reconstructed proton, but the output ROOT tree stores only
 proton rows. This keeps the matched REC/GEN proton calibration sample broad
 without writing every other reconstructed particle in those events.
+The companion `ReconstructedEvents` tree nevertheless records multiplicities
+from the complete reconstructed particle list before `outputPids` is applied.
 
 For the 100M inclusive GEMC sample split across
 `/volatile/clas12/osg/storyf/11262` and `/volatile/clas12/osg/storyf/11263`,

@@ -43,6 +43,11 @@ row cap is disabled for that run. Event identity prefers
 `sourceFileId + sourceEventIndex` and falls back to `runNum + eventNum` when
 needed. Use `--max-source-events 0` to embed every source event.
 
+New converter files provide `ReconstructedEvents` for one-row-per-event
+diagnostics. Its scalar topology branches include `nPid2212`,
+`nPid2212FD`, and `nPid2212CD`; select that tree when studying reconstructed
+multiplicity without particle-row weighting.
+
 Use `--root-filter` to apply a ROOT `RDataFrame` expression before either row
 or source-event sampling. Converter object fields keep their qualified ROOT
 branch names everywhere, including `event.runNum`, `event.eventNum`, `rec.pid`,

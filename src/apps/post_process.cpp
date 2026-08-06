@@ -152,6 +152,12 @@ struct CandidateOutput {
     std::vector<double> selectedP;
     std::vector<double> selectedTheta;
     std::vector<double> selectedPhi;
+    std::vector<int> topologyPids;
+    std::vector<int> topologyPidCounts;
+    std::vector<int> topologyPidCountsFT;
+    std::vector<int> topologyPidCountsFD;
+    std::vector<int> topologyPidCountsCD;
+    std::vector<int> topologyPidCountsOther;
 
     double charge = NAN;
 
@@ -223,6 +229,12 @@ struct CandidateOutput {
         tree.Branch("selectedP", &selectedP);
         tree.Branch("selectedTheta", &selectedTheta);
         tree.Branch("selectedPhi", &selectedPhi);
+        tree.Branch("topologyPids", &topologyPids);
+        tree.Branch("topologyPidCounts", &topologyPidCounts);
+        tree.Branch("topologyPidCountsFT", &topologyPidCountsFT);
+        tree.Branch("topologyPidCountsFD", &topologyPidCountsFD);
+        tree.Branch("topologyPidCountsCD", &topologyPidCountsCD);
+        tree.Branch("topologyPidCountsOther", &topologyPidCountsOther);
         tree.Branch("electronEPCAL", &electronEPCAL, "electronEPCAL/D");
         tree.Branch("electronEECIN", &electronEECIN, "electronEECIN/D");
         tree.Branch("electronEECOUT", &electronEECOUT, "electronEECOUT/D");
@@ -285,6 +297,129 @@ struct CandidateOutput {
     }
 };
 
+struct SelectedParticleOutput {
+    std::uint64_t sourceFileId = INVALID_SOURCE_ID;
+    std::uint64_t sourceEventIndex = INVALID_SOURCE_ID;
+    int runNum = -999;
+    int eventNum = -999;
+    std::string role;
+    int occurrence = 0;
+    int particleIdx = -999;
+    int pid = -999;
+    int det = -999;
+    int sector = -999;
+    double p = NAN;
+    double theta = NAN;
+    double phi = NAN;
+
+    void registerBranches(TTree& tree) {
+        tree.Branch("sourceFileId", &sourceFileId, "sourceFileId/l");
+        tree.Branch("sourceEventIndex", &sourceEventIndex, "sourceEventIndex/l");
+        tree.Branch("runNum", &runNum, "runNum/I");
+        tree.Branch("eventNum", &eventNum, "eventNum/I");
+        tree.Branch("role", &role);
+        tree.Branch("occurrence", &occurrence, "occurrence/I");
+        tree.Branch("particleIdx", &particleIdx, "particleIdx/I");
+        tree.Branch("pid", &pid, "pid/I");
+        tree.Branch("det", &det, "det/I");
+        tree.Branch("sector", &sector, "sector/I");
+        tree.Branch("p", &p, "p/D");
+        tree.Branch("theta", &theta, "theta/D");
+        tree.Branch("phi", &phi, "phi/D");
+    }
+
+    void fillRows(const CandidateOutput& candidate, TTree& tree) {
+        sourceFileId = candidate.sourceFileId;
+        sourceEventIndex = candidate.sourceEventIndex;
+        runNum = candidate.runNum;
+        eventNum = candidate.eventNum;
+        std::map<std::string, int> occurrences;
+        for (size_t index = 0; index < candidate.selectedRoles.size(); ++index) {
+            role = candidate.selectedRoles[index];
+            occurrence = ++occurrences[role];
+            particleIdx = index < candidate.selectedIdx.size()
+                ? candidate.selectedIdx[index] : -999;
+            pid = index < candidate.selectedPid.size() ? candidate.selectedPid[index] : -999;
+            det = index < candidate.selectedDet.size() ? candidate.selectedDet[index] : -999;
+            sector = index < candidate.selectedSector.size()
+                ? candidate.selectedSector[index] : -999;
+            p = index < candidate.selectedP.size() ? candidate.selectedP[index] : NAN;
+            theta = index < candidate.selectedTheta.size()
+                ? candidate.selectedTheta[index] : NAN;
+            phi = index < candidate.selectedPhi.size() ? candidate.selectedPhi[index] : NAN;
+            tree.Fill();
+        }
+    }
+};
+
+class ReconstructedEventReader {
+public:
+    explicit ReconstructedEventReader(TTree* tree) : tree_(tree) {
+        if (!tree_) return;
+        const std::vector<std::string> required{
+            "sourceFileId", "sourceEventIndex", "runNum", "eventNum",
+            "topologyPids", "topologyPidCounts", "topologyPidCountsFT",
+            "topologyPidCountsFD", "topologyPidCountsCD", "topologyPidCountsOther"
+        };
+        for (const auto& name : required) {
+            if (!tree_->GetBranch(name.c_str())) {
+                tree_ = nullptr;
+                return;
+            }
+        }
+        tree_->SetBranchAddress("sourceFileId", &sourceFileId_);
+        tree_->SetBranchAddress("sourceEventIndex", &sourceEventIndex_);
+        tree_->SetBranchAddress("runNum", &runNum_);
+        tree_->SetBranchAddress("eventNum", &eventNum_);
+        tree_->SetBranchAddress("topologyPids", &topologyPids_);
+        tree_->SetBranchAddress("topologyPidCounts", &topologyPidCounts_);
+        tree_->SetBranchAddress("topologyPidCountsFT", &topologyPidCountsFT_);
+        tree_->SetBranchAddress("topologyPidCountsFD", &topologyPidCountsFD_);
+        tree_->SetBranchAddress("topologyPidCountsCD", &topologyPidCountsCD_);
+        tree_->SetBranchAddress("topologyPidCountsOther", &topologyPidCountsOther_);
+    }
+
+    bool available() const { return tree_ != nullptr; }
+
+    void copyFor(const EventBranches& event, CandidateOutput& candidate) {
+        if (!tree_) return;
+        while (nextEntry_ < tree_->GetEntries()) {
+            tree_->GetEntry(nextEntry_++);
+            const bool sourceAware = event.sourceFileId != INVALID_SOURCE_ID &&
+                                     sourceFileId_ != INVALID_SOURCE_ID;
+            const bool matches = sourceAware
+                ? sourceFileId_ == event.sourceFileId &&
+                  sourceEventIndex_ == event.sourceEventIndex
+                : runNum_ == event.runNum && eventNum_ == event.eventNum;
+            if (!matches) continue;
+            candidate.topologyPids = *topologyPids_;
+            candidate.topologyPidCounts = *topologyPidCounts_;
+            candidate.topologyPidCountsFT = *topologyPidCountsFT_;
+            candidate.topologyPidCountsFD = *topologyPidCountsFD_;
+            candidate.topologyPidCountsCD = *topologyPidCountsCD_;
+            candidate.topologyPidCountsOther = *topologyPidCountsOther_;
+            return;
+        }
+        throw std::runtime_error(
+            "Could not match selected particle event to input ReconstructedEvents row"
+        );
+    }
+
+private:
+    TTree* tree_ = nullptr;
+    Long64_t nextEntry_ = 0;
+    std::uint64_t sourceFileId_ = INVALID_SOURCE_ID;
+    std::uint64_t sourceEventIndex_ = INVALID_SOURCE_ID;
+    int runNum_ = -999;
+    int eventNum_ = -999;
+    std::vector<int>* topologyPids_ = nullptr;
+    std::vector<int>* topologyPidCounts_ = nullptr;
+    std::vector<int>* topologyPidCountsFT_ = nullptr;
+    std::vector<int>* topologyPidCountsFD_ = nullptr;
+    std::vector<int>* topologyPidCountsCD_ = nullptr;
+    std::vector<int>* topologyPidCountsOther_ = nullptr;
+};
+
 std::string branchRoleName(const std::string& role) {
     std::string name;
     bool previousUnderscore = false;
@@ -302,6 +437,67 @@ std::string branchRoleName(const std::string& role) {
     if (std::isdigit(static_cast<unsigned char>(name.front()))) name = "role_" + name;
     return name;
 }
+
+std::string pidBranchToken(int pid) {
+    return pid < 0 ? "Minus" + std::to_string(-pid) : std::to_string(pid);
+}
+
+struct PidMultiplicitySlot {
+    int pid = -999;
+    int total = 0;
+    int ft = 0;
+    int fd = 0;
+    int cd = 0;
+    int other = 0;
+};
+
+class PidMultiplicityBranches {
+public:
+    explicit PidMultiplicityBranches(const PostCutConfig& cfg) {
+        for (const auto& role : cfg.channel.particles) {
+            if (lookup_.count(role.pid)) continue;
+            lookup_[role.pid] = slots_.size();
+            slots_.push_back({role.pid});
+        }
+    }
+
+    void registerBranches(TTree& tree) {
+        for (auto& slot : slots_) {
+            const std::string base = "nPid" + pidBranchToken(slot.pid);
+            registerInt(tree, base, slot.total);
+            registerInt(tree, base + "FT", slot.ft);
+            registerInt(tree, base + "FD", slot.fd);
+            registerInt(tree, base + "CD", slot.cd);
+            registerInt(tree, base + "Other", slot.other);
+        }
+    }
+
+    void fill(const CandidateOutput& candidate) {
+        for (auto& slot : slots_) slot.total = slot.ft = slot.fd = slot.cd = slot.other = 0;
+        for (size_t index = 0; index < candidate.topologyPids.size(); ++index) {
+            const auto found = lookup_.find(candidate.topologyPids[index]);
+            if (found == lookup_.end()) continue;
+            auto& slot = slots_[found->second];
+            slot.total = valueAt(candidate.topologyPidCounts, index);
+            slot.ft = valueAt(candidate.topologyPidCountsFT, index);
+            slot.fd = valueAt(candidate.topologyPidCountsFD, index);
+            slot.cd = valueAt(candidate.topologyPidCountsCD, index);
+            slot.other = valueAt(candidate.topologyPidCountsOther, index);
+        }
+    }
+
+private:
+    static int valueAt(const std::vector<int>& values, size_t index) {
+        return index < values.size() ? values[index] : 0;
+    }
+
+    static void registerInt(TTree& tree, const std::string& name, int& value) {
+        tree.Branch(name.c_str(), &value, (name + "/I").c_str());
+    }
+
+    std::vector<PidMultiplicitySlot> slots_;
+    std::map<int, size_t> lookup_;
+};
 
 struct SelectedRoleBranch {
     std::string role;
@@ -546,6 +742,32 @@ void fillGenericCandidate(const EventRows& rows,
     out.helicity = rows.event.helicity;
     out.charge = rows.event.charge;
     out.passTopology = 1;
+    for (const auto& role : cfg.channel.particles) {
+        if (std::find(out.topologyPids.begin(), out.topologyPids.end(), role.pid) ==
+            out.topologyPids.end()) {
+            out.topologyPids.push_back(role.pid);
+        }
+    }
+    const size_t topologySize = out.topologyPids.size();
+    out.topologyPidCounts.assign(topologySize, 0);
+    out.topologyPidCountsFT.assign(topologySize, 0);
+    out.topologyPidCountsFD.assign(topologySize, 0);
+    out.topologyPidCountsCD.assign(topologySize, 0);
+    out.topologyPidCountsOther.assign(topologySize, 0);
+    for (const auto& particle : rows.recs) {
+        const auto found = std::find(
+            out.topologyPids.begin(), out.topologyPids.end(), particle.pid
+        );
+        if (found == out.topologyPids.end()) continue;
+        const size_t index = static_cast<size_t>(found - out.topologyPids.begin());
+        ++out.topologyPidCounts[index];
+        switch (particle.det) {
+            case 0: ++out.topologyPidCountsFT[index]; break;
+            case 1: ++out.topologyPidCountsFD[index]; break;
+            case 2: ++out.topologyPidCountsCD[index]; break;
+            default: ++out.topologyPidCountsOther[index]; break;
+        }
+    }
     fillSelectedParticleBranches(selection, cfg, out);
     fillElectronCalorimeterBranches(selection, out);
     fillDISBranches(selection, cfg, out);
@@ -795,10 +1017,15 @@ int main(int argc, char** argv) {
         return 1;
     }
     const Long64_t nEntries = inTree->GetEntries();
+    auto* inEventTree = dynamic_cast<TTree*>(input.Get(cfg.inputEventTree.c_str()));
+    ReconstructedEventReader reconstructedEventReader(inEventTree);
 
     std::cout << "[INFO] Config file : " << argv[1] << "\n"
               << "[INFO] Input file  : " << argv[2] << "\n"
               << "[INFO] Input tree  : " << cfg.inputTree << "\n"
+              << "[INFO] Event tree  : "
+              << (reconstructedEventReader.available() ? cfg.inputEventTree : "legacy fallback")
+              << "\n"
               << "[INFO] Input rows  : " << nEntries << "\n"
               << "[INFO] Output file : " << cfg.outputFile << "\n"
               << "[INFO] Output tree : " << cfg.outputTree << "\n"
@@ -907,6 +1134,13 @@ int main(int argc, char** argv) {
     out.registerBranches(outTree, supportsEppi0Logic(cfg));
     SelectedRoleBranches selectedRoleBranches(cfg);
     selectedRoleBranches.registerBranches(outTree);
+    PidMultiplicityBranches pidMultiplicityBranches(cfg);
+    pidMultiplicityBranches.registerBranches(outTree);
+    TTree selectedParticleTree(
+        cfg.outputParticleTree.c_str(), cfg.outputParticleTree.c_str()
+    );
+    SelectedParticleOutput selectedParticleOutput;
+    selectedParticleOutput.registerBranches(selectedParticleTree);
 
     EventRows rows;
     ProcessingStats stats;
@@ -922,9 +1156,12 @@ int main(int argc, char** argv) {
         ++nEvents;
         CandidateOutput candidate;
         if (processEvent(rows, cuts, candidate, stats)) {
+            reconstructedEventReader.copyFor(rows.event, candidate);
             out = candidate;
             selectedRoleBranches.fill(out);
+            pidMultiplicityBranches.fill(out);
             outTree.Fill();
+            selectedParticleOutput.fillRows(out, selectedParticleTree);
             ++nWritten;
         }
     };

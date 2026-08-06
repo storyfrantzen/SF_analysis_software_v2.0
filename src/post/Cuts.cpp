@@ -295,7 +295,9 @@ PostCutConfig PostCutConfig::fromFile(const std::string& filename) {
     PostCutConfig cfg;
     cfg.outputFile = j.value("outputFile", cfg.outputFile);
     cfg.inputTree = j.value("inputTree", cfg.inputTree);
+    cfg.inputEventTree = j.value("inputEventTree", cfg.inputEventTree);
     cfg.outputTree = j.value("outputTree", cfg.outputTree);
+    cfg.outputParticleTree = j.value("outputParticleTree", cfg.outputParticleTree);
     cfg.outputMode = j.value("outputMode", cfg.outputMode);
     cfg.beamEnergy = j.value("beamEnergy", cfg.beamEnergy);
     cfg.torus = j.value("torus", cfg.torus);
@@ -369,6 +371,9 @@ PostCutConfig PostCutConfig::fromFile(const std::string& filename) {
         cfg.maxPi0ConeAngleDeg = eppi0.value("maxPi0ConeAngleDeg", cfg.maxPi0ConeAngleDeg);
     }
 
+    if (cfg.outputMode == "candidates" && cfg.outputParticleTree == cfg.outputTree) {
+        throw std::runtime_error("outputParticleTree must differ from outputTree");
+    }
     return cfg;
 }
 

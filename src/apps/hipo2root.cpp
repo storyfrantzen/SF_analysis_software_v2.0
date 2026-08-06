@@ -56,6 +56,120 @@ struct GeneratorFileMetadata {
     double weight = 1.0;
 };
 
+std::string pidBranchToken(int pid) {
+    return pid < 0 ? "Minus" + std::to_string(-pid) : std::to_string(pid);
+}
+
+struct ReconstructedEventOutput {
+    std::uint64_t sourceFileId = INVALID_SOURCE_ID;
+    std::uint64_t sourceEventIndex = INVALID_SOURCE_ID;
+    int runNum = -999;
+    int eventNum = -999;
+    int helicity = -999;
+    double charge = NAN;
+    int nReconstructedParticles = 0;
+    int nWrittenReconstructedParticles = 0;
+    int nParticleTreeRows = 0;
+    std::vector<int> topologyPids;
+    std::vector<int> topologyRequiredCounts;
+    std::vector<int> topologyExact;
+    std::vector<int> topologyPidCounts;
+    std::vector<int> topologyPidCountsFT;
+    std::vector<int> topologyPidCountsFD;
+    std::vector<int> topologyPidCountsCD;
+    std::vector<int> topologyPidCountsOther;
+
+    explicit ReconstructedEventOutput(const std::vector<FinalState>& finalState) {
+        for (const auto& requirement : finalState) {
+            topologyPids.push_back(requirement.pid);
+            topologyRequiredCounts.push_back(requirement.count);
+            topologyExact.push_back(requirement.exact ? 1 : 0);
+        }
+        resetCounts();
+    }
+
+    void registerBranches(TTree& tree) {
+        tree.Branch("sourceFileId", &sourceFileId, "sourceFileId/l");
+        tree.Branch("sourceEventIndex", &sourceEventIndex, "sourceEventIndex/l");
+        tree.Branch("runNum", &runNum, "runNum/I");
+        tree.Branch("eventNum", &eventNum, "eventNum/I");
+        tree.Branch("helicity", &helicity, "helicity/I");
+        tree.Branch("charge", &charge, "charge/D");
+        tree.Branch("nReconstructedParticles", &nReconstructedParticles,
+                    "nReconstructedParticles/I");
+        tree.Branch("nWrittenReconstructedParticles", &nWrittenReconstructedParticles,
+                    "nWrittenReconstructedParticles/I");
+        tree.Branch("nParticleTreeRows", &nParticleTreeRows, "nParticleTreeRows/I");
+        tree.Branch("topologyPids", &topologyPids);
+        tree.Branch("topologyRequiredCounts", &topologyRequiredCounts);
+        tree.Branch("topologyExact", &topologyExact);
+        tree.Branch("topologyPidCounts", &topologyPidCounts);
+        tree.Branch("topologyPidCountsFT", &topologyPidCountsFT);
+        tree.Branch("topologyPidCountsFD", &topologyPidCountsFD);
+        tree.Branch("topologyPidCountsCD", &topologyPidCountsCD);
+        tree.Branch("topologyPidCountsOther", &topologyPidCountsOther);
+        for (size_t index = 0; index < topologyPids.size(); ++index) {
+            const std::string base = "nPid" + pidBranchToken(topologyPids[index]);
+            tree.Branch(base.c_str(), &topologyPidCounts[index], (base + "/I").c_str());
+            tree.Branch((base + "FT").c_str(), &topologyPidCountsFT[index],
+                        (base + "FT/I").c_str());
+            tree.Branch((base + "FD").c_str(), &topologyPidCountsFD[index],
+                        (base + "FD/I").c_str());
+            tree.Branch((base + "CD").c_str(), &topologyPidCountsCD[index],
+                        (base + "CD/I").c_str());
+            tree.Branch((base + "Other").c_str(), &topologyPidCountsOther[index],
+                        (base + "Other/I").c_str());
+        }
+    }
+
+    void fill(const EventBranches& event,
+              const std::vector<clas12::region_particle*>& particles,
+              int writtenRecParticles,
+              int particleTreeRows) {
+        sourceFileId = event.sourceFileId;
+        sourceEventIndex = event.sourceEventIndex;
+        runNum = event.runNum;
+        eventNum = event.eventNum;
+        helicity = event.helicity;
+        charge = event.charge;
+        nReconstructedParticles = static_cast<int>(particles.size());
+        nWrittenReconstructedParticles = writtenRecParticles;
+        nParticleTreeRows = particleTreeRows;
+        resetCounts();
+        for (const auto* particle : particles) {
+            if (!particle) continue;
+            const int pid = particle->getPid();
+            const auto found = std::find(topologyPids.begin(), topologyPids.end(), pid);
+            if (found == topologyPids.end()) continue;
+            const size_t index = static_cast<size_t>(found - topologyPids.begin());
+            ++topologyPidCounts[index];
+            switch (getDetector(particle->par()->getStatus())) {
+                case 0: ++topologyPidCountsFT[index]; break;
+                case 1: ++topologyPidCountsFD[index]; break;
+                case 2: ++topologyPidCountsCD[index]; break;
+                default: ++topologyPidCountsOther[index]; break;
+            }
+        }
+    }
+
+private:
+    void resetCounts() {
+        const size_t size = topologyPids.size();
+        if (topologyPidCounts.size() != size) {
+            topologyPidCounts.resize(size);
+            topologyPidCountsFT.resize(size);
+            topologyPidCountsFD.resize(size);
+            topologyPidCountsCD.resize(size);
+            topologyPidCountsOther.resize(size);
+        }
+        std::fill(topologyPidCounts.begin(), topologyPidCounts.end(), 0);
+        std::fill(topologyPidCountsFT.begin(), topologyPidCountsFT.end(), 0);
+        std::fill(topologyPidCountsFD.begin(), topologyPidCountsFD.end(), 0);
+        std::fill(topologyPidCountsCD.begin(), topologyPidCountsCD.end(), 0);
+        std::fill(topologyPidCountsOther.begin(), topologyPidCountsOther.end(), 0);
+    }
+};
+
 std::string extractCanonicalChunkId(const std::string& filename) {
     static const std::regex pattern(
         R"(s[0-9]{5}__g[0-9]{4}__p[0-9]{6})"
@@ -550,6 +664,15 @@ int main(int argc, char** argv) {
         return 1;
     }
     TTree* tree = new TTree(cfg.treeName.c_str(), cfg.treeName.c_str());
+    TTree* reconstructedEventTree = nullptr;
+    ReconstructedEventOutput reconstructedEvent(cfg.finalState);
+    if (cfg.reconstructedEventTree.enabled) {
+        reconstructedEventTree = new TTree(
+            cfg.reconstructedEventTree.treeName.c_str(),
+            cfg.reconstructedEventTree.treeName.c_str()
+        );
+        reconstructedEvent.registerBranches(*reconstructedEventTree);
+    }
     TTree* generatedTree = nullptr;
     GeneratedEventBranches generatedEvent;
     if (cfg.generatedEventTree.enabled) {
@@ -588,6 +711,7 @@ int main(int argc, char** argv) {
     long long nSkippedOutputPid = 0;
     long long nMatched = 0, nUnmatchedRec = 0, nUnmatchedGen = 0;
     long long nGeneratedEvents = 0, nGeneratedTopologyValid = 0;
+    long long nReconstructedEventRows = 0;
     long long nInputFail = 0;
     long long lastProgressEvent = 0;
     const Clock::time_point startTime = Clock::now();
@@ -717,6 +841,8 @@ int main(int argc, char** argv) {
 
             const auto& particles = c12.getDetParticles();
             std::vector<bool> usedGen(mc ? mc->getRows() : 0, false);
+            int writtenRecParticles = 0;
+            const long long particleRowsBeforeEvent = nOutputRows;
 
             for (int i = 0; i < static_cast<int>(particles.size()); ++i) {
                 auto* particle = particles[i];
@@ -742,6 +868,7 @@ int main(int argc, char** argv) {
 
                 tree->Fill();
                 ++nOutputRows;
+                ++writtenRecParticles;
             }
 
             if (cfg.fillMC && mc && (!cfg.matchMC || cfg.saveUnmatchedMC)) {
@@ -757,6 +884,17 @@ int main(int argc, char** argv) {
                     ++nOutputRows;
                     ++nUnmatchedGen;
                 }
+            }
+
+            if (reconstructedEventTree) {
+                reconstructedEvent.fill(
+                    evBranches,
+                    particles,
+                    writtenRecParticles,
+                    static_cast<int>(nOutputRows - particleRowsBeforeEvent)
+                );
+                reconstructedEventTree->Fill();
+                ++nReconstructedEventRows;
             }
 
             ++nWritten;
@@ -792,6 +930,7 @@ int main(int argc, char** argv) {
               << "  PID-filtered rows : " << nSkippedOutputPid << "\n"
               << "  Skipped input files: " << nInputFail << "\n"
               << "  Generated events  : " << nGeneratedEvents << "\n"
+              << "  Reconstructed event rows: " << nReconstructedEventRows << "\n"
               << "  Valid GEN topology: " << nGeneratedTopologyValid << "\n"
               << "  Elapsed time      : " << std::fixed << std::setprecision(1)
               << elapsed << " s\n";
@@ -825,6 +964,8 @@ int main(int argc, char** argv) {
     summary.Branch("PidFilteredRows", &nSkippedOutputPid, "PidFilteredRows/L");
     summary.Branch("SkippedInputFiles", &nInputFail, "SkippedInputFiles/L");
     summary.Branch("GeneratedEventRows", &nGeneratedEvents, "GeneratedEventRows/L");
+    summary.Branch("ReconstructedEventRows", &nReconstructedEventRows,
+                   "ReconstructedEventRows/L");
     summary.Branch("GeneratedTopologyValid", &nGeneratedTopologyValid,
                    "GeneratedTopologyValid/L");
     long long runChargeRows = static_cast<long long>(runChargeRecords.size());

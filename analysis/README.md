@@ -26,6 +26,12 @@ For legacy files without `GeneratedEvents`, do not apply reconstructed event
 filters during conversion because the unmatched particle rows are then the only
 source of the generated denominator.
 
+For new converter files, use `ReconstructedEvents` for reconstructed
+event-level bookkeeping and topology multiplicities. The converter `Events`
+tree is particle-level and repeats a legacy event-key object only for backward
+compatibility. The full schema contract is documented in
+`docs/root_tree_schema.md`.
+
 Radiative generator events are interpreted as `e p pi0 gamma`; non-radiative
 events are interpreted as `e p gamma gamma`.  Extra reconstructed photons are
 allowed and the reconstructed pi0 candidate is the photon pair nearest the pi0

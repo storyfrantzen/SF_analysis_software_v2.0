@@ -26,6 +26,11 @@ struct GeneratedEventTreeConfig {
     std::string treeName = "GeneratedEvents";
 };
 
+struct ReconstructedEventTreeConfig {
+    bool enabled = true;
+    std::string treeName = "ReconstructedEvents";
+};
+
 struct GeneratorWeightsConfig {
     bool enabled = false;
     std::string chunkProvenance;
@@ -43,6 +48,7 @@ struct Config {
     // ── Output ────────────────────────────────
     std::string outputFile = "output.root";
     std::string treeName   = "Events";
+    ReconstructedEventTreeConfig reconstructedEventTree;
 
     // ── Beam ──────────────────────────────────
     double beamEnergy = 10.6;
@@ -90,6 +96,24 @@ struct Config {
 
         outputFile = j.value("outputFile", outputFile);
         treeName   = j.value("treeName",   treeName);
+
+        if (j.contains("reconstructedEventTree")) {
+            const auto& reconstructed = j["reconstructedEventTree"];
+            if (!reconstructed.is_object()) {
+                throw std::runtime_error("reconstructedEventTree must be a JSON object");
+            }
+            reconstructedEventTree.enabled = reconstructed.value(
+                "enabled", reconstructedEventTree.enabled
+            );
+            reconstructedEventTree.treeName = reconstructed.value(
+                "treeName", reconstructedEventTree.treeName
+            );
+            if (reconstructedEventTree.treeName.empty()) {
+                throw std::runtime_error(
+                    "reconstructedEventTree.treeName must not be empty"
+                );
+            }
+        }
 
         beamEnergy = j.value("beamEnergy", beamEnergy);
 
@@ -192,6 +216,27 @@ struct Config {
                 fs.exact = (p.at("mode").get<std::string>() == "exact");
                 finalState.push_back(fs);
             }
+        }
+        for (std::size_t i = 0; i < finalState.size(); ++i) {
+            for (std::size_t k = i + 1; k < finalState.size(); ++k) {
+                if (finalState[i].pid == finalState[k].pid) {
+                    throw std::runtime_error(
+                        "finalState contains duplicate PID " +
+                        std::to_string(finalState[i].pid)
+                    );
+                }
+            }
+        }
+        if (reconstructedEventTree.enabled && reconstructedEventTree.treeName == treeName) {
+            throw std::runtime_error(
+                "reconstructedEventTree.treeName must differ from particle treeName"
+            );
+        }
+        if (generatedEventTree.enabled && reconstructedEventTree.enabled &&
+            generatedEventTree.treeName == reconstructedEventTree.treeName) {
+            throw std::runtime_error(
+                "generatedEventTree.treeName must differ from reconstructedEventTree.treeName"
+            );
         }
     }
 };

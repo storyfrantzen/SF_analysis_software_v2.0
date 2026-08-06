@@ -11,6 +11,8 @@ import unittest
 import numpy as np
 
 from visualizer.app import (
+    ROOT_PREFERRED_BRANCHES,
+    ROOT_VECTOR_BRANCHES,
     add_derived_quantities,
     build_payload,
     label_for,
@@ -358,6 +360,13 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertEqual(columns["gen.pid"], "gen.pid")
         self.assertNotIn("event_runNum", columns)
         self.assertNotIn("rec_chi2pid", columns)
+
+    def test_topology_multiplicities_are_preferred_root_columns(self) -> None:
+        self.assertIn("nPid2212", ROOT_PREFERRED_BRANCHES)
+        self.assertIn("nPid2212FD", ROOT_PREFERRED_BRANCHES)
+        self.assertIn("nPid2212CD", ROOT_PREFERRED_BRANCHES)
+        self.assertIn("topologyPids", ROOT_VECTOR_BRANCHES)
+        self.assertIn("topologyPidCounts", ROOT_VECTOR_BRANCHES)
 
     def test_prefixed_particle_aliases_are_deduplicated(self) -> None:
         values = np.array([1.0, 2.0])

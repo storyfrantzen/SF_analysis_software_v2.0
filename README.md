@@ -69,6 +69,13 @@ This writes a lightweight `GeneratedEvents` tree before reconstructed topology
 or DIS filtering. The particle-level `Events` tree may therefore be REC-skimmed
 with `saveUnmatchedMC` disabled without biasing the generated denominator.
 
+New converter files also contain a canonical `ReconstructedEvents` tree with
+one row per accepted reconstructed event. It stores the complete configured PID
+multiplicities before `outputPids` filtering, including FD/CD splits. Selected
+files propagate those counts and add a normalized `SelectedParticles` tree.
+See [the ROOT tree implementation notes](docs/root_tree_schema.md) for the tree
+contracts and compatibility behavior.
+
 `GeneratedEvents` has one row per input MC event. It stores the source-aware
 identity `(sourceFileId, sourceEventIndex)`, the original `(runNum, eventNum)`,
 generator-topology validity, a radiative flag, weight, and generated `Q2`, `nu`,
