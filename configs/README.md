@@ -145,7 +145,7 @@ From the repository root:
   10.604_rga_eppi0_data.root
 
 python3 -m visualizer 10.604_rga_eppi0_cut_diagnostics.root \
-  --tree Events --output 10.604_rga_eppi0_cut_diagnostics.html
+  --tree SelectedEvents --output 10.604_rga_eppi0_cut_diagnostics.html
 ```
 
 The processing stage corrects reconstructed proton momentum and angles before
@@ -312,7 +312,7 @@ dictionary if object branches are not already discoverable:
 
 ```bash
 python3 analysis/compare_root_distributions.py --density \
-  --tree Events --columns p theta phi \
+  --tree ReconstructedParticles --columns p theta phi \
   --dictionary build/libROOTBranchesDict.dylib \
   --where 'rec.pid == 22' \
   --sample EG0.005=aao_rad_11221.root \

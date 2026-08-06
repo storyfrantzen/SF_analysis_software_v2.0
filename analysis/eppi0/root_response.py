@@ -44,7 +44,7 @@ def build_response_from_root(
     selected_root: Path,
     binning: AnalysisBinning,
     dictionary: Path | None = None,
-    tree: str = "Events",
+    tree: str = "SelectedEvents",
     generated_tree: str = "GeneratedEvents",
     chunk_size: int = 1_000_000,
     selection_mask: np.ndarray | None = None,
@@ -64,6 +64,7 @@ def build_response_from_root(
     converter_path = str(converter_root.resolve())
     selected_path = str(selected_root.resolve())
     _require_tree(ROOT, converter_path, generated_tree, GENERATED_COLUMNS)
+    tree = _resolve_selected_tree(ROOT, selected_path, tree)
     selected_entries = _require_tree(ROOT, selected_path, tree, SELECTED_COLUMNS)
 
     selected = ROOT.RDataFrame(tree, selected_path).AsNumpy(SELECTED_COLUMNS)
@@ -198,6 +199,21 @@ def _require_tree(ROOT, path: str, tree_name: str, columns: list[str]) -> int:
     if missing:
         raise RuntimeError(f"Tree {tree_name} in {path} is missing branches: {missing}")
     return entries
+
+
+def _resolve_selected_tree(ROOT, path: str, tree_name: str) -> str:
+    root_file = ROOT.TFile.Open(path, "READ")
+    if not root_file or root_file.IsZombie():
+        raise RuntimeError(f"Could not open ROOT file: {path}")
+    if root_file.Get(tree_name):
+        root_file.Close()
+        return tree_name
+    if tree_name == "SelectedEvents" and root_file.Get("Events"):
+        root_file.Close()
+        print("Warning: using legacy selected tree Events")
+        return "Events"
+    root_file.Close()
+    return tree_name
 
 
 def _tree_entries(ROOT, path: str, tree_name: str) -> int:

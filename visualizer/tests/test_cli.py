@@ -18,6 +18,7 @@ from visualizer.app import (
     label_for,
     normalize_visual_columns,
     object_branch_aliases,
+    resolve_root_tree_name,
     sample_event_row_indices,
     sample_row_indices,
 )
@@ -367,6 +368,23 @@ class VisualizerCliTests(unittest.TestCase):
         self.assertIn("nPid2212CD", ROOT_PREFERRED_BRANCHES)
         self.assertIn("topologyPids", ROOT_VECTOR_BRANCHES)
         self.assertIn("topologyPidCounts", ROOT_VECTOR_BRANCHES)
+
+    def test_root_tree_autodetection_prefers_canonical_names(self) -> None:
+        class RootFile:
+            def __init__(self, names):
+                self.names = set(names)
+
+            def Get(self, name):
+                return object() if name in self.names else None
+
+        selected = RootFile({"SelectedEvents", "Events"})
+        converter = RootFile({"ReconstructedParticles", "ReconstructedEvents", "Events"})
+        legacy = RootFile({"Events"})
+        self.assertEqual(resolve_root_tree_name(selected, None), "SelectedEvents")
+        self.assertEqual(resolve_root_tree_name(converter, None), "ReconstructedParticles")
+        self.assertEqual(
+            resolve_root_tree_name(legacy, "ReconstructedParticles"), "Events"
+        )
 
     def test_prefixed_particle_aliases_are_deduplicated(self) -> None:
         values = np.array([1.0, 2.0])

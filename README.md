@@ -66,13 +66,14 @@ For storage-efficient acceptance production:
 ```
 
 This writes a lightweight `GeneratedEvents` tree before reconstructed topology
-or DIS filtering. The particle-level `Events` tree may therefore be REC-skimmed
+or DIS filtering. The `ReconstructedParticles` tree may therefore be REC-skimmed
 with `saveUnmatchedMC` disabled without biasing the generated denominator.
 
-New converter files also contain a canonical `ReconstructedEvents` tree with
+Converter files also contain a canonical `ReconstructedEvents` tree with
 one row per accepted reconstructed event. It stores the complete configured PID
 multiplicities before `outputPids` filtering, including FD/CD splits. Selected
-files propagate those counts and add a normalized `SelectedParticles` tree.
+files propagate those counts through `SelectedEvents` and add a normalized
+`SelectedParticles` tree.
 See [the ROOT tree implementation notes](docs/root_tree_schema.md) for the tree
 contracts and compatibility behavior.
 

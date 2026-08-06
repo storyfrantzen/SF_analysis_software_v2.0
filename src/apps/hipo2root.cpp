@@ -543,8 +543,10 @@ int main(int argc, char** argv) {
         std::cerr << "[ERROR] generatedEventTree requires fillMC=true\n";
         return 1;
     }
-    if (cfg.generatedEventTree.enabled && cfg.generatedEventTree.treeName == cfg.treeName) {
-        std::cerr << "[ERROR] generatedEventTree.treeName must differ from treeName\n";
+    if (cfg.generatedEventTree.enabled &&
+        cfg.generatedEventTree.treeName == cfg.reconstructedParticleTree) {
+        std::cerr << "[ERROR] generatedEventTree.treeName must differ from "
+                  << "reconstructedParticleTree\n";
         return 1;
     }
     if (cfg.generatorWeights.enabled && !cfg.generatedEventTree.enabled) {
@@ -606,7 +608,7 @@ int main(int argc, char** argv) {
 
     // ── Echo active config ────────────────────────────────────────────────────
     std::cout << "[INFO] Output file : " << cfg.outputFile << "\n"
-              << "[INFO] Tree name   : " << cfg.treeName   << "\n"
+              << "[INFO] Particle tree: " << cfg.reconstructedParticleTree << "\n"
               << "[INFO] Beam energy : " << cfg.beamEnergy << " GeV\n"
               << "[INFO] Fill MC     : " << (cfg.fillMC ? "yes" : "no") << "\n"
               << "[INFO] Match MC    : " << (cfg.matchMC ? "yes" : "no") << "\n"
@@ -663,7 +665,9 @@ int main(int argc, char** argv) {
         std::cerr << "[ERROR] Could not open output file: " << cfg.outputFile << "\n";
         return 1;
     }
-    TTree* tree = new TTree(cfg.treeName.c_str(), cfg.treeName.c_str());
+    TTree* tree = new TTree(
+        cfg.reconstructedParticleTree.c_str(), cfg.reconstructedParticleTree.c_str()
+    );
     TTree* reconstructedEventTree = nullptr;
     ReconstructedEventOutput reconstructedEvent(cfg.finalState);
     if (cfg.reconstructedEventTree.enabled) {

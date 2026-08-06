@@ -85,7 +85,7 @@ def parser() -> argparse.ArgumentParser:
     response_root.add_argument("--config", type=Path, required=True)
     response_root.add_argument("--output-dir", type=Path, required=True)
     response_root.add_argument("--dictionary", type=Path)
-    response_root.add_argument("--tree", default="Events")
+    response_root.add_argument("--tree", default="SelectedEvents")
     response_root.add_argument("--generated-tree", default="GeneratedEvents")
     response_root.add_argument("--chunk-size", type=int, default=1_000_000)
     response_root.add_argument("--progress-chunks", type=int, default=10)

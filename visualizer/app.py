@@ -430,7 +430,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("input", type=Path, help=".npz sample or selected .root file")
     parser.add_argument("--output", type=Path, required=True, help="Output .html path")
     parser.add_argument("--format", choices=("auto", "npz", "root"), default="auto")
-    parser.add_argument("--tree", default="Events", help="ROOT tree name")
+    parser.add_argument(
+        "--tree",
+        help=(
+            "ROOT tree name; defaults to SelectedEvents, ReconstructedParticles, "
+            "ReconstructedEvents, then legacy Events"
+        ),
+    )
     parser.add_argument("--dictionary", type=Path, help="Optional ROOT dictionary shared library")
     parser.add_argument(
         "--root-filter",
@@ -551,7 +557,7 @@ def load_npz(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 
 def load_root(
     path: Path,
-    tree_name: str,
+    tree_name: str | None,
     dictionary: Path | None,
     requested_columns: list[str] | None,
     max_events: int,
@@ -571,6 +577,7 @@ def load_root(
     root_file = ROOT.TFile.Open(root_path, "READ")
     if not root_file or root_file.IsZombie():
         raise RuntimeError(f"Could not open ROOT file: {root_path}")
+    tree_name = resolve_root_tree_name(root_file, tree_name)
     tree = root_file.Get(tree_name)
     if not tree:
         root_file.Close()
@@ -712,6 +719,25 @@ def load_root(
             metadata["sampling_seed"] = seed
             metadata["sampling_strategy"] = "deterministic-random"
     return arrays, metadata
+
+
+def resolve_root_tree_name(root_file: Any, requested: str | None) -> str:
+    if requested and root_file.Get(requested):
+        return requested
+    if requested in {"SelectedEvents", "ReconstructedParticles"} and root_file.Get("Events"):
+        log(f"Warning: using legacy tree Events instead of {requested}")
+        return "Events"
+    if requested:
+        return requested
+    for candidate in (
+        "SelectedEvents",
+        "ReconstructedParticles",
+        "ReconstructedEvents",
+        "Events",
+    ):
+        if root_file.Get(candidate):
+            return candidate
+    return "SelectedEvents"
 
 
 def load_root_dictionary(ROOT: Any, dictionary: Path | None) -> Path | None:

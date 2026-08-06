@@ -47,7 +47,7 @@ struct Config {
 
     // ── Output ────────────────────────────────
     std::string outputFile = "output.root";
-    std::string treeName   = "Events";
+    std::string reconstructedParticleTree = "ReconstructedParticles";
     ReconstructedEventTreeConfig reconstructedEventTree;
 
     // ── Beam ──────────────────────────────────
@@ -95,7 +95,18 @@ struct Config {
         const auto configDir = std::filesystem::path(filename).parent_path();
 
         outputFile = j.value("outputFile", outputFile);
-        treeName   = j.value("treeName",   treeName);
+        if (j.contains("reconstructedParticleTree") && j.contains("treeName")) {
+            throw std::runtime_error(
+                "Use reconstructedParticleTree; do not also set deprecated treeName"
+            );
+        }
+        reconstructedParticleTree = j.value(
+            "reconstructedParticleTree",
+            j.value("treeName", reconstructedParticleTree)
+        );
+        if (reconstructedParticleTree.empty()) {
+            throw std::runtime_error("reconstructedParticleTree must not be empty");
+        }
 
         if (j.contains("reconstructedEventTree")) {
             const auto& reconstructed = j["reconstructedEventTree"];
@@ -227,9 +238,10 @@ struct Config {
                 }
             }
         }
-        if (reconstructedEventTree.enabled && reconstructedEventTree.treeName == treeName) {
+        if (reconstructedEventTree.enabled &&
+            reconstructedEventTree.treeName == reconstructedParticleTree) {
             throw std::runtime_error(
-                "reconstructedEventTree.treeName must differ from particle treeName"
+                "reconstructedEventTree.treeName must differ from reconstructedParticleTree"
             );
         }
         if (generatedEventTree.enabled && reconstructedEventTree.enabled &&

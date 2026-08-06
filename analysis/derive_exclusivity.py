@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
         help="Read either a dense event NPZ or the selected-candidate ROOT tree directly",
     )
     parser.add_argument("--dictionary", type=Path, help="ROOT dictionary shared library for selected-root input")
-    parser.add_argument("--tree", default="Events", help="ROOT tree name for selected-root input")
+    parser.add_argument("--tree", default="SelectedEvents", help="ROOT tree name for selected-root input")
     parser.add_argument("--global-cuts", action="store_true")
     parser.add_argument("--n-sigma", type=float, default=3.0)
     parser.add_argument("--minimum-events", type=int, default=50)
@@ -63,6 +63,11 @@ def selected_root_arrays(path: Path, dictionary: Path | None, tree_name: str):
     if not root_file or root_file.IsZombie():
         raise RuntimeError(f"Could not open selected ROOT file: {root_path}")
     tree = root_file.Get(tree_name)
+    if not tree and tree_name == "SelectedEvents":
+        tree = root_file.Get("Events")
+        if tree:
+            tree_name = "Events"
+            print("Warning: using legacy selected tree Events", file=sys.stderr)
     if not tree:
         root_file.Close()
         raise RuntimeError(f"Could not find tree {tree_name} in {root_path}")

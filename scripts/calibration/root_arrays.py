@@ -44,7 +44,16 @@ def import_root() -> Any:
 
 def load_dataframe(input_file: str | Path, tree: str):
     ROOT = import_root()
-    return ROOT.RDataFrame(tree, str(input_file))
+    path = str(input_file)
+    root_file = ROOT.TFile.Open(path, "READ")
+    if not root_file or root_file.IsZombie():
+        raise RuntimeError(f"Could not open ROOT file: {path}")
+    resolved = tree
+    if not root_file.Get(resolved) and tree == "ReconstructedParticles" and root_file.Get("Events"):
+        resolved = "Events"
+        print("Warning: using legacy particle tree Events")
+    root_file.Close()
+    return ROOT.RDataFrame(resolved, path)
 
 
 def has_column(df, column: str) -> bool:

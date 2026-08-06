@@ -16,7 +16,7 @@ Arguments:
 Environment overrides:
   VISUALIZER_PORT        Server port (default: 8765)
   VISUALIZER_HOST        Bind address (default: 127.0.0.1)
-  VISUALIZER_TREE        ROOT tree name (default: Events)
+  VISUALIZER_TREE        ROOT tree name (default: auto-detect canonical tree)
   VISUALIZER_SEED        Deterministic sampling seed (default: 12345)
   VISUALIZER_DICTIONARY  ROOT dictionary path
   VISUALIZER_PYTHON      Python executable (default: python3)
@@ -54,7 +54,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 PORT=${VISUALIZER_PORT:-8765}
 BIND_HOST=${VISUALIZER_HOST:-127.0.0.1}
-TREE_NAME=${VISUALIZER_TREE:-Events}
+TREE_NAME=${VISUALIZER_TREE:-}
 SEED=${VISUALIZER_SEED:-12345}
 PYTHON_BIN=${VISUALIZER_PYTHON:-python3}
 
@@ -87,11 +87,13 @@ trap cleanup EXIT INT TERM
 visualizer_command=(
   "$PYTHON_BIN" -m visualizer "$ROOT_FILE"
   --format root
-  --tree "$TREE_NAME"
   --max-source-events "$EVENT_LIMIT"
   --seed "$SEED"
   --output "$HTML_FILE"
 )
+if [[ -n "$TREE_NAME" ]]; then
+  visualizer_command+=(--tree "$TREE_NAME")
+fi
 if [[ -n "$DICTIONARY" ]]; then
   visualizer_command+=(--dictionary "$DICTIONARY")
 fi

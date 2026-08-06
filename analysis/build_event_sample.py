@@ -98,7 +98,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--beam-energy", type=float,
                         help="Required only for legacy particle-level GEN input")
     parser.add_argument("--dictionary", type=Path, help="Optional ROOT dictionary shared library")
-    parser.add_argument("--tree", default="Events")
+    parser.add_argument("--selected-tree", default="SelectedEvents")
+    parser.add_argument("--particle-tree", default="ReconstructedParticles")
+    parser.add_argument(
+        "--tree",
+        help="Deprecated: use one legacy tree name for both selected and particle input",
+    )
     parser.add_argument("--generated-tree", default="GeneratedEvents")
     parser.add_argument(
         "--matched-only",
@@ -137,6 +142,8 @@ def main() -> int:
         if status < 0:
             raise RuntimeError(f"Could not load ROOT dictionary: {args.dictionary}")
 
+    selected_tree_name = args.tree or args.selected_tree
+    particle_tree_name = args.tree or args.particle_tree
     matched_path = str(args.matched_root.resolve())
     input_file = ROOT.TFile.Open(matched_path, "READ")
     if not input_file or input_file.IsZombie():
@@ -161,10 +168,15 @@ def main() -> int:
     selected_file = ROOT.TFile.Open(selected_path, "READ")
     if not selected_file or selected_file.IsZombie():
         raise RuntimeError(f"Could not open selected ROOT file: {selected_path}")
-    selected_tree = selected_file.Get(args.tree)
+    selected_tree = selected_file.Get(selected_tree_name)
+    if not selected_tree and selected_tree_name == "SelectedEvents":
+        selected_tree_name = "Events"
+        selected_tree = selected_file.Get(selected_tree_name)
+        if selected_tree:
+            print("Warning: using legacy selected tree Events", file=sys.stderr)
     if not selected_tree:
         selected_file.Close()
-        raise RuntimeError(f"Could not find tree {args.tree} in {selected_path}")
+        raise RuntimeError(f"Could not find tree {selected_tree_name} in {selected_path}")
     has_source_key = all(selected_tree.GetBranch(name) for name in REC_SOURCE_COLUMNS)
     requested_rec_columns = scalar_branch_names(selected_tree)
     selected_file.Close()
@@ -175,7 +187,7 @@ def main() -> int:
         for name in REC_SOURCE_COLUMNS:
             if name not in requested_rec_columns:
                 requested_rec_columns.append(name)
-    rec = ROOT.RDataFrame(args.tree, selected_path).AsNumpy(requested_rec_columns)
+    rec = ROOT.RDataFrame(selected_tree_name, selected_path).AsNumpy(requested_rec_columns)
     rec_values = reconstructed_columns(rec, requested_rec_columns)
 
     if args.matched_only:
@@ -272,7 +284,8 @@ def main() -> int:
     else:
         if args.beam_energy is None:
             raise ValueError("--beam-energy is required when GeneratedEvents is absent")
-        gen = ROOT.RDataFrame(args.tree, matched_path).AsNumpy(GEN_COLUMNS)
+        particle_tree_name = resolve_particle_tree(ROOT, matched_path, particle_tree_name)
+        gen = ROOT.RDataFrame(particle_tree_name, matched_path).AsNumpy(GEN_COLUMNS)
         generated = build_generated_sample(
             gen["event.runNum"],
             gen["event.eventNum"],
@@ -282,14 +295,14 @@ def main() -> int:
             gen["gen.phi"],
             args.beam_energy,
         )
-        generated_source = f"{args.tree}.gen (legacy)"
+        generated_source = f"{particle_tree_name}.gen (legacy)"
         generated_values = {}
 
     if not generated_values:
         generated_values = read_generated_particle_columns(
             ROOT,
             matched_path,
-            args.tree,
+            resolve_particle_tree(ROOT, matched_path, particle_tree_name),
             generated,
             prefer_source_keys=has_generated_source_key,
         )
@@ -321,6 +334,21 @@ def main() -> int:
     print(f"REC variables carried: {len(rec_values)}")
     print(f"Wrote {args.output}")
     return 0
+
+
+def resolve_particle_tree(ROOT, path: str, tree_name: str) -> str:
+    root_file = ROOT.TFile.Open(path, "READ")
+    if not root_file or root_file.IsZombie():
+        raise RuntimeError(f"Could not open converter ROOT file: {path}")
+    if root_file.Get(tree_name):
+        root_file.Close()
+        return tree_name
+    if tree_name == "ReconstructedParticles" and root_file.Get("Events"):
+        root_file.Close()
+        print("Warning: using legacy particle tree Events", file=sys.stderr)
+        return "Events"
+    root_file.Close()
+    return tree_name
 
 
 def generated_tree_chunks(

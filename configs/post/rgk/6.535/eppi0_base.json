@@ -1,6 +1,6 @@
 {
-    "inputTree": "Events",
-    "outputTree": "Events",
+    "inputTree": "ReconstructedParticles",
+    "outputTree": "SelectedEvents",
     "beamEnergy": 6.535,
     "torus": 1,
     "saveFailedCandidates": false,

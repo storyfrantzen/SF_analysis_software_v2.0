@@ -18,18 +18,18 @@ with no accepted reconstructed candidate.  Each row needs:
 - the reconstructed proton topology;
 - the generated-event weight, defaulting to one.
 
-Reconstructed DIS and final-state cuts may be applied to the particle-level
-`Events` tree only after the converter has filled `GeneratedEvents`. They define
-the reconstructed numerator and do not alter the generated denominator.
+Reconstructed DIS and final-state cuts may be applied to
+`ReconstructedParticles` only after the converter has filled `GeneratedEvents`.
+They define the reconstructed numerator and do not alter the generated denominator.
 Generated phase-space cuts are applied later to the compact truth coordinates.
 For legacy files without `GeneratedEvents`, do not apply reconstructed event
 filters during conversion because the unmatched particle rows are then the only
 source of the generated denominator.
 
-For new converter files, use `ReconstructedEvents` for reconstructed
-event-level bookkeeping and topology multiplicities. The converter `Events`
-tree is particle-level and repeats a legacy event-key object only for backward
-compatibility. The full schema contract is documented in
+Use `ReconstructedEvents` for reconstructed event-level bookkeeping and
+topology multiplicities. `ReconstructedParticles` is particle-level and
+repeats a legacy event-key object only for backward compatibility. The full
+schema contract is documented in
 `docs/root_tree_schema.md`.
 
 Radiative generator events are interpreted as `e p pi0 gamma`; non-radiative
@@ -281,8 +281,8 @@ kinematics in `GeneratedEvents`; `build_event_sample.py` carries those columns,
 including `gen_electronP`, `gen_protonTheta`, `gen_gamma1Phi`, `gen_gamma2P`,
 and `gen_pi0P`, so generated-vs-reconstructed residuals can be built directly
 in the visualizer. Older converter ROOT files fall back to the available
-`Events.gen` rows, which may be less complete.
-The dictionary is optional for ordinary selected `Events` trees; if the named
+`ReconstructedParticles.gen` rows, which may be less complete.
+The dictionary is optional for ordinary `SelectedEvents` trees; if the named
 dictionary is missing, the script continues with ROOT's built-in scalar and STL
 branch readers.
 The selected tree's default `t` branch remains the proton-based positive `-t`,
@@ -604,8 +604,9 @@ pages for the primary positional artifact unless `--quilts-only` is passed.
 ## Managing MC intermediate size
 
 The preferred converter configuration enables `GeneratedEvents`, applies REC
-topology/DIS skims only to `Events`, and sets `saveUnmatchedMC` to false. This
-retains the generated denominator in one lightweight scalar row per event. See
+topology/DIS skims only to `ReconstructedParticles`, and sets
+`saveUnmatchedMC` to false. This retains the generated denominator in one
+lightweight scalar row per event. See
 `configs/processing/rgk/6.535/eppi0_mc_acceptance.json`.
 
 For older files without `GeneratedEvents`, an unbiased denominator still

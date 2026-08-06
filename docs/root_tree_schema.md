@@ -36,17 +36,22 @@ it defaults to enabled with the name `ReconstructedEvents`.
 
 ## Converter particle tree
 
-The processing config's `treeName` remains the reconstructed particle table
-and defaults to `Events`. It contains one `rec` object per retained
-reconstructed particle and an optional matched `gen` object. `rec.particleIdx`
-is the position in the complete `c12.getDetParticles()` list, so PID filtering
-can leave gaps.
+The processing config's `reconstructedParticleTree` names the reconstructed
+particle table and defaults to `ReconstructedParticles`. It contains one `rec`
+object per retained reconstructed particle and an optional matched `gen`
+object. `rec.particleIdx` is the position in the complete
+`c12.getDetParticles()` list, so PID filtering can leave gaps.
+The converter still accepts `treeName` as a deprecated configuration alias for
+reading old processing configs, but maintained configs use
+`reconstructedParticleTree`.
 
 For backward compatibility, this tree temporarily retains the repeated
 `event` object used by existing post-processing, calibration scripts, and old
 ROOT readers. New event-level diagnostics must use `ReconstructedEvents`; they
 must not count repeated particle rows as events. The repeated object is a
 compatibility foreign-key snapshot, not the canonical event table.
+Readers fall back to the legacy tree name `Events` when a canonical tree is
+absent; new files do not write an `Events` alias.
 
 ## `GeneratedEvents`
 
@@ -57,7 +62,7 @@ The source-aware key is the join contract.
 
 ## Selected output
 
-The configured selected `Events` tree contains one row per retained candidate.
+The configured `SelectedEvents` tree contains one row per retained candidate.
 It propagates the converter topology vectors and exposes scalar PID counts such
 as `nPid2212`, `nPid2212FD`, and `nPid2212CD`. When the companion
 `ReconstructedEvents` tree is present, post-processing streams and joins those
@@ -70,8 +75,9 @@ row per selected role occurrence with the event key, role, occurrence,
 selected-role vectors and scalar role branches remain in the candidate tree for
 existing analysis and visualization consumers.
 
-The post config keys `inputEventTree` and `outputParticleTree` default to
-`ReconstructedEvents` and `SelectedParticles`, respectively.
+The post config keys `inputTree`, `inputEventTree`, `outputTree`, and
+`outputParticleTree` default to `ReconstructedParticles`,
+`ReconstructedEvents`, `SelectedEvents`, and `SelectedParticles`, respectively.
 
 ## Proton-multiplicity diagnostic
 

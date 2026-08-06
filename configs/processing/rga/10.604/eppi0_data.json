@@ -1,6 +1,6 @@
 {
     "outputFile": "10.604_rga_eppi0_data.root",
-    "treeName": "Events",
+    "reconstructedParticleTree": "ReconstructedParticles",
 
     "beamEnergy": 10.604,
 

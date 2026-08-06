@@ -1,6 +1,6 @@
 {
     "outputFile": "6.535_rgk_proton_energy_loss_mc.root",
-    "treeName": "Events",
+    "reconstructedParticleTree": "ReconstructedParticles",
 
     "beamEnergy": 6.535,
 

@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("processing_root", type=Path, help="Converter ROOT file containing AccumulatedCharge")
     parser.add_argument("output", type=Path)
     parser.add_argument("--dictionary", type=Path)
-    parser.add_argument("--tree", default="Events")
+    parser.add_argument("--tree", default="SelectedEvents")
     return parser.parse_args()
 
 
@@ -41,8 +41,10 @@ def main() -> int:
     if args.dictionary and ROOT.gSystem.Load(str(args.dictionary.resolve())) < 0:
         raise RuntimeError(f"Could not load ROOT dictionary: {args.dictionary}")
     selected_path = str(args.selected_root.resolve())
-    columns = columns_in_tree(ROOT, selected_path, args.tree, COLUMNS, OPTIONAL_COLUMNS)
-    arrays = ROOT.RDataFrame(args.tree, selected_path).AsNumpy(columns)
+    tree_name, columns = columns_in_tree(
+        ROOT, selected_path, args.tree, COLUMNS, OPTIONAL_COLUMNS
+    )
+    arrays = ROOT.RDataFrame(tree_name, selected_path).AsNumpy(columns)
     processing_path = str(args.processing_root.resolve())
     processing_file = ROOT.TFile.Open(processing_path, "READ")
     if not processing_file or processing_file.IsZombie():
@@ -134,11 +136,16 @@ def main() -> int:
     return 0
 
 
-def columns_in_tree(ROOT, path: str, tree_name: str, required: list[str], optional: list[str]) -> list[str]:
+def columns_in_tree(ROOT, path: str, tree_name: str, required: list[str], optional: list[str]) -> tuple[str, list[str]]:
     root_file = ROOT.TFile.Open(path, "READ")
     if not root_file or root_file.IsZombie():
         raise RuntimeError(f"Could not open selected ROOT file: {path}")
     tree = root_file.Get(tree_name)
+    if not tree and tree_name == "SelectedEvents":
+        tree_name = "Events"
+        tree = root_file.Get(tree_name)
+        if tree:
+            print("Warning: using legacy selected tree Events")
     if not tree:
         root_file.Close()
         raise RuntimeError(f"Could not find tree {tree_name} in {path}")
@@ -148,7 +155,7 @@ def columns_in_tree(ROOT, path: str, tree_name: str, required: list[str], option
         raise RuntimeError(f"Tree {tree_name} is missing branches: {missing}")
     columns = list(required) + [name for name in optional if tree.GetBranch(name)]
     root_file.Close()
-    return columns
+    return tree_name, columns
 
 
 if __name__ == "__main__":

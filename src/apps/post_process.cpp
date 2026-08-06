@@ -1011,7 +1011,16 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto* inTree = dynamic_cast<TTree*>(input.Get(cfg.inputTree.c_str()));
+    std::string inputTreeName = cfg.inputTree;
+    auto* inTree = dynamic_cast<TTree*>(input.Get(inputTreeName.c_str()));
+    if (!inTree && inputTreeName == "ReconstructedParticles") {
+        inTree = dynamic_cast<TTree*>(input.Get("Events"));
+        if (inTree) {
+            inputTreeName = "Events";
+            std::cerr << "[WARN] Using legacy particle tree Events; reconvert to obtain "
+                      << "ReconstructedParticles\n";
+        }
+    }
     if (!inTree) {
         std::cerr << "[ERROR] Could not find input tree: " << cfg.inputTree << "\n";
         return 1;
@@ -1022,7 +1031,7 @@ int main(int argc, char** argv) {
 
     std::cout << "[INFO] Config file : " << argv[1] << "\n"
               << "[INFO] Input file  : " << argv[2] << "\n"
-              << "[INFO] Input tree  : " << cfg.inputTree << "\n"
+              << "[INFO] Input tree  : " << inputTreeName << "\n"
               << "[INFO] Event tree  : "
               << (reconstructedEventReader.available() ? cfg.inputEventTree : "legacy fallback")
               << "\n"

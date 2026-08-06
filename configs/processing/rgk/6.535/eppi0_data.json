@@ -1,6 +1,6 @@
 {
     "outputFile": "6.535_rgk_eppi0_data.root",
-    "treeName": "Events",
+    "reconstructedParticleTree": "ReconstructedParticles",
 
     "beamEnergy": 6.535,
 

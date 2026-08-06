@@ -95,7 +95,7 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Sample as LABEL=path.root. May be repeated.",
     )
-    parser.add_argument("--tree", default="Events")
+    parser.add_argument("--tree", default="ReconstructedParticles")
     parser.add_argument("--columns", nargs="+", default=DEFAULT_COLUMNS)
     parser.add_argument("--where", help="Optional ROOT RDataFrame filter expression")
     parser.add_argument("--dictionary", type=Path)
@@ -150,6 +150,7 @@ def main() -> int:
 
 def read_arrays(ROOT, path: Path, tree: str, columns: list[str], where: str | None):
     root_path = str(path.resolve())
+    tree = resolve_particle_tree(ROOT, root_path, tree)
     aliases = aliases_for_columns(ROOT, root_path, tree, columns)
     frame = ROOT.RDataFrame(tree, root_path)
     if where:
@@ -157,6 +158,21 @@ def read_arrays(ROOT, path: Path, tree: str, columns: list[str], where: str | No
     for name, expression in aliases.items():
         frame = frame.Define(name, expression)
     return frame.AsNumpy(columns)
+
+
+def resolve_particle_tree(ROOT, path: str, tree_name: str) -> str:
+    root_file = ROOT.TFile.Open(path, "READ")
+    if not root_file or root_file.IsZombie():
+        raise RuntimeError(f"Could not open ROOT file: {path}")
+    if root_file.Get(tree_name):
+        root_file.Close()
+        return tree_name
+    if tree_name == "ReconstructedParticles" and root_file.Get("Events"):
+        root_file.Close()
+        print("Warning: using legacy particle tree Events")
+        return "Events"
+    root_file.Close()
+    return tree_name
 
 
 def aliases_for_columns(ROOT, path: str, tree_name: str, columns: list[str]) -> dict[str, str]:

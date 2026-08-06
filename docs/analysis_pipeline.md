@@ -336,7 +336,7 @@ gamma`. Invalid generator topologies remain represented with
 `topologyValid=false` and reset kinematics, making event accounting explicit.
 
 After this row is saved, the normal `finalState` and DIS skim apply only to the
-particle-level `Events` tree. This permits a compact REC numerator without
+`ReconstructedParticles` tree. This permits a compact REC numerator without
 removing generated events from the denominator. Use
 `configs/processing/rgk/6.535/eppi0_mc_acceptance.json` as the reference.
 
