@@ -1,0 +1,41 @@
+{
+    "outputFile": "6.535_rgk_eppi0_data_full_dst.root",
+
+    "beamEnergy": 6.535,
+
+    "qadb": {
+        "enabled": true,
+        "database": "latest",
+        "rejectDefects": [
+            "MarginalOutlier",
+            "TerminalOutlier",
+            "TotalOutlier",
+            "SectorLoss",
+            "LowLiveTime"
+        ],
+        "allowMiscRuns": []
+    },
+
+    "kinematicCorrections": "../../../../parameters/proton_energy_loss/6.535RGK_INCLUSIVE_GEMC_100M.json",
+
+    "finalState": [
+        { "pid": 11, "count": 1, "mode": "atleast" },
+        { "pid": 2212, "count": 1, "mode": "atleast" },
+        { "pid": 22, "count": 2, "mode": "atleast" }
+    ],
+    "inclusive": true,
+    "outputPids": [11, 2212, 22],
+
+    "enableSkim": true,
+    "Q2_min": 1.0,
+    "W_min": 2.0,
+    "y_max": 0.8,
+
+    "diphotonMassSkim": {
+        "enabled": true,
+        "minGeV": 0.0,
+        "maxGeV": 0.30
+    },
+
+    "fillMC": false
+}

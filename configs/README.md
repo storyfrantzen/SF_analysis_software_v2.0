@@ -37,6 +37,7 @@ The active RGK 6.535 GeV files are:
 - `processing/rgk/6.535/aao_rad_q2_0.7_ep_1.00.json`;
 - `processing/rgk/6.535/aao_rad_q2_0.9_ep_1.15.json`;
 - `processing/rgk/6.535/eppi0_data.json`;
+- `processing/rgk/6.535/eppi0_data_full_dst.json`;
 - `post/rgk/6.535/eppi0_data.json`;
 - `post/rgk/6.535/eppi0_base.json`;
 - `post/rgk/6.535/aao_rad_eppi0_loose.json`;
@@ -251,6 +252,22 @@ signal-yield study. Add `--include-classes P3 P4 L5` only after confirming L5
 trigger and prescale compatibility. The run-current manifest deliberately
 retains suspect, mixed-trigger, empty-target, and half-torus entries so each
 nominal exclusion remains auditable.
+
+For conversion of the complete reconstructed-DST holdings, including the
+luminosity-scan runs, use the more compact converter config:
+
+```bash
+./build/hipo2root configs/processing/rgk/6.535/eppi0_data_full_dst.json \
+  /path/to/rgk/6.535/reconstructed/dsts 0 1000000
+```
+
+This config retains the nominal QADB policy and DIS/topology skim, writes only
+electron, proton, and photon particle rows, and requires at least one photon
+pair with `0 <= m_gg <= 0.30 GeV`. The pair condition is existential: in an
+event with more than two photons, any pair may satisfy it. Its upper boundary
+is deliberately looser than the nominal post-processing pi0 window, whose
+upper edge is approximately `0.285 GeV`; candidate choice and all final
+selection cuts remain downstream.
 
 For calibrated RGK 6.535 GeV acceptance studies, use the compact acceptance
 processing config together with the acceptance post config. The processing

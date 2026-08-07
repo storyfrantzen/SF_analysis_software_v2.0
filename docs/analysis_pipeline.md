@@ -15,6 +15,7 @@ The converter should make a reusable analysis ntuple. Physics selections that ar
    - MC truth branches
    - loose final-state requirements used only to reduce file size
    - loose DIS skims such as broad `Q2`, `W`, and `y` ranges
+   - an optional loose existential diphoton-mass skim used only to reduce file size
    - optional precomputed helper variables or cut flags, as long as the raw ingredients are still saved
    - configured proton kinematic corrections, with raw values and correction deltas saved alongside corrected branches
    - optional REC/GEN matching for calibration and acceptance studies
@@ -65,6 +66,11 @@ file-level total; the latter remains available for backward compatibility.
 Load QADB before configuring and building on JLab, for example `module load qadb/3.1`.
 If QADB is requested by a config but was unavailable at build time, `hipo2root` exits with
 an explicit error.
+
+The converter's optional `diphotonMassSkim` accepts an event when any pair of
+reconstructed PID-22 particles falls within the inclusive `minGeV` and
+`maxGeV` interval. Set it wider than every downstream pi0 mass variation so
+conversion does not define the final signal window.
 
 ## Practical Rule
 

@@ -1,4 +1,5 @@
 #pragma once
+#include <cmath>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -36,6 +37,12 @@ struct InputValidationConfig {
     bool skipMalformed = true;
 };
 
+struct DiphotonMassSkimConfig {
+    bool enabled = false;
+    double minGeV = 0.0;
+    double maxGeV = 1.0;
+};
+
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 struct Config {
@@ -56,6 +63,7 @@ struct Config {
     double Q2_min     = 1.0;
     double W_min      = 2.0;
     double y_max      = 0.8;
+    DiphotonMassSkimConfig diphotonMassSkim;
 
     // ── MC ────────────────────────────────────
     bool fillMC = false;
@@ -131,6 +139,31 @@ struct Config {
         Q2_min     = j.value("Q2_min",     Q2_min);
         W_min      = j.value("W_min",      W_min);
         y_max      = j.value("y_max",      y_max);
+
+        if (j.contains("diphotonMassSkim")) {
+            const auto& skim = j["diphotonMassSkim"];
+            if (!skim.is_object()) {
+                throw std::runtime_error("diphotonMassSkim must be a JSON object");
+            }
+            diphotonMassSkim.enabled = skim.value(
+                "enabled", diphotonMassSkim.enabled
+            );
+            diphotonMassSkim.minGeV = skim.value(
+                "minGeV", diphotonMassSkim.minGeV
+            );
+            diphotonMassSkim.maxGeV = skim.value(
+                "maxGeV", diphotonMassSkim.maxGeV
+            );
+            if (diphotonMassSkim.enabled &&
+                (!std::isfinite(diphotonMassSkim.minGeV) ||
+                 !std::isfinite(diphotonMassSkim.maxGeV) ||
+                 diphotonMassSkim.minGeV < 0.0 ||
+                 diphotonMassSkim.maxGeV <= diphotonMassSkim.minGeV)) {
+                throw std::runtime_error(
+                    "enabled diphotonMassSkim requires 0 <= minGeV < maxGeV"
+                );
+            }
+        }
 
         fillMC = j.value("fillMC", fillMC);
         matchMC = j.value("matchMC", matchMC);

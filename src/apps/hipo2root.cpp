@@ -459,6 +459,32 @@ bool passesDISSkim(const Config& cfg, clas12::clas12reader& c12) {
     return (dis.Q2 >= cfg.Q2_min && dis.W >= cfg.W_min && dis.y <= cfg.y_max);
 }
 
+bool passesDiphotonMassSkim(const Config& cfg, clas12::clas12reader& c12) {
+    if (!cfg.diphotonMassSkim.enabled) return true;
+
+    const auto photons = c12.getByID(22);
+    for (std::size_t first = 0; first < photons.size(); ++first) {
+        const auto* gamma1 = photons[first];
+        const TLorentzVector lvGamma1 = Kinematics::particle(
+            gamma1->par()->getPx(), gamma1->par()->getPy(), gamma1->par()->getPz(), 0.0
+        );
+        for (std::size_t second = first + 1; second < photons.size(); ++second) {
+            const auto* gamma2 = photons[second];
+            const TLorentzVector lvGamma2 = Kinematics::particle(
+                gamma2->par()->getPx(), gamma2->par()->getPy(), gamma2->par()->getPz(), 0.0
+            );
+            const double mass2 = (lvGamma1 + lvGamma2).M2();
+            if (!std::isfinite(mass2) || mass2 < 0.0) continue;
+            const double mass = std::sqrt(mass2);
+            if (mass >= cfg.diphotonMassSkim.minGeV &&
+                mass <= cfg.diphotonMassSkim.maxGeV) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // ─── MC matching ─────────────────────────────────────────────────────────────
 
 MatchResult findBestGenMatch(clas12::region_particle* rec,
@@ -649,6 +675,11 @@ int main(int argc, char** argv) {
                   << ", W >= "  << cfg.W_min
                   << ", y <= " << cfg.y_max << "\n";
     }
+    if (cfg.diphotonMassSkim.enabled) {
+        std::cout << "[INFO] Diphoton mass skim: at least one pair in ["
+                  << cfg.diphotonMassSkim.minGeV << ", "
+                  << cfg.diphotonMassSkim.maxGeV << "] GeV\n";
+    }
     if (!cfg.outputPids.empty()) {
         std::cout << "[INFO] Output PID filter:";
         for (const int pid : cfg.outputPids) std::cout << " " << pid;
@@ -698,6 +729,7 @@ int main(int argc, char** argv) {
 
     // ── Event loop ────────────────────────────────────────────────────────────
     long long nTotal = 0, nQAFail = 0, nFSFail = 0, nSkimFail = 0, nWritten = 0;
+    long long nDISSkimFail = 0, nDiphotonMassSkimFail = 0;
     long long nOutputRows = 0;
     long long nSkippedOutputPid = 0;
     long long nMatched = 0, nUnmatchedRec = 0, nUnmatchedGen = 0;
@@ -821,6 +853,13 @@ int main(int argc, char** argv) {
             }
             if (!passesDISSkim(cfg, c12)) {
                 ++nSkimFail;
+                ++nDISSkimFail;
+                maybePrintProgress();
+                continue;
+            }
+            if (!passesDiphotonMassSkim(cfg, c12)) {
+                ++nSkimFail;
+                ++nDiphotonMassSkimFail;
                 maybePrintProgress();
                 continue;
             }
@@ -914,6 +953,8 @@ int main(int argc, char** argv) {
               << "  Failed QADB       : " << nQAFail   << "\n"
               << "  Failed final state: " << nFSFail   << "\n"
               << "  Failed skim       : " << nSkimFail << "\n"
+              << "    DIS             : " << nDISSkimFail << "\n"
+              << "    Diphoton mass   : " << nDiphotonMassSkimFail << "\n"
               << "  Written events    : " << nWritten  << "\n"
               << "  Output rows       : " << nOutputRows << "\n"
               << "  PID-filtered rows : " << nSkippedOutputPid << "\n"
@@ -948,6 +989,18 @@ int main(int argc, char** argv) {
     summary.Branch("FailedQADB", &nQAFail, "FailedQADB/L");
     summary.Branch("FailedFinalState", &nFSFail, "FailedFinalState/L");
     summary.Branch("FailedSkim", &nSkimFail, "FailedSkim/L");
+    summary.Branch("FailedDISSkim", &nDISSkimFail, "FailedDISSkim/L");
+    summary.Branch("FailedDiphotonMassSkim", &nDiphotonMassSkimFail,
+                   "FailedDiphotonMassSkim/L");
+    bool diphotonMassSkimEnabled = cfg.diphotonMassSkim.enabled;
+    double diphotonMassSkimMinGeV = cfg.diphotonMassSkim.minGeV;
+    double diphotonMassSkimMaxGeV = cfg.diphotonMassSkim.maxGeV;
+    summary.Branch("DiphotonMassSkimEnabled", &diphotonMassSkimEnabled,
+                   "DiphotonMassSkimEnabled/O");
+    summary.Branch("DiphotonMassSkimMinGeV", &diphotonMassSkimMinGeV,
+                   "DiphotonMassSkimMinGeV/D");
+    summary.Branch("DiphotonMassSkimMaxGeV", &diphotonMassSkimMaxGeV,
+                   "DiphotonMassSkimMaxGeV/D");
     summary.Branch("WrittenEvents", &nWritten, "WrittenEvents/L");
     summary.Branch("OutputRows", &nOutputRows, "OutputRows/L");
     summary.Branch("PidFilteredRows", &nSkippedOutputPid, "PidFilteredRows/L");
