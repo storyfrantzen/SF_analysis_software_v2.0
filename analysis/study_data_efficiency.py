@@ -259,21 +259,33 @@ def write_plots(path, records, groups, fit, has_selection_mask: bool) -> None:
         and record.yield_events_per_nC is not None
     ]
     classes = sorted({record.run_class for record in included if record.run_class})
-    colors = {name: plt.get_cmap("tab10")(index % 10) for index, name in enumerate(classes)}
+    excluded_classes = sorted({record.run_class or "unclassified" for record in excluded})
+    plotted_classes = sorted(set(classes).union(excluded_classes))
+    colors = {
+        name: plt.get_cmap("tab10")(index % 10)
+        for index, name in enumerate(plotted_classes)
+    }
     selection_label = "fixed-mask signal" if has_selection_mask else "all selected candidates"
 
     with PdfPages(path) as pdf:
         fig, (axis, residual_axis) = plt.subplots(
             2, 1, figsize=(8.5, 8.5), sharex=True, gridspec_kw={"height_ratios": [3, 1]}
         )
-        if excluded:
+        for name in excluded_classes:
+            members = [
+                record
+                for record in excluded
+                if (record.run_class or "unclassified") == name
+            ]
             axis.scatter(
-                [record.current_nA for record in excluded],
-                [record.yield_events_per_nC for record in excluded],
-                color="0.75",
+                [record.current_nA for record in members],
+                [record.yield_events_per_nC for record in members],
+                color=colors[name],
                 marker="x",
-                s=22,
-                label="excluded runs",
+                s=28,
+                linewidths=1.0,
+                alpha=0.65,
+                label=f"{name} excluded",
                 zorder=1,
             )
         for name in classes:
@@ -315,7 +327,7 @@ def write_plots(path, records, groups, fit, has_selection_mask: bool) -> None:
         axis.set_ylabel("Yield (events/nC)")
         axis.set_title(f"RGK data current study: {selection_label}")
         axis.grid(True, alpha=0.25)
-        axis.legend(fontsize="small", ncol=2)
+        axis.legend(fontsize="x-small", ncol=3)
 
         group_current = np.asarray([group.effective_current_nA for group in groups])
         group_residual = np.asarray([group.yield_events_per_nC for group in groups]) - fit.predict(

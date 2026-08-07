@@ -160,6 +160,8 @@ class DataEfficiencyTests(unittest.TestCase):
                 "L5",
                 "P4",
                 "P3",
+                "--exclude-run",
+                "1001",
                 "--output-dir",
                 str(output),
             ]

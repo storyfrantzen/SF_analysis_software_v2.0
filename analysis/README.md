@@ -217,7 +217,8 @@ The output directory contains:
 - `fit_summary.json`: inputs, filters, charge validation, fit covariance,
   warnings, and zero-current result;
 - `data_efficiency_diagnostics.pdf`: current-dependence, fit pulls, and
-  included-run stability plots.
+  included-run stability plots. Excluded runs remain visible on the current
+  plot as crosses colored and labeled by their manifest run class.
 
 Use `--fit-level runs` only as a diagnostic. The nominal group-level fit avoids
 treating the many runs within one production setting as independent current
