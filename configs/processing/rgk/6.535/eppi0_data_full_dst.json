@@ -29,12 +29,12 @@
     "enableSkim": true,
     "Q2_min": 1.0,
     "W_min": 2.0,
-    "y_max": 0.8,
+    "y_max": 0.95,
 
     "diphotonMassSkim": {
         "enabled": true,
         "minGeV": 0.0,
-        "maxGeV": 0.30
+        "maxGeV": 0.35
     },
 
     "fillMC": false

@@ -59,10 +59,10 @@
       }
     },
     "runs": {
-      "5875": { "run_class": "L4", "nominal_current_nA": null, "rcdb_current_nA": 4.68437, "rcdb_quality": "unflagged", "notes": null },
-      "5877": { "run_class": "L4", "nominal_current_nA": null, "rcdb_current_nA": 10.9248, "rcdb_quality": "suspect", "notes": "Marked with an asterisk in the manual transcription." },
-      "5878": { "run_class": "L4", "nominal_current_nA": null, "rcdb_current_nA": 8.14509, "rcdb_quality": "unflagged", "notes": null },
-      "5879": { "run_class": "L4", "nominal_current_nA": null, "rcdb_current_nA": 31.8293, "rcdb_quality": "unflagged", "notes": null },
+      "5875": { "run_class": "L4", "nominal_current_nA": null, "rcdb_current_nA": 4.68437, "rcdb_quality": "unflagged", "notes": "run_config: /usr/clas12/release/1.3.2/parms/trigger/rgk_v6_300MeV.cnf" },
+      "5877": { "run_class": "L4", "nominal_current_nA": null, "rcdb_current_nA": 10.9248, "rcdb_quality": "suspect", "notes": "run_config: /usr/clas12/release/1.3.2/parms/trigger/rgk_v6_150MeV.cnf . Current marked with an asterisk in the manual transcription." },
+      "5878": { "run_class": "L4", "nominal_current_nA": null, "rcdb_current_nA": 8.14509, "rcdb_quality": "unflagged", "notes": "run_config: /usr/clas12/release/1.3.2/parms/trigger/rgk_v6_150MeV.cnf . HV dropouts on FTOF+PCAL sector3." },
+      "5879": { "run_class": "L4", "nominal_current_nA": null, "rcdb_current_nA": 31.8293, "rcdb_quality": "unflagged", "notes": "run_config: /usr/clas12/release/1.3.2/parms/trigger/rgk_v6_200MeV.cnf" },
       "5880": { "run_class": "L4", "nominal_current_nA": null, "rcdb_current_nA": 35.0, "rcdb_quality": "suspect", "notes": "Marked with an asterisk in the manual transcription." },
       "5881": { "run_class": "L4", "nominal_current_nA": null, "rcdb_current_nA": 31.3424, "rcdb_quality": "unflagged", "notes": null },
       "5883": { "run_class": "L4", "nominal_current_nA": null, "rcdb_current_nA": 30.8913, "rcdb_quality": "unflagged", "notes": null },
@@ -96,7 +96,7 @@
       "5916": { "run_class": "P3", "nominal_current_nA": 60.0, "rcdb_current_nA": 55.9598, "rcdb_quality": "suspect", "notes": "Marked with an asterisk in the manual transcription." },
       "5917": { "run_class": "P3", "nominal_current_nA": 60.0, "rcdb_current_nA": 55.426, "rcdb_quality": "unflagged", "notes": null },
       "5918": { "run_class": "P3", "nominal_current_nA": 60.0, "rcdb_current_nA": 56.4392, "rcdb_quality": "unflagged", "notes": null },
-      "5919": { "run_class": "P3", "nominal_current_nA": 60.0, "rcdb_current_nA": 56.3194, "rcdb_quality": "unflagged", "notes": null },
+      "5919": { "run_class": "P3", "nominal_current_nA": 60.0, "rcdb_current_nA": 56.3194, "rcdb_quality": "unflagged", "notes": "Not tracked in QADB?" },
       "5920": { "run_class": "P3", "nominal_current_nA": 60.0, "rcdb_current_nA": 43.3661, "rcdb_quality": "unflagged", "notes": "Measured current is substantially below the nominal P3 setting." },
       "5922": { "run_class": "P3", "nominal_current_nA": 60.0, "rcdb_current_nA": 55.7425, "rcdb_quality": "unflagged", "notes": null },
       "5923": { "run_class": "P3", "nominal_current_nA": 60.0, "rcdb_current_nA": 55.3136, "rcdb_quality": "unflagged", "notes": null },
