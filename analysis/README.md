@@ -18,13 +18,19 @@ with no accepted reconstructed candidate.  Each row needs:
 - the reconstructed proton topology;
 - the generated-event weight, defaulting to one.
 
-Reconstructed DIS and final-state cuts may be applied to the particle-level
-`Events` tree only after the converter has filled `GeneratedEvents`. They define
-the reconstructed numerator and do not alter the generated denominator.
+Reconstructed DIS and final-state cuts may be applied to
+`rParticles` only after the converter has filled `gEvents`.
+They define the reconstructed numerator and do not alter the generated denominator.
 Generated phase-space cuts are applied later to the compact truth coordinates.
-For legacy files without `GeneratedEvents`, do not apply reconstructed event
+For legacy files without `gEvents`, do not apply reconstructed event
 filters during conversion because the unmatched particle rows are then the only
 source of the generated denominator.
+
+Use `rEvents` for reconstructed event-level bookkeeping and
+topology multiplicities. `rParticles` is particle-level and
+repeats a legacy event-key object only for backward compatibility. The full
+schema contract is documented in
+`docs/root_tree_schema.md`.
 
 Radiative generator events are interpreted as `e p pi0 gamma`; non-radiative
 events are interpreted as `e p gamma gamma`.  Extra reconstructed photons are
@@ -42,12 +48,14 @@ mass.
   corrections;
 - `eppi0.exclusivity`: topology-aware sequential data/GEMC windows;
 - `eppi0.event_sample`: radiative/non-radiative GEN construction and REC joins;
+- `eppi0.data_efficiency`: run-charge joins, current grouping, and zero-current fits;
 - `eppi0.harmonics`: weighted `A + B cos(phi) + C cos(2 phi)` fits.
 
 ## Dependencies
 
 - Python 3.10 or newer;
 - NumPy and SciPy for the numerical pipeline;
+- Matplotlib for diagnostic PDF output;
 - PyROOT for `build_event_sample.py` and `export_selected_data.py`;
 - the project ROOT dictionary when object branches are not already discoverable.
 
@@ -103,7 +111,7 @@ python3 analysis/run_analysis.py response-root \
   --dictionary build/libROOTBranchesDict.dylib
 ```
 
-This command histograms the `GeneratedEvents` denominator in chunks, joins only
+This command histograms the `gEvents` denominator in chunks, joins only
 selected REC candidates by `(sourceFileId, sourceEventIndex)`, and writes the
 same `response_matrix.npz` and `response_meta.npz` consumed by `unfold`.
 `build_event_sample.py` remains useful for compact debug samples and for
@@ -111,7 +119,66 @@ backward compatibility with older particle-level matched files. New files join
 on `(sourceFileId, sourceEventIndex)`, because GEMC files can all have run 11
 and restart their event numbers.
 `export_selected_data.py` creates the compact data artifact and carries the
-converter's accumulated charge into the pipeline.
+converter's accumulated charge into the pipeline. New converter files also
+provide a `RunCharge` tree; the exporter preserves its run numbers, charges,
+and QADB event counters as `beam_charge_run`, `beam_charge_by_run_c`,
+`run_total_events`, `run_passed_qadb_events`, and
+`run_failed_qadb_events`. This permits charge-normalized run filtering without
+splitting the original HIPO production by run.
+
+## Data current-efficiency study
+
+`study_data_efficiency.py` joins the selected-event run numbers to the QADB
+charge arrays and `configs/efficiency/rgk/6.535/run_currents.json`. It writes a
+complete per-run audit table, charge-aggregated current-group yields, a linear
+zero-current fit, and a two-page diagnostic PDF. Its conservative default fit
+uses only unflagged P3 and P4 runs:
+
+```bash
+python3 analysis/study_data_efficiency.py \
+  results/data/rgk_6.535_data_events.npz \
+  --output-dir results/data_efficiency/rgk_6.535_preliminary
+```
+
+Without `--selection-mask`, this is explicitly labeled as a raw
+selected-candidate study rather than a background-subtracted signal-efficiency
+measurement. After deriving and freezing one event-level signal mask, apply the
+same mask to every current:
+
+```bash
+python3 analysis/study_data_efficiency.py \
+  results/data/rgk_6.535_data_events.npz \
+  --selection-mask results/data_exclusivity.npy \
+  --include-classes P3 P4 L5 \
+  --output-dir results/data_efficiency/rgk_6.535_fixed_selection
+```
+
+Include L5 only after confirming that its physics trigger and prescale are
+compatible with P3/P4. L4 trigger tests, mixed/random-trigger L6 runs, the E2
+empty-target run, and half-torus T runs are excluded unless explicitly admitted
+with `--include-classes` or `--include-run`. Suspect RCDB currents remain
+excluded unless their label is added with `--include-qualities`.
+
+For each run class, the command sums signal counts and charge before taking the
+ratio. Its effective current is charge weighted. The default fit therefore uses
+
+`N_k = sum_r N_r`, `Q_k = sum_r Q_r`,
+`I_k = sum_r(Q_r I_r) / Q_k`, and `Y_k = N_k / Q_k`.
+
+The output directory contains:
+
+- `run_yields.csv`: every charge-bearing run, its counts, charge, current
+  metadata, inclusion decision, and exclusion reason;
+- `current_group_yields.csv`: charge-aggregated fit points and their relative
+  efficiencies;
+- `fit_summary.json`: inputs, filters, charge validation, fit covariance,
+  warnings, and zero-current result;
+- `data_efficiency_diagnostics.pdf`: current-dependence, fit pulls, and
+  included-run stability plots.
+
+Use `--fit-level runs` only as a diagnostic. The nominal group-level fit avoids
+treating the many runs within one production setting as independent current
+settings.
 
 For interactive cut studies and quick detector/topology comparisons, build a
 standalone histogram browser from either compact NPZ samples or selected ROOT
@@ -203,15 +270,19 @@ also derive total and PCAL/ECIN/ECOUT electron sampling fractions from the store
 calorimeter energies divided by `electronP`.
 Joined generated/reconstructed event samples made by `build_event_sample.py`
 carry every scalar branch from the selected reconstructed tree with a `rec_`
-prefix, so MC acceptance visualizers expose the same reconstructed filters and
-kinematic branches as the selected data visualizers after the `.npz` and HTML
-are regenerated. Newly converted MC files store complete per-particle GEN/LUND
-kinematics in `GeneratedEvents`; `build_event_sample.py` carries those columns,
+prefix without interpreting particle roles. Post-processing itself writes the
+generic role selection as standardized scalar branches such as `electronP`,
+`protonP`, `gamma1P`, and `gamma2P`, with matching index, PID, detector, sector,
+theta, and phi fields. Thus the NPZ builder remains schema-agnostic while MC
+acceptance visualizers expose the same reconstructed filters and kinematic
+branches as the selected data visualizers after the ROOT, `.npz`, and HTML are
+regenerated. Newly converted MC files store complete per-particle GEN/LUND
+kinematics in `gEvents`; `build_event_sample.py` carries those columns,
 including `gen_electronP`, `gen_protonTheta`, `gen_gamma1Phi`, `gen_gamma2P`,
 and `gen_pi0P`, so generated-vs-reconstructed residuals can be built directly
 in the visualizer. Older converter ROOT files fall back to the available
-`Events.gen` rows, which may be less complete.
-The dictionary is optional for ordinary selected `Events` trees; if the named
+`rParticles.gen` rows, which may be less complete.
+The dictionary is optional for ordinary `sEvents` trees; if the named
 dictionary is missing, the script continues with ROOT's built-in scalar and STL
 branch readers.
 The selected tree's default `t` branch remains the proton-based positive `-t`,
@@ -229,7 +300,9 @@ with `N_same,i = N(rec i and gen i)`, they are:
 
 The default phi overlay includes `A_i`, `E_i`, and `epsilon_i`. Add
 `--include-purity` to include `P_i`, whose scale can differ substantially from
-the other three diagnostics.
+the other three diagnostics. Add `--quilt` to prepend one stitched `Q2`-by-`xB`
+page per `-t` bin to the phi PDF. Quilts share a page-wide y scale by default;
+use `--quilt-scale-mode panel` for independent panel scales.
 
 The full unfolding still uses the migration matrix `R[j,i]`, not any one of
 these scalar diagnostics alone.
@@ -257,6 +330,26 @@ the adapter requires `--beam-energy` to reconstruct those quantities:
 python3 analysis/build_event_sample.py \
   6.535_rgk_eppi0_mc_acceptance.root selected_mc.root mc_events.npz
 ```
+
+For generated-versus-reconstructed visualization of a large production, use
+the reverse join instead of materializing one output row per generated event:
+
+```bash
+python3 analysis/build_event_sample.py \
+  6.535_rgk_eppi0_mc_acceptance.root \
+  6.535_rgk_eppi0_mc_acceptance_selected.root \
+  samples/rgk_6.535_matched_mc_events.npz \
+  --dictionary build/libROOTBranchesDict.so \
+  --matched-only --chunk-size 250000 --progress-chunks 4
+```
+
+`--matched-only` uses selected reconstructed candidates as the left table and
+streams `gEvents` in chunks. It joins on
+`(sourceFileId, sourceEventIndex)` and exports only candidates with valid
+generated topology and kinematics. Every output row therefore has
+`rec_selected=true` and carries both the generated and reconstructed scalar
+columns used by the visualizer. This artifact is intended for reconstruction
+diagnostics, not as the generated denominator for response construction.
 
 `derive_exclusivity.py` preserves the legacy sequential variable order and
 global/per-bin modes. The nominal legacy-faithful procedure is to derive
@@ -297,7 +390,7 @@ The selected-root mask has one row per selected ROOT candidate, so use it with
 `response-root --selection-mask`. The dense NPZ mask has one row per generated
 event and remains the format expected by `response --selection-mask`.
 
-## Compact `GeneratedEvents` schema
+## Compact `gEvents` schema
 
 The converter writes one row for every input MC event:
 
@@ -305,7 +398,8 @@ The converter writes one row for every input MC event:
 - `sourceEventIndex`, the zero-based input-event ordinal within that file;
 - the original `runNum`, `eventNum` for diagnostics;
 - `topologyValid`, `radiative`;
-- `weight` (currently `1.0` until generator weights are connected);
+- `stratumFlatIndex` (`-1` for samples without stratum provenance);
+- `weight` (unit weight unless generator chunk provenance is enabled);
 - `Q2`, `nu`, `xB`, `y`, `W`, `minusT`, `trentoPhi`.
 
 `build_event_sample.py` retains only `topologyValid` rows in the physics sample,
@@ -323,13 +417,65 @@ python3 analysis/check_event_keys.py 6.535_rgk_eppi0_mc_acceptance.root
 Repeated `(runNum,eventNum)` keys are expected for the tested GEMC production;
 duplicated source-event keys are an error.
 
+### Bin-conditional OSG weights
+
+After finalizing a bin-conditional AAO campaign, repack its LUND files without
+mixing strata or generator replicas:
+
+```bash
+python3 scripts/repack_lund_for_osg.py \
+  born_rgk_conditional born_rgk_osg \
+  --glob '**/*.lund' \
+  --campaign-weights born_rgk_conditional/campaign_weights.json \
+  --prefix aao_born
+```
+
+Chunk names follow
+`aao_born__sNNNNN__gNNNN__pNNNNNN.lund`. Each chunk contains events from
+exactly one stratum and one generator invocation. `chunk_provenance.json` and
+`.tsv` record the source LUND file, pooled stratum weight, event count, and
+identifiers for every chunk.
+
+Submit these files through the portal's type-2 LUND workflow. Its output name
+may wrap the LUND filename as
+`STRINGID-LUNDFILENAME-OSGID-JOBINDEX.hipo`; the canonical
+`sNNNNN__gNNNN__pNNNNNN` token remains embedded in that name. Then enable the
+lookup during conversion:
+
+```json
+{
+  "generatedEventTree": {
+    "enabled": true
+  },
+  "generatorWeights": {
+    "enabled": true,
+    "chunkProvenance": "/path/to/born_rgk_osg/chunk_provenance.json"
+  },
+  "fillMC": true
+}
+```
+
+`hipo2root` extracts exactly one canonical chunk token from each HIPO basename,
+matches it to the provenance table, and fills
+`gEvents.stratumFlatIndex` and `gEvents.weight`. It fails
+rather than silently assigning unit weight when the token is missing,
+ambiguous, or absent from an enabled provenance table. This supports both
+directly named local HIPO files and portal type-2 names without changing the
+LUND event structure. Type-1 generator submissions are not yet supported. The
+`SourceFiles` tree also stores the resolved stratum and weight for file-level
+auditing. The existing response builders consume `weight` directly.
+
 The harmonic stage retains the legacy weighted fit
 `A + B cos(phi) + C cos(2 phi)` and stores coefficients, full covariance,
 chi-square per degree of freedom, and the number of contributing phi bins.
 
 The radiative-correction command streams Born and radiative LUND files directly
 into configured analysis bins, using the same electron-proton Trento phi
-convention as the rest of this package. Its output is a native `C_rad.npz`
+convention as the rest of this package. If the analysis config contains a
+`phase_space` block, each filled bin is interpreted as the rectangular 4D bin
+intersected with those generated-level DIS cuts. For the current RGK/RGA
+configs this is `Q2 >= 1`, `W >= 2`, and `y <= 0.8`, matching the processing
+skim region. Its output is a native `C_rad.npz`
 artifact consumed by `unfold --radiative-correction`; reliability masks and
 correction uncertainties are propagated into the self-contained unfolding
 result. For AAO-generated samples, pass the generator `sig_sum` integrated cross
@@ -345,9 +491,9 @@ when entering the values manually. The resulting global factor is
 radiative-to-Born cross-section ratio rather than a raw event-density ratio.
 `unfold --radiative-correction` divides unfolded yields by this factor. The
 artifact also stores support diagnostics: per-bin born/radiative counts, overlap
-and status masks, generated `Q2`/`Eprime` ranges, and the integrated cross
-sections used for each sample. When sidecars are supplied, the artifact also
-preserves the
+and status masks, generated `Q2`/`Eprime` ranges, the phase-space cuts used to
+define the selected bins, and the integrated cross sections used for each
+sample. When sidecars are supplied, the artifact also preserves the
 normalization records used to get those cross sections: sidecar paths,
 combination method, `sig_sum`, `sig_int`, `events`, `ntries`, `nevent`,
 `mcall_max`, `sigr_max`, generator name, and units. Regenerate the diagnostic
@@ -355,26 +501,36 @@ report later without rereading LUND files:
 
 ```bash
 python3 analysis/run_analysis.py radiative-correction-plots results/C_rad.npz \
-  --output results/C_rad_diagnostics.pdf --csv results/C_rad_diagnostics.csv
+  --output results/C_rad_diagnostics.pdf --csv results/C_rad_diagnostics.csv \
+  --quilt
 ```
 
 The PDF includes summary/support pages, a clipped `0<C_rad<2` summary
 histogram, projection heatmaps of median reliable `C_rad` and reliable-bin
 fraction in `(xB,Q2)` and `(phi,-t)`, and then detailed per-`(Q2,xB,-t)` phi
-pages.
+pages. With `--quilt`, one stitched `Q2`-by-`xB` `C_rad`-vs-phi page per `-t`
+bin is inserted before the detailed pages. Use `--quilt-scale-mode global` for
+a common y scale across every panel on a page.
 
 ## Bin-centering correction
 
-`bin-centering` computes `C_BC = <d4sigma>_physical_bin / d4sigma(center)` with
-AAO model calls over a midpoint grid. The analysis-facing convention remains
-positive `-t`; the command converts internally to signed negative `t` only when
-calling `aao_xsec`. The reference center is the geometric centroid of the
-sampled physical midpoint cells in each bin, and the artifact stores the center
-coordinates, physical fractions, failed-call fractions, and reliability mask.
+`bin-centering` computes `C_BC = <d4sigma>_physical_selected_bin /
+d4sigma(center)` with AAO model calls over a midpoint grid. The selected bin is
+the exclusive physical region intersected with the same optional `phase_space`
+cuts from the analysis config. The analysis-facing convention remains positive
+`-t`; the command converts internally to signed negative `t` only when calling
+`aao_xsec`. The reference center is the geometric centroid of the sampled
+physical selected midpoint cells in each bin, and the artifact stores the center
+coordinates, physical fractions, failed-call fractions, phase-space cuts, and
+reliability mask.
 
 Apply the artifact during normalization with `cross-section --bin-centering`.
-The reduced cross section and uncertainty are divided by `C_BC`; unreliable
-bin-centering bins are suppressed in the output.
+The cross-section stage uses the exclusive physical bin volume, including the
+partial `-t` overlap at the reaction boundary, and evaluates the virtual-photon
+flux at the reference `Q2` and `xB` stored in the `C_BC` artifact. The reduced
+cross section and uncertainty are then divided by `C_BC`; unreliable
+bin-centering bins are suppressed in the output. The uncentered event-mean
+coordinates are retained separately in the cross-section artifact.
 
 For convergence studies or production-sized grids, split the work over
 flattened 3D `(Q2, xB, -t)` bins and merge the partial artifacts. A local chunk
@@ -411,6 +567,28 @@ and a PNG showing reliable-bin growth, relative-difference histograms/CDFs,
 adjacent-`N` convergence, and where the largest tail sits in phi and kinematic
 bin index.
 
+To plot `C_BC` versus phi with one stitched `Q2`-by-`xB` quilt per `-t` bin:
+
+```bash
+python3 analysis/run_analysis.py bin-centering-plots results/C_BC_N30.npz \
+  --output results/C_BC_N30_quilts.pdf --quilt
+```
+
+Optionally overlay every available merged N artifact in a convergence-scan
+directory:
+
+```bash
+python3 analysis/run_analysis.py bin-centering-plots results/C_BC_N30.npz \
+  --output results/C_BC_Nscan_quilts.pdf --quilt \
+  --overlay-n-directory results/bin_centering_convergence/rgk_6.535 \
+  --quilt-scale-mode panel --quilts-only
+```
+
+Files are discovered with `C_BC*.npz`, labeled using their stored
+`samples_per_dimension`, sorted by N, and symlink aliases are deduplicated.
+Only reliable, computed phi bins are drawn. The PDF also contains detailed phi
+pages for the primary positional artifact unless `--quilts-only` is passed.
+
 ## Legacy behavior intentionally corrected
 
 - reconstructed failures never remove generated events from the denominator;
@@ -424,12 +602,13 @@ bin index.
 
 ## Managing MC intermediate size
 
-The preferred converter configuration enables `GeneratedEvents`, applies REC
-topology/DIS skims only to `Events`, and sets `saveUnmatchedMC` to false. This
-retains the generated denominator in one lightweight scalar row per event. See
+The preferred converter configuration enables `gEvents`, applies REC
+topology/DIS skims only to `rParticles`, and sets
+`saveUnmatchedMC` to false. This retains the generated denominator in one
+lightweight scalar row per event. See
 `configs/processing/rgk/6.535/eppi0_mc_acceptance.json`.
 
-For older files without `GeneratedEvents`, an unbiased denominator still
+For older files without `gEvents`, an unbiased denominator still
 requires an unrestricted matched conversion with unmatched particle-level GEN
 rows. Treat that legacy intermediate as a temporary scratch product:
 
@@ -458,5 +637,5 @@ safely combine files whose GEMC event numbers restart. Reconvert those files
 with the current converter before multi-file acceptance production.
 
 Setting `saveUnmatchedMC` to false is safe for acceptance only when
-`GeneratedEvents` is enabled. Without that tree, generated events lacking a
+`gEvents` is enabled. Without that tree, generated events lacking a
 reconstructed match disappear from the denominator.

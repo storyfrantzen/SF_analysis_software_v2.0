@@ -1,6 +1,4 @@
 {
-    "inputTree": "Events",
-    "outputTree": "Events",
     "beamEnergy": 6.535,
     "torus": 1,
     "saveFailedCandidates": false,

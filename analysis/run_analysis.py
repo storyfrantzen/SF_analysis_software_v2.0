@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from eppi0.binning import from_config
 from eppi0.bin_centering import AaoExecutableEvaluator, compute_bin_centering
 from eppi0.cross_section import (
+    DEFAULT_VOLUME_INTEGRATION_POINTS,
     Target,
     integrated_luminosity_fb,
     physical_bin_volumes,
@@ -27,6 +28,7 @@ from eppi0.response import build_response
 from eppi0.radiative_correction import compute_radiative_correction
 from eppi0.root_response import build_response_from_root
 from eppi0.harmonics import fit_grid
+from eppi0.phase_space import AnalysisPhaseSpace
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes, subtract_feed_in
 
 
@@ -83,8 +85,8 @@ def parser() -> argparse.ArgumentParser:
     response_root.add_argument("--config", type=Path, required=True)
     response_root.add_argument("--output-dir", type=Path, required=True)
     response_root.add_argument("--dictionary", type=Path)
-    response_root.add_argument("--tree", default="Events")
-    response_root.add_argument("--generated-tree", default="GeneratedEvents")
+    response_root.add_argument("--tree", default="sEvents")
+    response_root.add_argument("--generated-tree", default="gEvents")
     response_root.add_argument("--chunk-size", type=int, default=1_000_000)
     response_root.add_argument("--progress-chunks", type=int, default=10)
     response_root.add_argument(
@@ -139,6 +141,17 @@ def parser() -> argparse.ArgumentParser:
         help="Optional CSV summary for the diagnostic PDF phi pages",
     )
     radcorr.add_argument(
+        "--diagnostic-quilt",
+        action="store_true",
+        help="Prepend one stitched Q2-by-xB C_rad-vs-phi quilt per -t bin",
+    )
+    radcorr.add_argument(
+        "--diagnostic-quilt-scale-mode",
+        choices=("global", "panel"),
+        default="panel",
+        help="Use one y scale per diagnostic quilt or independently scale every panel (default: panel)",
+    )
+    radcorr.add_argument(
         "--normalization-ratio",
         type=float,
         help="Override all automatic normalization with this global factor",
@@ -179,6 +192,17 @@ def parser() -> argparse.ArgumentParser:
         "--csv",
         type=Path,
         help="Optional CSV summary for the per-(Q2,xB,-t) phi pages",
+    )
+    radcorr_plots.add_argument(
+        "--quilt",
+        action="store_true",
+        help="Prepend one stitched Q2-by-xB C_rad-vs-phi quilt per -t bin",
+    )
+    radcorr_plots.add_argument(
+        "--quilt-scale-mode",
+        choices=("global", "panel"),
+        default="panel",
+        help="Use one y scale per -t quilt or independently scale every panel (default: panel)",
     )
 
     xsec = commands.add_parser("cross-section", help="Normalize unfolded yields")
@@ -247,6 +271,34 @@ def parser() -> argparse.ArgumentParser:
     bin_centering_merge.add_argument("partials", nargs="+", type=Path)
     bin_centering_merge.add_argument("--output", type=Path, required=True)
 
+    bin_centering_plots = commands.add_parser(
+        "bin-centering-plots",
+        help="Plot C_BC vs phi, optionally overlaying an N scan in -t quilts",
+    )
+    bin_centering_plots.add_argument("correction", type=Path)
+    bin_centering_plots.add_argument("--output", type=Path, required=True)
+    bin_centering_plots.add_argument(
+        "--quilt",
+        action="store_true",
+        help="Prepend one stitched Q2-by-xB C_BC-vs-phi quilt per -t bin",
+    )
+    bin_centering_plots.add_argument(
+        "--quilts-only",
+        action="store_true",
+        help="Write only the stitched -t quilt pages; requires --quilt",
+    )
+    bin_centering_plots.add_argument(
+        "--overlay-n-directory",
+        type=Path,
+        help="Overlay every distinct merged C_BC*.npz N artifact found in this directory on quilt panels",
+    )
+    bin_centering_plots.add_argument(
+        "--quilt-scale-mode",
+        choices=("global", "panel"),
+        default="panel",
+        help="Use one y scale per -t quilt or independently scale every panel (default: panel)",
+    )
+
     harmonics = commands.add_parser("fit-harmonics", help="Fit A + B cos(phi) + C cos(2 phi)")
     harmonics.add_argument("cross_section", type=Path)
     harmonics.add_argument("--output", type=Path, required=True)
@@ -266,12 +318,32 @@ def parser() -> argparse.ArgumentParser:
         default=98.0,
         help="Robust absolute-value percentile used for the stitched quilt y scale",
     )
+    harmonic_plots.add_argument(
+        "--quilt-scale-mode",
+        choices=("global", "panel"),
+        default="global",
+        help=(
+            "Use one percentile-based y scale for the quilt or independently scale "
+            "each panel like its corresponding coefficient page (default: global)"
+        ),
+    )
 
     xsec_plots = commands.add_parser("cross-section-plots", help="Plot reduced cross section vs phi with harmonic fits")
     xsec_plots.add_argument("cross_section", type=Path)
     xsec_plots.add_argument("harmonics", type=Path)
     xsec_plots.add_argument("--output-dir", type=Path, required=True)
     xsec_plots.add_argument("--min-points", type=int, default=4)
+    xsec_plots.add_argument(
+        "--quilt",
+        action="store_true",
+        help="Prepend one stitched Q2-by-xB reduced-cross-section quilt per -t bin",
+    )
+    xsec_plots.add_argument(
+        "--quilt-scale-mode",
+        choices=("global", "panel"),
+        default="panel",
+        help="Use one y scale per -t quilt or independently scale every panel (default: panel)",
+    )
 
     acceptance = commands.add_parser("acceptance-plots", help="Plot acceptance diagnostics from response metadata")
     acceptance.add_argument("response_meta", type=Path)
@@ -292,6 +364,17 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="Minimum number of above-threshold phi bins required to include a 3D bin in the phi PDF",
+    )
+    acceptance.add_argument(
+        "--quilt",
+        action="store_true",
+        help="Prepend one stitched Q2-by-xB acceptance-vs-phi quilt per -t bin",
+    )
+    acceptance.add_argument(
+        "--quilt-scale-mode",
+        choices=("global", "panel"),
+        default="global",
+        help="Use one y scale per -t quilt or independently scale every panel (default: global)",
     )
     response_plots = commands.add_parser(
         "response-plots",
@@ -318,9 +401,14 @@ def load_config(path: Path) -> dict:
 def command_response(args: argparse.Namespace) -> None:
     sample = np.load(args.sample, allow_pickle=False)
     binning = from_config(args.config)
+    config = load_config(args.config)
+    phase_space = AnalysisPhaseSpace.from_config(config)
     truth_flat = binning.coordinates_to_flat(
         sample["gen_Q2"], sample["gen_xB"], sample["gen_minus_t"], sample["gen_trento_phi"]
     )
+    if phase_space.enabled:
+        truth_phase = phase_space.mask(sample["gen_Q2"], sample["gen_xB"], float(config["beam_energy"]))
+        truth_flat = np.where(truth_phase, truth_flat, -1)
     rec_flat = binning.coordinates_to_flat(
         sample["rec_Q2"], sample["rec_xB"], sample["rec_minus_t"], sample["rec_trento_phi"]
     )
@@ -346,16 +434,26 @@ def command_response(args: argparse.Namespace) -> None:
         xb_edges=binning.xb_edges,
         t_edges=binning.t_edges,
         phi_edges=binning.phi_edges,
+        phase_space_definition=(
+            "4D bin"
+            if not phase_space.enabled
+            else f"4D bin and {phase_space.description()}"
+        ),
+        **phase_space.as_npz_fields(),
     )
     print(f"Truth events in range: {response.truth_total.sum():.0f}")
     print(f"Selected REC events in range: {response.reconstructed_total.sum():.0f}")
     print(f"Feed-in fraction: {response.feed_in_fraction:.6f}")
+    if phase_space.enabled:
+        print(f"Analysis phase space: 4D bin and {phase_space.description()}")
     print(f"Wrote {matrix_path}")
     print(f"Wrote {metadata_path}")
 
 
 def command_response_root(args: argparse.Namespace) -> None:
     binning = from_config(args.config)
+    config = load_config(args.config)
+    phase_space = AnalysisPhaseSpace.from_config(config)
     mask = None
     if args.selection_mask:
         mask = np.asarray(np.load(args.selection_mask), dtype=bool)
@@ -369,6 +467,8 @@ def command_response_root(args: argparse.Namespace) -> None:
         chunk_size=args.chunk_size,
         selection_mask=mask,
         progress_chunks=args.progress_chunks,
+        phase_space=phase_space,
+        beam_energy=float(config["beam_energy"]),
     )
     response = summary.response
 
@@ -391,6 +491,12 @@ def command_response_root(args: argparse.Namespace) -> None:
         generated_rows=summary.generated_rows,
         selected_rows=summary.selected_rows,
         matched_selected_rows=summary.matched_selected_rows,
+        phase_space_definition=(
+            "4D bin"
+            if not phase_space.enabled
+            else f"4D bin and {phase_space.description()}"
+        ),
+        **phase_space.as_npz_fields(),
     )
     print(f"Generated rows scanned: {summary.generated_rows}")
     print(f"Selected rows read: {summary.selected_rows}")
@@ -398,6 +504,8 @@ def command_response_root(args: argparse.Namespace) -> None:
     print(f"Truth events in range: {response.truth_total.sum():.0f}")
     print(f"Selected REC events in range: {response.reconstructed_total.sum():.0f}")
     print(f"Feed-in fraction: {response.feed_in_fraction:.6f}")
+    if phase_space.enabled:
+        print(f"Analysis phase space: 4D bin and {phase_space.description()}")
     print(f"Wrote {matrix_path}")
     print(f"Wrote {metadata_path}")
 
@@ -532,6 +640,7 @@ def command_unfold(args: argparse.Namespace) -> None:
 def command_radiative_correction(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     binning = from_config(args.config)
+    phase_space = AnalysisPhaseSpace.from_config(config)
     born_normalization = _resolve_normalization_summary(
         args.born_integrated_cross_section,
         args.born_normalization_file,
@@ -557,6 +666,7 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         born_integrated_cross_section=born_normalization.integrated_cross_section,
         radiative_integrated_cross_section=radiative_normalization.integrated_cross_section,
         progress_chunks=args.progress_chunks,
+        phase_space=phase_space,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -615,6 +725,12 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
             result.radiative.generated_eprime_min, result.radiative.generated_eprime_max,
         ]),
         phi_convention="electron-proton trento plane",
+        phase_space_definition=(
+            "4D bin"
+            if not phase_space.enabled
+            else f"4D bin and {phase_space.description()}"
+        ),
+        **phase_space.as_npz_fields(),
         **_normalization_npz_fields("born", born_normalization),
         **_normalization_npz_fields("radiative", radiative_normalization),
     )
@@ -623,6 +739,8 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
             args.output,
             args.diagnostic_pdf,
             csv_path=args.diagnostic_csv,
+            include_quilt=args.diagnostic_quilt,
+            quilt_scale_mode=args.diagnostic_quilt_scale_mode,
         )
         print(f"Wrote radiative-correction diagnostic PDF with {pages} pages: {args.diagnostic_pdf}")
     reliable_bins = int(np.count_nonzero(result.reliable))
@@ -658,6 +776,8 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         f"low_both={int(support_counts[6])}"
     )
     print(f"Normalization ratio: {result.normalization_ratio:.8g}")
+    if phase_space.enabled:
+        print(f"Analysis phase space: 4D bin and {phase_space.description()}")
     if result.born_integrated_cross_section is not None:
         print(
             "Integrated cross sections: "
@@ -880,7 +1000,13 @@ def _normalization_npz_fields(
 
 
 def command_radiative_correction_plots(args: argparse.Namespace) -> None:
-    pages = _plot_radiative_correction_diagnostics(args.correction, args.output, csv_path=args.csv)
+    pages = _plot_radiative_correction_diagnostics(
+        args.correction,
+        args.output,
+        csv_path=args.csv,
+        include_quilt=args.quilt,
+        quilt_scale_mode=args.quilt_scale_mode,
+    )
     print(f"Wrote radiative-correction diagnostic PDF with {pages} pages: {args.output}")
 
 
@@ -888,6 +1014,8 @@ def _plot_radiative_correction_diagnostics(
     correction_path: Path,
     pdf_path: Path,
     csv_path: Path | None = None,
+    include_quilt: bool = False,
+    quilt_scale_mode: str = "panel",
 ) -> int:
     _prepare_matplotlib_cache()
     import matplotlib.pyplot as plt
@@ -987,6 +1115,20 @@ def _plot_radiative_correction_diagnostics(
 
         _plot_radcorr_t_phi_projection(pdf, c_rad, reliable, t_edges, phi_edges)
         pages += 1
+
+        if include_quilt:
+            pages += _plot_quantity_quilts_vs_phi(
+                pdf,
+                {"C_rad": (c_rad, delta_c, reliable)},
+                phi_edges,
+                q2_edges,
+                xb_edges,
+                t_edges,
+                title="Radiative correction vs phi quilt",
+                ylabel="C_rad",
+                scale_mode=quilt_scale_mode,
+                reference_lines=(1.0,),
+            )
 
         for iq2 in range(c_rad.shape[0]):
             for ixb in range(c_rad.shape[1]):
@@ -1437,6 +1579,7 @@ def command_bin_centering(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     binning = from_config(args.config)
     beam_energy = float(config["beam_energy"])
+    phase_space = AnalysisPhaseSpace.from_config(config)
     if not args.exe.is_file():
         raise FileNotFoundError(f"aao_xsec executable not found: {args.exe}")
     if args.N <= 0:
@@ -1465,6 +1608,7 @@ def command_bin_centering(args: argparse.Namespace) -> None:
             bin_start=bin_start,
             bin_stop=bin_stop,
             progress_chunks=args.progress_chunks,
+            phase_space=phase_space,
         )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -1481,6 +1625,7 @@ def command_bin_centering(args: argparse.Namespace) -> None:
         bin_start=bin_start,
         bin_stop=bin_stop,
         total_3d_bins=total_3d_bins,
+        phase_space=phase_space,
     )
     reliable_bins = int(np.count_nonzero(result.reliable & result.computed))
     computed_bins = int(np.count_nonzero(result.computed))
@@ -1491,6 +1636,8 @@ def command_bin_centering(args: argparse.Namespace) -> None:
     print(f"Reliable C_BC bins: {reliable_bins}/{result.reliable.size}")
     if reliable_bins:
         print(f"Mean C_BC reliable: {np.nanmean(result.c_bc[result.reliable & result.computed]):.6g}")
+    if phase_space.enabled:
+        print(f"Analysis phase space: physical bin and {phase_space.description()}")
     print(f"Wrote {args.output}")
 
 
@@ -1528,7 +1675,10 @@ def _save_bin_centering_artifact(
     bin_start: int,
     bin_stop: int,
     total_3d_bins: int,
+    phase_space: AnalysisPhaseSpace | None = None,
 ) -> None:
+    if phase_space is None:
+        phase_space = AnalysisPhaseSpace()
     np.savez_compressed(
         path,
         C_BC=result.c_bc,
@@ -1558,9 +1708,18 @@ def _save_bin_centering_artifact(
         bin_start=bin_start,
         bin_stop=bin_stop,
         total_3d_bins=total_3d_bins,
-        convention="C_BC = <d4sigma>_physical_bin / d4sigma(physical midpoint-grid centroid)",
+        convention=(
+            "C_BC = <d4sigma>_physical_selected_bin / "
+            "d4sigma(physical selected midpoint-grid centroid)"
+        ),
         apply_as="centered_cross_section = bin_averaged_cross_section / C_BC",
         t_convention="positive -t externally; signed t passed to aao_xsec",
+        phase_space_definition=(
+            "exclusive physical bin"
+            if not phase_space.enabled
+            else f"exclusive physical bin and {phase_space.description()}"
+        ),
+        **phase_space.as_npz_fields(),
     )
 
 
@@ -1602,6 +1761,9 @@ def command_bin_centering_merge(args: argparse.Namespace) -> None:
         "theory",
         "channel",
         "resonance",
+        "phase_space_Q2_min",
+        "phase_space_W_min",
+        "phase_space_y_max",
     )
 
     for path, partial in zip(args.partials, partials):
@@ -1646,6 +1808,7 @@ def command_bin_centering_merge(args: argparse.Namespace) -> None:
         convention=_npz_string(first, "convention", "C_BC = <d4sigma>_physical_bin / d4sigma(center)"),
         apply_as=_npz_string(first, "apply_as", "centered_cross_section = bin_averaged_cross_section / C_BC"),
         t_convention=_npz_string(first, "t_convention", "positive -t externally; signed t passed to aao_xsec"),
+        phase_space_definition=_npz_string(first, "phase_space_definition", "exclusive physical bin"),
     )
     for key in metadata_keys:
         if key in first.files:
@@ -1659,11 +1822,171 @@ def command_bin_centering_merge(args: argparse.Namespace) -> None:
     print(f"Wrote {args.output}")
 
 
+def command_bin_centering_plots(args: argparse.Namespace) -> None:
+    if args.overlay_n_directory is not None and not args.quilt:
+        raise ValueError("--overlay-n-directory requires --quilt")
+    if args.quilts_only and not args.quilt:
+        raise ValueError("--quilts-only requires --quilt")
+    scan = _load_bin_centering_plot_artifacts(
+        args.correction,
+        overlay_directory=args.overlay_n_directory,
+    )
+    pages = _plot_bin_centering_diagnostics(
+        scan,
+        args.correction,
+        args.output,
+        include_quilt=args.quilt,
+        quilt_scale_mode=args.quilt_scale_mode,
+        quilts_only=args.quilts_only,
+    )
+    print("Bin-centering N values: " + ", ".join(str(n) for n in scan))
+    print(f"Wrote bin-centering PDF with {pages} pages: {args.output}")
+
+
+def _load_bin_centering_plot_artifacts(
+    primary_path: Path,
+    *,
+    overlay_directory: Path | None = None,
+) -> dict[int, dict[str, np.ndarray]]:
+    if not primary_path.is_file():
+        raise FileNotFoundError(f"bin-centering artifact not found: {primary_path}")
+    candidates = [primary_path]
+    if overlay_directory is not None:
+        if not overlay_directory.is_dir():
+            raise NotADirectoryError(f"N-scan directory not found: {overlay_directory}")
+        candidates.extend(sorted(overlay_directory.glob("C_BC*.npz")))
+
+    artifacts: dict[int, dict[str, np.ndarray]] = {}
+    source_by_n: dict[int, Path] = {}
+    seen_paths: set[Path] = set()
+    reference_edges: tuple[np.ndarray, ...] | None = None
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved in seen_paths:
+            continue
+        seen_paths.add(resolved)
+        with np.load(path, allow_pickle=False) as data:
+            required = ("C_BC", "reliable", "q2_edges", "xb_edges", "t_edges", "phi_edges")
+            missing = [name for name in required if name not in data.files]
+            if missing:
+                raise ValueError(f"{path} is missing bin-centering fields: {', '.join(missing)}")
+            if "samples_per_dimension" not in data.files:
+                raise ValueError(f"{path} does not store samples_per_dimension")
+            n_value = int(np.asarray(data["samples_per_dimension"]).item())
+            edges = tuple(
+                np.asarray(data[name], dtype=float)
+                for name in ("q2_edges", "xb_edges", "t_edges", "phi_edges")
+            )
+            shape = tuple(edge.size - 1 for edge in edges)
+            c_bc = np.asarray(data["C_BC"], dtype=float)
+            reliable = np.asarray(data["reliable"], dtype=bool)
+            computed = (
+                np.asarray(data["computed"], dtype=bool)
+                if "computed" in data.files else np.ones(shape, dtype=bool)
+            )
+            if c_bc.shape != shape or reliable.shape != shape or computed.shape != shape:
+                raise ValueError(f"{path} arrays do not match its bin edges; expected {shape}")
+            if reference_edges is None:
+                reference_edges = edges
+            elif any(actual.shape != expected.shape or not np.allclose(actual, expected)
+                     for actual, expected in zip(edges, reference_edges)):
+                raise ValueError(f"{path} bin edges do not match {primary_path}")
+            if n_value in artifacts:
+                raise ValueError(
+                    f"multiple distinct artifacts store N={n_value}: "
+                    f"{source_by_n[n_value]} and {path}"
+                )
+            artifacts[n_value] = {
+                "C_BC": c_bc,
+                "valid": reliable & computed & np.isfinite(c_bc),
+                "q2_edges": edges[0],
+                "xb_edges": edges[1],
+                "t_edges": edges[2],
+                "phi_edges": edges[3],
+            }
+            source_by_n[n_value] = path
+    return dict(sorted(artifacts.items()))
+
+
+def _plot_bin_centering_diagnostics(
+    scan: dict[int, dict[str, np.ndarray]],
+    primary_path: Path,
+    pdf_path: Path,
+    *,
+    include_quilt: bool,
+    quilt_scale_mode: str,
+    quilts_only: bool = False,
+) -> int:
+    _prepare_matplotlib_cache()
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    if not scan:
+        raise ValueError("no bin-centering artifacts were loaded")
+    with np.load(primary_path, allow_pickle=False) as primary_data:
+        primary_n = int(np.asarray(primary_data["samples_per_dimension"]).item())
+    primary = scan[primary_n]
+    phi_edges = primary["phi_edges"]
+    phi_centers = 0.5 * (phi_edges[:-1] + phi_edges[1:])
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    pages = 0
+
+    with PdfPages(pdf_path) as pdf:
+        if include_quilt:
+            quantities = {
+                f"N={n_value}": (artifact["C_BC"], None, artifact["valid"])
+                for n_value, artifact in scan.items()
+            }
+            pages += _plot_quantity_quilts_vs_phi(
+                pdf,
+                quantities,
+                phi_edges,
+                primary["q2_edges"],
+                primary["xb_edges"],
+                primary["t_edges"],
+                title="Bin-centering correction vs phi quilt",
+                ylabel="C_BC",
+                scale_mode=quilt_scale_mode,
+                reference_lines=(1.0,),
+            )
+        if not quilts_only:
+            values = primary["C_BC"]
+            valid4 = primary["valid"]
+            for iq2 in range(values.shape[0]):
+                for ixb in range(values.shape[1]):
+                    for it in range(values.shape[2]):
+                        valid = valid4[iq2, ixb, it, :]
+                        if not np.any(valid):
+                            continue
+                        fig, ax = plt.subplots(figsize=(8, 5))
+                        ax.plot(phi_centers[valid], values[iq2, ixb, it, valid], "o-",
+                                color="#4c78a8", markersize=4, linewidth=1.2,
+                                label=f"C_BC, N={primary_n}")
+                        ax.axhline(1.0, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
+                        ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
+                        ax.set_xlabel("phi [deg]")
+                        ax.set_ylabel("C_BC")
+                        ax.set_title(
+                            "Bin-centering correction vs phi\n"
+                            f"Q2 {primary['q2_edges'][iq2]:g}-{primary['q2_edges'][iq2 + 1]:g}, "
+                            f"xB {primary['xb_edges'][ixb]:g}-{primary['xb_edges'][ixb + 1]:g}, "
+                            f"-t {primary['t_edges'][it]:g}-{primary['t_edges'][it + 1]:g}"
+                        )
+                        ax.grid(True, alpha=0.25)
+                        ax.legend(loc="best", fontsize="small")
+                        fig.tight_layout()
+                        pdf.savefig(fig)
+                        plt.close(fig)
+                        pages += 1
+    return pages
+
+
 def command_cross_section(args: argparse.Namespace) -> None:
     result = np.load(args.unfolding_result, allow_pickle=False)
     config = load_config(args.config)
     binning = from_config(args.config)
     beam_energy = float(config["beam_energy"])
+    phase_space = AnalysisPhaseSpace.from_config(config)
     target = Target(
         float(config["target_length_cm"]),
         float(config["target_density_g_cm3"]),
@@ -1673,7 +1996,15 @@ def command_cross_section(args: argparse.Namespace) -> None:
     if not np.isfinite(beam_charge) or beam_charge <= 0:
         raise ValueError("unfolding result does not contain a positive beam_charge_c")
     luminosity = integrated_luminosity_fb(beam_charge, target)
-    volumes = binning.flatten_values(physical_bin_volumes(binning, beam_energy))
+    volumes = binning.flatten_values(
+        physical_bin_volumes(
+            binning,
+            beam_energy,
+            q2_minimum=1.0 if phase_space.q2_min is None else phase_space.q2_min,
+            w_minimum=2.0 if phase_space.w_min is None else phase_space.w_min,
+            y_maximum=0.8 if phase_space.y_max is None else phase_space.y_max,
+        )
+    )
     # Construct center arrays through the binning itself to avoid order mistakes.
     iq2, ixb, it, iphi = np.indices(binning.shape)
     flat_positions = binning.flatten(iq2, ixb, it, iphi)
@@ -1684,6 +2015,52 @@ def command_cross_section(args: argparse.Namespace) -> None:
     q2_means = np.where(np.isfinite(result["Q2_mean"]), result["Q2_mean"], q2_fallback)
     xb_means = np.where(np.isfinite(result["xB_mean"]), result["xB_mean"], xb_fallback)
     valid = result["efficiency"] > float(config.get("minimum_acceptance", 0.005))
+    flux_q2 = q2_means.copy()
+    flux_xb = xb_means.copy()
+    bin_centering_cbc = None
+    bin_centering_reliable = None
+    bin_centering_q2_center = None
+    bin_centering_xb_center = None
+    cbc_flat = None
+    apply_mask = None
+    if args.bin_centering:
+        bin_centering = np.load(args.bin_centering, allow_pickle=False)
+        required = ("C_BC", "reliable", "q2_center", "xB_center")
+        missing = [name for name in required if name not in bin_centering.files]
+        if missing:
+            raise ValueError(
+                f"bin-centering artifact is missing required fields: {', '.join(missing)}"
+            )
+        bin_centering_cbc = np.asarray(bin_centering["C_BC"], dtype=float)
+        bin_centering_reliable = np.asarray(bin_centering["reliable"], dtype=bool)
+        bin_centering_q2_center = np.asarray(bin_centering["q2_center"], dtype=float)
+        bin_centering_xb_center = np.asarray(bin_centering["xB_center"], dtype=float)
+        for name, values in (
+            ("C_BC", bin_centering_cbc),
+            ("reliable", bin_centering_reliable),
+            ("q2_center", bin_centering_q2_center),
+            ("xB_center", bin_centering_xb_center),
+        ):
+            if values.shape != binning.shape:
+                raise ValueError(
+                    f"bin-centering {name} has shape {values.shape}; expected {binning.shape}"
+                )
+        cbc_flat = binning.flatten_values(bin_centering_cbc)
+        reliable_flat = binning.flatten_values(bin_centering_reliable)
+        q2_center_flat = binning.flatten_values(bin_centering_q2_center)
+        xb_center_flat = binning.flatten_values(bin_centering_xb_center)
+        apply_mask = (
+            reliable_flat
+            & np.isfinite(cbc_flat)
+            & (cbc_flat > 0.0)
+            & np.isfinite(q2_center_flat)
+            & np.isfinite(xb_center_flat)
+            & (q2_center_flat > 0.0)
+            & (xb_center_flat > 0.0)
+        )
+        valid &= apply_mask
+        flux_q2 = np.where(apply_mask, q2_center_flat, q2_means)
+        flux_xb = np.where(apply_mask, xb_center_flat, xb_means)
     yields = result["corrected_yield"] if "corrected_yield" in result.files else result["unfolded"]
     yield_uncertainty = (
         result["corrected_uncertainty"]
@@ -1693,29 +2070,15 @@ def command_cross_section(args: argparse.Namespace) -> None:
     values, errors = reduced_cross_section(
         yields,
         yield_uncertainty,
-        q2_means,
-        xb_means,
+        flux_q2,
+        flux_xb,
         volumes,
         luminosity,
         beam_energy,
         branching_ratio=float(config["pi0_to_gg_branching_ratio"]),
         valid=valid,
     )
-    bin_centering_cbc = None
-    bin_centering_reliable = None
-    if args.bin_centering:
-        bin_centering = np.load(args.bin_centering, allow_pickle=False)
-        bin_centering_cbc = np.asarray(bin_centering["C_BC"], dtype=float)
-        bin_centering_reliable = np.asarray(bin_centering["reliable"], dtype=bool)
-        if bin_centering_cbc.shape != binning.shape:
-            raise ValueError(f"bin-centering C_BC has shape {bin_centering_cbc.shape}; expected {binning.shape}")
-        if bin_centering_reliable.shape != binning.shape:
-            raise ValueError(
-                f"bin-centering reliable has shape {bin_centering_reliable.shape}; expected {binning.shape}"
-            )
-        cbc_flat = binning.flatten_values(bin_centering_cbc)
-        reliable_flat = binning.flatten_values(bin_centering_reliable)
-        apply_mask = reliable_flat & np.isfinite(cbc_flat) & (cbc_flat > 0.0)
+    if cbc_flat is not None and apply_mask is not None:
         values = np.divide(values, cbc_flat, out=np.zeros_like(values), where=apply_mask)
         errors = np.divide(errors, cbc_flat, out=np.zeros_like(errors), where=apply_mask)
     values /= args.global_normalization
@@ -1724,9 +2087,18 @@ def command_cross_section(args: argparse.Namespace) -> None:
     payload = dict(
         reduced_cross_section=binning.unflatten(values),
         uncertainty=binning.unflatten(errors),
-        flux_q2_mean=q2_means,
-        flux_xb_mean=xb_means,
+        flux_q2_mean=flux_q2,
+        flux_xb_mean=flux_xb,
+        flux_q2_coordinate=flux_q2,
+        flux_xb_coordinate=flux_xb,
+        uncentered_q2_mean=q2_means,
+        uncentered_xb_mean=xb_means,
         bin_volume=binning.unflatten(volumes),
+        bin_volume_definition="exclusive physical 4D volume after configured phase-space cuts",
+        bin_volume_integration_points=DEFAULT_VOLUME_INTEGRATION_POINTS,
+        flux_coordinate_definition=(
+            "C_BC reference centroid when bin centering is applied; event mean otherwise"
+        ),
         reduced_cross_section_units="nb/(GeV^2 rad)",
         luminosity_fb=luminosity,
         global_normalization=args.global_normalization,
@@ -1735,12 +2107,30 @@ def command_cross_section(args: argparse.Namespace) -> None:
         t_edges=binning.t_edges,
         phi_edges=binning.phi_edges,
     )
-    if bin_centering_cbc is not None and bin_centering_reliable is not None:
+    payload.update(
+        phase_space_definition=(
+            "exclusive physical 4D bin"
+            if not phase_space.enabled
+            else f"exclusive physical 4D bin and {phase_space.description()}"
+        ),
+        **phase_space.as_npz_fields(),
+    )
+    if (
+        bin_centering_cbc is not None
+        and bin_centering_reliable is not None
+        and bin_centering_q2_center is not None
+        and bin_centering_xb_center is not None
+    ):
         payload.update(
             bin_centering_C_BC=bin_centering_cbc,
             bin_centering_reliable=bin_centering_reliable,
+            bin_centering_q2_center=bin_centering_q2_center,
+            bin_centering_xB_center=bin_centering_xb_center,
             bin_centering_path=str(args.bin_centering),
-            bin_centering_application="reduced_cross_section and uncertainty divided by C_BC",
+            bin_centering_application=(
+                "flux evaluated at C_BC reference coordinates; reduced cross section "
+                "and uncertainty divided by C_BC"
+            ),
         )
     np.savez_compressed(args.output, **payload)
     print(f"Integrated luminosity: {luminosity:.6g} fb^-1")
@@ -1812,6 +2202,7 @@ def command_harmonic_plots(args: argparse.Namespace) -> None:
         args.output_dir / "harmonic_coefficients_summary.csv",
         include_quilt=args.quilt,
         quilt_scale_percentile=args.quilt_scale_percentile,
+        quilt_scale_mode=args.quilt_scale_mode,
     )
     print(f"Successful fits: {int(fit_mask.sum())}")
     print(f"Coefficient pages: {pages}")
@@ -1856,6 +2247,8 @@ def command_cross_section_plots(args: argparse.Namespace) -> None:
         args.min_points,
         args.output_dir / "reduced_cross_section_vs_phi_with_fits.pdf",
         args.output_dir / "reduced_cross_section_vs_phi_summary.csv",
+        include_quilt=args.quilt,
+        quilt_scale_mode=args.quilt_scale_mode,
     )
     print(f"Cross-section phi pages: {pages}")
     print(f"Wrote cross-section plots under {args.output_dir}")
@@ -1993,6 +2386,8 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
         args.phi_min_passing_bins,
         args.output_dir / "acceptance_vs_phi_by_3d_bin.pdf",
         args.output_dir / "acceptance_vs_phi_by_3d_bin.csv",
+        include_quilt=args.quilt,
+        quilt_scale_mode=args.quilt_scale_mode,
     )
 
     print(f"Truth-populated bins: {int(populated.sum())}")
@@ -2606,6 +3001,7 @@ def _plot_harmonic_coefficients_vs_t(
     csv_path: Path,
     include_quilt: bool = False,
     quilt_scale_percentile: float = 98.0,
+    quilt_scale_mode: str = "global",
 ) -> int:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
@@ -2633,6 +3029,7 @@ def _plot_harmonic_coefficients_vs_t(
                 names,
                 colors,
                 quilt_scale_percentile,
+                quilt_scale_mode,
             )
         for iq2 in range(parameters.shape[0]):
             for ixb in range(parameters.shape[1]):
@@ -2716,6 +3113,7 @@ def _plot_harmonic_coefficient_quilt_vs_t(
     names: tuple[str, ...],
     colors: tuple[str, str, str],
     scale_percentile: float,
+    scale_mode: str,
 ) -> int:
     import matplotlib.pyplot as plt
 
@@ -2724,6 +3122,8 @@ def _plot_harmonic_coefficient_quilt_vs_t(
         return 0
     if not 0.0 < scale_percentile <= 100.0:
         raise ValueError("--quilt-scale-percentile must be in the range (0, 100]")
+    if scale_mode not in ("global", "panel"):
+        raise ValueError("--quilt-scale-mode must be global or panel")
 
     t_centers = 0.5 * (t_edges[:-1] + t_edges[1:])
     q2_labels = _edge_labels(q2_edges)
@@ -2746,24 +3146,46 @@ def _plot_harmonic_coefficient_quilt_vs_t(
     else:
         ylim = (-1.0, 1.0)
 
+    populated_panels = [
+        (iq2, ixb)
+        for iq2 in range(nq2)
+        for ixb in range(nxb)
+        if np.any(fit_mask[iq2, ixb, :])
+    ]
+    active_q2, active_xb, panel_positions = _ordered_quilt_axes(populated_panels)
+    nrows, ncols = len(active_q2), len(active_xb)
     fig, axes = plt.subplots(
-        nq2,
-        nxb,
-        figsize=(max(9.0, 1.65 * nxb), max(7.0, 1.2 * nq2)),
+        nrows,
+        ncols,
+        figsize=(max(8.5, 3.25 * ncols), max(5.5, 2.35 * nrows)),
         sharex=True,
-        sharey=True,
+        sharey=scale_mode == "global",
         squeeze=False,
     )
-    for iq2 in range(nq2):
-        for ixb in range(nxb):
-            ax = axes[nq2 - 1 - iq2, ixb]
+    for iq2, ixb in populated_panels:
+            row, column = panel_positions[(iq2, ixb)]
+            ax = axes[row, column]
             mask = fit_mask[iq2, ixb, :]
-            if not np.any(mask):
-                ax.set_axis_off()
-                continue
             ax.axhline(0.0, color="black", linewidth=0.45, alpha=0.35)
             ax.set_xlim(float(t_edges[0]), float(t_edges[-1]))
-            ax.set_ylim(*ylim)
+            if scale_mode == "global":
+                ax.set_ylim(*ylim)
+            else:
+                local_low = []
+                local_high = []
+                for coeff_index in range(3):
+                    local_values = parameters[iq2, ixb, mask, coeff_index]
+                    local_errors = coeff_errors[iq2, ixb, mask, coeff_index]
+                    finite = np.isfinite(local_values) & np.isfinite(local_errors)
+                    if np.any(finite):
+                        local_low.extend((local_values[finite] - local_errors[finite]).tolist())
+                        local_high.extend((local_values[finite] + local_errors[finite]).tolist())
+                if local_low and local_high:
+                    lower = min(0.0, float(np.min(local_low)))
+                    upper = max(0.0, float(np.max(local_high)))
+                    span = upper - lower
+                    padding = 0.08 * span if span > 0.0 else max(abs(lower), abs(upper), 1.0) * 0.08
+                    ax.set_ylim(lower - padding, upper + padding)
             ax.grid(True, alpha=0.16, linewidth=0.45)
             for coeff_index in range(3):
                 ax.errorbar(
@@ -2776,13 +3198,22 @@ def _plot_harmonic_coefficient_quilt_vs_t(
                     markersize=2.4,
                     color=colors[coeff_index],
                 )
-            ax.tick_params(axis="both", labelsize=6, length=2)
-            if iq2 == 0:
+            ax.tick_params(axis="both", labelsize=6, length=2, labelleft=True)
+            if scale_mode == "panel":
+                ax.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2), useMathText=True)
+                ax.yaxis.get_offset_text().set_fontsize(5)
+            if iq2 == active_q2[0]:
                 ax.set_xlabel("-t [GeV^2]", fontsize=7)
-            if ixb == 0:
-                ax.set_ylabel(f"Q2 {q2_labels[iq2]}", fontsize=7)
-            if iq2 == nq2 - 1:
-                ax.set_title(f"xB {xb_labels[ixb]}", fontsize=7)
+            ax.set_title(
+                f"Q2 {q2_labels[iq2]}; xB {xb_labels[ixb]}",
+                fontsize=7,
+                pad=2,
+            )
+    occupied_positions = set(panel_positions.values())
+    for row in range(nrows):
+        for column in range(ncols):
+            if (row, column) not in occupied_positions:
+                axes[row, column].set_axis_off()
 
     handles = [
         plt.Line2D(
@@ -2796,14 +3227,39 @@ def _plot_harmonic_coefficient_quilt_vs_t(
         )
         for index in range(3)
     ]
-    fig.legend(handles=handles, loc="upper center", ncol=3, fontsize="small")
+    fig.legend(
+        handles=handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.995),
+        ncol=3,
+        fontsize="small",
+    )
     fig.suptitle(
         "Harmonic coefficients vs -t quilt\n"
-        f"Q2 increases bottom to top; xB increases left to right; y scale uses p{scale_percentile:g}",
-        y=0.985,
+        "Q2 increases bottom to top; xB increases left to right; "
+        + (
+            "each panel uses its corresponding page scale"
+            if scale_mode == "panel"
+            else f"y scale uses p{scale_percentile:g}"
+        ),
+        y=0.955,
     )
-    fig.supylabel("Harmonic coefficient [nb/(GeV^2 rad)]")
-    fig.tight_layout(rect=(0.02, 0.03, 0.995, 0.94))
+    fig.text(
+        0.012,
+        0.5,
+        "Harmonic coefficient [nb/(GeV^2 rad)]",
+        rotation="vertical",
+        va="center",
+        fontsize=9,
+    )
+    fig.subplots_adjust(
+        left=0.052,
+        right=0.995,
+        bottom=0.045,
+        top=0.89,
+        wspace=0.16,
+        hspace=0.18,
+    )
     pdf.savefig(fig)
     plt.close(fig)
     return 1
@@ -2823,6 +3279,8 @@ def _plot_cross_section_vs_phi(
     min_points: int,
     pdf_path: Path,
     csv_path: Path,
+    include_quilt: bool = False,
+    quilt_scale_mode: str = "panel",
 ) -> int:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
@@ -2837,6 +3295,22 @@ def _plot_cross_section_vs_phi(
     ]
 
     with PdfPages(pdf_path) as pdf:
+        if include_quilt:
+            pages += _plot_cross_section_quilts_vs_phi(
+                pdf,
+                values,
+                uncertainties,
+                units,
+                phi_edges,
+                parameters,
+                chi2_ndf,
+                points,
+                q2_edges,
+                xb_edges,
+                t_edges,
+                min_points,
+                quilt_scale_mode,
+            )
         for iq2 in range(values.shape[0]):
             for ixb in range(values.shape[1]):
                 for it in range(values.shape[2]):
@@ -2919,6 +3393,336 @@ def _plot_cross_section_vs_phi(
     return pages
 
 
+def _plot_cross_section_quilts_vs_phi(
+    pdf,
+    values: np.ndarray,
+    uncertainties: np.ndarray,
+    units: str,
+    phi_edges: np.ndarray,
+    parameters: np.ndarray,
+    chi2_ndf: np.ndarray,
+    points: np.ndarray,
+    q2_edges: np.ndarray,
+    xb_edges: np.ndarray,
+    t_edges: np.ndarray,
+    min_points: int,
+    scale_mode: str,
+) -> int:
+    import matplotlib.pyplot as plt
+
+    if scale_mode not in ("global", "panel"):
+        raise ValueError("--quilt-scale-mode must be global or panel")
+    nq2, nxb, nt = values.shape[:3]
+    phi_centers = 0.5 * (phi_edges[:-1] + phi_edges[1:])
+    phi_curve = np.linspace(float(phi_edges[0]), float(phi_edges[-1]), 361)
+    radians = np.deg2rad(phi_curve)
+    q2_labels = _edge_labels(q2_edges)
+    xb_labels = _edge_labels(xb_edges)
+    pages = 0
+
+    for it in range(nt):
+        panel_data: dict[tuple[int, int], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        global_low: list[float] = []
+        global_high: list[float] = []
+        for iq2 in range(nq2):
+            for ixb in range(nxb):
+                y = values[iq2, ixb, it, :]
+                yerr = uncertainties[iq2, ixb, it, :]
+                p = parameters[iq2, ixb, it, :]
+                valid = np.isfinite(y) & np.isfinite(yerr) & (yerr > 0.0)
+                fit_valid = (
+                    np.all(np.isfinite(p))
+                    and np.isfinite(chi2_ndf[iq2, ixb, it])
+                    and points[iq2, ixb, it] >= min_points
+                )
+                if not fit_valid or not np.any(valid):
+                    continue
+                fit_curve = p[0] + p[1] * np.cos(radians) + p[2] * np.cos(2.0 * radians)
+                panel_data[(iq2, ixb)] = (valid, y, fit_curve)
+                finite_fit = fit_curve[np.isfinite(fit_curve)]
+                global_low.extend((y[valid] - yerr[valid]).tolist())
+                global_high.extend((y[valid] + yerr[valid]).tolist())
+                global_low.extend(finite_fit.tolist())
+                global_high.extend(finite_fit.tolist())
+        if not panel_data:
+            continue
+
+        global_ylim = _padded_plot_limits(global_low, global_high, include_zero=True)
+        populated_panels = sorted(panel_data)
+        active_q2, active_xb, panel_positions = _ordered_quilt_axes(populated_panels)
+        nrows, ncols = len(active_q2), len(active_xb)
+        fig, axes = plt.subplots(
+            nrows,
+            ncols,
+            figsize=(max(8.5, 3.25 * ncols), max(5.5, 2.35 * nrows)),
+            sharex=True,
+            sharey=scale_mode == "global",
+            squeeze=False,
+        )
+        for iq2, ixb in populated_panels:
+                row, column = panel_positions[(iq2, ixb)]
+                ax = axes[row, column]
+                item = panel_data[(iq2, ixb)]
+                valid, y, fit_curve = item
+                yerr = uncertainties[iq2, ixb, it, :]
+                ax.errorbar(
+                    phi_centers[valid],
+                    y[valid],
+                    yerr=yerr[valid],
+                    fmt="o",
+                    capsize=1.0,
+                    linewidth=0.7,
+                    markersize=2.2,
+                    color="#1f78b4",
+                )
+                ax.plot(phi_curve, fit_curve, color="#d95f02", linewidth=0.9)
+                ax.axhline(0.0, color="black", linewidth=0.4, alpha=0.3)
+                ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
+                if scale_mode == "global":
+                    ax.set_ylim(*global_ylim)
+                else:
+                    finite_fit = fit_curve[np.isfinite(fit_curve)]
+                    local_low = (y[valid] - yerr[valid]).tolist() + finite_fit.tolist()
+                    local_high = (y[valid] + yerr[valid]).tolist() + finite_fit.tolist()
+                    ax.set_ylim(*_padded_plot_limits(local_low, local_high, include_zero=True))
+                ax.grid(True, alpha=0.16, linewidth=0.45)
+                ax.tick_params(axis="both", labelsize=6, length=2, labelleft=True)
+                if scale_mode == "panel":
+                    ax.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2), useMathText=True)
+                    ax.yaxis.get_offset_text().set_fontsize(5)
+                if iq2 == active_q2[0]:
+                    ax.set_xlabel("phi [deg]", fontsize=7)
+                ax.set_title(
+                    f"Q2 {q2_labels[iq2]}; xB {xb_labels[ixb]}",
+                    fontsize=7,
+                    pad=2,
+                )
+        occupied_positions = set(panel_positions.values())
+        for row in range(nrows):
+            for column in range(ncols):
+                if (row, column) not in occupied_positions:
+                    axes[row, column].set_axis_off()
+
+        handles = [
+            plt.Line2D([0], [0], color="#1f78b4", marker="o", linewidth=0.8,
+                       markersize=3, label="reduced cross section"),
+            plt.Line2D([0], [0], color="#d95f02", linewidth=1.1,
+                       label="A + B cos(phi) + C cos(2phi)"),
+        ]
+        fig.legend(
+            handles=handles,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.995),
+            ncol=2,
+            fontsize="small",
+        )
+        fig.suptitle(
+            "Reduced cross section vs phi quilt\n"
+            f"-t {t_edges[it]:g}-{t_edges[it + 1]:g} GeV^2; "
+            "Q2 increases bottom to top; xB increases left to right; "
+            + ("independent panel scales" if scale_mode == "panel" else "shared page scale"),
+            y=0.955,
+        )
+        fig.text(
+            0.012,
+            0.5,
+            f"Reduced cross section [{units}]",
+            rotation="vertical",
+            va="center",
+            fontsize=9,
+        )
+        fig.subplots_adjust(
+            left=0.052,
+            right=0.995,
+            bottom=0.045,
+            top=0.89,
+            wspace=0.16,
+            hspace=0.18,
+        )
+        pdf.savefig(fig)
+        plt.close(fig)
+        pages += 1
+    return pages
+
+
+def _plot_quantity_quilts_vs_phi(
+    pdf,
+    quantities: dict[str, tuple[np.ndarray, np.ndarray | None, np.ndarray]],
+    phi_edges: np.ndarray,
+    q2_edges: np.ndarray,
+    xb_edges: np.ndarray,
+    t_edges: np.ndarray,
+    *,
+    title: str,
+    ylabel: str,
+    scale_mode: str,
+    reference_lines: tuple[float, ...] = (),
+    include_zero: bool = False,
+) -> int:
+    """Draw one cross-section-style Q2-by-xB quilt per -t bin."""
+    import matplotlib.pyplot as plt
+
+    if scale_mode not in ("global", "panel"):
+        raise ValueError("--quilt-scale-mode must be global or panel")
+    if not quantities:
+        return 0
+    first_values = next(iter(quantities.values()))[0]
+    nq2, nxb, nt, _ = first_values.shape
+    expected_shape = first_values.shape
+    for label, (values, errors, valid) in quantities.items():
+        if values.shape != expected_shape or valid.shape != expected_shape:
+            raise ValueError(f"quilt quantity {label} does not match the common 4D shape")
+        if errors is not None and errors.shape != expected_shape:
+            raise ValueError(f"quilt uncertainty {label} does not match the common 4D shape")
+
+    colors = (
+        "#4c78a8", "#7b3294", "#f58518", "#222222", "#1b9e77",
+        "#e45756", "#72b7b2", "#b279a2", "#ff9da6", "#9d755d",
+    )
+    linestyles = ("-", "--", "-.", ":", "-")
+    phi_centers = 0.5 * (phi_edges[:-1] + phi_edges[1:])
+    q2_labels = _edge_labels(q2_edges)
+    xb_labels = _edge_labels(xb_edges)
+    pages = 0
+
+    for it in range(nt):
+        panels: dict[tuple[int, int], list[tuple[str, np.ndarray, np.ndarray | None, np.ndarray]]] = {}
+        global_low: list[float] = []
+        global_high: list[float] = []
+        for iq2 in range(nq2):
+            for ixb in range(nxb):
+                series = []
+                for label, (values, errors, valid4) in quantities.items():
+                    y = values[iq2, ixb, it, :]
+                    yerr = errors[iq2, ixb, it, :] if errors is not None else None
+                    valid = valid4[iq2, ixb, it, :] & np.isfinite(y)
+                    if yerr is not None:
+                        valid &= np.isfinite(yerr) & (yerr >= 0.0)
+                    if not np.any(valid):
+                        continue
+                    series.append((label, y, yerr, valid))
+                    low = y[valid] - yerr[valid] if yerr is not None else y[valid]
+                    high = y[valid] + yerr[valid] if yerr is not None else y[valid]
+                    global_low.extend(low.tolist())
+                    global_high.extend(high.tolist())
+                if series:
+                    panels[(iq2, ixb)] = series
+        if not panels:
+            continue
+
+        global_ylim = _padded_plot_limits(global_low, global_high, include_zero=include_zero)
+        active_q2, active_xb, positions = _ordered_quilt_axes(sorted(panels))
+        fig, axes = plt.subplots(
+            len(active_q2),
+            len(active_xb),
+            figsize=(max(8.5, 3.25 * len(active_xb)), max(5.5, 2.35 * len(active_q2))),
+            sharex=True,
+            sharey=scale_mode == "global",
+            squeeze=False,
+        )
+        label_order = list(quantities)
+        for (iq2, ixb), series in panels.items():
+            row, column = positions[(iq2, ixb)]
+            ax = axes[row, column]
+            local_low: list[float] = []
+            local_high: list[float] = []
+            for label, y, yerr, valid in series:
+                index = label_order.index(label)
+                kwargs = dict(
+                    color=colors[index % len(colors)],
+                    linestyle=linestyles[index % len(linestyles)],
+                    linewidth=0.9,
+                )
+                if yerr is None:
+                    ax.plot(phi_centers[valid], y[valid], marker="o", markersize=2.2, **kwargs)
+                    low = high = y[valid]
+                else:
+                    ax.errorbar(
+                        phi_centers[valid], y[valid], yerr=yerr[valid], fmt="o",
+                        markersize=2.2, capsize=1.0, elinewidth=0.7, **kwargs,
+                    )
+                    low, high = y[valid] - yerr[valid], y[valid] + yerr[valid]
+                local_low.extend(low.tolist())
+                local_high.extend(high.tolist())
+            for value in reference_lines:
+                ax.axhline(value, color="red" if value != 1.0 else "black",
+                           linestyle="--", linewidth=0.65, alpha=0.65)
+            ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
+            ax.set_ylim(*(global_ylim if scale_mode == "global" else
+                          _padded_plot_limits(local_low, local_high, include_zero=include_zero)))
+            ax.grid(True, alpha=0.16, linewidth=0.45)
+            ax.tick_params(axis="both", labelsize=6, length=2, labelleft=True)
+            if iq2 == active_q2[0]:
+                ax.set_xlabel("phi [deg]", fontsize=7)
+            ax.set_title(f"Q2 {q2_labels[iq2]}; xB {xb_labels[ixb]}", fontsize=7, pad=2)
+        occupied = set(positions.values())
+        for row in range(len(active_q2)):
+            for column in range(len(active_xb)):
+                if (row, column) not in occupied:
+                    axes[row, column].set_axis_off()
+
+        handles = [
+            plt.Line2D([0], [0], color=colors[index % len(colors)],
+                       linestyle=linestyles[index % len(linestyles)], marker="o",
+                       linewidth=1.1, markersize=3, label=label)
+            for index, label in enumerate(label_order)
+        ]
+        fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.995),
+                   ncol=min(4, len(handles)), fontsize="small")
+        fig.suptitle(
+            f"{title}\n-t {t_edges[it]:g}-{t_edges[it + 1]:g} GeV^2; "
+            "Q2 increases bottom to top; xB increases left to right; "
+            + ("independent panel scales" if scale_mode == "panel" else "shared page scale"),
+            y=0.955,
+        )
+        fig.text(0.012, 0.5, ylabel, rotation="vertical", va="center", fontsize=9)
+        fig.subplots_adjust(left=0.052, right=0.995, bottom=0.045, top=0.89,
+                            wspace=0.16, hspace=0.18)
+        pdf.savefig(fig)
+        plt.close(fig)
+        pages += 1
+    return pages
+
+
+def _ordered_quilt_axes(
+    panels: list[tuple[int, int]],
+) -> tuple[list[int], list[int], dict[tuple[int, int], tuple[int, int]]]:
+    """Preserve shared xB columns and Q2 rows, trimming empty outer bins."""
+    if not panels:
+        return [0], [0], {}
+    active_q2 = sorted({iq2 for iq2, _ in panels})
+    active_xb = sorted({ixb for _, ixb in panels})
+    q2_rows = {iq2: len(active_q2) - 1 - index for index, iq2 in enumerate(active_q2)}
+    xb_columns = {ixb: index for index, ixb in enumerate(active_xb)}
+    positions = {
+        (iq2, ixb): (q2_rows[iq2], xb_columns[ixb])
+        for iq2, ixb in panels
+    }
+    return active_q2, active_xb, positions
+
+
+def _padded_plot_limits(
+    lower_values: list[float],
+    upper_values: list[float],
+    *,
+    include_zero: bool,
+) -> tuple[float, float]:
+    finite_lower = np.asarray(lower_values, dtype=float)
+    finite_upper = np.asarray(upper_values, dtype=float)
+    finite_lower = finite_lower[np.isfinite(finite_lower)]
+    finite_upper = finite_upper[np.isfinite(finite_upper)]
+    if not finite_lower.size or not finite_upper.size:
+        return (-1.0, 1.0)
+    lower = float(np.min(finite_lower))
+    upper = float(np.max(finite_upper))
+    if include_zero:
+        lower = min(0.0, lower)
+        upper = max(0.0, upper)
+    span = upper - lower
+    padding = 0.08 * span if span > 0.0 else max(abs(lower), abs(upper), 1.0) * 0.08
+    return lower - padding, upper + padding
+
+
 def _plot_heatmap(
     values: np.ndarray,
     y_name: str,
@@ -2962,6 +3766,8 @@ def _plot_acceptance_vs_phi(
     min_passing_bins: int,
     pdf_path: Path,
     csv_path: Path,
+    include_quilt: bool = False,
+    quilt_scale_mode: str = "global",
 ) -> int:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
@@ -2978,6 +3784,29 @@ def _plot_acceptance_vs_phi(
     ]
 
     with PdfPages(pdf_path) as pdf:
+        if include_quilt:
+            populated4 = truth > 0
+            quantities = {
+                "epsilon_i total efficiency": (efficiency, None, populated4),
+                "A_i bin-by-bin acceptance": (acceptance, None, populated4),
+            }
+            if purity is not None:
+                quantities["P_i purity"] = (purity, None, populated4)
+            if same_bin_efficiency is not None:
+                quantities["E_i same-bin efficiency"] = (same_bin_efficiency, None, populated4)
+            pages += _plot_quantity_quilts_vs_phi(
+                pdf,
+                quantities,
+                phi_edges,
+                q2_edges,
+                xb_edges,
+                t_edges,
+                title="Acceptance diagnostics vs phi quilt",
+                ylabel="Migration/acceptance diagnostic",
+                scale_mode=quilt_scale_mode,
+                reference_lines=(minimum_acceptance,),
+                include_zero=True,
+            )
         for iq2 in range(efficiency.shape[0]):
             for ixb in range(efficiency.shape[1]):
                 for it in range(efficiency.shape[2]):
@@ -3181,6 +4010,8 @@ def main() -> int:
         command_bin_centering(args)
     elif args.command == "bin-centering-merge":
         command_bin_centering_merge(args)
+    elif args.command == "bin-centering-plots":
+        command_bin_centering_plots(args)
     elif args.command == "cross-section":
         command_cross_section(args)
     elif args.command == "fit-harmonics":

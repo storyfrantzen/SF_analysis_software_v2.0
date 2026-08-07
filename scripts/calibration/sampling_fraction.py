@@ -323,7 +323,7 @@ def plot_diagonal_cut(arrays: dict[str, np.ndarray],
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Derive electron sampling-fraction mu/sigma parameters.")
     parser.add_argument("input_file", type=Path)
-    parser.add_argument("--tree", default="Events")
+    parser.add_argument("--tree", default="rParticles")
     parser.add_argument(
         "--output",
         type=Path,

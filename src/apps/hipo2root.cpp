@@ -9,9 +9,11 @@
 #include <cctype>
 #include <cmath>
 #include <exception>
+#include <fstream>
 #include <iomanip>
 #include <memory>
 #include <optional>
+#include <regex>
 #include <sstream>
 #include <unordered_map>
 
@@ -32,6 +34,7 @@
 #include "QualityAssurance.h"
 #include "Kinematics.h"
 #include "ROOTBranches.h"
+#include "core/TreeNames.h"
 
 using namespace clas12;
 namespace fs = std::filesystem;
@@ -48,6 +51,182 @@ struct HipoOpenCheck {
 };
 
 namespace {
+
+struct GeneratorFileMetadata {
+    int stratumFlatIndex = -1;
+    double weight = 1.0;
+};
+
+std::string pidBranchToken(int pid) {
+    return pid < 0 ? "Minus" + std::to_string(-pid) : std::to_string(pid);
+}
+
+struct ReconstructedEventOutput {
+    std::uint64_t sourceFileId = INVALID_SOURCE_ID;
+    std::uint64_t sourceEventIndex = INVALID_SOURCE_ID;
+    int runNum = -999;
+    int eventNum = -999;
+    int helicity = -999;
+    double charge = NAN;
+    int nReconstructedParticles = 0;
+    int nWrittenReconstructedParticles = 0;
+    int nParticleTreeRows = 0;
+    std::vector<int> topologyPids;
+    std::vector<int> topologyRequiredCounts;
+    std::vector<int> topologyExact;
+    std::vector<int> topologyPidCounts;
+    std::vector<int> topologyPidCountsFT;
+    std::vector<int> topologyPidCountsFD;
+    std::vector<int> topologyPidCountsCD;
+    std::vector<int> topologyPidCountsOther;
+
+    explicit ReconstructedEventOutput(const std::vector<FinalState>& finalState) {
+        for (const auto& requirement : finalState) {
+            topologyPids.push_back(requirement.pid);
+            topologyRequiredCounts.push_back(requirement.count);
+            topologyExact.push_back(requirement.exact ? 1 : 0);
+        }
+        resetCounts();
+    }
+
+    void registerBranches(TTree& tree) {
+        tree.Branch("sourceFileId", &sourceFileId, "sourceFileId/l");
+        tree.Branch("sourceEventIndex", &sourceEventIndex, "sourceEventIndex/l");
+        tree.Branch("runNum", &runNum, "runNum/I");
+        tree.Branch("eventNum", &eventNum, "eventNum/I");
+        tree.Branch("helicity", &helicity, "helicity/I");
+        tree.Branch("charge", &charge, "charge/D");
+        tree.Branch("nReconstructedParticles", &nReconstructedParticles,
+                    "nReconstructedParticles/I");
+        tree.Branch("nWrittenReconstructedParticles", &nWrittenReconstructedParticles,
+                    "nWrittenReconstructedParticles/I");
+        tree.Branch("nParticleTreeRows", &nParticleTreeRows, "nParticleTreeRows/I");
+        tree.Branch("topologyPids", &topologyPids);
+        tree.Branch("topologyRequiredCounts", &topologyRequiredCounts);
+        tree.Branch("topologyExact", &topologyExact);
+        tree.Branch("topologyPidCounts", &topologyPidCounts);
+        tree.Branch("topologyPidCountsFT", &topologyPidCountsFT);
+        tree.Branch("topologyPidCountsFD", &topologyPidCountsFD);
+        tree.Branch("topologyPidCountsCD", &topologyPidCountsCD);
+        tree.Branch("topologyPidCountsOther", &topologyPidCountsOther);
+        for (size_t index = 0; index < topologyPids.size(); ++index) {
+            const std::string base = "nPid" + pidBranchToken(topologyPids[index]);
+            tree.Branch(base.c_str(), &topologyPidCounts[index], (base + "/I").c_str());
+            tree.Branch((base + "FT").c_str(), &topologyPidCountsFT[index],
+                        (base + "FT/I").c_str());
+            tree.Branch((base + "FD").c_str(), &topologyPidCountsFD[index],
+                        (base + "FD/I").c_str());
+            tree.Branch((base + "CD").c_str(), &topologyPidCountsCD[index],
+                        (base + "CD/I").c_str());
+            tree.Branch((base + "Other").c_str(), &topologyPidCountsOther[index],
+                        (base + "Other/I").c_str());
+        }
+    }
+
+    void fill(const EventBranches& event,
+              const std::vector<clas12::region_particle*>& particles,
+              int writtenRecParticles,
+              int particleTreeRows) {
+        sourceFileId = event.sourceFileId;
+        sourceEventIndex = event.sourceEventIndex;
+        runNum = event.runNum;
+        eventNum = event.eventNum;
+        helicity = event.helicity;
+        charge = event.charge;
+        nReconstructedParticles = static_cast<int>(particles.size());
+        nWrittenReconstructedParticles = writtenRecParticles;
+        nParticleTreeRows = particleTreeRows;
+        resetCounts();
+        for (const auto* particle : particles) {
+            if (!particle) continue;
+            const int pid = particle->getPid();
+            const auto found = std::find(topologyPids.begin(), topologyPids.end(), pid);
+            if (found == topologyPids.end()) continue;
+            const size_t index = static_cast<size_t>(found - topologyPids.begin());
+            ++topologyPidCounts[index];
+            switch (getDetector(particle->par()->getStatus())) {
+                case 0: ++topologyPidCountsFT[index]; break;
+                case 1: ++topologyPidCountsFD[index]; break;
+                case 2: ++topologyPidCountsCD[index]; break;
+                default: ++topologyPidCountsOther[index]; break;
+            }
+        }
+    }
+
+private:
+    void resetCounts() {
+        const size_t size = topologyPids.size();
+        if (topologyPidCounts.size() != size) {
+            topologyPidCounts.resize(size);
+            topologyPidCountsFT.resize(size);
+            topologyPidCountsFD.resize(size);
+            topologyPidCountsCD.resize(size);
+            topologyPidCountsOther.resize(size);
+        }
+        std::fill(topologyPidCounts.begin(), topologyPidCounts.end(), 0);
+        std::fill(topologyPidCountsFT.begin(), topologyPidCountsFT.end(), 0);
+        std::fill(topologyPidCountsFD.begin(), topologyPidCountsFD.end(), 0);
+        std::fill(topologyPidCountsCD.begin(), topologyPidCountsCD.end(), 0);
+        std::fill(topologyPidCountsOther.begin(), topologyPidCountsOther.end(), 0);
+    }
+};
+
+std::string extractCanonicalChunkId(const std::string& filename) {
+    static const std::regex pattern(
+        R"(s[0-9]{5}__g[0-9]{4}__p[0-9]{6})"
+    );
+    std::sregex_iterator match(filename.begin(), filename.end(), pattern);
+    const std::sregex_iterator end;
+    if (match == end) {
+        throw std::runtime_error(
+            "Filename does not contain a canonical AAO chunk ID "
+            "(sNNNNN__gNNNN__pNNNNNN): " + filename
+        );
+    }
+    const std::string identifier = match->str();
+    ++match;
+    if (match != end) {
+        throw std::runtime_error(
+            "Filename contains more than one canonical AAO chunk ID: " + filename
+        );
+    }
+    return identifier;
+}
+
+std::unordered_map<std::string, GeneratorFileMetadata>
+loadGeneratorWeights(const std::string& provenancePath) {
+    std::ifstream source(provenancePath);
+    if (!source.is_open()) {
+        throw std::runtime_error(
+            "Cannot open generator chunk provenance: " + provenancePath
+        );
+    }
+    nlohmann::json provenance;
+    source >> provenance;
+    if (provenance.value("schema", std::string()) != "aao-osg-stratum-chunks-v1") {
+        throw std::runtime_error(
+            "Unsupported generator chunk provenance schema in " + provenancePath
+        );
+    }
+    std::unordered_map<std::string, GeneratorFileMetadata> weights;
+    for (const auto& chunk : provenance.at("chunks")) {
+        const std::string chunkFile = chunk.at("chunk_file").get<std::string>();
+        const std::string chunkId = extractCanonicalChunkId(chunkFile);
+        const GeneratorFileMetadata metadata{
+            chunk.at("flat_index").get<int>(),
+            chunk.at("pooled_event_weight_microbarn").get<double>()
+        };
+        if (!std::isfinite(metadata.weight) || metadata.weight <= 0.0) {
+            throw std::runtime_error("Invalid generator weight for " + chunkFile);
+        }
+        if (!weights.emplace(chunkId, metadata).second) {
+            throw std::runtime_error(
+                "Duplicate canonical generator chunk ID in provenance: " + chunkId
+            );
+        }
+    }
+    return weights;
+}
 
 bool isRichDetectorSchemaWarning(const std::string& line) {
     return line.find("hipo::schema getEntryOrder") != std::string::npos &&
@@ -365,9 +544,18 @@ int main(int argc, char** argv) {
         std::cerr << "[ERROR] generatedEventTree requires fillMC=true\n";
         return 1;
     }
-    if (cfg.generatedEventTree.enabled && cfg.generatedEventTree.treeName == cfg.treeName) {
-        std::cerr << "[ERROR] generatedEventTree.treeName must differ from treeName\n";
+    if (cfg.generatorWeights.enabled && !cfg.generatedEventTree.enabled) {
+        std::cerr << "[ERROR] generatorWeights requires generatedEventTree.enabled=true\n";
         return 1;
+    }
+    std::unordered_map<std::string, GeneratorFileMetadata> generatorWeights;
+    if (cfg.generatorWeights.enabled) {
+        try {
+            generatorWeights = loadGeneratorWeights(cfg.generatorWeights.chunkProvenance);
+        } catch (const std::exception& error) {
+            std::cerr << "[ERROR] " << error.what() << "\n";
+            return 1;
+        }
     }
     const ProtonEnergyLossCorrections corrections(cfg.kinematicCorrections);
     std::unique_ptr<QualityAssurance> qa;
@@ -415,12 +603,18 @@ int main(int argc, char** argv) {
 
     // ── Echo active config ────────────────────────────────────────────────────
     std::cout << "[INFO] Output file : " << cfg.outputFile << "\n"
-              << "[INFO] Tree name   : " << cfg.treeName   << "\n"
+              << "[INFO] REC trees   : " << TreeNames::rEvents
+              << ", " << TreeNames::rParticles << "\n"
               << "[INFO] Beam energy : " << cfg.beamEnergy << " GeV\n"
               << "[INFO] Fill MC     : " << (cfg.fillMC ? "yes" : "no") << "\n"
               << "[INFO] Match MC    : " << (cfg.matchMC ? "yes" : "no") << "\n"
               << "[INFO] GEN events  : "
-              << (cfg.generatedEventTree.enabled ? cfg.generatedEventTree.treeName : "disabled")
+              << (cfg.generatedEventTree.enabled ? TreeNames::gEvents : "disabled")
+              << "\n"
+              << "[INFO] GEN weights : "
+              << (cfg.generatorWeights.enabled
+                      ? cfg.generatorWeights.chunkProvenance
+                      : "unit weights")
               << "\n"
               << "[INFO] QADB        : " << (qa->enabled() ? "enabled" : "disabled") << "\n"
               << "[INFO] Input check : "
@@ -467,30 +661,40 @@ int main(int argc, char** argv) {
         std::cerr << "[ERROR] Could not open output file: " << cfg.outputFile << "\n";
         return 1;
     }
-    TTree* tree = new TTree(cfg.treeName.c_str(), cfg.treeName.c_str());
-    TTree* generatedTree = nullptr;
-    GeneratedEventBranches generatedEvent;
+    auto* rParticles = new TTree(TreeNames::rParticles, TreeNames::rParticles);
+    auto* rEvents = new TTree(TreeNames::rEvents, TreeNames::rEvents);
+    ReconstructedEventOutput rEvent(cfg.finalState);
+    rEvent.registerBranches(*rEvents);
+    TTree* gEvents = nullptr;
+    GeneratedEventBranches gEvent;
     if (cfg.generatedEventTree.enabled) {
-        generatedTree = new TTree(cfg.generatedEventTree.treeName.c_str(),
-                                  cfg.generatedEventTree.treeName.c_str());
-        generatedEvent.registerBranches(*generatedTree);
+        gEvents = new TTree(TreeNames::gEvents, TreeNames::gEvents);
+        gEvent.registerBranches(*gEvents);
     }
     TTree* sourceFilesTree = nullptr;
     std::uint64_t catalogSourceFileId = INVALID_SOURCE_ID;
     std::string catalogSourceFileName;
+    int catalogStratumFlatIndex = -1;
+    double catalogGeneratorWeight = 1.0;
     if (cfg.generatedEventTree.enabled) {
         sourceFilesTree = new TTree("SourceFiles", "SourceFiles");
         sourceFilesTree->Branch("sourceFileId", &catalogSourceFileId, "sourceFileId/l");
         sourceFilesTree->Branch("sourceFileName", &catalogSourceFileName);
+        sourceFilesTree->Branch(
+            "stratumFlatIndex", &catalogStratumFlatIndex, "stratumFlatIndex/I"
+        );
+        sourceFilesTree->Branch(
+            "generatorWeight", &catalogGeneratorWeight, "generatorWeight/D"
+        );
     }
 
     EventBranches evBranches;
     RecBranches   recBranches;
     GenBranches   genBranches;
 
-    tree->Branch("event", &evBranches);
-    tree->Branch("rec",   &recBranches);
-    if (cfg.fillMC) tree->Branch("gen", &genBranches);
+    rParticles->Branch("event", &evBranches);
+    rParticles->Branch("rec",   &recBranches);
+    if (cfg.fillMC) rParticles->Branch("gen", &genBranches);
 
     // ── Event loop ────────────────────────────────────────────────────────────
     long long nTotal = 0, nQAFail = 0, nFSFail = 0, nSkimFail = 0, nWritten = 0;
@@ -498,6 +702,7 @@ int main(int argc, char** argv) {
     long long nSkippedOutputPid = 0;
     long long nMatched = 0, nUnmatchedRec = 0, nUnmatchedGen = 0;
     long long nGeneratedEvents = 0, nGeneratedTopologyValid = 0;
+    long long nReconstructedEventRows = 0;
     long long nInputFail = 0;
     long long lastProgressEvent = 0;
     const Clock::time_point startTime = Clock::now();
@@ -521,6 +726,25 @@ int main(int argc, char** argv) {
         }
 
         const std::string sourceBasename = fs::path(hipoPath).filename().string();
+        int sourceStratumFlatIndex = -1;
+        double sourceGeneratorWeight = 1.0;
+        if (cfg.generatorWeights.enabled) {
+            std::string sourceChunkId;
+            try {
+                sourceChunkId = extractCanonicalChunkId(sourceBasename);
+            } catch (const std::exception& error) {
+                std::cerr << "[ERROR] " << error.what() << "\n";
+                return 1;
+            }
+            const auto weightEntry = generatorWeights.find(sourceChunkId);
+            if (weightEntry == generatorWeights.end()) {
+                std::cerr << "[ERROR] HIPO canonical chunk ID is absent from "
+                          << "generator chunk provenance: " << sourceChunkId << "\n";
+                return 1;
+            }
+            sourceStratumFlatIndex = weightEntry->second.stratumFlatIndex;
+            sourceGeneratorWeight = weightEntry->second.weight;
+        }
         const std::string sourceFileName = sourceBasenameCounts[sourceBasename] > 1
             ? fs::absolute(fs::path(hipoPath)).lexically_normal().string()
             : sourceBasename;
@@ -536,6 +760,8 @@ int main(int argc, char** argv) {
             if (sourceFilesTree) {
                 catalogSourceFileId = sourceFileId;
                 catalogSourceFileName = sourceFileName;
+                catalogStratumFlatIndex = sourceStratumFlatIndex;
+                catalogGeneratorWeight = sourceGeneratorWeight;
                 sourceFilesTree->Fill();
             }
         }
@@ -571,13 +797,15 @@ int main(int argc, char** argv) {
 
             // Preserve the generated denominator before any reconstructed QA,
             // final-state, or DIS decision is made.
-            if (generatedTree) {
-                generatedEvent.fill(mc, runNum, eventNum,
-                                    sourceFileId, currentSourceEventIndex,
-                                    cfg.beamEnergy);
-                generatedTree->Fill();
+            if (gEvents) {
+                gEvent.fill(mc, runNum, eventNum,
+                            sourceFileId, currentSourceEventIndex,
+                            cfg.beamEnergy,
+                            sourceStratumFlatIndex,
+                            sourceGeneratorWeight);
+                gEvents->Fill();
                 ++nGeneratedEvents;
-                if (generatedEvent.topologyValid) ++nGeneratedTopologyValid;
+                if (gEvent.topologyValid) ++nGeneratedTopologyValid;
             }
 
             if (!qa->pass(runNum, eventNum)) {
@@ -604,6 +832,8 @@ int main(int argc, char** argv) {
 
             const auto& particles = c12.getDetParticles();
             std::vector<bool> usedGen(mc ? mc->getRows() : 0, false);
+            int writtenRecParticles = 0;
+            const long long particleRowsBeforeEvent = nOutputRows;
 
             for (int i = 0; i < static_cast<int>(particles.size()); ++i) {
                 auto* particle = particles[i];
@@ -627,8 +857,9 @@ int main(int argc, char** argv) {
                     }
                 }
 
-                tree->Fill();
+                rParticles->Fill();
                 ++nOutputRows;
+                ++writtenRecParticles;
             }
 
             if (cfg.fillMC && mc && (!cfg.matchMC || cfg.saveUnmatchedMC)) {
@@ -640,11 +871,20 @@ int main(int argc, char** argv) {
                     }
                     recBranches.reset();
                     genBranches.fill(mc, rn, en, i);
-                    tree->Fill();
+                    rParticles->Fill();
                     ++nOutputRows;
                     ++nUnmatchedGen;
                 }
             }
+
+            rEvent.fill(
+                evBranches,
+                particles,
+                writtenRecParticles,
+                static_cast<int>(nOutputRows - particleRowsBeforeEvent)
+            );
+            rEvents->Fill();
+            ++nReconstructedEventRows;
 
             ++nWritten;
             maybePrintProgress();
@@ -667,6 +907,7 @@ int main(int argc, char** argv) {
 
     // ── Summary ───────────────────────────────────────────────────────────────
     double accumulatedCharge = qa->accumulatedCharge();
+    const std::vector<RunChargeRecord> runChargeRecords = qa->runChargeRecords();
     const double elapsed = std::chrono::duration<double>(Clock::now() - startTime).count();
     std::cout << "\n[DONE]\n"
               << "  Total events      : " << nTotal    << "\n"
@@ -678,6 +919,7 @@ int main(int argc, char** argv) {
               << "  PID-filtered rows : " << nSkippedOutputPid << "\n"
               << "  Skipped input files: " << nInputFail << "\n"
               << "  Generated events  : " << nGeneratedEvents << "\n"
+              << "  Reconstructed event rows: " << nReconstructedEventRows << "\n"
               << "  Valid GEN topology: " << nGeneratedTopologyValid << "\n"
               << "  Elapsed time      : " << std::fixed << std::setprecision(1)
               << elapsed << " s\n";
@@ -711,9 +953,39 @@ int main(int argc, char** argv) {
     summary.Branch("PidFilteredRows", &nSkippedOutputPid, "PidFilteredRows/L");
     summary.Branch("SkippedInputFiles", &nInputFail, "SkippedInputFiles/L");
     summary.Branch("GeneratedEventRows", &nGeneratedEvents, "GeneratedEventRows/L");
+    summary.Branch("ReconstructedEventRows", &nReconstructedEventRows,
+                   "ReconstructedEventRows/L");
     summary.Branch("GeneratedTopologyValid", &nGeneratedTopologyValid,
                    "GeneratedTopologyValid/L");
+    long long runChargeRows = static_cast<long long>(runChargeRecords.size());
+    summary.Branch("RunChargeRows", &runChargeRows, "RunChargeRows/L");
     summary.Fill();
+
+    TTree runCharge("RunCharge", "QADB accumulated charge and event counts by run");
+    int chargeRunNum = -999;
+    double runAccumulatedChargeNC = 0.0;
+    long long runTotalEvents = 0;
+    long long runPassedQADBEvents = 0;
+    long long runFailedQADBEvents = 0;
+    runCharge.Branch("runNum", &chargeRunNum, "runNum/I");
+    runCharge.Branch(
+        "accumulatedCharge_nC", &runAccumulatedChargeNC, "accumulatedCharge_nC/D"
+    );
+    runCharge.Branch("totalEvents", &runTotalEvents, "totalEvents/L");
+    runCharge.Branch(
+        "passedQADBEvents", &runPassedQADBEvents, "passedQADBEvents/L"
+    );
+    runCharge.Branch(
+        "failedQADBEvents", &runFailedQADBEvents, "failedQADBEvents/L"
+    );
+    for (const auto& record : runChargeRecords) {
+        chargeRunNum = record.runNum;
+        runAccumulatedChargeNC = record.accumulatedChargeNC;
+        runTotalEvents = record.totalEvents;
+        runPassedQADBEvents = record.passedQADBEvents;
+        runFailedQADBEvents = record.failedQADBEvents;
+        runCharge.Fill();
+    }
 
     TParameter<double> chargeMetadata("AccumulatedCharge", accumulatedCharge);
     chargeMetadata.Write();

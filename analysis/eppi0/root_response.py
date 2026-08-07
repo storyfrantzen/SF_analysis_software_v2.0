@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from .binning import AnalysisBinning
+from .phase_space import AnalysisPhaseSpace
 from .response import ResponseResult, build_response_from_counts
 
 
@@ -43,11 +44,13 @@ def build_response_from_root(
     selected_root: Path,
     binning: AnalysisBinning,
     dictionary: Path | None = None,
-    tree: str = "Events",
-    generated_tree: str = "GeneratedEvents",
+    tree: str = "sEvents",
+    generated_tree: str = "gEvents",
     chunk_size: int = 1_000_000,
     selection_mask: np.ndarray | None = None,
     progress_chunks: int = 10,
+    phase_space: AnalysisPhaseSpace | None = None,
+    beam_energy: float | None = None,
 ) -> RootResponseSummary:
     """Build a response directly from ROOT files without a dense event-level NPZ."""
     import ROOT  # type: ignore
@@ -60,7 +63,9 @@ def build_response_from_root(
 
     converter_path = str(converter_root.resolve())
     selected_path = str(selected_root.resolve())
+    generated_tree = _resolve_selected_tree(ROOT, converter_path, generated_tree)
     _require_tree(ROOT, converter_path, generated_tree, GENERATED_COLUMNS)
+    tree = _resolve_selected_tree(ROOT, selected_path, tree)
     selected_entries = _require_tree(ROOT, selected_path, tree, SELECTED_COLUMNS)
 
     selected = ROOT.RDataFrame(tree, selected_path).AsNumpy(SELECTED_COLUMNS)
@@ -112,7 +117,15 @@ def build_response_from_root(
             chunk["Q2"], chunk["xB"], chunk["minusT"], chunk["trentoPhi"]
         )
         weights = np.asarray(chunk["weight"], dtype=float)
-        truth_inside = valid & (truth_flat >= 0) & (truth_flat < number_of_bins)
+        truth_inside = _truth_inside_mask(
+            valid,
+            truth_flat,
+            chunk["Q2"],
+            chunk["xB"],
+            number_of_bins,
+            phase_space=phase_space,
+            beam_energy=beam_energy,
+        )
         truth_total += np.bincount(
             truth_flat[truth_inside], weights=weights[truth_inside], minlength=number_of_bins
         )
@@ -189,6 +202,22 @@ def _require_tree(ROOT, path: str, tree_name: str, columns: list[str]) -> int:
     return entries
 
 
+def _resolve_selected_tree(ROOT, path: str, tree_name: str) -> str:
+    from .root_trees import resolve
+
+    root_file = ROOT.TFile.Open(path, "READ")
+    if not root_file or root_file.IsZombie():
+        raise RuntimeError(f"Could not open ROOT file: {path}")
+    resolved = resolve(root_file, tree_name)
+    if root_file.Get(resolved):
+        root_file.Close()
+        if resolved != tree_name:
+            print(f"Warning: using compatible tree {resolved}")
+        return resolved
+    root_file.Close()
+    return tree_name
+
+
 def _tree_entries(ROOT, path: str, tree_name: str) -> int:
     root_file = ROOT.TFile.Open(path, "READ")
     if not root_file or root_file.IsZombie():
@@ -216,3 +245,25 @@ def _concat_or_empty(items: list[np.ndarray], dtype=np.int64) -> np.ndarray:
     if not items:
         return np.empty(0, dtype=dtype)
     return np.concatenate(items).astype(dtype, copy=False)
+
+
+def _truth_inside_mask(
+    topology_valid: np.ndarray,
+    truth_flat: np.ndarray,
+    q2: np.ndarray,
+    xb: np.ndarray,
+    number_of_bins: int,
+    *,
+    phase_space: AnalysisPhaseSpace | None = None,
+    beam_energy: float | None = None,
+) -> np.ndarray:
+    inside = (
+        np.asarray(topology_valid, dtype=bool)
+        & (np.asarray(truth_flat) >= 0)
+        & (np.asarray(truth_flat) < number_of_bins)
+    )
+    if phase_space is not None and phase_space.enabled:
+        if beam_energy is None:
+            raise ValueError("beam_energy is required when phase_space is enabled")
+        inside &= phase_space.mask(q2, xb, beam_energy)
+    return inside

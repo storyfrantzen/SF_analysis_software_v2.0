@@ -1,6 +1,5 @@
 {
     "outputFile": "6.535_rgk_eppi0_data.root",
-    "treeName": "Events",
 
     "beamEnergy": 6.535,
 
@@ -17,7 +16,7 @@
         "allowMiscRuns": []
     },
 
-    "kinematicCorrections": "../../../../parameters/proton_energy_loss/6.535RGK_clasdisP2.json",
+    "kinematicCorrections": "../../../../parameters/proton_energy_loss/6.535RGK_INCLUSIVE_GEMC_100M.json",
 
     "finalState": [
         { "pid": 11, "count": 1, "mode": "atleast" },

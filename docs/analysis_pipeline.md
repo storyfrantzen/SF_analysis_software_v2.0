@@ -54,7 +54,13 @@ with `qadb-info misc`; individual acceptable `Misc` runs can then be listed in
 `allowMiscRuns`. QADB is bypassed for simulation (`runNum == 11`). The terminal summary
 reports rejected events and accumulated DAQ-gated charge. The output ROOT file stores the
 processing counters in its `Summary` tree and the file-level charge separately as a
-top-level `TParameter<double>` named `AccumulatedCharge`.
+top-level `TParameter<double>` named `AccumulatedCharge`. It also writes a
+`RunCharge` tree with one row per observed run and the branches `runNum`,
+`accumulatedCharge_nC`, `totalEvents`, `passedQADBEvents`, and
+`failedQADBEvents`. Charge is attributed when QADB first accumulates a new good
+interval, so mixed-run converter files can be normalized after filtering the
+selected candidates by `runNum`. The per-run charge sum reproduces the legacy
+file-level total; the latter remains available for backward compatibility.
 
 Load QADB before configuring and building on JLab, for example `module load qadb/3.1`.
 If QADB is requested by a config but was unavailable at build time, `hipo2root` exits with
@@ -112,7 +118,17 @@ DC information from photons or calorimeter information from protons.
 
 This keeps a cut like `removeCVTPhi(min, max)` reusable across channels and systematic variations. The current primitive vocabulary includes `minP`, `maxP`, `pRange`, `betaRange`, `minCalEnergy`, `firstPidInstance`, `rejectDetector` for backward compatibility, `rejectSameSectorAsRole`, `vertexDiff`, `removeCVTPhi`, `fiducial`, `minPcalEnergy`, `samplingFractionDiagonal`, and `samplingFractionSigma`. The combined `samplingFraction` operation remains available for older configs.
 
-The `post_process` workflow reads `channel.particles` in order and recursively builds valid candidate combinations. This makes the topology generic enough for channels beyond eppi0. Every channel gets the generic selected-particle branches such as `selectedRoles`, `selectedIdx`, `selectedPid`, and `selectedP`, plus electron-derived DIS branches `Q2`, `nu`, and `xB` when the `electron` role is selected. Use `firstPidInstance` on that role when it must be the trigger/scattered electron, meaning the first particle with that PID in the reconstructed bank.
+The `post_process` workflow reads `channel.particles` in order and recursively builds valid candidate combinations. This makes the topology generic enough for channels beyond eppi0. Every channel gets the generic selected-particle branches such as `selectedRoles`, `selectedIdx`, `selectedPid`, and `selectedP`, plus standardized scalar branches for every configured role. A single proton role writes `protonIdx`, `protonPid`, `protonDet`, `protonSector`, `protonP`, `protonTheta`, and `protonPhi`; repeated roles receive numbered names such as `gamma1P` and `gamma2P`. Electron-derived DIS branches `Q2`, `nu`, and `xB` are added when the `electron` role is selected. Downstream converters can therefore copy scalar branches without interpreting role vectors. Use `firstPidInstance` on the electron role when it must be the trigger/scattered electron, meaning the first particle with that PID in the reconstructed bank.
+
+For EPPI0, all eligible proton-by-photon-pair combinations are evaluated before
+one candidate is retained. RGK uses `candidateSelection.method` set to
+`pi0MassThenMissingPt`: first choose the photon pair closest to the configured
+pi0 mass, then choose the proton that minimizes missing transverse momentum for
+that pair. Selected-particle input indices provide the final deterministic
+tie-break. The trigger-electron choice remains fixed by `firstPidInstance`; it
+does not participate in the combinatorial search. Loose exclusivity is tested
+only after the global winner is known, preventing a failed event from selecting
+a different combination solely to pass that gate.
 
 Post configs may share repeated topology definitions with an `extends` key. The
 parent path is resolved relative to the child config. Object values merge
@@ -268,8 +284,7 @@ studies when `generatedEventTree` is enabled:
 ```json
 {
   "generatedEventTree": {
-    "enabled": true,
-    "treeName": "GeneratedEvents"
+    "enabled": true
   },
   "fillMC": true,
   "matchMC": true,
@@ -277,13 +292,14 @@ studies when `generatedEventTree` is enabled:
 }
 ```
 
-`hipo2root` fills `GeneratedEvents` immediately after reading each MC event and
+`hipo2root` fills `gEvents` immediately after reading each MC event and
 before QADB, reconstructed final-state, or reconstructed DIS decisions. It has
 one scalar row per input event with:
 
 - `sourceFileId` and zero-based `sourceEventIndex`;
 - original `runNum`, `eventNum`, `topologyValid`, and `radiative`;
-- `weight` (currently one until generator weights are connected);
+- `stratumFlatIndex` (`-1` without bin-conditional provenance);
+- `weight` (one unless `generatorWeights` is enabled);
 - generated `Q2`, `nu`, `xB`, `y`, `W`, `minusT`, and `trentoPhi`.
 
 `sourceFileId` is a deterministic hash of the input HIPO basename. When a
@@ -294,12 +310,32 @@ candidates and is the acceptance join key. It is necessary because GEMC files
 use run 11 and may each restart `eventNum` at one; `(runNum,eventNum)` is
 therefore diagnostic metadata, not a cross-file primary key.
 
+For stratum-preserving AAO chunks, `hipo2root` can resolve the pooled event
+weight from the filename and the repacker provenance:
+
+```json
+{
+  "generatorWeights": {
+    "enabled": true,
+    "chunkProvenance": "/path/to/chunk_provenance.json"
+  }
+}
+```
+
+For portal type-2 submissions, the HIPO basename may use
+`STRINGID-LUNDFILENAME-OSGID-JOBINDEX.hipo`. The converter extracts the
+canonical `sNNNNN__gNNNN__pNNNNNN` token embedded in `LUNDFILENAME` and
+requires exactly one match in the provenance table. A missing, ambiguous, or
+unknown token is a fatal error rather than a silent unit-weight fallback. This
+does not alter the standard LUND event structure. Type-1 generator submissions
+are not yet supported.
+
 Radiative topology is `e p pi0 gamma`; non-radiative topology is `e p gamma
 gamma`. Invalid generator topologies remain represented with
 `topologyValid=false` and reset kinematics, making event accounting explicit.
 
 After this row is saved, the normal `finalState` and DIS skim apply only to the
-particle-level `Events` tree. This permits a compact REC numerator without
+`rParticles` tree. This permits a compact REC numerator without
 removing generated events from the denominator. Use
 `configs/processing/rgk/6.535/eppi0_mc_acceptance.json` as the reference.
 

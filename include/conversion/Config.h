@@ -4,6 +4,7 @@
 #include <vector>
 #include <fstream>
 #include <stdexcept>
+#include "core/TreeNames.h"
 #include "nlohmann/json.hpp"
 
 // ─── Final state ─────────────────────────────────────────────────────────
@@ -23,7 +24,11 @@ struct QADBConfig {
 
 struct GeneratedEventTreeConfig {
     bool enabled = false;
-    std::string treeName = "GeneratedEvents";
+};
+
+struct GeneratorWeightsConfig {
+    bool enabled = false;
+    std::string chunkProvenance;
 };
 
 struct InputValidationConfig {
@@ -37,7 +42,6 @@ struct Config {
 
     // ── Output ────────────────────────────────
     std::string outputFile = "output.root";
-    std::string treeName   = "Events";
 
     // ── Beam ──────────────────────────────────
     double beamEnergy = 10.6;
@@ -59,6 +63,7 @@ struct Config {
     bool saveUnmatchedMC = true;
     double matchMaxAngleDeg = 3.0;
     GeneratedEventTreeConfig generatedEventTree;
+    GeneratorWeightsConfig generatorWeights;
 
     // ── Data quality ──────────────────────────
     QADBConfig qadb;
@@ -83,7 +88,42 @@ struct Config {
         const auto configDir = std::filesystem::path(filename).parent_path();
 
         outputFile = j.value("outputFile", outputFile);
-        treeName   = j.value("treeName",   treeName);
+        const auto validateParticleTree = [&j](const char* key) {
+            if (!j.contains(key)) return;
+            const auto name = j.at(key).get<std::string>();
+            if (name != TreeNames::rParticles &&
+                name != TreeNames::legacyRParticles &&
+                name != TreeNames::legacyEvents) {
+                throw std::runtime_error(
+                    std::string(key) +
+                    " is no longer configurable; the output tree is rParticles"
+                );
+            }
+        };
+        validateParticleTree("reconstructedParticleTree");
+        validateParticleTree("treeName");
+
+        if (j.contains("reconstructedEventTree")) {
+            const auto& reconstructed = j.at("reconstructedEventTree");
+            if (!reconstructed.is_object()) {
+                throw std::runtime_error("reconstructedEventTree must be a JSON object");
+            }
+            if (reconstructed.contains("enabled") &&
+                !reconstructed.at("enabled").get<bool>()) {
+                throw std::runtime_error(
+                    "rEvents is part of the fixed ROOT schema and cannot be disabled"
+                );
+            }
+            if (reconstructed.contains("treeName")) {
+                const auto name = reconstructed.at("treeName").get<std::string>();
+                if (name != TreeNames::rEvents && name != TreeNames::legacyREvents) {
+                    throw std::runtime_error(
+                        "reconstructedEventTree.treeName is no longer configurable; "
+                        "the output tree is rEvents"
+                    );
+                }
+            }
+        }
 
         beamEnergy = j.value("beamEnergy", beamEnergy);
 
@@ -103,9 +143,39 @@ struct Config {
                 throw std::runtime_error("generatedEventTree must be a JSON object");
             }
             generatedEventTree.enabled = generated.value("enabled", generatedEventTree.enabled);
-            generatedEventTree.treeName = generated.value("treeName", generatedEventTree.treeName);
-            if (generatedEventTree.treeName.empty()) {
-                throw std::runtime_error("generatedEventTree.treeName must not be empty");
+            if (generated.contains("treeName")) {
+                const auto name = generated.at("treeName").get<std::string>();
+                if (name != TreeNames::gEvents && name != TreeNames::legacyGEvents) {
+                    throw std::runtime_error(
+                        "generatedEventTree.treeName is no longer configurable; "
+                        "the output tree is gEvents"
+                    );
+                }
+            }
+        }
+
+        if (j.contains("generatorWeights")) {
+            const auto& weights = j["generatorWeights"];
+            if (!weights.is_object()) {
+                throw std::runtime_error("generatorWeights must be a JSON object");
+            }
+            generatorWeights.enabled = weights.value("enabled", generatorWeights.enabled);
+            generatorWeights.chunkProvenance = weights.value(
+                "chunkProvenance", generatorWeights.chunkProvenance
+            );
+            if (generatorWeights.enabled) {
+                if (generatorWeights.chunkProvenance.empty()) {
+                    throw std::runtime_error(
+                        "generatorWeights.chunkProvenance is required when enabled"
+                    );
+                }
+                std::filesystem::path provenancePath =
+                    generatorWeights.chunkProvenance;
+                if (provenancePath.is_relative() && !configDir.empty()) {
+                    provenancePath = configDir / provenancePath;
+                }
+                generatorWeights.chunkProvenance =
+                    provenancePath.lexically_normal().string();
             }
         }
 
@@ -160,6 +230,16 @@ struct Config {
                 fs.count = p.at("count").get<int>();
                 fs.exact = (p.at("mode").get<std::string>() == "exact");
                 finalState.push_back(fs);
+            }
+        }
+        for (std::size_t i = 0; i < finalState.size(); ++i) {
+            for (std::size_t k = i + 1; k < finalState.size(); ++k) {
+                if (finalState[i].pid == finalState[k].pid) {
+                    throw std::runtime_error(
+                        "finalState contains duplicate PID " +
+                        std::to_string(finalState[i].pid)
+                    );
+                }
             }
         }
     }

@@ -1,6 +1,5 @@
 {
     "outputFile": "6.535_rgk_gemc_sidis_electrons.root",
-    "treeName": "Events",
 
     "beamEnergy": 6.535,
 

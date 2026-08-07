@@ -197,7 +197,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("input_file", type=Path)
     parser.add_argument("baseline_params", type=Path)
     parser.add_argument("updated_params", type=Path)
-    parser.add_argument("--tree", default="Events")
+    parser.add_argument("--tree", default="rParticles")
     parser.add_argument("--detector", choices=["FD", "CD", "both"], default="both")
     parser.add_argument("--baseline-label", default="baseline")
     parser.add_argument("--updated-label", default="updated")

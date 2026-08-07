@@ -28,6 +28,12 @@ ROOT_VECTOR_BRANCHES = (
     "selectedP",
     "selectedTheta",
     "selectedPhi",
+    "topologyPids",
+    "topologyPidCounts",
+    "topologyPidCountsFT",
+    "topologyPidCountsFD",
+    "topologyPidCountsCD",
+    "topologyPidCountsOther",
 )
 
 ROOT_PREFERRED_BRANCHES = (
@@ -38,6 +44,18 @@ ROOT_PREFERRED_BRANCHES = (
     "helicity",
     "charge",
     "passTopology",
+    "nPid11",
+    "nPid11FT",
+    "nPid11FD",
+    "nPid11CD",
+    "nPid2212",
+    "nPid2212FT",
+    "nPid2212FD",
+    "nPid2212CD",
+    "nPid22",
+    "nPid22FT",
+    "nPid22FD",
+    "nPid22CD",
     "electronDet",
     "electronSector",
     "electronP",
@@ -194,7 +212,95 @@ REDUNDANT_COLUMNS = (
     ("gamma1Sector", "g1Sector"),
     ("gamma2Sector", "g2Sector"),
     ("rec_proton_detector", "pDet"),
+    ("rec_eIdx", "rec_electronIdx"),
+    ("rec_eDet", "rec_electronDet"),
+    ("rec_eSector", "rec_electronSector"),
+    ("rec_pIdx", "rec_protonIdx"),
+    ("rec_pDet", "rec_protonDet"),
+    ("rec_proton_detector", "rec_protonDet"),
+    ("rec_pSector", "rec_protonSector"),
+    ("rec_g1Idx", "rec_gamma1Idx"),
+    ("rec_g1Det", "rec_gamma1Det"),
+    ("rec_g1Sector", "rec_gamma1Sector"),
+    ("rec_g2Idx", "rec_gamma2Idx"),
+    ("rec_g2Det", "rec_gamma2Det"),
+    ("rec_g2Sector", "rec_gamma2Sector"),
+    ("gen_eIdx", "gen_electronIdx"),
+    ("gen_eDet", "gen_electronDet"),
+    ("gen_eSector", "gen_electronSector"),
+    ("gen_pIdx", "gen_protonIdx"),
+    ("gen_pDet", "gen_protonDet"),
+    ("gen_pSector", "gen_protonSector"),
+    ("gen_g1Idx", "gen_gamma1Idx"),
+    ("gen_g1Det", "gen_gamma1Det"),
+    ("gen_g1Sector", "gen_gamma1Sector"),
+    ("gen_g2Idx", "gen_gamma2Idx"),
+    ("gen_g2Det", "gen_gamma2Det"),
+    ("gen_g2Sector", "gen_gamma2Sector"),
 )
+
+
+PARTICLE_DISPLAY_PREFIXES = (
+    ("electron", "electron"),
+    ("proton", "proton"),
+    ("gamma1", "gamma 1"),
+    ("gamma2", "gamma 2"),
+    ("gamma", "gamma"),
+    ("pi0", "pi0"),
+    ("g1", "gamma 1"),
+    ("g2", "gamma 2"),
+    ("e", "electron"),
+    ("p", "proton"),
+)
+
+
+PARTICLE_QUANTITY_DISPLAY_NAMES = {
+    "idx": "index",
+    "index": "index",
+    "particleidx": "index",
+    "matchedgenidx": "matched GEN index",
+    "matchangledeg": "match angle deg",
+    "pid": "pid",
+    "charge": "charge",
+    "status": "status",
+    "det": "detector",
+    "detector": "detector",
+    "sector": "sector",
+    "p": "p",
+    "px": "px",
+    "py": "py",
+    "pz": "pz",
+    "praw": "p raw",
+    "theta": "theta",
+    "thetadeg": "theta deg",
+    "thetaraw": "theta raw",
+    "thetarawdeg": "theta raw deg",
+    "phi": "phi",
+    "phideg": "phi deg",
+    "phiraw": "phi raw",
+    "phirawdeg": "phi raw deg",
+    "deltap": "delta p",
+    "deltatheta": "delta theta",
+    "deltaphi": "delta phi",
+    "beta": "beta",
+    "chi2pid": "chi2 pid",
+    "trackchi2": "track chi2",
+    "trackndf": "track NDF",
+    "trackchi2n": "track chi2/NDF",
+    "vx": "vx",
+    "vy": "vy",
+    "vz": "vz",
+    "time": "time",
+    "epcal": "E PCAL",
+    "eecin": "E ECIN",
+    "eecout": "E ECOUT",
+    "samplingfraction": "SF",
+    "samplingfractionpcal": "SF PCAL",
+    "samplingfractionecin": "SF ECIN",
+    "samplingfractionecout": "SF ECOUT",
+    "samplingfractionecal": "SF ECAL",
+    "passfiducial": "fiducial",
+}
 
 
 DISPLAY_NAMES = {
@@ -324,8 +430,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("input", type=Path, help=".npz sample or selected .root file")
     parser.add_argument("--output", type=Path, required=True, help="Output .html path")
     parser.add_argument("--format", choices=("auto", "npz", "root"), default="auto")
-    parser.add_argument("--tree", default="Events", help="ROOT tree name")
+    parser.add_argument(
+        "--tree",
+        help=(
+            "ROOT tree name; defaults to sEvents, rParticles, rEvents, then gEvents"
+        ),
+    )
     parser.add_argument("--dictionary", type=Path, help="Optional ROOT dictionary shared library")
+    parser.add_argument(
+        "--root-filter",
+        help=(
+            "Optional ROOT RDataFrame expression applied before sampling. Converter object "
+            "fields use their qualified branch names, such as event.runNum and rec.pid."
+        ),
+    )
     parser.add_argument(
         "--columns",
         nargs="+",
@@ -336,8 +454,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=250_000,
         help=(
-            "Maximum rows embedded in the HTML. ROOT inputs read at most this many rows "
-            "by default; use 0 to read all rows."
+            "Maximum rows embedded in the HTML. Larger NPZ and ROOT inputs are sampled "
+            "deterministically using --seed; use 0 to read all rows."
+        ),
+    )
+    parser.add_argument(
+        "--max-source-events",
+        type=int,
+        default=None,
+        help=(
+            "Maximum distinct source events embedded from a ROOT input. All particle rows "
+            "belonging to each sampled event are retained. This overrides the --max-events "
+            "row limit; use 0 to read every source event."
         ),
     )
     parser.add_argument("--seed", type=int, default=12345)
@@ -355,6 +483,10 @@ def main() -> int:
             raise ValueError("Could not infer input format; pass --format npz or --format root")
 
     if input_format == "npz":
+        if args.root_filter:
+            raise ValueError("--root-filter requires a ROOT input")
+        if args.max_source_events is not None:
+            raise ValueError("--max-source-events currently requires a ROOT input")
         log(f"Reading NPZ input {args.input}")
         arrays, metadata = load_npz(args.input)
     else:
@@ -364,13 +496,35 @@ def main() -> int:
             args.dictionary,
             args.columns,
             max_events=args.max_events,
+            max_source_events=args.max_source_events,
+            root_filter=args.root_filter,
+            seed=args.seed,
         )
 
     log("Preparing embedded data")
     arrays = add_derived_quantities(arrays)
     arrays = normalize_visual_columns(arrays)
     arrays = rectangular_numeric_and_text(arrays)
-    arrays, downsample = downsample_arrays(arrays, args.max_events, args.seed)
+    row_limit = 0 if args.max_source_events is not None else args.max_events
+    arrays, downsample = downsample_arrays(arrays, row_limit, args.seed)
+    if input_format == "root" and metadata.get("root_rows_total", 0) > len(next(iter(arrays.values()))):
+        downsample = {
+            "originalRows": int(metadata["root_rows_total"]),
+            "embeddedRows": int(len(next(iter(arrays.values())))),
+            "sampled": True,
+            "strategy": "deterministic-random",
+            "seed": int(args.seed),
+        }
+        if metadata.get("sampling_unit") == "source-events":
+            downsample.update(
+                {
+                    "unit": "source-events",
+                    "originalEvents": int(metadata["root_events_total"]),
+                    "embeddedEvents": int(metadata["root_events_read"]),
+                }
+            )
+    if args.root_filter:
+        downsample["filter"] = args.root_filter
     payload = build_payload(args.input, arrays, metadata, downsample, args.title)
     log(f"Writing {args.output}")
     html = render_html(payload)
@@ -402,14 +556,19 @@ def load_npz(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 
 def load_root(
     path: Path,
-    tree_name: str,
+    tree_name: str | None,
     dictionary: Path | None,
     requested_columns: list[str] | None,
     max_events: int,
+    max_source_events: int | None,
+    root_filter: str | None,
+    seed: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     import ROOT  # type: ignore
 
     ROOT.gROOT.SetBatch(True)
+    if ROOT.IsImplicitMTEnabled():
+        ROOT.DisableImplicitMT()
     log(f"Opening ROOT input {path}")
     loaded_dictionary = load_root_dictionary(ROOT, dictionary)
 
@@ -417,6 +576,7 @@ def load_root(
     root_file = ROOT.TFile.Open(root_path, "READ")
     if not root_file or root_file.IsZombie():
         raise RuntimeError(f"Could not open ROOT file: {root_path}")
+    tree_name = resolve_root_tree_name(root_file, tree_name)
     tree = root_file.Get(tree_name)
     if not tree:
         root_file.Close()
@@ -445,18 +605,94 @@ def load_root(
         columns.extend(name for name in object_aliases if name not in columns)
     root_file.Close()
 
-    read_limit = entries if max_events <= 0 else min(entries, max_events)
-    if read_limit < entries:
-        log(f"Reading {len(columns)} ROOT columns from first {read_limit} of {entries} rows")
+    filtered_entries = entries
+    eligible_entries: np.ndarray | None = None
+    event_starts: np.ndarray | None = None
+    key_expressions = None
+    if max_source_events is not None:
+        key_expressions = root_event_key_expressions(available, object_aliases)
+        if key_expressions is None:
+            raise RuntimeError(
+                "--max-source-events requires sourceFileId/sourceEventIndex or runNum/eventNum "
+                f"event identifiers in tree {tree_name}"
+            )
+    if root_filter:
+        log(f"Applying ROOT filter: {root_filter}")
+        eligible_entries, event_starts = read_filtered_root_selection(
+            ROOT,
+            root_path,
+            tree_name,
+            root_filter,
+            object_aliases,
+            key_expressions,
+        )
+        filtered_entries = int(eligible_entries.size)
+        if filtered_entries == 0:
+            raise ValueError(f"ROOT filter selected no rows: {root_filter}")
+        log(f"ROOT filter selected {filtered_entries} of {entries} rows")
+
+    event_count: int | None = None
+    event_read_count: int | None = None
+    if max_source_events is not None:
+        log(f"Scanning {filtered_entries} qualifying rows for distinct source events")
+        if event_starts is None:
+            event_starts = read_root_event_starts(
+                ROOT,
+                root_path,
+                tree_name,
+                key_expressions,
+            )
+        sampled_positions, event_count = sample_event_row_indices(
+            event_starts,
+            filtered_entries,
+            max_source_events,
+            seed,
+        )
+        sample_indices = (
+            sampled_positions
+            if eligible_entries is None or sampled_positions is None
+            else eligible_entries[sampled_positions]
+        )
+        event_read_count = (
+            event_count
+            if sampled_positions is None
+            else min(max_source_events, event_count)
+        )
     else:
-        log(f"Reading {len(columns)} ROOT columns from {entries} rows")
+        sampled_positions = sample_row_indices(filtered_entries, max_events, seed)
+        sample_indices = (
+            sampled_positions
+            if eligible_entries is None or sampled_positions is None
+            else eligible_entries[sampled_positions]
+        )
+    read_count = filtered_entries if sample_indices is None else len(sample_indices)
+    if max_source_events is not None:
+        if sample_indices is None:
+            log(
+                f"Reading {len(columns)} ROOT columns from all {event_count} source events "
+                f"({filtered_entries} rows)"
+            )
+        else:
+            log(
+                f"Reading {len(columns)} ROOT columns from a deterministic random sample "
+                f"of {event_read_count} of {event_count} source events "
+                f"({read_count} of {filtered_entries} qualifying rows, seed {seed})"
+            )
+    elif sample_indices is not None:
+        log(
+            f"Reading {len(columns)} ROOT columns from a deterministic random sample "
+            f"of {read_count} of {filtered_entries} qualifying rows (seed {seed})"
+        )
+    else:
+        log(f"Reading {len(columns)} ROOT columns from {filtered_entries} rows")
     raw = read_root_arrays(
         ROOT,
         root_path,
         tree_name,
         columns,
         aliases=object_branch_aliases(available),
-        max_events=max_events,
+        sample_indices=sample_indices,
+        root_filter=root_filter,
         strict=bool(requested_columns),
     )
     arrays = {name: raw[name] for name in columns}
@@ -464,10 +700,59 @@ def load_root(
     metadata = {"format": "root", "tree": tree_name}
     if loaded_dictionary:
         metadata["dictionary"] = str(loaded_dictionary)
-    if max_events > 0 and entries > max_events:
-        metadata["root_rows_total"] = entries
-        metadata["root_rows_read"] = max_events
+    if root_filter:
+        metadata["root_filter"] = root_filter
+        metadata["root_rows_before_filter"] = entries
+    if max_source_events is None and max_events > 0 and filtered_entries > max_events:
+        metadata["root_rows_total"] = filtered_entries
+        metadata["root_rows_read"] = read_count
+        metadata["sampling_seed"] = seed
+        metadata["sampling_strategy"] = "deterministic-random"
+    if max_source_events is not None:
+        metadata["root_rows_total"] = filtered_entries
+        metadata["root_rows_read"] = read_count
+        metadata["root_events_total"] = event_count
+        metadata["root_events_read"] = event_read_count
+        metadata["sampling_unit"] = "source-events"
+        if sample_indices is not None:
+            metadata["sampling_seed"] = seed
+            metadata["sampling_strategy"] = "deterministic-random"
     return arrays, metadata
+
+
+def resolve_root_tree_name(root_file: Any, requested: str | None) -> str:
+    if requested and root_file.Get(requested):
+        return requested
+    aliases = {
+        "sEvents": ("SelectedEvents", "Events"),
+        "SelectedEvents": ("sEvents", "Events"),
+        "rParticles": ("ReconstructedParticles", "Events"),
+        "ReconstructedParticles": ("rParticles", "Events"),
+        "rEvents": ("ReconstructedEvents",),
+        "ReconstructedEvents": ("rEvents",),
+        "gEvents": ("GeneratedEvents",),
+        "GeneratedEvents": ("gEvents",),
+    }
+    for candidate in aliases.get(requested, ()):
+        if root_file.Get(candidate):
+            log(f"Warning: using compatible tree {candidate} instead of {requested}")
+            return candidate
+    if requested:
+        return requested
+    for candidate in (
+        "sEvents",
+        "rParticles",
+        "rEvents",
+        "gEvents",
+        "SelectedEvents",
+        "ReconstructedParticles",
+        "ReconstructedEvents",
+        "GeneratedEvents",
+        "Events",
+    ):
+        if root_file.Get(candidate):
+            return candidate
+    return "sEvents"
 
 
 def load_root_dictionary(ROOT: Any, dictionary: Path | None) -> Path | None:
@@ -479,18 +764,20 @@ def load_root_dictionary(ROOT: Any, dictionary: Path | None) -> Path | None:
     elif dictionary.suffix == ".so":
         candidates.append(dictionary.with_suffix(".dylib"))
 
+    found_candidate = False
     for candidate in candidates:
         if not candidate.exists():
             continue
+        found_candidate = True
         if ROOT.gSystem.Load(str(candidate.resolve())) >= 0:
             if candidate != dictionary:
                 print(f"Using ROOT dictionary {candidate} instead of {dictionary}", file=sys.stderr)
             return candidate
-        print(f"Warning: could not load ROOT dictionary {candidate}; trying without it", file=sys.stderr)
-        return None
+        print(f"Warning: could not load ROOT dictionary {candidate}; trying alternatives", file=sys.stderr)
 
     tried = ", ".join(str(candidate) for candidate in candidates)
-    print(f"Warning: ROOT dictionary not found ({tried}); continuing without it", file=sys.stderr)
+    problem = "could not be loaded" if found_candidate else "was not found"
+    print(f"Warning: ROOT dictionary {problem} ({tried}); continuing without it", file=sys.stderr)
     return None
 
 
@@ -505,12 +792,125 @@ def is_plain_root_branch(branch: Any) -> bool:
 def object_branch_aliases(available: set[str]) -> dict[str, str]:
     aliases: dict[str, str] = {}
     if "event" in available:
-        aliases.update({f"event_{field}": f"event.{field}" for field in EVENT_OBJECT_FIELDS})
+        aliases.update({f"event.{field}": f"event.{field}" for field in EVENT_OBJECT_FIELDS})
     if "rec" in available:
-        aliases.update({f"rec_{field}": f"rec.{field}" for field in REC_OBJECT_FIELDS})
+        aliases.update({f"rec.{field}": f"rec.{field}" for field in REC_OBJECT_FIELDS})
     if "gen" in available:
-        aliases.update({f"gen_{field}": f"gen.{field}" for field in GEN_OBJECT_FIELDS})
+        aliases.update({f"gen.{field}": f"gen.{field}" for field in GEN_OBJECT_FIELDS})
     return aliases
+
+
+def root_event_key_expressions(
+    available: set[str],
+    aliases: dict[str, str],
+) -> tuple[tuple[str, str], tuple[str, str]] | None:
+    candidates = (
+        ("event.sourceFileId", "event.sourceEventIndex"),
+        ("sourceFileId", "sourceEventIndex"),
+        ("event.runNum", "event.eventNum"),
+        ("runNum", "eventNum"),
+        ("rec.runNum", "rec.eventNum"),
+    )
+    for primary, secondary in candidates:
+        if primary not in available and primary not in aliases:
+            continue
+        if secondary not in available and secondary not in aliases:
+            continue
+        return (
+            (primary, aliases.get(primary, primary)),
+            (secondary, aliases.get(secondary, secondary)),
+        )
+    return None
+
+
+def define_root_aliases(frame: Any, aliases: dict[str, str]) -> Any:
+    for name, expression in aliases.items():
+        if name != expression:
+            frame = frame.Define(name, expression)
+    return frame
+
+
+def read_filtered_root_selection(
+    ROOT: Any,
+    root_path: str,
+    tree_name: str,
+    root_filter: str,
+    aliases: dict[str, str],
+    key_expressions: tuple[tuple[str, str], tuple[str, str]] | None,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    frame = define_root_aliases(ROOT.RDataFrame(tree_name, root_path), aliases)
+    output_names = ["rdfentry_"]
+    key_names = ("__sf_filtered_event_key_primary", "__sf_filtered_event_key_secondary")
+    if key_expressions is not None:
+        for output_name, (logical_name, expression) in zip(key_names, key_expressions):
+            resolved_expression = logical_name if logical_name in aliases else expression
+            frame = frame.Define(
+                output_name,
+                f"static_cast<ULong64_t>({resolved_expression})",
+            )
+        output_names.extend(key_names)
+    try:
+        values = frame.Filter(root_filter).AsNumpy(output_names)
+    except RuntimeError as error:
+        raise RuntimeError(f"ROOT filter failed ({root_filter!r}): {error}") from error
+
+    entries = np.asarray(values["rdfentry_"], dtype=np.uint64)
+    if key_expressions is None or entries.size == 0:
+        return entries, None
+    primary = np.asarray(values[key_names[0]])
+    secondary = np.asarray(values[key_names[1]])
+    boundaries = np.empty(entries.size, dtype=bool)
+    boundaries[0] = True
+    boundaries[1:] = (primary[1:] != primary[:-1]) | (secondary[1:] != secondary[:-1])
+    return entries, np.flatnonzero(boundaries).astype(np.uint64, copy=False)
+
+
+def read_root_event_starts(
+    ROOT: Any,
+    root_path: str,
+    tree_name: str,
+    key_expressions: tuple[tuple[str, str], tuple[str, str]],
+) -> np.ndarray:
+    if not hasattr(ROOT, "SFVisualizerEventBoundaries"):
+        declared = ROOT.gInterpreter.Declare(
+            """
+            namespace SFVisualizerEventBoundaries {
+            bool initialized = false;
+            ULong64_t previous_primary = 0;
+            ULong64_t previous_secondary = 0;
+            void reset() {
+                initialized = false;
+                previous_primary = 0;
+                previous_secondary = 0;
+            }
+            bool starts_event(ULong64_t primary, ULong64_t secondary) {
+                const bool starts = !initialized
+                    || primary != previous_primary
+                    || secondary != previous_secondary;
+                initialized = true;
+                previous_primary = primary;
+                previous_secondary = secondary;
+                return starts;
+            }
+            }
+            """
+        )
+        if not declared:
+            raise RuntimeError("Could not initialize ROOT source-event boundary scanner")
+
+    ROOT.SFVisualizerEventBoundaries.reset()
+    frame = ROOT.RDataFrame(tree_name, root_path)
+    output_names = ("__sf_event_key_primary", "__sf_event_key_secondary")
+    for output_name, (_, expression) in zip(output_names, key_expressions):
+        frame = frame.Define(output_name, f"static_cast<ULong64_t>({expression})")
+    try:
+        starts = frame.Filter(
+            "SFVisualizerEventBoundaries::starts_event("
+            f"{output_names[0]}, {output_names[1]})"
+        ).AsNumpy(["rdfentry_"])
+        return np.asarray(starts["rdfentry_"], dtype=np.uint64)
+    finally:
+        ROOT.SFVisualizerEventBoundaries.reset()
 
 
 def read_root_arrays(
@@ -520,31 +920,71 @@ def read_root_arrays(
     columns: list[str],
     *,
     aliases: dict[str, str],
-    max_events: int,
+    sample_indices: np.ndarray | None,
+    root_filter: str | None,
     strict: bool,
 ) -> dict[str, Any]:
     remaining = list(columns)
-    while remaining:
-        try:
-            frame = ROOT.RDataFrame(tree_name, root_path)
-            for name in remaining:
-                if name in aliases:
-                    frame = frame.Define(name, aliases[name])
-            if max_events > 0:
-                frame = frame.Range(max_events)
-            return frame.AsNumpy(remaining)
-        except RuntimeError as error:
-            match = re.search(r'The column named "([^"]+)"', str(error))
-            if strict or not match or match.group(1) not in remaining:
-                raise
-            column = match.group(1)
-            print(
-                f"Warning: skipping ROOT branch {column!r}; its type needs a dictionary",
-                file=sys.stderr,
-            )
-            remaining.remove(column)
-            columns[:] = remaining
+    if sample_indices is not None:
+        set_root_sample_entries(ROOT, sample_indices)
+    try:
+        while remaining:
+            try:
+                frame = ROOT.RDataFrame(tree_name, root_path)
+                defined_aliases: set[str] = set()
+                if root_filter:
+                    frame = define_root_aliases(frame, aliases)
+                    defined_aliases.update(aliases)
+                    frame = frame.Filter(root_filter)
+                if sample_indices is not None:
+                    frame = frame.Filter("SFVisualizerRootSampling::includes(rdfentry_)")
+                for name in remaining:
+                    if name in aliases and name not in defined_aliases:
+                        frame = frame.Define(name, aliases[name])
+                return frame.AsNumpy(remaining)
+            except RuntimeError as error:
+                match = re.search(r'The column named "([^"]+)"', str(error))
+                if strict or not match or match.group(1) not in remaining:
+                    raise
+                column = match.group(1)
+                print(
+                    f"Warning: skipping ROOT branch {column!r}; its type needs a dictionary",
+                    file=sys.stderr,
+                )
+                remaining.remove(column)
+                columns[:] = remaining
+    finally:
+        if sample_indices is not None:
+            ROOT.SFVisualizerRootSampling.clear_entries()
     raise RuntimeError(f"No readable scalar or vector branches found in {tree_name}")
+
+
+def set_root_sample_entries(ROOT: Any, indices: np.ndarray) -> None:
+    if not hasattr(ROOT, "SFVisualizerRootSampling"):
+        declared = ROOT.gInterpreter.Declare(
+            """
+            #include <unordered_set>
+            #include <vector>
+            namespace SFVisualizerRootSampling {
+            std::unordered_set<ULong64_t> entries;
+            void set_entries(const std::vector<ULong64_t>& values) {
+                entries.clear();
+                entries.reserve(values.size());
+                entries.insert(values.begin(), values.end());
+            }
+            void clear_entries() {
+                entries.clear();
+                entries.rehash(0);
+            }
+            bool includes(ULong64_t entry) {
+                return entries.find(entry) != entries.end();
+            }
+            }
+            """
+        )
+        if not declared:
+            raise RuntimeError("Could not initialize the ROOT entry sampler")
+    ROOT.SFVisualizerRootSampling.set_entries(np.asarray(indices, dtype=np.uint64))
 
 
 def extract_selected_particle_quantities(raw: dict[str, Any]) -> dict[str, np.ndarray]:
@@ -678,18 +1118,17 @@ def add_cut_result_quantities(arrays: dict[str, Any]) -> None:
 
         reference = arrays.get(evaluated_name, arrays.get(failed_name))
         rows = len(np.asarray(reference))
-        evaluated_values = np.asarray(
-            arrays.get(evaluated_name, np.full(rows, "", dtype=str)), dtype=str
-        )
-        failed_values = np.asarray(
-            arrays.get(failed_name, np.full(rows, "", dtype=str)), dtype=str
-        )
+        # PyROOT may expose std::string branches as per-row character arrays
+        # rather than a rectangular NumPy string array.  Keep the rows in their
+        # original representation and normalize each value individually.
+        evaluated_values = arrays.get(evaluated_name, np.full(rows, "", dtype=str))
+        failed_values = arrays.get(failed_name, np.full(rows, "", dtype=str))
         evaluated_sets: list[set[str]] = []
         failed_sets: list[set[str]] = []
         cut_names: set[str] = set()
         for row in range(rows):
-            evaluated = csv_name_set(evaluated_values[row])
-            failed = csv_name_set(failed_values[row])
+            evaluated = csv_name_set(root_text_value(evaluated_values[row]))
+            failed = csv_name_set(root_text_value(failed_values[row]))
             evaluated.update(failed)  # Supports older files with failedCuts only.
             evaluated_sets.append(evaluated)
             failed_sets.append(failed)
@@ -713,6 +1152,29 @@ def add_cut_result_quantities(arrays: dict[str, Any]) -> None:
 
 def csv_name_set(value: Any) -> set[str]:
     return {name.strip() for name in str(value).split(",") if name.strip()}
+
+
+def root_text_value(value: Any) -> str:
+    """Normalize scalar text and PyROOT's per-row string representations."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", errors="replace").rstrip("\x00")
+    if isinstance(value, np.ndarray) and value.ndim == 0:
+        return root_text_value(value.item())
+    try:
+        items = list(value)
+    except TypeError:
+        return str(value)
+    if not items:
+        return ""
+    if all(isinstance(item, (int, np.integer)) for item in items):
+        return bytes(int(item) for item in items if int(item) != 0).decode(
+            "utf-8", errors="replace"
+        )
+    text_items = [root_text_value(item) for item in items]
+    separator = "" if all(len(item) <= 1 for item in text_items) else ","
+    return separator.join(text_items)
 
 
 def sanitize_cut_name(name: str) -> str:
@@ -889,18 +1351,59 @@ def is_scalar_text(value: Any) -> bool:
     return isinstance(value, (str, bytes, np.str_))
 
 
+def sample_row_indices(row_count: int, max_events: int, seed: int) -> np.ndarray | None:
+    if max_events <= 0 or row_count <= max_events:
+        return None
+    rng = random.Random(seed)
+    return np.asarray(sorted(rng.sample(range(row_count), max_events)), dtype=np.uint64)
+
+
+def sample_event_row_indices(
+    event_starts: np.ndarray,
+    row_count: int,
+    max_source_events: int,
+    seed: int,
+) -> tuple[np.ndarray | None, int]:
+    starts = np.asarray(event_starts, dtype=np.int64)
+    if starts.ndim != 1:
+        raise ValueError("ROOT event boundaries must be a one-dimensional array")
+    if row_count < 0:
+        raise ValueError("ROOT row count cannot be negative")
+    if row_count == 0:
+        if starts.size:
+            raise ValueError("An empty ROOT tree cannot contain event boundaries")
+        return None, 0
+    if starts.size == 0 or starts[0] != 0 or np.any(starts[1:] <= starts[:-1]) or starts[-1] >= row_count:
+        raise ValueError("ROOT event boundaries must start at row zero and increase within the tree")
+    event_count = int(starts.size)
+    if max_source_events <= 0 or event_count <= max_source_events:
+        return None, event_count
+
+    rng = random.Random(seed)
+    selected_events = np.zeros(event_count, dtype=bool)
+    selected_events[rng.sample(range(event_count), max_source_events)] = True
+    event_row_counts = np.diff(np.append(starts, row_count))
+    selected_rows = np.flatnonzero(np.repeat(selected_events, event_row_counts))
+    return selected_rows.astype(np.uint64, copy=False), event_count
+
+
 def downsample_arrays(
     arrays: dict[str, np.ndarray],
     max_events: int,
     seed: int,
 ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     row_count = next(iter(arrays.values())).shape[0]
-    if max_events <= 0 or row_count <= max_events:
+    indices = sample_row_indices(row_count, max_events, seed)
+    if indices is None:
         return arrays, {"originalRows": int(row_count), "embeddedRows": int(row_count), "sampled": False}
-    rng = random.Random(seed)
-    indices = np.asarray(sorted(rng.sample(range(row_count), max_events)), dtype=np.int64)
     sampled = {name: value[indices] for name, value in arrays.items()}
-    return sampled, {"originalRows": int(row_count), "embeddedRows": int(max_events), "sampled": True}
+    return sampled, {
+        "originalRows": int(row_count),
+        "embeddedRows": int(max_events),
+        "sampled": True,
+        "strategy": "deterministic-random",
+        "seed": int(seed),
+    }
 
 
 def build_payload(
@@ -1055,9 +1558,9 @@ def variable_group_rank(name: str) -> int:
         return particle_rank
     if is_mass_or_exclusivity_variable(name):
         return 9
-    if lowered.startswith("rec_"):
+    if lowered.startswith(("rec_", "rec.")):
         return 10
-    if lowered.startswith("gen_"):
+    if lowered.startswith(("gen_", "gen.")):
         return 11
     if is_detector_geometry_variable(name):
         return 12
@@ -1086,11 +1589,11 @@ def variable_group_label(name: str) -> str:
 
 def canonical_variable_name(name: str) -> str:
     lowered = name.lower()
-    for prefix in ("rec_", "gen_"):
+    for prefix in ("rec_", "gen_", "rec.", "gen.", "event."):
         if lowered.startswith(prefix):
             lowered = lowered[len(prefix):]
             break
-    return lowered.replace("_", "")
+    return lowered.replace("_", "").replace(".", "")
 
 
 def particle_variable_group_rank(name: str) -> int | None:
@@ -1115,7 +1618,7 @@ def is_event_variable(name: str) -> bool:
     canonical = canonical_variable_name(name)
     if is_run_number_column(name) or canonical in {"sourcefileid", "sourceeventindex", "eventnum"}:
         return True
-    if lowered.startswith(("rec_", "gen_")):
+    if lowered.startswith(("rec_", "gen_", "rec.", "gen.")):
         return False
     return canonical in {
         "helicity",
@@ -1168,9 +1671,9 @@ def is_detector_geometry_variable(name: str) -> bool:
 
 def source_sort_rank(name: str) -> int:
     lowered = name.lower()
-    if lowered.startswith("rec_"):
+    if lowered.startswith(("rec_", "rec.")):
         return 1
-    if lowered.startswith("gen_"):
+    if lowered.startswith(("gen_", "gen.")):
         return 2
     return 0
 
@@ -1306,7 +1809,7 @@ def categorical_filter_sort_key(filter_info: dict[str, Any]) -> tuple[int, int, 
 
 def category_group_rank(name: str) -> int:
     lowered = name.lower()
-    canonical = lowered.removeprefix("rec_").removeprefix("gen_").replace("_", "")
+    canonical = canonical_variable_name(name)
     if is_run_number_column(name) or canonical in {"sourcefileid", "sourceeventindex", "eventnum", "helicity", "charge"}:
         return 0
     if is_pass_flag(name) or lowered in {"rec_selected", "rec_not_selected"} or "selected" in canonical:
@@ -1350,7 +1853,7 @@ def category_group_label(name: str) -> str:
 
 
 def category_kind_rank(name: str) -> int:
-    canonical = name.lower().removeprefix("rec_").removeprefix("gen_").replace("_", "")
+    canonical = canonical_variable_name(name)
     if is_run_number_column(name):
         return 0
     if canonical.endswith("det") or canonical.endswith("detector"):
@@ -1383,7 +1886,11 @@ def category_label(name: str, value: Any) -> str:
 
 
 def is_pass_flag(name: str) -> bool:
-    core = name.removeprefix("rec_").removeprefix("gen_")
+    core = name
+    for prefix in ("rec_", "gen_", "rec.", "gen.", "event."):
+        if core.lower().startswith(prefix):
+            core = core[len(prefix):]
+            break
     return core.startswith("pass") or bool(
         re.match(r"^(?:electron|proton|gamma1|gamma2|gamma|pi0)Pass", core)
     )
@@ -1402,9 +1909,42 @@ def is_integer_category(name: str) -> bool:
 
 
 def label_for(name: str) -> str:
+    particle_label = particle_display_label(name)
+    if particle_label is not None:
+        return particle_label
     if name in DISPLAY_NAMES:
         return DISPLAY_NAMES[name]
     return name.replace("_", " ")
+
+
+def particle_display_label(name: str) -> str | None:
+    lowered = name.lower()
+    source = ""
+    base = name
+    if lowered.startswith("rec_"):
+        source = "REC"
+        base = name[4:]
+    elif lowered.startswith("gen_"):
+        source = "GEN"
+        base = name[4:]
+    elif lowered.startswith("rec."):
+        source = "REC"
+        base = name[4:]
+    elif lowered.startswith("gen."):
+        source = "GEN"
+        base = name[4:]
+
+    canonical = base.replace("_", "").replace(".", "").lower()
+    if source and canonical in PARTICLE_QUANTITY_DISPLAY_NAMES:
+        return f"{source} {PARTICLE_QUANTITY_DISPLAY_NAMES[canonical]}"
+    for prefix, particle in PARTICLE_DISPLAY_PREFIXES:
+        if not canonical.startswith(prefix):
+            continue
+        quantity = PARTICLE_QUANTITY_DISPLAY_NAMES.get(canonical[len(prefix):])
+        if quantity is None:
+            continue
+        return " ".join(part for part in (source, particle, quantity) if part)
+    return None
 
 
 def first_present(
@@ -1489,6 +2029,26 @@ body {{
 }}
 .startup-loading-content strong {{ font-size: 16px; }}
 .startup-loading-content span {{ color: var(--muted); }}
+.startup-loading-progress {{
+  width: min(320px, 72vw);
+  height: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+}}
+.startup-loading-progress-bar {{
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 120ms ease-out;
+}}
+.startup-loading-percent {{
+  min-width: 4ch;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}}
 @keyframes startup-spin {{ to {{ transform: rotate(360deg); }} }}
 @media (prefers-reduced-motion: reduce) {{
   .startup-loading {{ transition: none; }}
@@ -1961,9 +2521,31 @@ canvas.fit-range-picker {{
   padding: 2px 6px;
   background: transparent;
 }}
+.canvas-toolbar .display-tile {{
+  display: grid;
+  grid-template-columns: repeat(3, max-content);
+  align-content: center;
+  gap: 3px 6px;
+}}
+.canvas-toolbar .action-tile {{
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: center;
+  gap: 2px;
+}}
+.canvas-toolbar .action-tile button {{ min-width: 0; white-space: nowrap; }}
+.display-tile .aspect-control {{
+  grid-column: 1 / -1;
+  gap: 1px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+}}
+.display-tile .aspect-control input {{ width: 100%; padding-inline: 0; }}
 canvas {{
   display: block;
   width: 100%;
+  margin-inline: auto;
   height: min(70vh, 700px);
   min-height: 420px;
   border: 1px solid var(--border);
@@ -2297,7 +2879,11 @@ th:first-child, td:first-child {{ text-align: left; }}
   <div class="startup-loading-content">
     <div class="startup-loading-spinner" aria-hidden="true"></div>
     <strong>Loading visualizer</strong>
-    <span>Reading embedded data…</span>
+    <div class="startup-loading-progress" role="progressbar" aria-label="Visualizer startup progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div class="startup-loading-progress-bar" id="startupProgressBar"></div>
+    </div>
+    <span class="startup-loading-percent" id="startupProgressPercent">0%</span>
+    <span id="startupProgressStage">Reading embedded data…</span>
   </div>
 </div>
 <main id="app">
@@ -2442,11 +3028,16 @@ th:first-child, td:first-child {{ text-align: left; }}
         <label class="chip" id="logzChip"><input id="logz" type="checkbox"> log color</label>
         <label class="chip"><input id="density" type="checkbox"> density</label>
         <label class="chip" id="colorScaleChip"><input id="colorScale" type="checkbox"> color scale</label>
+        <label class="aspect-control"><span>plot height <span id="plotHeightValue">50%</span></span><input id="plotHeight" type="range" min="0.25" max="1" step="0.01" value="0.5"></label>
+        <label class="aspect-control"><span>plot width <span id="plotWidthValue">100%</span></span><input id="plotWidth" type="range" min="0.5" max="1" step="0.01" value="1"></label>
       </div>
       <div class="toolbar-tile action-tile" aria-label="Plot actions">
         <button type="button" id="resetFilters">Reset filters</button>
         <button type="button" id="resetRanges">Reset axes</button>
+        <button type="button" id="plotTools" aria-haspopup="menu" aria-expanded="false">Plot tools…</button>
         <button type="button" id="savePng">Save PNG</button>
+        <button type="button" id="saveWorkspace">Save workspace</button>
+        <button type="button" id="restoreWorkspace">Restore saved</button>
       </div>
     </div>
     <div class="plot-grid" id="plotGrid">
@@ -2530,6 +3121,7 @@ th:first-child, td:first-child {{ text-align: left; }}
   <button type="button" id="makeGhost" role="menuitem">Make ghost</button>
   <button type="button" id="clearGhost" role="menuitem">Clear ghost</button>
   <button type="button" id="toggleCanvasToolbarContext" role="menuitem">Hide plot controls</button>
+  <button type="button" id="toggleMeanGuides" role="menuitemcheckbox" aria-checked="false">Show mean guides</button>
   <button type="button" id="profileX" role="menuitem">Profile X</button>
   <button type="button" id="profileY" role="menuitem">Profile Y</button>
   <button type="button" id="addFunctionCurve" role="menuitem">Add function curve…</button>
@@ -2573,20 +3165,12 @@ const payload = {payload_json};
 const columns = {{}};
 const textColumns = {{}};
 let rowCount = payload.rowCount;
-for (const [name, value] of Object.entries(payload.columns)) {{
-  if (value && value.dtype === "float32") {{
-    const binary = atob(value.data);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    columns[name] = new Float32Array(bytes.buffer);
-  }} else {{
-    textColumns[name] = value;
-  }}
-}}
 const variables = payload.variables;
 const byName = Object.fromEntries(variables.map(v => [v.name, v]));
 const integerVariables = new Set(variables.filter(v => v.integer).map(v => v.name));
 const SAMPLE_COLUMN = "__sampleId";
+const WORKSPACE_STORAGE_VERSION = 3;
+const WORKSPACE_STORAGE_KEY = `sf-visualizer:${{payload.source || payload.title}}`;
 const loadedSamples = [{{id: 0, label: sampleLabel(payload.source || "sample 1"), rows: rowCount}}];
 let remoteDirectoryUrl = null;
 const remoteSelections = new Map();
@@ -2600,6 +3184,9 @@ let contextMenuProfileBin = null;
 let referenceCurveId = 0;
 let topologyCollapsed = true;
 let canvasToolbarCollapsed = false;
+let canvasToolbarExpandedHeight = 0;
+let workspaceSaveTimer = null;
+let updateFrame = null;
 const sharedFilterState = makeFilterState();
 let sharedPanelFilters = true;
 let activeRanges = sharedFilterState.ranges;
@@ -2613,6 +3200,50 @@ const el = id => document.getElementById(id);
 const fmt = value => Number.isFinite(value) ? (Math.abs(value) >= 1000 || Math.abs(value) < 0.01 ? value.toExponential(3) : value.toPrecision(4)) : "-";
 const fmtColumn = (name, value) => integerVariables.has(name) && Number.isFinite(value) ? String(Math.round(value)) : fmt(value);
 const fmtTickTarget = value => Number.isInteger(value) ? String(value) : value.toFixed(1);
+const MAX_PLOT_HEIGHT_TO_WIDTH = 2 / 3;
+const canonicalPlotHeight = value => clamp(Number(value) || 0.5, 0.25, 1);
+const plotHeightLabel = value => `${{Math.round(canonicalPlotHeight(value) * 100)}}%`;
+const canonicalPlotWidth = value => clamp(Number(value) || 1, 0.5, 1);
+const plotWidthLabel = value => `${{Math.round(canonicalPlotWidth(value) * 100)}}%`;
+
+function setStartupProgress(percent, stage) {{
+  const normalized = Math.max(0, Math.min(100, Math.round(percent)));
+  const overlay = document.getElementById("startupLoading");
+  const bar = document.getElementById("startupProgressBar");
+  const percentLabel = document.getElementById("startupProgressPercent");
+  const stageLabel = document.getElementById("startupProgressStage");
+  if (bar) bar.style.width = `${{normalized}}%`;
+  if (percentLabel) percentLabel.textContent = `${{normalized}}%`;
+  if (stageLabel && stage) stageLabel.textContent = stage;
+  const progress = overlay?.querySelector('[role="progressbar"]');
+  if (progress) progress.setAttribute("aria-valuenow", String(normalized));
+}}
+
+function yieldStartupFrame() {{
+  return new Promise(resolve => requestAnimationFrame(() => resolve()));
+}}
+
+async function decodeInitialPayloadColumns() {{
+  const entries = Object.entries(payload.columns || {{}});
+  setStartupProgress(2, `Preparing ${{entries.length.toLocaleString()}} columns…`);
+  await yieldStartupFrame();
+  for (let index = 0; index < entries.length; index++) {{
+    const [name, value] = entries[index];
+    if (value && value.dtype === "float32") {{
+      const binary = atob(value.data);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      columns[name] = new Float32Array(bytes.buffer);
+    }} else {{
+      textColumns[name] = value;
+    }}
+    setStartupProgress(
+      5 + 55 * (index + 1) / Math.max(entries.length, 1),
+      `Decoding column ${{index + 1}} of ${{entries.length}}: ${{name}}`
+    );
+    await yieldStartupFrame();
+  }}
+}}
 
 function sampleLabel(source) {{
   const clean = String(source || "").split(/[\\\\/]/).pop() || "sample";
@@ -3083,6 +3714,8 @@ function makePanel(key, xvar, yvar) {{
     logz: true,
     density: false,
     colorScale: true,
+    plotHeightFraction: 0.5,
+    plotWidthFraction: 1,
     fitModel: "none",
     signalModel: "none",
     backgroundModel: "none",
@@ -3090,6 +3723,7 @@ function makePanel(key, xvar, yvar) {{
     fitScanDetail: 3,
     fitRangeClick: false,
     showFitAnnotations: true,
+    showMeanGuides: false,
     fitRangeMin: NaN,
     fitRangeMax: NaN,
     fitSummary: "No fit",
@@ -3097,6 +3731,8 @@ function makePanel(key, xvar, yvar) {{
     filterState: makeFilterState(),
     ghostPlot: null,
     referenceCurves: [],
+    pinnedMarkers: [],
+    nextPinnedMarkerColor: 0,
     lastPlot: null,
     stats: {{selected: 0, meanX: NaN, meanY: NaN}}
   }};
@@ -3104,6 +3740,128 @@ function makePanel(key, xvar, yvar) {{
 
 function makeFilterState() {{
   return {{categories: {{}}, ranges: [], text: {{}}}};
+}}
+
+const persistedPanelKeys = [
+  "mode", "xvar", "x2var", "yvar", "y2var", "xLabel", "yLabel", "splitVar",
+  "sliceBins", "sliceEdges", "xbins", "ybins", "xticks", "yticks", "xmin", "xmax",
+  "ymin", "ymax", "logz", "density", "colorScale", "plotHeightFraction", "plotWidthFraction", "signalModel",
+  "backgroundModel", "fitMethod", "fitScanDetail", "fitRangeClick", "showFitAnnotations",
+  "showMeanGuides", "fitRangeMin", "fitRangeMax", "referenceCurves"
+];
+
+function serializableFilterState(state) {{
+  return {{
+    categories: Object.fromEntries(
+      Object.entries(state.categories).map(([name, values]) => [name, Array.from(values)])
+    ),
+    ranges: state.ranges.map(filter => ({{...filter}})),
+    text: {{...state.text}}
+  }};
+}}
+
+function serializablePanel(panel) {{
+  const saved = Object.fromEntries(persistedPanelKeys.map(key => [key, panel[key]]));
+  saved.filterState = serializableFilterState(panel.filterState);
+  return saved;
+}}
+
+function workspaceSnapshot() {{
+  return {{
+    version: WORKSPACE_STORAGE_VERSION,
+    enabledPanels: [...enabledPanels],
+    activePanel,
+    compareMode,
+    sharedPanelFilters,
+    topologyCollapsed,
+    canvasToolbarCollapsed,
+    sharedFilterState: serializableFilterState(sharedFilterState),
+    panels: Object.fromEntries(panelKeys.map(key => [key, serializablePanel(panels[key])]))
+  }};
+}}
+
+function applySavedFilterState(target, saved) {{
+  if (!saved || typeof saved !== "object") return;
+  target.categories = Object.fromEntries(
+    Object.entries(saved.categories || {{}}).map(([name, values]) => [name, new Set(values.map(Number))])
+  );
+  target.ranges = Array.isArray(saved.ranges)
+    ? saved.ranges.filter(filter => columns[filter.name]).map(filter => ({{...filter}}))
+    : [];
+  target.text = {{...(saved.text || {{}})}};
+}}
+
+function restoreWorkspace(showStatus = false) {{
+  let saved;
+  try {{
+    saved = JSON.parse(localStorage.getItem(WORKSPACE_STORAGE_KEY) || "null");
+  }} catch (error) {{
+    if (showStatus) el("datasetStatus").textContent = "Saved workspace could not be read.";
+    return false;
+  }}
+  if (!saved || ![1, 2, WORKSPACE_STORAGE_VERSION].includes(saved.version)) {{
+    if (showStatus) el("datasetStatus").textContent = "No saved workspace for this dataset.";
+    return false;
+  }}
+  applySavedFilterState(sharedFilterState, saved.sharedFilterState);
+  for (const key of panelKeys) {{
+    const savedPanel = saved.panels?.[key];
+    if (!savedPanel) continue;
+    if (savedPanel.plotHeightFraction === undefined) {{
+      if (saved.version === 1 && savedPanel.plotAspect !== undefined) {{
+        savedPanel.plotHeightFraction = 1 / Number(savedPanel.plotAspect) / MAX_PLOT_HEIGHT_TO_WIDTH;
+      }} else if (saved.version === 2 && savedPanel.plotHeightScale !== undefined) {{
+        savedPanel.plotHeightFraction = Number(savedPanel.plotHeightScale) / MAX_PLOT_HEIGHT_TO_WIDTH;
+      }}
+    }}
+    for (const name of persistedPanelKeys) {{
+      if (savedPanel[name] !== undefined) panels[key][name] = savedPanel[name];
+    }}
+    if (!columns[panels[key].xvar]) panels[key].xvar = payload.defaultX;
+    if (!columns[panels[key].yvar]) panels[key].yvar = payload.defaultY;
+    if (panels[key].x2var && !columns[panels[key].x2var]) panels[key].x2var = "";
+    if (panels[key].y2var && !columns[panels[key].y2var]) panels[key].y2var = "";
+    if (panels[key].splitVar && !columns[panels[key].splitVar]) panels[key].splitVar = "";
+    for (const curve of panels[key].referenceCurves || []) {{
+      referenceCurveId = Math.max(referenceCurveId, Number(curve.id) || 0);
+    }}
+    applySavedFilterState(panels[key].filterState, savedPanel.filterState);
+  }}
+  enabledPanels = (saved.enabledPanels || ["A"]).filter(key => panelKeys.includes(key));
+  if (!enabledPanels.length) enabledPanels = ["A"];
+  activePanel = enabledPanels.includes(saved.activePanel) ? saved.activePanel : enabledPanels[0];
+  compareMode = Boolean(saved.compareMode && enabledPanels.length > 1);
+  sharedPanelFilters = saved.sharedPanelFilters !== false;
+  topologyCollapsed = saved.topologyCollapsed !== false;
+  canvasToolbarCollapsed = Boolean(saved.canvasToolbarCollapsed);
+  useActiveFilterState();
+  initializeCategoryState();
+  if (showStatus) el("datasetStatus").textContent = "Saved workspace restored.";
+  return true;
+}}
+
+function saveWorkspace(showStatus = false) {{
+  try {{
+    localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(workspaceSnapshot()));
+    if (showStatus) el("datasetStatus").textContent = "Workspace saved in this browser.";
+    return true;
+  }} catch (error) {{
+    if (showStatus) el("datasetStatus").textContent = "Workspace could not be saved in this browser.";
+    return false;
+  }}
+}}
+
+function scheduleWorkspaceSave() {{
+  window.clearTimeout(workspaceSaveTimer);
+  workspaceSaveTimer = window.setTimeout(() => saveWorkspace(false), 250);
+}}
+
+function scheduleUpdate() {{
+  if (updateFrame !== null) cancelAnimationFrame(updateFrame);
+  updateFrame = requestAnimationFrame(() => {{
+    updateFrame = null;
+    update();
+  }});
 }}
 
 function allFilterStates() {{
@@ -3425,7 +4183,7 @@ function updateSliceControls(panel) {{
 }}
 
 function isProtonSectorSplit(name) {{
-  const canonical = String(name || "").toLowerCase().replace(/^rec_/, "").replace(/^gen_/, "").replace(/_/g, "");
+  const canonical = String(name || "").toLowerCase().replace(/^(?:rec|gen)[_.]/, "").replace(/[_.]/g, "");
   return canonical === "psector" || canonical === "protonsector";
 }}
 
@@ -3447,22 +4205,37 @@ function shortFacetLabel(filter, value, index) {{
   return filter.labels[index] || String(value);
 }}
 
-function init() {{
+async function init() {{
+  setStartupProgress(64, "Building dataset controls…");
+  await yieldStartupFrame();
   document.querySelector("h1").textContent = payload.title;
   el("source").textContent = payload.source;
   el("source").title = payload.source;
   document.querySelector(".dataset-heading").title = payload.source;
   el("embeddedCount").textContent = rowCount.toLocaleString();
+  const samplingNotes = [];
   if (payload.downsample.sampled) {{
-    el("samplingNote").textContent = `downsampled from ${{payload.downsample.originalRows.toLocaleString()}} rows`;
+    const seedNote = Number.isInteger(payload.downsample.seed)
+      ? `, seed ${{payload.downsample.seed}}`
+      : "";
+    if (payload.downsample.unit === "source-events") {{
+      samplingNotes.push(`sampled ${{payload.downsample.embeddedEvents.toLocaleString()}} of ${{payload.downsample.originalEvents.toLocaleString()}} source events (${{payload.downsample.embeddedRows.toLocaleString()}} rows)${{seedNote}}`);
+    }} else {{
+      samplingNotes.push(`sampled ${{payload.downsample.embeddedRows.toLocaleString()}} of ${{payload.downsample.originalRows.toLocaleString()}} rows${{seedNote}}`);
+    }}
   }}
+  if (payload.downsample.filter) samplingNotes.push(`filter: ${{payload.downsample.filter}}`);
+  el("samplingNote").textContent = samplingNotes.join("; ");
   ensureSampleColumn();
   rebuildCategoricalFilters(false);
   rebuildSplitOptions();
   updateDatasetStatus();
+  setStartupProgress(74, "Preparing filters and quantities…");
+  await yieldStartupFrame();
   fillSelect(el("rangeVar"), payload.defaultX);
   fillOperationSelects();
   initializeCategoryState();
+  restoreWorkspace(false);
   renderCategoryFilters();
   renderQuickCategoryOptions();
   renderQuickCategory();
@@ -3470,7 +4243,11 @@ function init() {{
   attachEvents();
   renderPanelTabs();
   syncControlsFromPanel();
+  setStartupProgress(90, "Rendering the initial histogram…");
+  await yieldStartupFrame();
   update();
+  setStartupProgress(100, "Ready");
+  await yieldStartupFrame();
   const startupLoading = el("startupLoading");
   document.body.removeAttribute("aria-busy");
   requestAnimationFrame(() => {{
@@ -3570,7 +4347,7 @@ function categoricalGroupRank(group) {{
 function categoricalKindRank(name) {{
   if (name === SAMPLE_COLUMN) return 0;
   if (isRunNumberName(name)) return 1;
-  const canonical = name.toLowerCase().replace(/^rec_/, "").replace(/^gen_/, "").replace(/_/g, "");
+  const canonical = name.toLowerCase().replace(/^(?:rec|gen|event)[_.]/, "").replace(/[_.]/g, "");
   if (canonical.endsWith("det") || canonical.endsWith("detector")) return 2;
   if (canonical.includes("sector")) return 3;
   if (isIndexName(name)) return 4;
@@ -3786,8 +4563,8 @@ function renderActiveFilterControls() {{
 }}
 
 function attachEvents() {{
-  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","sliceBins","sliceEdges","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","signalModel","backgroundModel","fitMethod","fitScanDetail","fitRangeClick"].forEach(id => {{
-    el(id).addEventListener("input", () => {{ readControlsToPanel(); update(); }});
+  ["x2var","y2var","xAxisLabel","yAxisLabel","splitVar","sliceBins","sliceEdges","xbins","ybins","xticks","yticks","xmin","xmax","ymin","ymax","logz","density","colorScale","plotHeight","plotWidth","signalModel","backgroundModel","fitMethod","fitScanDetail","fitRangeClick"].forEach(id => {{
+    el(id).addEventListener("input", () => {{ readControlsToPanel(); scheduleUpdate(); }});
   }});
   el("xvar").addEventListener("change", () => {{ setPanelVariable("x"); update(); }});
   el("yvar").addEventListener("change", () => {{ setPanelVariable("y"); update(); }});
@@ -3834,7 +4611,23 @@ function attachEvents() {{
   }});
   el("resetFilters").addEventListener("click", resetFilters);
   el("resetRanges").addEventListener("click", () => {{ resetAxisRanges(currentPanel()); syncControlsFromPanel(); update(); }});
+  el("plotTools").addEventListener("click", event => {{
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    showCanvasContextMenu({{
+      preventDefault() {{}},
+      clientX: bounds.left,
+      clientY: bounds.bottom + 4
+    }}, activePanel);
+  }});
   el("savePng").addEventListener("click", savePng);
+  el("saveWorkspace").addEventListener("click", () => saveWorkspace(true));
+  el("restoreWorkspace").addEventListener("click", () => {{
+    if (!restoreWorkspace(true)) return;
+    renderActiveFilterControls();
+    syncControlsFromPanel();
+    update();
+  }});
   el("clearFitRange").addEventListener("click", () => {{ clearFitRange(currentPanel()); syncControlsFromPanel(); update(); }});
   el("toggleFitAnnotations").addEventListener("click", () => {{
     const panel = currentPanel();
@@ -3857,6 +4650,12 @@ function attachEvents() {{
   el("toggleCanvasToolbarContext").addEventListener("click", () => {{
     toggleCanvasToolbar();
     hideCanvasContextMenu();
+  }});
+  el("toggleMeanGuides").addEventListener("click", () => {{
+    const panel = panels[contextMenuPanelKey];
+    panel.showMeanGuides = !Boolean(panel.showMeanGuides);
+    hideCanvasContextMenu();
+    update();
   }});
   el("profileX").addEventListener("click", () => {{
     launchBinProfile("x");
@@ -3883,11 +4682,11 @@ function attachEvents() {{
   }});
   for (const key of panelKeys) {{
     el("plot" + key).addEventListener("mousemove", event => showHoverInfo(event, key));
-    el("plot" + key).addEventListener("click", event => handleFitRangeClick(event, key));
+    el("plot" + key).addEventListener("click", event => handleCanvasClick(event, key));
     el("plot" + key).addEventListener("contextmenu", event => showCanvasContextMenu(event, key));
     el("plot" + key).addEventListener("mouseleave", () => {{
-      setHoverText(key, "");
-      clearHoverOverlay(key);
+      setHoverText(key, pinnedMarkerSummary(key));
+      renderPinnedMarkers(key);
       hideColorScaleMarker(key);
     }});
   }}
@@ -3901,7 +4700,7 @@ function attachEvents() {{
     }}
   }});
   window.addEventListener("blur", hideCanvasContextMenu);
-  window.addEventListener("resize", update);
+  window.addEventListener("resize", scheduleUpdate);
 }}
 
 function setActivePanel(key) {{
@@ -3953,14 +4752,17 @@ function syncPanelViewButtons() {{
 
 function toggleCanvasToolbar() {{
   canvasToolbarCollapsed = !canvasToolbarCollapsed;
-  syncCanvasToolbarVisibility();
-  updatePanelVisibility();
+  update();
 }}
 
 function syncCanvasToolbarVisibility() {{
   const toolbar = el("canvasToolbar");
   const button = el("toggleCanvasToolbar");
   if (!toolbar || !button) return;
+  if (!toolbar.hidden) {{
+    const measuredHeight = Math.ceil(toolbar.getBoundingClientRect().height);
+    if (measuredHeight > 0) canvasToolbarExpandedHeight = measuredHeight;
+  }}
   toolbar.hidden = canvasToolbarCollapsed;
   const actionLabel = canvasToolbarCollapsed ? "Show plot controls" : "Hide plot controls";
   button.textContent = actionLabel;
@@ -4017,6 +4819,12 @@ function syncControlsFromPanel() {{
   el("logz").checked = panel.logz;
   el("density").checked = panel.density;
   el("colorScale").checked = panel.colorScale;
+  panel.plotHeightFraction = canonicalPlotHeight(panel.plotHeightFraction);
+  panel.plotWidthFraction = canonicalPlotWidth(panel.plotWidthFraction);
+  el("plotHeight").value = panel.plotHeightFraction;
+  el("plotHeightValue").textContent = plotHeightLabel(panel.plotHeightFraction);
+  el("plotWidth").value = panel.plotWidthFraction;
+  el("plotWidthValue").textContent = plotWidthLabel(panel.plotWidthFraction);
   migratePanelFitSpec(panel);
   el("signalModel").value = panel.signalModel || "none";
   el("backgroundModel").value = panel.backgroundModel || "none";
@@ -4095,6 +4903,10 @@ function readControlsToPanel() {{
   panel.logz = el("logz").checked;
   panel.density = el("density").checked;
   panel.colorScale = el("colorScale").checked;
+  panel.plotHeightFraction = canonicalPlotHeight(el("plotHeight").value);
+  panel.plotWidthFraction = canonicalPlotWidth(el("plotWidth").value);
+  el("plotHeightValue").textContent = plotHeightLabel(panel.plotHeightFraction);
+  el("plotWidthValue").textContent = plotWidthLabel(panel.plotWidthFraction);
   panel.signalModel = canonicalSignalModel(el("signalModel").value);
   panel.backgroundModel = canonicalBackgroundModel(el("backgroundModel").value);
   panel.fitMethod = canonicalFitMethod(el("fitMethod").value);
@@ -4313,15 +5125,15 @@ function fitClickArea(lastPlot, px, py) {{
 function handleFitRangeClick(event, key) {{
   const panel = panels[key];
   const lastPlot = panel?.lastPlot;
-  if (!panel || !lastPlot || !panel.fitRangeClick || !panelHasFit(panel)) return;
+  if (!panel || !lastPlot || !panel.fitRangeClick || !panelHasFit(panel)) return false;
   const rect = el("plot" + key).getBoundingClientRect();
   const px = event.clientX - rect.left;
   const py = event.clientY - rect.top;
   const area = fitClickArea(lastPlot, px, py);
-  if (!area) return;
+  if (!area) return true;
   const pw = area.width - area.left - area.right;
   const xValue = lastPlot.xMin + (px - area.left) / pw * (lastPlot.xMax - lastPlot.xMin);
-  if (!Number.isFinite(xValue)) return;
+  if (!Number.isFinite(xValue)) return true;
   activePanel = key;
   if (!Number.isFinite(panel.fitRangeMin) || Number.isFinite(panel.fitRangeMax)) {{
     panel.fitRangeMin = xValue;
@@ -4337,6 +5149,12 @@ function handleFitRangeClick(event, key) {{
   renderActiveFilterControls();
   syncControlsFromPanel();
   update();
+  return true;
+}}
+
+function handleCanvasClick(event, key) {{
+  if (handleFitRangeClick(event, key)) return;
+  togglePinnedMarker(event, key);
 }}
 
 function setMode(next) {{
@@ -4533,9 +5351,11 @@ function update() {{
     if (key === activePanel) activeMask = mask;
     if (panel.mode === "1d") draw1d(panel, mask);
     else draw2d(panel, mask);
+    renderPinnedMarkers(key);
   }}
   updateActiveStats();
   renderPreview(activeMask || selectedMask(filterStateForPanel(activePanel)));
+  scheduleWorkspaceSave();
 }}
 
 function visiblePanelKeys() {{
@@ -4677,12 +5497,16 @@ function showCanvasContextMenu(event, key) {{
   const manageCurves = el("manageReferenceCurves");
   const profileX = el("profileX");
   const profileY = el("profileY");
+  const meanGuides = el("toggleMeanGuides");
   el("toggleCanvasToolbarContext").textContent = canvasToolbarCollapsed
     ? "Show plot controls"
     : "Hide plot controls";
   make.textContent = panel.ghostPlot ? "Replace ghost" : "Make ghost";
   make.disabled = !panel.lastPlot;
   clear.disabled = !panel.ghostPlot;
+  meanGuides.textContent = panel.showMeanGuides ? "Hide mean guides" : "Show mean guides";
+  meanGuides.setAttribute("aria-checked", panel.showMeanGuides ? "true" : "false");
+  meanGuides.disabled = !panel.lastPlot;
   profileX.disabled = !contextMenuProfileBin;
   profileY.disabled = !contextMenuProfileBin;
   profileX.title = profileMenuTitle("x", contextMenuProfileBin);
@@ -4691,6 +5515,7 @@ function showCanvasContextMenu(event, key) {{
   addCurve.title = addCurve.disabled ? "Function curves require a 2D plot" : "";
   manageCurves.disabled = !(panel.referenceCurves || []).length;
   menu.hidden = false;
+  el("plotTools").setAttribute("aria-expanded", "true");
   const padding = 6;
   menu.style.left = clamp(event.clientX, padding, Math.max(padding, window.innerWidth - menu.offsetWidth - padding)) + "px";
   menu.style.top = clamp(event.clientY, padding, Math.max(padding, window.innerHeight - menu.offsetHeight - padding)) + "px";
@@ -4698,6 +5523,7 @@ function showCanvasContextMenu(event, key) {{
 
 function hideCanvasContextMenu() {{
   el("canvasContextMenu").hidden = true;
+  el("plotTools").setAttribute("aria-expanded", "false");
 }}
 
 function addProfileRange(state, name, minimum, maximum, maxExclusive, profileAxisSlice = false) {{
@@ -4734,7 +5560,10 @@ function configureProfilePanel(target, source, hit, axis) {{
     yLabel: source.yLabel,
     xticks: source.xticks,
     yticks: source.yticks,
-    density: source.density
+    density: source.density,
+    plotHeightFraction: source.plotHeightFraction,
+    plotWidthFraction: source.plotWidthFraction,
+    showMeanGuides: source.showMeanGuides
   }};
   const variableName = profileX ? hit.xName : hit.yName;
   const sliceName = profileX ? hit.yName : hit.xName;
@@ -4756,6 +5585,9 @@ function configureProfilePanel(target, source, hit, axis) {{
   target.xmin = profileX ? hit.xMin : hit.yMin;
   target.xmax = profileX ? hit.xMax : hit.yMax;
   target.density = sourceSettings.density;
+  target.plotHeightFraction = canonicalPlotHeight(sourceSettings.plotHeightFraction);
+  target.plotWidthFraction = canonicalPlotWidth(sourceSettings.plotWidthFraction);
+  target.showMeanGuides = Boolean(sourceSettings.showMeanGuides);
   target.fitModel = "none";
   target.signalModel = "none";
   target.backgroundModel = "none";
@@ -4799,6 +5631,7 @@ function launchBinProfile(axis) {{
   if (!enabledPanels.includes("B")) enabledPanels.push("B");
   activePanel = "B";
   compareMode = true;
+  canvasToolbarCollapsed = true;
   renderActiveFilterControls();
   syncControlsFromPanel();
   update();
@@ -5203,14 +6036,24 @@ function plotArea(canvas, showColorScale = false) {{
   const colorScaleSlots = typeof showColorScale === "number" ? showColorScale : showColorScale ? 1 : 0;
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
-  canvas.width = Math.max(400, Math.floor(rect.width * dpr));
-  canvas.height = Math.max(320, Math.floor(rect.height * dpr));
+  canvas.width = Math.max(240, Math.floor(rect.width * dpr));
+  canvas.height = Math.max(180, Math.floor(rect.height * dpr));
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const width = canvas.width / dpr;
   const height = canvas.height / dpr;
   const right = colorScaleSlots > 1 ? 112 : colorScaleSlots > 0 ? 82 : 22;
   return {{ctx, width, height, left: 76, right, top: 18, bottom: 62}};
+}}
+
+function preparePanelCanvas(panel) {{
+  const canvas = el("plot" + panel.key);
+  canvas.style.width = `${{canonicalPlotWidth(panel.plotWidthFraction) * 100}}%`;
+  const width = canvas.getBoundingClientRect().width;
+  const heightScale = canonicalPlotHeight(panel.plotHeightFraction) * MAX_PLOT_HEIGHT_TO_WIDTH;
+  const reclaimedHeight = canvasToolbarCollapsed ? canvasToolbarExpandedHeight : 0;
+  canvas.style.minHeight = "0";
+  canvas.style.height = `${{clamp(width * heightScale + reclaimedHeight, 160, 2000)}}px`;
 }}
 
 function colors() {{
@@ -5436,13 +6279,109 @@ function drawAxes(ctx, area, xMin, xMax, yMin, yMax, xLabel, yLabel, xTickCount,
   }}
 }}
 
+function drawMeanGuides(ctx, area, panel, meanX, meanY, xMin, xMax, yMin, yMax) {{
+  if (!panel?.showMeanGuides) return;
+  const drawX = Number.isFinite(meanX) && xMax > xMin && meanX >= xMin && meanX <= xMax;
+  const drawY = panel.mode === "2d" && Number.isFinite(meanY) && yMax > yMin && meanY >= yMin && meanY <= yMax;
+  if (!drawX && !drawY) return;
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  const c = colors();
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(area.left, area.top, pw, ph);
+  ctx.clip();
+  ctx.strokeStyle = c.fg;
+  ctx.globalAlpha = 0.76;
+  ctx.lineWidth = 1.25;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  if (drawX) {{
+    const x = area.left + (meanX - xMin) / (xMax - xMin) * pw;
+    ctx.moveTo(x, area.top);
+    ctx.lineTo(x, area.top + ph);
+  }}
+  if (drawY) {{
+    const y = area.top + ph - (meanY - yMin) / (yMax - yMin) * ph;
+    ctx.moveTo(area.left, y);
+    ctx.lineTo(area.left + pw, y);
+  }}
+  ctx.stroke();
+  ctx.restore();
+}}
+
+function poissonBinError(value, total, density) {{
+  if (!(value >= 0)) return 0;
+  if (!density) return Math.sqrt(value);
+  if (!(total > 0)) return 0;
+  return Math.sqrt(Math.max(0, value * total)) / total;
+}}
+
+function histogramPointScaleMax(series, ghostCounts = null) {{
+  let maximum = 0;
+  for (const item of series) {{
+    if (!item?.values) continue;
+    for (let index = 0; index < item.values.length; index++) {{
+      const value = item.values[index];
+      if (!Number.isFinite(value) || value < 0) continue;
+      maximum = Math.max(maximum, value + poissonBinError(value, item.total, item.density));
+    }}
+  }}
+  if (ghostCounts) {{
+    for (let index = 0; index < ghostCounts.length; index++) {{
+      const value = ghostCounts[index];
+      if (Number.isFinite(value)) maximum = Math.max(maximum, value);
+    }}
+  }}
+  return maximum > 0 ? maximum * 1.06 : 1;
+}}
+
+function draw1dPoints(ctx, area, values, yMax, total, density, color, alpha = 1) {{
+  if (!values || !values.length || !(yMax > 0)) return;
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  const binWidth = pw / values.length;
+  const capHalfWidth = Math.min(4, Math.max(1.5, binWidth * 0.22));
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(area.left, area.top, pw, ph + 3);
+  ctx.clip();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.globalAlpha = alpha;
+  ctx.lineWidth = 1.2;
+  for (let index = 0; index < values.length; index++) {{
+    const value = values[index];
+    if (!Number.isFinite(value) || value < 0) continue;
+    const error = poissonBinError(value, total, density);
+    const x = area.left + (index + 0.5) * binWidth;
+    const y = area.top + ph - value / yMax * ph;
+    if (error > 0) {{
+      const yHigh = area.top + ph - (value + error) / yMax * ph;
+      const yLow = area.top + ph - Math.max(0, value - error) / yMax * ph;
+      ctx.beginPath();
+      ctx.moveTo(x, yHigh);
+      ctx.lineTo(x, yLow);
+      ctx.moveTo(x - capHalfWidth, yHigh);
+      ctx.lineTo(x + capHalfWidth, yHigh);
+      ctx.moveTo(x - capHalfWidth, yLow);
+      ctx.lineTo(x + capHalfWidth, yLow);
+      ctx.stroke();
+    }}
+    ctx.beginPath();
+    ctx.arc(x, y, 2.6, 0, 2 * Math.PI);
+    ctx.fill();
+  }}
+  ctx.restore();
+}}
+
 function draw1d(panel, mask) {{
   const splitName = panel.splitVar;
   if (splitName) {{
     draw1dFacets(panel, mask, splitName);
     return;
   }}
-  el("plot" + panel.key).style.height = "";
+  preparePanelCanvas(panel);
   const xName = panel.xvar;
   const x2Name = panel.x2var && panel.x2var !== xName && columns[panel.x2var] ? panel.x2var : "";
   const x = columns[xName];
@@ -5478,35 +6417,22 @@ function draw1d(panel, mask) {{
     normalizeHistogram(overlayCounts, overlaySelected);
   }}
   const ghost = compatibleGhost(panel, "1d", {{xName}});
-  const maxCount = histogramMax(counts, overlayCounts, ghost?.counts);
+  const maxCount = histogramPointScaleMax([
+    {{values: counts, total: selected, density: panel.density}},
+    {{values: overlayCounts, total: overlaySelected, density: panel.density}}
+  ], ghost?.counts);
   const canvas = el("plot" + panel.key);
   const area = plotArea(canvas);
-  const {{ctx, width, height, left, right, top, bottom}} = area;
+  const {{ctx, width, height}} = area;
   const c = colors();
   ctx.clearRect(0, 0, width, height);
-  const pw = width - left - right;
-  const ph = height - top - bottom;
-  ctx.fillStyle = c.mark;
-  for (let i = 0; i < bins; i++) {{
-    const barH = counts[i] / maxCount * ph;
-    const x0 = left + i / bins * pw;
-    const x1 = left + (i + 1) / bins * pw;
-    ctx.fillRect(x0, top + ph - barH, Math.max(1, x1 - x0 - 1), barH);
-  }}
-  if (overlayCounts) {{
-    ctx.save();
-    ctx.globalAlpha = 0.64;
-    ctx.fillStyle = overlayHeatColor(0.82);
-    for (let i = 0; i < bins; i++) {{
-      const barH = overlayCounts[i] / maxCount * ph;
-      const binW = pw / bins;
-      const x0 = left + i * binW + binW * 0.2;
-      ctx.fillRect(x0, top + ph - barH, Math.max(1, binW * 0.6), barH);
-    }}
-    ctx.restore();
-  }}
   drawAxes(ctx, area, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks);
-  if (x2Name) drawOverlayLegend(ctx, area, byName[xName].label, byName[x2Name].label);
+  drawMeanGuides(ctx, area, panel, sumX / selected, NaN, xMin, xMax, 0, maxCount);
+  draw1dPoints(ctx, area, counts, maxCount, selected, panel.density, c.mark);
+  if (overlayCounts) {{
+    draw1dPoints(ctx, area, overlayCounts, maxCount, overlaySelected, panel.density, overlayHeatColor(0.82), 0.78);
+  }}
+  if (x2Name) draw1dOverlayLegend(ctx, area, byName[xName].label, byName[x2Name].label);
   if (ghost) drawGhost1d(ctx, area, ghost, ghost.counts, xMin, xMax, maxCount);
   drawFitRangeIndicator(ctx, area, panel, xMin, xMax);
   panel.fitSummary = draw1dFit(ctx, area, panel, counts, xMin, xMax, 0, maxCount, fitValues);
@@ -5523,7 +6449,7 @@ function draw2d(panel, mask) {{
     draw2dFacets(panel, mask, splitName);
     return;
   }}
-  el("plot" + panel.key).style.height = "";
+  preparePanelCanvas(panel);
   const xName = panel.xvar;
   const yName = panel.yvar;
   const x2Name = panel.x2var && panel.x2var !== xName && columns[panel.x2var] ? panel.x2var : "";
@@ -5610,6 +6536,7 @@ function draw2d(panel, mask) {{
   const xAxisLabel = x2Name ? `${{byName[xName].label}} / ${{byName[x2Name].label}}` : byName[xName].label;
   const yAxisLabel = y2Name ? `${{byName[yName].label}} / ${{byName[y2Name].label}}` : byName[yName].label;
   drawAxes(ctx, area, xMin, xMax, yMin, yMax, axisDisplayLabel(panel, "x", xAxisLabel), axisDisplayLabel(panel, "y", yAxisLabel), panel.xticks, panel.yticks);
+  drawMeanGuides(ctx, area, panel, sumX / selected, sumY / selected, xMin, xMax, yMin, yMax);
   if (x2Name || y2Name) drawOverlayLegend(ctx, area, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
   const colorScale = panel.colorScale ? draw2dColorScale(ctx, area, maxCount, overlayCounts ? overlayMaxCount : 0, panel) : null;
   if (ghost) drawGhost2d(ctx, area, ghost, ghost.counts, xMin, xMax, yMin, yMax);
@@ -5664,7 +6591,7 @@ function draw1dFacets(panel, mask, splitName) {{
     totalSelected += selected;
     totalOverlaySelected += overlaySelected;
     sumXAll += sumX;
-    facets.push({{value: definition.value, label: definition.label, shortLabel: definition.shortLabel, counts, overlayCounts, fitValues, selected, overlaySelected}});
+    facets.push({{value: definition.value, label: definition.label, shortLabel: definition.shortLabel, counts, overlayCounts, fitValues, selected, overlaySelected, meanX: sumX / selected}});
   }}
   if (panel.density) {{
     for (const facet of facets) {{
@@ -5673,13 +6600,15 @@ function draw1dFacets(panel, mask, splitName) {{
     }}
   }}
   const ghost = compatibleGhost(panel, "1d-facet", {{xName, splitName, splitSignature}});
-  const maxCount = histogramMax(
-    ...facets.map(f => f.counts),
-    ...facets.map(f => f.overlayCounts).filter(Boolean),
-    ...(ghost?.facets || []).map(f => f.counts)
-  );
+  const pointSeries = [];
+  for (const facet of facets) {{
+    pointSeries.push({{values: facet.counts, total: facet.selected, density: panel.density}});
+    if (facet.overlayCounts) pointSeries.push({{values: facet.overlayCounts, total: facet.overlaySelected, density: panel.density}});
+  }}
+  const ghostCounts = (ghost?.facets || []).flatMap(facet => Array.from(facet.counts));
+  const maxCount = histogramPointScaleMax(pointSeries, ghostCounts);
   const canvas = el("plot" + panel.key);
-  prepareFacetCanvas(canvas, facets.length, splitName, facets);
+  prepareFacetCanvas(canvas, panel, facets.length, splitName, facets);
   const area = plotArea(canvas);
   const {{ctx, width, height}} = area;
   const c = colors();
@@ -5689,30 +6618,14 @@ function draw1dFacets(panel, mask, splitName) {{
   for (let index = 0; index < facets.length; index++) {{
     const facet = facets[index];
     const facetAreaInfo = panelArea(area, layout, index);
-    const pw = facetAreaInfo.width - facetAreaInfo.left - facetAreaInfo.right;
-    const ph = facetAreaInfo.height - facetAreaInfo.top - facetAreaInfo.bottom;
-    ctx.fillStyle = c.mark;
-    for (let i = 0; i < bins; i++) {{
-      const barH = facet.counts[i] / maxCount * ph;
-      const x0 = facetAreaInfo.left + i / bins * pw;
-      const x1 = facetAreaInfo.left + (i + 1) / bins * pw;
-      ctx.fillRect(x0, facetAreaInfo.top + ph - barH, Math.max(1, x1 - x0 - 1), barH);
-    }}
-    if (facet.overlayCounts) {{
-      ctx.save();
-      ctx.globalAlpha = 0.64;
-      ctx.fillStyle = overlayHeatColor(0.82);
-      for (let i = 0; i < bins; i++) {{
-        const barH = facet.overlayCounts[i] / maxCount * ph;
-        const binW = pw / bins;
-        const x0 = facetAreaInfo.left + i * binW + binW * 0.2;
-        ctx.fillRect(x0, facetAreaInfo.top + ph - barH, Math.max(1, binW * 0.6), barH);
-      }}
-      ctx.restore();
-    }}
     const axisVisibility = facetAxisVisibility(layout, index, facets.length);
     drawAxes(ctx, facetAreaInfo, xMin, xMax, 0, maxCount, axisDisplayLabel(panel, "x", byName[xName].label), axisDisplayLabel(panel, "y", panel.density ? "density" : "counts"), panel.xticks, panel.yticks, axisVisibility);
-    if (x2Name && index === 0) drawOverlayLegend(ctx, facetAreaInfo, byName[xName].label, byName[x2Name].label);
+    drawMeanGuides(ctx, facetAreaInfo, panel, facet.meanX, NaN, xMin, xMax, 0, maxCount);
+    draw1dPoints(ctx, facetAreaInfo, facet.counts, maxCount, facet.selected, panel.density, c.mark);
+    if (facet.overlayCounts) {{
+      draw1dPoints(ctx, facetAreaInfo, facet.overlayCounts, maxCount, facet.overlaySelected, panel.density, overlayHeatColor(0.82), 0.78);
+    }}
+    if (x2Name && index === 0) draw1dOverlayLegend(ctx, facetAreaInfo, byName[xName].label, byName[x2Name].label);
     const savedFacet = ghostFacet(ghost, facet.value);
     if (savedFacet) drawGhost1d(ctx, facetAreaInfo, {{...ghost, selected: savedFacet.selected}}, savedFacet.counts, xMin, xMax, maxCount, index === 0);
     drawFacetTitle(ctx, facetAreaInfo, `${{facet.label}} (${{facet.selected.toLocaleString()}})`);
@@ -5793,7 +6706,7 @@ function draw2dFacets(panel, mask, splitName) {{
     totalOverlaySelected += overlaySelected;
     sumXAll += sumX;
     sumYAll += sumY;
-    facets.push({{...definition, counts, overlayCounts, selected, overlaySelected, fitXs, fitYs, maxCount: 1, overlayMaxCount: 0, colorScale: null}});
+    facets.push({{...definition, counts, overlayCounts, selected, overlaySelected, meanX: sumX / selected, meanY: sumY / selected, fitXs, fitYs, maxCount: 1, overlayMaxCount: 0, colorScale: null}});
   }}
   if (panel.density) {{
     for (const facet of facets) {{
@@ -5807,7 +6720,7 @@ function draw2dFacets(panel, mask, splitName) {{
   }}
   const ghost = compatibleGhost(panel, "2d-facet", {{xName, yName, splitName, splitSignature}});
   const canvas = el("plot" + panel.key);
-  prepareFacetCanvas(canvas, facets.length, splitName, facets);
+  prepareFacetCanvas(canvas, panel, facets.length, splitName, facets);
   const area = plotArea(canvas, panel.colorScale ? (x2Name || y2Name ? 2 : 1) : 0);
   const {{ctx, width, height}} = area;
   ctx.clearRect(0, 0, width, height);
@@ -5853,6 +6766,7 @@ function draw2dFacets(panel, mask, splitName) {{
     const yAxisLabel = y2Name ? `${{byName[yName].label}} / ${{byName[y2Name].label}}` : byName[yName].label;
     const axisVisibility = facetAxisVisibility(layout, index, facets.length);
     drawAxes(ctx, facetAreaInfo, xMin, xMax, yMin, yMax, axisDisplayLabel(panel, "x", xAxisLabel), axisDisplayLabel(panel, "y", yAxisLabel), panel.xticks, panel.yticks, axisVisibility);
+    drawMeanGuides(ctx, facetAreaInfo, panel, facet.meanX, facet.meanY, xMin, xMax, yMin, yMax);
     if ((x2Name || y2Name) && index === 0) drawOverlayLegend(ctx, facetAreaInfo, `${{byName[yName].label}} vs ${{byName[xName].label}}`, overlay2dLabel({{xName, x2Name, yName, y2Name}}));
     const savedFacet = ghostFacet(ghost, facet.value);
     if (savedFacet) drawGhost2d(ctx, facetAreaInfo, {{...ghost, selected: savedFacet.selected}}, savedFacet.counts, xMin, xMax, yMin, yMax, index === 0);
@@ -5907,16 +6821,23 @@ function facetLayout(area, facetCount, splitName = "", facets = null) {{
   return {{cols, rows, gapX: 16, gapY: 30, outerLeft: 8, outerRight: 8, outerTop: 4, outerBottom: 8}};
 }}
 
-function prepareFacetCanvas(canvas, facetCount, splitName = "", facets = null) {{
+function prepareFacetCanvas(canvas, panel, facetCount, splitName = "", facets = null) {{
   const count = Math.max(1, facetCount || 1);
   const protonValues = Array.isArray(facets) ? facets.map(facet => Math.round(Number(facet.value))) : [];
   const centeredCd = isProtonSectorSplit(splitName)
     && count === 7
     && [0, 1, 2, 3, 4, 5, 6].every(value => protonValues.includes(value));
+  canvas.style.width = `${{canonicalPlotWidth(panel.plotWidthFraction) * 100}}%`;
   const width = canvas.getBoundingClientRect().width;
   const columns = centeredCd ? 3 : count <= 2 ? count : width >= 900 ? 3 : 2;
   const rows = centeredCd ? 3 : Math.ceil(count / Math.max(1, columns));
-  canvas.style.height = `${{clamp(rows * 215 + 20, 420, 2800)}}px`;
+  const gapWidth = Math.max(0, columns - 1) * 16;
+  const cellWidth = Math.max(120, (width - gapWidth - 16) / Math.max(1, columns));
+  const plotWidth = Math.max(80, cellWidth - 60);
+  const cellHeight = plotWidth * canonicalPlotHeight(panel.plotHeightFraction) * MAX_PLOT_HEIGHT_TO_WIDTH + 64;
+  const reclaimedHeight = canvasToolbarCollapsed ? canvasToolbarExpandedHeight : 0;
+  canvas.style.minHeight = "0";
+  canvas.style.height = `${{clamp(rows * cellHeight + Math.max(0, rows - 1) * 30 + 12 + reclaimedHeight, 240, 4800)}}px`;
 }}
 
 function panelArea(area, layout, index, colorScaleSlots = 0) {{
@@ -5991,6 +6912,42 @@ function drawOverlayLegend(ctx, area, primaryLabel, overlayLabel) {{
   ctx.globalAlpha = 1;
   ctx.fillStyle = c.fg;
   ctx.fillText(overlayLabel, x + 15, y);
+  ctx.restore();
+}}
+
+function draw1dOverlayLegend(ctx, area, primaryLabel, overlayLabel) {{
+  const c = colors();
+  const pw = area.width - area.left - area.right;
+  const x = area.left + pw - 150;
+  let y = area.top + 10;
+  ctx.save();
+  ctx.font = "12px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  for (const item of [
+    {{label: primaryLabel, color: c.mark, alpha: 1}},
+    {{label: overlayLabel, color: overlayHeatColor(0.82), alpha: 0.78}}
+  ]) {{
+    ctx.globalAlpha = item.alpha;
+    ctx.strokeStyle = item.color;
+    ctx.fillStyle = item.color;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(x + 5, y - 5);
+    ctx.lineTo(x + 5, y + 5);
+    ctx.moveTo(x + 2, y - 5);
+    ctx.lineTo(x + 8, y - 5);
+    ctx.moveTo(x + 2, y + 5);
+    ctx.lineTo(x + 8, y + 5);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x + 5, y, 2.5, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = c.fg;
+    ctx.fillText(item.label, x + 15, y);
+    y += 16;
+  }}
   ctx.restore();
 }}
 
@@ -7045,11 +8002,175 @@ function prepareHoverOverlay(key) {{
   return {{ctx, width: canvasRect.width, height: canvasRect.height}};
 }}
 
+const PIN_MARKER_COLORS = [
+  "#ff5f57", "#2f9bff", "#20b26b", "#b66dff", "#ff9f1c", "#00a6a6", "#e64980", "#7c8a00"
+];
+
+function pinnedMarkerColor(index) {{
+  return PIN_MARKER_COLORS[Math.abs(index) % PIN_MARKER_COLORS.length];
+}}
+
+function pinnedMarkerLabel(index) {{
+  return index < 26 ? String.fromCharCode(65 + index) : `P${{index + 1}}`;
+}}
+
+function plotMarkerSignature(lastPlot) {{
+  if (!lastPlot) return "";
+  return JSON.stringify([
+    lastPlot.mode, lastPlot.xName || "", lastPlot.x2Name || "", lastPlot.yName || "", lastPlot.y2Name || "",
+    lastPlot.splitName || "", lastPlot.splitSignature || "", lastPlot.bins || 0, lastPlot.xBins || 0,
+    lastPlot.yBins || 0, lastPlot.xMin, lastPlot.xMax, lastPlot.yMin, lastPlot.yMax
+  ]);
+}}
+
+function markerAreaAt(lastPlot, px, py) {{
+  const facets = (lastPlot.mode === "1d-facet" || lastPlot.mode === "2d-facet") ? lastPlot.facets : null;
+  if (facets) {{
+    for (let index = 0; index < facets.length; index++) {{
+      const area = facets[index].area;
+      const pw = area.width - area.left - area.right;
+      const ph = area.height - area.top - area.bottom;
+      if (px >= area.left && px <= area.left + pw && py >= area.top && py <= area.top + ph) {{
+        return {{area, facetIndex: index}};
+      }}
+    }}
+    return null;
+  }}
+  const area = lastPlot.area;
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  return px >= area.left && px <= area.left + pw && py >= area.top && py <= area.top + ph
+    ? {{area, facetIndex: -1}}
+    : null;
+}}
+
+function pinnedMarkerAt(key, px, py) {{
+  const lastPlot = panels[key]?.lastPlot;
+  if (!lastPlot) return null;
+  const hitArea = markerAreaAt(lastPlot, px, py);
+  if (!hitArea) return null;
+  const {{area, facetIndex}} = hitArea;
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  const signature = plotMarkerSignature(lastPlot);
+  if (lastPlot.mode === "1d" || lastPlot.mode === "1d-facet") {{
+    const bin = clamp(Math.floor((px - area.left) / pw * lastPlot.bins), 0, lastPlot.bins - 1);
+    return {{id: `${{signature}}:${{facetIndex}}:${{bin}}`, signature, facetIndex, bin}};
+  }}
+  const xi = clamp(Math.floor((px - area.left) / pw * lastPlot.xBins), 0, lastPlot.xBins - 1);
+  const yi = clamp(Math.floor((area.top + ph - py) / ph * lastPlot.yBins), 0, lastPlot.yBins - 1);
+  return {{id: `${{signature}}:${{facetIndex}}:${{xi}}:${{yi}}`, signature, facetIndex, xi, yi}};
+}}
+
+function resolvePinnedMarker(panel, marker) {{
+  const lastPlot = panel?.lastPlot;
+  if (!lastPlot || marker.signature !== plotMarkerSignature(lastPlot)) return null;
+  const facet = marker.facetIndex >= 0 ? lastPlot.facets?.[marker.facetIndex] : null;
+  const area = facet?.area || lastPlot.area;
+  if (!area) return null;
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  const facetText = facet ? `${{facet.label}}; ` : "";
+  if (lastPlot.mode === "1d" || lastPlot.mode === "1d-facet") {{
+    if (marker.bin < 0 || marker.bin >= lastPlot.bins) return null;
+    const counts = facet ? facet.counts : lastPlot.counts;
+    const value = counts?.[marker.bin];
+    if (!Number.isFinite(value)) return null;
+    const x0 = lastPlot.xMin + marker.bin / lastPlot.bins * (lastPlot.xMax - lastPlot.xMin);
+    const x1 = lastPlot.xMin + (marker.bin + 1) / lastPlot.bins * (lastPlot.xMax - lastPlot.xMin);
+    const xValue = (x0 + x1) / 2;
+    const xPixel = area.left + (marker.bin + 0.5) / lastPlot.bins * pw;
+    const yPixel = area.top + ph - (lastPlot.yMax > 0 ? value / lastPlot.yMax * ph : 0);
+    return {{
+      area, xPixel, yPixel, xValue, yValue: value, yLabelText: fmt(value),
+      summary: `${{facetText}}x=${{fmt(xValue)}}, ${{lastPlot.density ? "density" : "count"}}=${{fmt(value)}}`
+    }};
+  }}
+  if (marker.xi < 0 || marker.xi >= lastPlot.xBins || marker.yi < 0 || marker.yi >= lastPlot.yBins) return null;
+  const counts = facet ? facet.counts : lastPlot.counts;
+  const count = counts?.[marker.yi * lastPlot.xBins + marker.xi];
+  const x0 = lastPlot.xMin + marker.xi / lastPlot.xBins * (lastPlot.xMax - lastPlot.xMin);
+  const x1 = lastPlot.xMin + (marker.xi + 1) / lastPlot.xBins * (lastPlot.xMax - lastPlot.xMin);
+  const y0 = lastPlot.yMin + marker.yi / lastPlot.yBins * (lastPlot.yMax - lastPlot.yMin);
+  const y1 = lastPlot.yMin + (marker.yi + 1) / lastPlot.yBins * (lastPlot.yMax - lastPlot.yMin);
+  const xValue = (x0 + x1) / 2;
+  const yValue = (y0 + y1) / 2;
+  const xPixel = area.left + (marker.xi + 0.5) / lastPlot.xBins * pw;
+  const yPixel = area.top + ph - (marker.yi + 0.5) / lastPlot.yBins * ph;
+  return {{
+    area, xPixel, yPixel, xValue, yValue, yLabelText: fmt(yValue),
+    summary: `${{facetText}}x=${{fmt(xValue)}}, y=${{fmt(yValue)}}, ${{lastPlot.density ? "density" : "count"}}=${{fmt(count)}}`
+  }};
+}}
+
+function drawPinnedMarkersOnOverlay(key, overlay) {{
+  const panel = panels[key];
+  if (!panel || !overlay) return;
+  const signature = plotMarkerSignature(panel.lastPlot);
+  panel.pinnedMarkers = (panel.pinnedMarkers || []).filter(marker => marker.signature === signature);
+  panel.pinnedMarkers.forEach((marker, lane) => {{
+    const resolved = resolvePinnedMarker(panel, marker);
+    if (!resolved) return;
+    drawCrosshairOnOverlay(
+      overlay, resolved.area, resolved.xPixel, resolved.yPixel, resolved.xValue, resolved.yValue,
+      resolved.yLabelText, pinnedMarkerColor(marker.colorIndex), pinnedMarkerLabel(marker.colorIndex), lane
+    );
+  }});
+}}
+
+function renderPinnedMarkers(key) {{
+  const panel = panels[key];
+  if (panel) {{
+    const signature = plotMarkerSignature(panel.lastPlot);
+    panel.pinnedMarkers = (panel.pinnedMarkers || []).filter(marker => marker.signature === signature);
+  }}
+  if (!panel?.pinnedMarkers?.length) {{
+    clearHoverOverlay(key);
+    return;
+  }}
+  const overlay = prepareHoverOverlay(key);
+  drawPinnedMarkersOnOverlay(key, overlay);
+}}
+
+function pinnedMarkerSummary(key) {{
+  const panel = panels[key];
+  if (!panel?.pinnedMarkers?.length) return "";
+  const summaries = [];
+  for (const marker of panel.pinnedMarkers) {{
+    const resolved = resolvePinnedMarker(panel, marker);
+    if (resolved) summaries.push(`${{pinnedMarkerLabel(marker.colorIndex)}}: ${{resolved.summary}}`);
+  }}
+  return summaries.length ? `Pinned · ${{summaries.join(" | ")}}` : "";
+}}
+
+function togglePinnedMarker(event, key) {{
+  const panel = panels[key];
+  const rect = el("plot" + key).getBoundingClientRect();
+  const marker = pinnedMarkerAt(key, event.clientX - rect.left, event.clientY - rect.top);
+  if (!panel || !marker) return;
+  const existing = (panel.pinnedMarkers || []).findIndex(item => item.id === marker.id);
+  if (existing >= 0) {{
+    panel.pinnedMarkers.splice(existing, 1);
+  }} else {{
+    marker.colorIndex = panel.nextPinnedMarkerColor++;
+    panel.pinnedMarkers.push(marker);
+  }}
+  setHoverText(key, pinnedMarkerSummary(key));
+  renderPinnedMarkers(key);
+  hideColorScaleMarker(key);
+}}
+
 function drawHoverCrosshair(key, area, xPixel, yPixel, xValue, yValue, yLabelText = null) {{
   const overlay = prepareHoverOverlay(key);
   if (!overlay) return;
+  drawPinnedMarkersOnOverlay(key, overlay);
+  drawCrosshairOnOverlay(overlay, area, xPixel, yPixel, xValue, yValue, yLabelText);
+}}
+
+function drawCrosshairOnOverlay(overlay, area, xPixel, yPixel, xValue, yValue, yLabelText = null, color = null, markerLabel = "", lane = 0) {{
   const {{ctx, width, height}} = overlay;
   const c = colors();
+  const strokeColor = color || c.fg;
   const pw = area.width - area.left - area.right;
   const ph = area.height - area.top - area.bottom;
   const x = clamp(xPixel, area.left, area.left + pw);
@@ -7059,7 +8180,7 @@ function drawHoverCrosshair(key, area, xPixel, yPixel, xValue, yValue, yLabelTex
   ctx.rect(area.left, area.top, pw, ph);
   ctx.clip();
   ctx.globalAlpha = 0.82;
-  ctx.strokeStyle = c.fg;
+  ctx.strokeStyle = strokeColor;
   ctx.lineWidth = 1;
   ctx.setLineDash([5, 4]);
   ctx.beginPath();
@@ -7072,14 +8193,15 @@ function drawHoverCrosshair(key, area, xPixel, yPixel, xValue, yValue, yLabelTex
   ctx.globalAlpha = 0.95;
   ctx.beginPath();
   ctx.arc(x, y, 3, 0, Math.PI * 2);
-  ctx.fillStyle = c.fg;
+  ctx.fillStyle = strokeColor;
   ctx.fill();
   ctx.restore();
-  drawHoverAxisLabel(ctx, fmt(xValue), x, area.top + ph + 7, "x", width, height);
-  drawHoverAxisLabel(ctx, yLabelText || fmt(yValue), area.left - 8, y, "y", width, height);
+  const prefix = markerLabel ? `${{markerLabel}} · ` : "";
+  drawHoverAxisLabel(ctx, prefix + fmt(xValue), x, area.top + ph + 7 + lane * 18, "x", width, height, strokeColor);
+  drawHoverAxisLabel(ctx, prefix + (yLabelText || fmt(yValue)), area.left - 8 + lane * 8, y, "y", width, height, strokeColor);
 }}
 
-function drawHoverAxisLabel(ctx, text, x, y, placement, width, height) {{
+function drawHoverAxisLabel(ctx, text, x, y, placement, width, height, color = null) {{
   const c = colors();
   const label = String(text);
   ctx.save();
@@ -7101,9 +8223,9 @@ function drawHoverAxisLabel(ctx, text, x, y, placement, width, height) {{
   ctx.globalAlpha = 0.96;
   ctx.fillRect(left, top, boxW, boxH);
   ctx.globalAlpha = 1;
-  ctx.strokeStyle = c.border;
+  ctx.strokeStyle = color || c.border;
   ctx.strokeRect(left, top, boxW, boxH);
-  ctx.fillStyle = c.fg;
+  ctx.fillStyle = color || c.fg;
   ctx.textAlign = "center";
   ctx.fillText(label, left + boxW / 2, top + boxH / 2);
   ctx.restore();
@@ -7165,8 +8287,8 @@ function showHoverInfo(event, key) {{
   const pw = area.width - area.left - area.right;
   const ph = area.height - area.top - area.bottom;
   if (px < area.left || px > area.left + pw || py < area.top || py > area.top + ph) {{
-    setHoverText(key, "");
-    clearHoverOverlay(key);
+    setHoverText(key, pinnedMarkerSummary(key));
+    renderPinnedMarkers(key);
     hideColorScaleMarker(key);
     return;
   }}
@@ -7247,8 +8369,8 @@ function showFacetHover(px, py, key) {{
     showColorScaleMarkers(key, facet.colorScale, value, overlayValue);
     return;
   }}
-  setHoverText(key, "");
-  clearHoverOverlay(key);
+  setHoverText(key, pinnedMarkerSummary(key));
+  renderPinnedMarkers(key);
   hideColorScaleMarker(key);
 }}
 
@@ -7328,7 +8450,16 @@ function renderPreview(mask) {{
   }}
 }}
 
-init();
+async function startVisualizer() {{
+  await decodeInitialPayloadColumns();
+  await init();
+}}
+
+startVisualizer().catch(error => {{
+  console.error(error);
+  setStartupProgress(100, `Could not load visualizer: ${{error.message || error}}`);
+  document.body.removeAttribute("aria-busy");
+}});
 </script>
 </body>
 </html>

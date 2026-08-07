@@ -77,7 +77,7 @@ testable.
 recreates the legacy radiative/non-radiative GEN candidate logic while retaining
 generated events without a selected REC candidate.
 
-The converter now provides a compact `GeneratedEvents` tree with one scalar row
+The converter now provides a compact `gEvents` tree with one scalar row
 per input MC event, filled before reconstructed filtering. Production can set
 `saveUnmatchedMC=false`, retain an unbiased denominator, and REC-skim the
 particle-level tree independently. The adapter still supports older matched

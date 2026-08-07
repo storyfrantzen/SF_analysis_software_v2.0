@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from itertools import islice
+import json
 from pathlib import Path
 import sys
 
@@ -15,6 +16,32 @@ class RepackStats:
     output_files: int = 0
     events: int = 0
     lines: int = 0
+
+
+@dataclass(frozen=True)
+class GenerationWeight:
+    stratum_id: str
+    flat_index: int
+    generation_id: str
+    replica_index: int
+    events: int
+    pooled_event_weight_microbarn: float
+    combined_sig_sum_microbarn: float
+    lund_file: str
+
+
+@dataclass(frozen=True)
+class ChunkProvenance:
+    chunk_file: str
+    source_lund_file: str
+    stratum_id: str
+    flat_index: int
+    generation_id: str
+    replica_index: int
+    part_index: int
+    events: int
+    pooled_event_weight_microbarn: float
+    combined_sig_sum_microbarn: float
 
 
 def parser() -> argparse.ArgumentParser:
@@ -40,6 +67,15 @@ def parser() -> argparse.ArgumentParser:
         help="Maximum entries per manifest file",
     )
     root.add_argument("--prefix", default="aao_rad_osg", help="Output LUND filename prefix")
+    root.add_argument(
+        "--campaign-weights",
+        type=Path,
+        help=(
+            "Finalized bin-conditional campaign_weights.json. When supplied, each "
+            "output chunk contains exactly one stratum/generation and its filename "
+            "encodes both identifiers."
+        ),
+    )
     root.add_argument(
         "--relative-manifest-paths",
         action="store_true",
@@ -100,7 +136,23 @@ def main() -> int:
         )
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.fixed_lines_per_event is None:
+    if args.campaign_weights is not None:
+        stats, provenance = repack_stratified_lund_files(
+            input_files,
+            args.output_dir,
+            events_per_file=args.events_per_file,
+            prefix=args.prefix,
+            dry_run=args.dry_run,
+            campaign_weights=args.campaign_weights,
+            progress_files=args.progress_files,
+        )
+        if not args.dry_run:
+            write_chunk_provenance(
+                args.output_dir,
+                provenance,
+                campaign_weights=args.campaign_weights,
+            )
+    elif args.fixed_lines_per_event is None:
         stats = repack_lund_files(
             input_files,
             args.output_dir,
@@ -129,6 +181,162 @@ def main() -> int:
         )
     print_summary(stats, args)
     return 0
+
+
+def load_generation_weights(path: Path) -> dict[str, GenerationWeight]:
+    path = path.resolve()
+    with path.open(encoding="utf-8") as source:
+        campaign = json.load(source)
+    if campaign.get("schema") != "aao-born-bin-conditional-weights-v1":
+        raise ValueError(f"unsupported campaign weights schema: {campaign.get('schema')}")
+    lookup: dict[str, GenerationWeight] = {}
+    for stratum in campaign["strata"]:
+        for generation in stratum["generations"]:
+            basename = Path(generation["lund_file"]).name
+            if basename in lookup:
+                raise ValueError(f"duplicate LUND basename in campaign weights: {basename}")
+            lookup[basename] = GenerationWeight(
+                stratum_id=str(stratum["stratum_id"]),
+                flat_index=int(stratum["flat_index"]),
+                generation_id=str(generation["generation_id"]),
+                replica_index=int(generation["replica_index"]),
+                events=int(generation["events"]),
+                pooled_event_weight_microbarn=float(
+                    stratum["pooled_event_weight_microbarn"]
+                ),
+                combined_sig_sum_microbarn=float(stratum["combined_sig_sum_microbarn"]),
+                lund_file=str(generation["lund_file"]),
+            )
+    return lookup
+
+
+def repack_stratified_lund_files(
+    input_files: list[Path],
+    output_dir: Path,
+    *,
+    events_per_file: int,
+    prefix: str,
+    dry_run: bool,
+    campaign_weights: Path,
+    progress_files: int = 0,
+) -> tuple[RepackStats, list[ChunkProvenance]]:
+    """Split each generation independently; never mix strata or replicas."""
+    if not dry_run:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    weights = load_generation_weights(campaign_weights)
+    stats = RepackStats()
+    provenance: list[ChunkProvenance] = []
+    total_files = len(input_files)
+    for file_index, input_file in enumerate(input_files, start=1):
+        metadata = weights.get(input_file.name)
+        if metadata is None:
+            raise ValueError(f"input LUND is absent from campaign weights: {input_file}")
+        source_events = 0
+        part_index = 0
+        output = None
+        events_in_output = 0
+        try:
+            with input_file.open("r", encoding="utf-8") as handle:
+                while True:
+                    event = read_lund_event(handle, input_file)
+                    if event is None:
+                        break
+                    if events_in_output == 0:
+                        part_index += 1
+                        stats.output_files += 1
+                        if not dry_run:
+                            output_name = (
+                                f"{prefix}__{metadata.stratum_id}__"
+                                f"{metadata.generation_id}__p{part_index:06d}.lund"
+                            )
+                            output = (output_dir / output_name).open("w", encoding="utf-8")
+                    if not dry_run:
+                        assert output is not None
+                        output.writelines(event)
+                    source_events += 1
+                    stats.events += 1
+                    stats.lines += len(event)
+                    events_in_output += 1
+                    if events_in_output >= events_per_file:
+                        if output is not None:
+                            output.close()
+                            output = None
+                        provenance.append(
+                            _chunk_provenance(
+                                prefix,
+                                input_file,
+                                metadata,
+                                part_index,
+                                events_in_output,
+                            )
+                        )
+                        events_in_output = 0
+            if events_in_output > 0:
+                provenance.append(
+                    _chunk_provenance(
+                        prefix,
+                        input_file,
+                        metadata,
+                        part_index,
+                        events_in_output,
+                    )
+                )
+        finally:
+            if output is not None:
+                output.close()
+        if source_events != metadata.events:
+            raise ValueError(
+                f"{input_file} contains {source_events} events; campaign weights "
+                f"record {metadata.events}"
+            )
+        print_progress(file_index, total_files, stats, progress_files, events_per_file)
+    return stats, provenance
+
+
+def _chunk_provenance(
+    prefix: str,
+    input_file: Path,
+    metadata: GenerationWeight,
+    part_index: int,
+    events: int,
+) -> ChunkProvenance:
+    return ChunkProvenance(
+        chunk_file=(
+            f"{prefix}__{metadata.stratum_id}__"
+            f"{metadata.generation_id}__p{part_index:06d}.lund"
+        ),
+        source_lund_file=str(input_file.resolve()),
+        stratum_id=metadata.stratum_id,
+        flat_index=metadata.flat_index,
+        generation_id=metadata.generation_id,
+        replica_index=metadata.replica_index,
+        part_index=part_index,
+        events=events,
+        pooled_event_weight_microbarn=metadata.pooled_event_weight_microbarn,
+        combined_sig_sum_microbarn=metadata.combined_sig_sum_microbarn,
+    )
+
+
+def write_chunk_provenance(
+    output_dir: Path,
+    records: list[ChunkProvenance],
+    *,
+    campaign_weights: Path,
+) -> tuple[Path, Path]:
+    json_path = output_dir / "chunk_provenance.json"
+    tsv_path = output_dir / "chunk_provenance.tsv"
+    payload = {
+        "schema": "aao-osg-stratum-chunks-v1",
+        "campaign_weights": str(campaign_weights.resolve()),
+        "chunks": [record.__dict__ for record in records],
+    }
+    json_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    columns = tuple(ChunkProvenance.__dataclass_fields__)
+    rows = ["\t".join(columns) + "\n"]
+    for record in records:
+        rows.append("\t".join(str(getattr(record, name)) for name in columns) + "\n")
+    tsv_path.write_text("".join(rows), encoding="utf-8")
+    return json_path, tsv_path
 
 
 def repack_lund_files(

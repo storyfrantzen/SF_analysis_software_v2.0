@@ -19,6 +19,7 @@ struct GeneratedEventBranches {
     bool topologyValid = false;
     bool radiative = false;
 
+    int stratumFlatIndex = -1;
     double weight = 1.0;
     double Q2 = NAN;
     double nu = NAN;
@@ -50,5 +51,7 @@ struct GeneratedEventBranches {
               int eventNumber,
               std::uint64_t fileId,
               std::uint64_t eventIndex,
-              double beamEnergy);
+              double beamEnergy,
+              int generatorStratumFlatIndex = -1,
+              double generatorWeight = 1.0);
 };

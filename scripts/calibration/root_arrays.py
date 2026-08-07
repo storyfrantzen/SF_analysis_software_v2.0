@@ -44,7 +44,22 @@ def import_root() -> Any:
 
 def load_dataframe(input_file: str | Path, tree: str):
     ROOT = import_root()
-    return ROOT.RDataFrame(tree, str(input_file))
+    path = str(input_file)
+    root_file = ROOT.TFile.Open(path, "READ")
+    if not root_file or root_file.IsZombie():
+        raise RuntimeError(f"Could not open ROOT file: {path}")
+    aliases = {
+        "rParticles": ("rParticles", "ReconstructedParticles", "Events"),
+        "ReconstructedParticles": ("ReconstructedParticles", "rParticles", "Events"),
+    }
+    resolved = next(
+        (name for name in aliases.get(tree, (tree,)) if root_file.Get(name)),
+        tree,
+    )
+    if resolved != tree:
+        print(f"Warning: using compatible particle tree {resolved}")
+    root_file.Close()
+    return ROOT.RDataFrame(resolved, path)
 
 
 def has_column(df, column: str) -> bool:

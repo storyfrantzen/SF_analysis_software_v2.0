@@ -1,17 +1,20 @@
 {
     "outputFile": "6.535_rgk_eppi0_mc_acceptance.root",
-    "treeName": "Events",
 
     "beamEnergy": 6.535,
-    "kinematicCorrections": "../../../../parameters/proton_energy_loss/6.535RGK_clasdisP2.json",
+    "kinematicCorrections": "../../../../parameters/proton_energy_loss/6.535RGK_INCLUSIVE_GEMC_100M.json",
 
     "qadb": {
         "enabled": false
     },
 
-    "generatedEventTree": {
+    "inputValidation": {
         "enabled": true,
-        "treeName": "GeneratedEvents"
+        "skipMalformed": true
+    },
+
+    "generatedEventTree": {
+        "enabled": true
     },
 
     "finalState": [

@@ -1,0 +1,101 @@
+# ROOT tree implementation notes
+
+The converter separates event-level bookkeeping from particle-level rows. New
+converter files use the following contracts.
+
+## `rEvents`
+
+This is the canonical reconstructed event table. It contains one row for every
+event that passes converter QADB, reconstructed final-state, and DIS filtering,
+including events whose particle rows are restricted by `outputPids`.
+
+Scalar event fields are `sourceFileId`, `sourceEventIndex`, `runNum`,
+`eventNum`, `helicity`, and `charge`. Row-count fields distinguish the complete
+reconstructed particle list from the particle table:
+
+- `nReconstructedParticles`: all entries in `c12.getDetParticles()`;
+- `nWrittenReconstructedParticles`: reconstructed rows retained after
+  `outputPids`;
+- `nParticleTreeRows`: all rows written to the particle tree, including any
+  unmatched generated-only rows in legacy matched-MC output.
+
+Topology multiplicities are evaluated before `outputPids` filtering. The
+parallel vectors `topologyPids`, `topologyRequiredCounts`, `topologyExact`, and
+`topologyPidCounts` retain the configured requirements and observed counts.
+`topologyPidCountsFT`, `topologyPidCountsFD`, `topologyPidCountsCD`, and
+`topologyPidCountsOther` split each observed count by the detector implied by
+the reconstructed status.
+
+Each configured PID also receives convenient scalar branches. For EPPI0 these
+include `nPid11`, `nPid2212`, and `nPid22`, together with detector suffixes such
+as `nPid2212FD` and `nPid2212CD`. A negative PID uses `Minus` in the branch name,
+for example `nPidMinus211`.
+
+This tree is part of the fixed schema. It is always written and cannot be
+renamed or disabled.
+
+## `rParticles`
+
+This reconstructed-particle table contains one `rec` object per retained
+reconstructed particle and an optional matched `gen` object.
+`rec.particleIdx` is the position in the complete
+`c12.getDetParticles()` list, so PID filtering can leave gaps.
+
+For backward compatibility, this tree temporarily retains the repeated
+`event` object used by existing post-processing, calibration scripts, and old
+ROOT readers. New event-level diagnostics must use `rEvents`; they
+must not count repeated particle rows as events. The repeated object is a
+compatibility foreign-key snapshot, not the canonical event table.
+Readers try `rParticles`, then the former `ReconstructedParticles` name, then
+the legacy `Events` name. New files write only `rParticles`.
+
+## `gEvents`
+
+For configured MC conversion this is the one-row-per-input-event truth
+denominator. It is filled before QADB and reconstructed topology/DIS filtering,
+so it is intentionally not row-aligned with `rEvents`.
+The source-aware key is the join contract. Set only
+`generatedEventTree.enabled`; its name is fixed.
+
+`gParticles` is reserved for a future generated-particle table. No current
+production path writes it because no such output contract is yet needed.
+
+## Selected output
+
+The `sEvents` tree contains one row per retained candidate.
+It propagates the converter topology vectors and exposes scalar PID counts such
+as `nPid2212`, `nPid2212FD`, and `nPid2212CD`. When the companion
+`rEvents` tree is present, post-processing streams and joins those
+counts by source-aware event key. Legacy inputs fall back to counting the
+available particle rows.
+
+`sParticles` is the normalized selected-particle table. It contains one
+row per selected role occurrence with the event key, role, occurrence,
+`particleIdx`, PID, detector, sector, and selected kinematics. The legacy
+selected-role vectors and scalar role branches remain in the candidate tree for
+existing analysis and visualization consumers.
+
+Post-processing always reads `rParticles` and `rEvents`, with ordered legacy
+fallbacks, and writes `sEvents` plus `sParticles`. In `matchedRows` mode it
+writes `rParticles`. Tree names are intentionally absent from maintained
+configs.
+
+## Compatibility
+
+The converter and post-config parsers still accept historical tree-name keys
+when they contain a recognized old or canonical name. Those values are ignored:
+they cannot change the fixed output schema. Readers retain ordered fallbacks so
+existing ROOT files remain usable while new files converge on the short names.
+
+## Proton-multiplicity diagnostic
+
+The immediate cross-detector population is selected from either event-level
+tree with
+
+```text
+nPid2212 >= 2 && nPid2212FD >= 1 && nPid2212CD >= 1
+```
+
+This identifies events with distinct FD and CD reconstructed proton rows. It
+does not establish that the rows came from one physical proton; kinematic and
+vertex residuals are still needed for that conclusion.

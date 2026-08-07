@@ -31,7 +31,7 @@ RGA data run looks like:
 ```
 
 Production configurations are organized by run group and energy. The complete
-RGA 10.604 GeV EPPI0 data/nonradiative-MC set lives under
+RGA 10.604 GeV EPPI0 data/acceptance-MC set lives under
 `configs/{processing,post}/rga/10.604/`, with its numerical analysis settings at
 `configs/analysis/rga/10.604.json`. See `configs/README.md` for the layout.
 
@@ -65,11 +65,19 @@ For storage-efficient acceptance production:
 ./build/hipo2root configs/processing/rgk/6.535/eppi0_mc_acceptance.json /path/to/hipo/files
 ```
 
-This writes a lightweight `GeneratedEvents` tree before reconstructed topology
-or DIS filtering. The particle-level `Events` tree may therefore be REC-skimmed
+This writes a lightweight `gEvents` tree before reconstructed topology
+or DIS filtering. The `rParticles` tree may therefore be REC-skimmed
 with `saveUnmatchedMC` disabled without biasing the generated denominator.
 
-`GeneratedEvents` has one row per input MC event. It stores the source-aware
+Converter files also contain a canonical `rEvents` tree with
+one row per accepted reconstructed event. It stores the complete configured PID
+multiplicities before `outputPids` filtering, including FD/CD splits. Selected
+files propagate those counts through `sEvents` and add a normalized
+`sParticles` tree.
+See [the ROOT tree implementation notes](docs/root_tree_schema.md) for the tree
+contracts and compatibility behavior.
+
+`gEvents` has one row per input MC event. It stores the source-aware
 identity `(sourceFileId, sourceEventIndex)`, the original `(runNum, eventNum)`,
 generator-topology validity, a radiative flag, weight, and generated `Q2`, `nu`,
 `xB`, `y`, `W`, `minusT`, and `trentoPhi`. Invalid generator topologies remain
@@ -121,6 +129,11 @@ The compact MC flow is:
 
 See `analysis/README.md` for commands, artifact schemas, storage guidance, and
 the legacy-file fallback.
+
+For an isolated, non-destructive RGK 6.535 GeV start-to-finish run on ifarm,
+see `docs/rgk_6535_clean_run.md`. The provided runner creates a fresh build and
+keeps every generated ROOT, NPZ, plot, log, and provenance file under a new
+user-selected work directory.
 
 ## Cut strategy
 

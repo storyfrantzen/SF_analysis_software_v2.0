@@ -296,7 +296,8 @@ def _plot_convergence(
     x = np.arange(len(adjacent_labels))
     ax[3].plot(x, adjacent_p95, marker="o", label="p95")
     ax[3].plot(x, adjacent_p99, marker="s", label="p99")
-    ax[3].set_xticks(x, adjacent_labels)
+    ax[3].set_xticks(x)
+    ax[3].set_xticklabels(adjacent_labels)
     ax[3].set_title("Adjacent-N convergence")
     ax[3].set_xlabel("comparison")
     ax[3].set_ylabel("relative difference")
@@ -335,7 +336,7 @@ def _parse_args() -> argparse.Namespace:
         "--n-values",
         type=int,
         nargs="+",
-        default=[2, 4, 6, 8],
+        default=[2, 4, 6, 8, 10, 12, 15, 20],
         help="N values to compare, in increasing order",
     )
     parser.add_argument("--reference-N", type=int, default=None, help="Reference N; defaults to the largest N")

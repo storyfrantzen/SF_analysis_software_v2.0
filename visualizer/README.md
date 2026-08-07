@@ -6,6 +6,20 @@ artifacts or selected ROOT trees into a self-contained HTML application. The
 generated file embeds its event data and does not require a JavaScript build or
 application server.
 
+Plot and filter settings are saved automatically in the browser for each source
+dataset. The Plot actions toolbar also provides explicit Save workspace and
+Restore saved controls. Plot tools such as ghost overlays, mean guides, profiles,
+and reference curves are available from the visible Plot tools button as well as
+the canvas context menu.
+
+Clicking a histogram point or 2D bin pins its crosshair and axis-value labels.
+Click the same point again to unpin it. Additional points remain visible for
+direct comparison and receive distinct colors and letter labels (`A`, `B`, and
+so on). Pinned values are panel-specific, update with filter changes, and clear
+automatically when the plotted variables, axes, binning, or facet layout changes.
+When click-to-select fit endpoints is enabled, canvas clicks remain reserved for
+the fit-range picker.
+
 ## Usage
 
 Run the package from the repository root:
@@ -17,7 +31,58 @@ python3 -m visualizer data_events.npz \
 python3 -m visualizer selected_data.root \
   --format root --output results/selected_data_histograms.html \
   --dictionary build/libROOTBranchesDict.so
+
+python3 -m visualizer converter_rows.root \
+  --format root --max-source-events 250000 --seed 12345 \
+  --output results/converter_event_sample.html \
+  --dictionary build/libROOTBranchesDict.so
 ```
+
+Inputs larger than `--max-events` are sampled across the complete dataset for
+both NPZ and ROOT files. Sampling is deterministic and defaults to `--seed
+12345`, so repeated runs select the same source rows. Pass a different seed for
+a different reproducible sample, or `--max-events 0` to embed every row.
+
+Converter ROOT trees often contain several particle rows per trigger event. Use
+`--max-source-events N` to sample `N` distinct source events instead of `N`
+rows. Every particle row belonging to each selected event is retained, the
+selection remains deterministic under `--seed`, and the ordinary `--max-events`
+row cap is disabled for that run. Event identity prefers
+`sourceFileId + sourceEventIndex` and falls back to `runNum + eventNum` when
+needed. Use `--max-source-events 0` to embed every source event.
+
+New converter files provide `rEvents` for one-row-per-event
+diagnostics. Its scalar topology branches include `nPid2212`,
+`nPid2212FD`, and `nPid2212CD`; select that tree when studying reconstructed
+multiplicity without particle-row weighting.
+
+Use `--root-filter` to apply a ROOT `RDataFrame` expression before either row
+or source-event sampling. Converter object fields keep their qualified ROOT
+branch names everywhere, including `event.runNum`, `event.eventNum`, `rec.pid`,
+and `rec.chi2pid`. For example, this retains every particle row from run 18480
+and embeds all qualifying source events:
+
+```bash
+python3 -m visualizer converter_rows.root \
+  --format root --root-filter 'event.runNum == 18480' \
+  --max-source-events 0 --seed 12345 \
+  --output results/run_18480.html \
+  --dictionary build/libROOTBranchesDict.so
+```
+
+For quick studies that do not need a persistent HTML artifact, the launcher
+below generates under a temporary directory, serves the visualizer, and removes
+the temporary HTML when the server stops:
+
+```bash
+scripts/visualize.sh converter_rows.root 0 'event.runNum == 18480'
+scripts/visualize.sh converter_rows.root 250000
+```
+
+The second argument is a source-event limit, not a row limit; `0` keeps every
+event passing the optional filter. Sampling still defaults to seed `12345`.
+The standalone `python3 -m visualizer` workflow remains available when a
+portable, comprehensive HTML file is desired.
 
 Then serve a generated file or a directory containing several visualizers:
 
@@ -33,6 +98,12 @@ python3 analysis/interactive_histograms.py INPUT --output OUTPUT.html
 ```
 
 ## Histogram fits
+
+One-dimensional histograms are drawn at bin centers as points with capped
+Poisson error bars. Count-mode uncertainties use `sqrt(N)` for each bin. In
+density mode the same uncertainty is rescaled by the selected total, so a bin
+with raw count `N` is displayed with uncertainty `sqrt(N) / N_selected`.
+Overlaid and faceted one-dimensional histograms use the same convention.
 
 The Fit panel supports ordinary least squares, Poisson-weighted least squares,
 and conditional unbinned likelihood fits. `Poisson WLS (Pearson)` iteratively
@@ -79,6 +150,12 @@ limits to keep rare extreme tails from dominating the initial display; the
 events remain embedded and available through manually entered axis limits and
 constraints.
 
+Particle quantities use a consistent selector vocabulary regardless of whether
+the input branch uses a short alias (`eIdx`, `pDet`, `g1Sector`) or a full name
+(`electronIdx`, `protonDet`, `gamma1Sector`). Display labels use `REC`/`GEN`, the
+full particle name, and a normalized quantity, while the underlying branch keys
+remain unchanged. Duplicate short/full aliases are shown only once.
+
 Proton-sector split views distinguish FD sectors 1-6 from sector 0, which
 denotes CD protons. The FD facets occupy the first two three-column rows in
 sector order, and the CD facet is centered by itself in the third row.
@@ -111,8 +188,13 @@ tick-density controls form one panel-specific tile beneath the active quantity
 title. They use two aligned X/Y rows, with the vertical label pair immediately
 to the right of the tick-density pair. One-dimensional plots pin Y ticks and Y
 label to the same columns used in two-dimensional mode even while the Y-range
-controls are hidden. The display tile
-for log color, density, and color scale sits immediately to its right, followed
+controls are hidden. The display tile includes panel-specific height and width
+sliders in one-percent steps. Height runs from 25% to 100%, where 100% is the
+former baseline canvas height, and now defaults to 50%. Width runs from 50% to
+100% of the available panel and defaults to 100%. Profiles inherit both source
+panel dimensions. Log color,
+density, and color scale share that tile, which sits immediately to the right of
+the axis settings and is followed
 by the reset/export tile. All three tiles span the full title width as one
 flush, spaced group above the canvas, with responsive wrapping when a pane is
 too narrow. Hover
@@ -121,7 +203,9 @@ In split view, the single toolbar moves between panel-specific rails with the
 active panel. `Hide plot controls` collapses that rail and leaves a persistent
 `Show plot controls` action in the panel controls. The rails compensate for
 different title and active-filter badge heights, keeping the 1D and 2D canvases
-flush whether the toolbar is expanded or collapsed.
+flush whether the toolbar is expanded or collapsed. When controls are hidden,
+the canvas reclaims the toolbar's measured height, enlarging the plotting area
+without altering the panel's stored plot-aspect setting.
 The panel control block provides separate `split view` and `shared panel
 filters` buttons. Filter sharing is enabled by default. Disabling it gives each
 panel its own topology selections, numeric constraints, and text searches;
@@ -146,7 +230,11 @@ display toggle.
 
 Right-clicking either canvas opens a plot menu with the ghost actions and a
 `Hide plot controls` / `Show plot controls` action that mirrors the persistent
-toolbar toggle. A ghost snapshots the active panel's current histogram bins and
+toolbar toggle. `Show mean guides` adds a vertical dashed line at the selected
+events' mean X and, for two-dimensional plots, a horizontal dashed line at mean
+Y. The toggle is panel-specific, follows the active filters and axis ranges,
+uses each facet's own means, and is included in saved PNGs. A ghost snapshots
+the active panel's current histogram bins and
 remains fixed while filters change. One-dimensional
 ghosts use a dashed orange step outline; two-dimensional ghosts use
 intensity-weighted orange cell outlines so the live heat map remains readable.
@@ -159,7 +247,9 @@ On a two-dimensional canvas, right-click inside a bin and choose `Profile X` or
 distribution selected by the clicked Y bin; `Profile Y` plots the Y distribution
 selected by the clicked X bin. The tool opens split view, makes panel filters
 independent, copies the source panel's active filters into Panel 2, and adds the
-clicked bin as an editable numeric constraint. Profiles created inside a facet
+clicked bin as an editable numeric constraint. Plot controls collapse by default
+so the one- and two-dimensional canvases remain aligned; restore them with the
+`Show plot controls` button or right-click action. Profiles created inside a facet
 also retain that facet's categorical or numeric slice. Bin upper edges are
 exclusive except for the final bin, matching the two-dimensional histogram's
 bin membership exactly.

@@ -10,10 +10,10 @@ import numpy as np
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Check legacy and source-aware identities in a GeneratedEvents tree."
+        description="Check legacy and source-aware identities in a gEvents tree."
     )
     parser.add_argument("input", type=Path, help="ROOT file produced by hipo2root")
-    parser.add_argument("--tree", default="GeneratedEvents")
+    parser.add_argument("--tree", default="gEvents")
     return parser.parse_args()
 
 
@@ -35,22 +35,24 @@ def duplicate_summary(keys: np.ndarray) -> tuple[int, int]:
 def main() -> int:
     args = parse_args()
     import ROOT  # type: ignore
+    from eppi0.root_trees import resolve
 
     ROOT.gROOT.SetBatch(True)
     path = str(args.input.resolve())
     root_file = ROOT.TFile.Open(path, "READ")
     if not root_file or root_file.IsZombie():
         raise RuntimeError(f"Could not open ROOT file: {path}")
-    tree = root_file.Get(args.tree)
+    tree_name = resolve(root_file, args.tree)
+    tree = root_file.Get(tree_name)
     if not tree:
         raise RuntimeError(f"Could not find tree {args.tree} in {path}")
     required = ("runNum", "eventNum", "sourceFileId", "sourceEventIndex")
     missing = [name for name in required if not tree.GetBranch(name)]
     root_file.Close()
     if missing:
-        raise RuntimeError(f"{args.tree} is missing branches: {', '.join(missing)}")
+        raise RuntimeError(f"{tree_name} is missing branches: {', '.join(missing)}")
 
-    arrays = ROOT.RDataFrame(args.tree, path).AsNumpy(list(required))
+    arrays = ROOT.RDataFrame(tree_name, path).AsNumpy(list(required))
     legacy = structured_keys(
         np.asarray(arrays["runNum"], dtype=np.int64),
         np.asarray(arrays["eventNum"], dtype=np.int64),

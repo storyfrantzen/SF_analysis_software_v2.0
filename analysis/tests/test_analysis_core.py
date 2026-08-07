@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import sys
 from pathlib import Path
 import tempfile
@@ -16,7 +17,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from eppi0.binning import AnalysisBinning, from_config, legacy_binning
 from eppi0.bin_centering import compute_bin_centering, physical_mask
-from eppi0.cross_section import integrated_luminosity_fb, virtual_photon_flux
+from eppi0.cross_section import (
+    integrated_luminosity_fb,
+    physical_bin_volumes,
+    virtual_photon_flux,
+)
 from eppi0.event_sample import (
     build_generated_sample,
     generated_particle_columns,
@@ -32,16 +37,24 @@ from eppi0.radiative_correction import (
     histogram_lund,
     support_status_codes,
 )
+from eppi0.root_response import _truth_inside_mask
+from eppi0.phase_space import AnalysisPhaseSpace
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
 from run_analysis import (
+    command_response,
     command_unfold,
     command_response_plots,
     command_bin_centering_merge,
+    command_cross_section,
+    _load_bin_centering_plot_artifacts,
     _normalization_npz_fields,
     _read_generator_integrated_cross_section,
     _read_generator_normalization_summary,
 )
-from build_event_sample import reconstructed_columns
+from build_event_sample import (
+    reconstructed_columns,
+    reverse_join_selected_events,
+)
 
 
 class BinningTests(unittest.TestCase):
@@ -105,6 +118,64 @@ class ResponseTests(unittest.TestCase):
         self.assertAlmostEqual(counted.feed_in_fraction, dense.feed_in_fraction)
         np.testing.assert_allclose(counted.feed_in_shape, dense.feed_in_shape)
 
+    def test_response_command_applies_analysis_phase_space_to_truth(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            config_path = tmpdir / "analysis.json"
+            sample_path = tmpdir / "sample.npz"
+            output_dir = tmpdir / "response"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "beam_energy": 6.535,
+                        "binning": {
+                            "Q2": [1.0, 1.5],
+                            "xB": [0.1, 0.3],
+                            "minus_t": [0.1, 0.3],
+                            "phi_deg": [0.0, 360.0],
+                        },
+                        "phase_space": {"y_max": 0.3},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            np.savez_compressed(
+                sample_path,
+                gen_Q2=np.array([1.2]),
+                gen_xB=np.array([0.2]),
+                gen_minus_t=np.array([0.2]),
+                gen_trento_phi=np.array([0.0]),
+                rec_Q2=np.array([1.2]),
+                rec_xB=np.array([0.2]),
+                rec_minus_t=np.array([0.2]),
+                rec_trento_phi=np.array([0.0]),
+                rec_selected=np.array([True]),
+            )
+            args = argparse.Namespace(
+                sample=sample_path,
+                config=config_path,
+                output_dir=output_dir,
+                selection_mask=None,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_response(args)
+            metadata = np.load(output_dir / "response_meta.npz", allow_pickle=False)
+        np.testing.assert_allclose(metadata["truth_total"], [0.0])
+        np.testing.assert_allclose(metadata["reconstructed_total"], [1.0])
+        self.assertEqual(float(metadata["feed_in_fraction"]), 1.0)
+
+    def test_root_response_truth_mask_applies_analysis_phase_space(self) -> None:
+        mask = _truth_inside_mask(
+            topology_valid=np.array([True, True, True]),
+            truth_flat=np.array([0, 0, -1]),
+            q2=np.array([1.2, 1.2, 1.2]),
+            xb=np.array([0.2, 0.8, 0.8]),
+            number_of_bins=1,
+            phase_space=AnalysisPhaseSpace(y_max=0.3),
+            beam_energy=6.535,
+        )
+        np.testing.assert_array_equal(mask, [False, True, False])
+
     def test_response_plots_writes_pdf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
@@ -146,6 +217,72 @@ class ResponseTests(unittest.TestCase):
 
 
 class EventSampleTests(unittest.TestCase):
+    def test_reverse_join_exports_only_valid_selected_matches(self) -> None:
+        rec = {
+            "runNum": np.array([11, 11, 11, 11]),
+            "eventNum": np.array([1, 1, 2, 3]),
+            "sourceFileId": np.array([1001, 1002, 1001, 1001], dtype=np.uint64),
+            "sourceEventIndex": np.array([0, 0, 1, 2], dtype=np.uint64),
+        }
+        rec_values = {
+            "rec_Q2": np.array([1.51, 1.61, 1.71, 1.81]),
+            "rec_y": np.array([0.30, 0.33, 0.34, 0.35]),
+            "rec_W": np.array([2.20, 2.23, 2.24, 2.25]),
+        }
+        chunks = [
+            {
+                "sourceFileId": np.array([1001, 1001], dtype=np.uint64),
+                "sourceEventIndex": np.array([1, 2], dtype=np.uint64),
+                "runNum": np.array([11, 11]),
+                "eventNum": np.array([2, 3]),
+                "topologyValid": np.array([True, False]),
+                "Q2": np.array([1.7, np.nan]),
+                "xB": np.array([0.2, np.nan]),
+                "y": np.array([0.31, np.nan]),
+                "W": np.array([2.21, np.nan]),
+                "minusT": np.array([0.3, np.nan]),
+                "trentoPhi": np.array([0.4, np.nan]),
+                "radiative": np.array([True, True]),
+                "weight": np.array([1.0, 1.0]),
+                "electronP": np.array([4.2, np.nan]),
+            },
+            {
+                "sourceFileId": np.array([1002, 9999], dtype=np.uint64),
+                "sourceEventIndex": np.array([0, 0], dtype=np.uint64),
+                "runNum": np.array([11, 11]),
+                "eventNum": np.array([1, 99]),
+                "topologyValid": np.array([True, True]),
+                "Q2": np.array([1.6, 2.0]),
+                "xB": np.array([0.21, 0.3]),
+                "y": np.array([0.32, 0.4]),
+                "W": np.array([2.22, 2.5]),
+                "minusT": np.array([0.31, 0.5]),
+                "trentoPhi": np.array([0.41, 0.6]),
+                "radiative": np.array([True, True]),
+                "weight": np.array([2.0, 1.0]),
+                "electronP": np.array([4.1, 5.0]),
+            },
+        ]
+        sample, stats = reverse_join_selected_events(
+            rec, rec_values, chunks, ["electronP"]
+        )
+        np.testing.assert_array_equal(sample["source_file_id"], [1002, 1001])
+        np.testing.assert_array_equal(sample["source_event_index"], [0, 1])
+        np.testing.assert_allclose(sample["gen_Q2"], [1.6, 1.7])
+        np.testing.assert_allclose(sample["rec_Q2"], [1.61, 1.71])
+        np.testing.assert_allclose(sample["gen_y"], [0.32, 0.31])
+        np.testing.assert_allclose(sample["gen_W"], [2.22, 2.21])
+        np.testing.assert_allclose(sample["rec_y"], [0.33, 0.34])
+        np.testing.assert_allclose(sample["rec_W"], [2.23, 2.24])
+        np.testing.assert_allclose(sample["gen_electronP"], [4.1, 4.2])
+        np.testing.assert_array_equal(sample["rec_selected"], [True, True])
+        self.assertEqual(stats["generated_events_scanned"], 4)
+        self.assertEqual(stats["valid_generated_events"], 3)
+        self.assertEqual(stats["selected_reconstructed_events"], 4)
+        self.assertEqual(stats["matched_generated_events"], 2)
+        self.assertEqual(stats["unmatched_selected_events"], 1)
+        self.assertEqual(stats["invalid_generated_matches"], 1)
+
     def test_compact_generated_tree_filters_invalid_topology(self) -> None:
         sample = generated_sample_from_tree(
             np.array([1001, 1002], dtype=np.uint64),
@@ -231,6 +368,8 @@ class EventSampleTests(unittest.TestCase):
             "t": np.array([0.3, 0.4]),
             "passSamplingFraction": np.array([1, 0]),
             "electronP": np.array([3.0, 3.2]),
+            "protonP": np.array([1.0, 1.1]),
+            "gamma1P": np.array([0.8, 0.9]),
         }
         values = reconstructed_columns(rec, list(rec))
         self.assertNotIn("rec_runNum", values)
@@ -239,6 +378,8 @@ class EventSampleTests(unittest.TestCase):
         np.testing.assert_allclose(values["rec_minus_t"], [0.3, 0.4])
         np.testing.assert_array_equal(values["rec_passSamplingFraction"], [1, 0])
         np.testing.assert_allclose(values["rec_electronP"], [3.0, 3.2])
+        np.testing.assert_allclose(values["rec_protonP"], [1.0, 1.1])
+        np.testing.assert_allclose(values["rec_gamma1P"], [0.8, 0.9])
 
     def test_generated_particle_columns_align_to_generated_events(self) -> None:
         run = np.full(8, 11)
@@ -393,6 +534,23 @@ class RadiativeCorrectionTests(unittest.TestCase):
         self.assertTrue(np.isfinite(result.generated_q2_min))
         self.assertTrue(np.isfinite(result.generated_eprime_max))
 
+    def test_lund_histogram_applies_analysis_phase_space(self) -> None:
+        bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "born.txt"
+            path.write_text(_lund_event(pi0=False), encoding="utf-8")
+            result = histogram_lund(
+                path,
+                bins,
+                beam_energy=6.535,
+                chunk_size=1,
+                phase_space=AnalysisPhaseSpace(y_max=0.3),
+            )
+        self.assertEqual(result.events_seen, 1)
+        self.assertEqual(result.topology_events, 1)
+        self.assertEqual(result.in_range, 0)
+        self.assertEqual(result.counts.sum(), 0.0)
+
     def test_lund_directory_accepts_non_txt_lund_files(self) -> None:
         bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
         with tempfile.TemporaryDirectory() as tmp:
@@ -541,6 +699,93 @@ class NormalizationTests(unittest.TestCase):
         flux = virtual_photon_flux(np.array([2.0]), np.array([0.3]), 6.535)
         self.assertGreater(flux[0], 0.0)
 
+    def test_physical_bin_volume_includes_exclusive_t_overlap(self) -> None:
+        bins = AnalysisBinning(
+            [1.49, 1.51],
+            [0.295, 0.305],
+            [0.0, 2.0],
+            [0.0, 360.0],
+        )
+        volumes = physical_bin_volumes(
+            bins,
+            6.535,
+            q2_minimum=0.0,
+            w_minimum=1.0,
+            y_maximum=1.0,
+            integration_points=100,
+        )
+        rectangular = 0.02 * 0.01 * 2.0 * 2.0 * np.pi
+        self.assertGreater(volumes[0, 0, 0, 0], 0.0)
+        self.assertLess(volumes[0, 0, 0, 0], rectangular)
+
+    def test_cross_section_uses_bin_centering_reference_for_flux(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            config_path = tmpdir / "config.json"
+            unfolding_path = tmpdir / "unfolding.npz"
+            centering_path = tmpdir / "C_BC.npz"
+            output_path = tmpdir / "cross_section.npz"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "beam_energy": 6.535,
+                        "target_length_cm": 5.0,
+                        "target_density_g_cm3": 0.071,
+                        "target_molar_mass_g": 1.008,
+                        "pi0_to_gg_branching_ratio": 0.988,
+                        "minimum_acceptance": 0.005,
+                        "phase_space": {"Q2_min": 1.0, "W_min": 2.0, "y_max": 0.8},
+                        "binning": {
+                            "Q2": [1.2, 1.4],
+                            "xB": [0.2, 0.3],
+                            "minus_t": [0.2, 0.3],
+                            "phi_deg": [0.0, 180.0],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            np.savez_compressed(
+                unfolding_path,
+                beam_charge_c=1.0e-3,
+                efficiency=np.asarray([1.0]),
+                corrected_yield=np.asarray([100.0]),
+                corrected_uncertainty=np.asarray([10.0]),
+                Q2_mean=np.asarray([1.35]),
+                xB_mean=np.asarray([0.28]),
+            )
+            shape = (1, 1, 1, 1)
+            np.savez_compressed(
+                centering_path,
+                C_BC=np.full(shape, 2.0),
+                reliable=np.ones(shape, dtype=bool),
+                q2_center=np.full(shape, 1.25),
+                xB_center=np.full(shape, 0.24),
+            )
+            args = argparse.Namespace(
+                unfolding_result=unfolding_path,
+                config=config_path,
+                output=output_path,
+                bin_centering=centering_path,
+                global_normalization=1.0,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_cross_section(args)
+            output = np.load(output_path, allow_pickle=False)
+
+        flux = virtual_photon_flux(np.asarray([1.25]), np.asarray([0.24]), 6.535)[0]
+        expected = (
+            100.0
+            * 1.0e-6
+            / (float(output["luminosity_fb"]) * 0.988 * output["bin_volume"].item() * flux)
+            / 2.0
+        )
+        self.assertAlmostEqual(output["reduced_cross_section"].item(), expected)
+        self.assertEqual(output["flux_q2_mean"].item(), 1.25)
+        self.assertEqual(output["flux_xb_mean"].item(), 0.24)
+        self.assertEqual(output["uncentered_q2_mean"].item(), 1.35)
+        self.assertEqual(output["uncentered_xb_mean"].item(), 0.28)
+
 
 class BinCenteringTests(unittest.TestCase):
     def test_physical_mask_uses_signed_t_internally(self) -> None:
@@ -560,6 +805,24 @@ class BinCenteringTests(unittest.TestCase):
         self.assertTrue(np.all(result.computed))
         np.testing.assert_allclose(result.c_bc, 1.0, rtol=1e-12, atol=1e-12)
         self.assertTrue(np.all(result.n_physical > 0))
+
+    def test_bin_centering_phase_space_restricts_physical_cells(self) -> None:
+        bins = AnalysisBinning([1.2, 1.4], [0.25, 0.35], [0.15, 0.25], [0.0, 180.0])
+
+        def flat_d4sigma(points: np.ndarray) -> np.ndarray:
+            flux = virtual_photon_flux(points[:, 1], points[:, 0], 6.535)
+            return np.divide(1.0, flux, out=np.full(points.shape[0], np.nan), where=flux > 0.0)
+
+        unrestricted = compute_bin_centering(bins, 6.535, flat_d4sigma, samples_per_dimension=2)
+        restricted = compute_bin_centering(
+            bins,
+            6.535,
+            flat_d4sigma,
+            samples_per_dimension=2,
+            phase_space=AnalysisPhaseSpace(y_max=0.35),
+        )
+        self.assertGreater(int(unrestricted.n_physical.sum()), int(restricted.n_physical.sum()))
+        self.assertGreater(int(restricted.n_physical.sum()), 0)
 
     def test_partial_bin_centering_merge_matches_full_result(self) -> None:
         bins = AnalysisBinning([1.2, 1.3, 1.4], [0.25, 0.35], [0.15, 0.25], [0.0, 180.0])
@@ -588,6 +851,26 @@ class BinCenteringTests(unittest.TestCase):
             np.testing.assert_array_equal(merged["reliable"], full.reliable)
             np.testing.assert_array_equal(merged["computed"], full.computed)
 
+    def test_plot_artifact_scan_deduplicates_symlinks_and_sorts_n(self) -> None:
+        bins = AnalysisBinning([1.2, 1.4], [0.25, 0.35], [0.15, 0.25], [0.0, 180.0])
+
+        def flat_d4sigma(points: np.ndarray) -> np.ndarray:
+            flux = virtual_photon_flux(points[:, 1], points[:, 0], 6.535)
+            return np.divide(1.0, flux, out=np.full(points.shape[0], np.nan), where=flux > 0.0)
+
+        result = compute_bin_centering(bins, 6.535, flat_d4sigma, samples_per_dimension=2)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            n2 = tmpdir / "C_BC_rgk_N2.npz"
+            n4 = tmpdir / "C_BC_rgk_N4.npz"
+            alias = tmpdir / "C_BC_N2.npz"
+            _write_bin_centering_test_artifact(n2, bins, result, bin_start=0, bin_stop=1, n_value=2)
+            _write_bin_centering_test_artifact(n4, bins, result, bin_start=0, bin_stop=1, n_value=4)
+            alias.symlink_to(n2.name)
+            scan = _load_bin_centering_plot_artifacts(alias, overlay_directory=tmpdir)
+            self.assertEqual(list(scan), [2, 4])
+            np.testing.assert_array_equal(scan[2]["valid"], result.reliable & result.computed)
+
 
 def _write_bin_centering_test_artifact(
     path: Path,
@@ -596,6 +879,7 @@ def _write_bin_centering_test_artifact(
     *,
     bin_start: int,
     bin_stop: int,
+    n_value: int = 2,
 ) -> None:
     np.savez_compressed(
         path,
@@ -618,7 +902,7 @@ def _write_bin_centering_test_artifact(
         t_edges=bins.t_edges,
         phi_edges=bins.phi_edges,
         beam_energy=6.535,
-        samples_per_dimension=2,
+        samples_per_dimension=n_value,
         max_failure_fraction=0.0,
         theory=5,
         channel=1,

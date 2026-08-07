@@ -7,6 +7,8 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "core/TreeNames.h"
+
 using json = nlohmann::json;
 
 namespace {
@@ -112,6 +114,36 @@ ChannelSpec parseChannelSpec(const json& j) {
         }
     }
     return channel;
+}
+
+CandidateSelectionSpec parseCandidateSelectionSpec(const json& j) {
+    CandidateSelectionSpec selection;
+    selection.method = j.value("method", selection.method);
+    if (selection.method != "compositeDistance" &&
+        selection.method != "pi0MassThenMissingPt") {
+        throw std::runtime_error(
+            "Unsupported candidate-selection method '" + selection.method + "'"
+        );
+    }
+    return selection;
+}
+
+void validateLegacyTreeSetting(const json& j, const char* key) {
+    if (!j.contains(key)) return;
+    const auto name = j.at(key).get<std::string>();
+    static const std::vector<const char*> knownNames = {
+        TreeNames::rEvents, TreeNames::rParticles, TreeNames::gEvents,
+        TreeNames::sEvents, TreeNames::sParticles,
+        TreeNames::legacyREvents, TreeNames::legacyRParticles,
+        TreeNames::legacyGEvents, TreeNames::legacySEvents,
+        TreeNames::legacySParticles, TreeNames::legacyEvents
+    };
+    for (const auto* known : knownNames) {
+        if (name == known) return;
+    }
+    throw std::runtime_error(
+        std::string(key) + " is no longer configurable; post-processing uses fixed tree names"
+    );
 }
 
 void mergeConfig(json& base, const json& override) {
@@ -282,9 +314,11 @@ PostCutConfig PostCutConfig::fromFile(const std::string& filename) {
 
     PostCutConfig cfg;
     cfg.outputFile = j.value("outputFile", cfg.outputFile);
-    cfg.inputTree = j.value("inputTree", cfg.inputTree);
-    cfg.outputTree = j.value("outputTree", cfg.outputTree);
     cfg.outputMode = j.value("outputMode", cfg.outputMode);
+    validateLegacyTreeSetting(j, "inputTree");
+    validateLegacyTreeSetting(j, "inputEventTree");
+    validateLegacyTreeSetting(j, "outputTree");
+    validateLegacyTreeSetting(j, "outputParticleTree");
     cfg.beamEnergy = j.value("beamEnergy", cfg.beamEnergy);
     cfg.torus = j.value("torus", cfg.torus);
     cfg.saveFailedCandidates = j.value("saveFailedCandidates", cfg.saveFailedCandidates);
@@ -331,6 +365,10 @@ PostCutConfig PostCutConfig::fromFile(const std::string& filename) {
         cfg.channel = parseChannelSpec(j["channel"]);
     } else if (j.contains("eppi0")) {
         cfg.channel = legacyEppi0Channel(j["eppi0"]);
+    }
+
+    if (j.contains("candidateSelection")) {
+        cfg.candidateSelection = parseCandidateSelectionSpec(j["candidateSelection"]);
     }
 
     if (j.contains("exclusivity")) {

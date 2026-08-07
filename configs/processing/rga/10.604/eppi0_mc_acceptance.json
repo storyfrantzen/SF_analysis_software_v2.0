@@ -1,6 +1,5 @@
 {
-    "outputFile": "10.604_rga_eppi0_mc_nonradiative.root",
-    "treeName": "Events",
+    "outputFile": "10.604_rga_eppi0_mc_acceptance.root",
 
     "beamEnergy": 10.604,
 
@@ -8,11 +7,15 @@
         "enabled": false
     },
 
+    "inputValidation": {
+        "enabled": true,
+        "skipMalformed": true
+    },
+
     "kinematicCorrections": "../../../../parameters/proton_energy_loss/10.604RGA_FA18_t1_clasdisP2_rederived.json",
 
     "generatedEventTree": {
-        "enabled": true,
-        "treeName": "GeneratedEvents"
+        "enabled": true
     },
 
     "finalState": [
