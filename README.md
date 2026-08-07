@@ -62,7 +62,7 @@ letting tiny edge populations define the first and last theta bins. Use
 For storage-efficient acceptance production:
 
 ```bash
-./build/hipo2root configs/processing/rgk/6.535/eppi0_mc_acceptance.json /path/to/hipo/files
+./build/hipo2root configs/processing/rgk/6.535/eppi0_GEMC.json /path/to/hipo/files
 ```
 
 This writes a lightweight `gEvents` tree before reconstructed topology

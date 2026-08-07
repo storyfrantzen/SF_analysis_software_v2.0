@@ -34,14 +34,12 @@ sampling-fraction parameter file.
 
 The active RGK 6.535 GeV files are:
 
-- `processing/rgk/6.535/aao_rad_q2_0.7_ep_1.00.json`;
-- `processing/rgk/6.535/aao_rad_q2_0.9_ep_1.15.json`;
 - `processing/rgk/6.535/eppi0_data.json`;
 - `processing/rgk/6.535/eppi0_data_full_dst.json`;
 - `post/rgk/6.535/eppi0_data.json`;
 - `post/rgk/6.535/eppi0_base.json`;
 - `post/rgk/6.535/aao_rad_eppi0_loose.json`;
-- `processing/rgk/6.535/eppi0_mc_acceptance.json`;
+- `processing/rgk/6.535/eppi0_GEMC.json`;
 - `post/rgk/6.535/eppi0_mc_acceptance.json`;
 - `processing/rgk/6.535/calibration/sidis_electrons_data.json`;
 - `processing/rgk/6.535/calibration/sidis_electrons_mc.json`;
@@ -206,19 +204,18 @@ The two output JSON files and plot directories are intentionally separate.
 Compare the fitted mean and sigma curves and the retained fractions before
 choosing which parameters belong in a physics-selection configuration.
 
-## RGK 6.535 GeV aaoRad reconstructed-distribution comparison
+## RGK 6.535 GeV GEMC reconstructed-distribution comparison
 
 The RGK EPPI0 base config mirrors the RGA EPPI0 topology with RGK-specific
 detector acceptance: no detector 0 FT candidates, RGK ECAL fiducials, RGK ECAL
 edge cuts, and the same FD/CD proton treatment.
 
-The aaoRad comparison configs are intended for quick shape checks across any
-compatible production. Choose the processing config whose phase-space family
-matches the generator inputs: `Q2 >= 0.7, electron p >= 1.00` or
-`Q2 >= 0.9, electron p >= 1.15`. The post config extends the RGK EPPI0 base but
-keeps a loose photon selection with a very low reconstructed photon momentum
-threshold, so comparisons remain sensitive to generated photon-threshold
-changes without depending on a particular production identifier.
+The unified `eppi0_GEMC.json` processing config is used for both radiative and
+non-radiative GEMC. It preserves every generated event in `gEvents` before the
+reconstructed topology and DIS skim, while requiring reconstructed `Q2 >= 1`,
+`W >= 2`, and the provisional broad bound `y <= 0.95`. The optional
+`aao_rad_eppi0_loose.json` post config keeps a loose photon selection for quick
+radiative-production shape checks.
 
 For RGK 6.535 GeV data processing, use the data config pair. The processing
 config enables QADB, applies the `6.535RGK_INCLUSIVE_GEMC_100M` proton
@@ -263,7 +260,7 @@ luminosity-scan runs, use the more compact converter config:
 
 This config retains the nominal QADB policy and DIS/topology skim, writes only
 electron, proton, and photon particle rows, and requires at least one photon
-pair with `0 <= m_gg <= 0.30 GeV`. The pair condition is existential: in an
+pair with `0 <= m_gg <= 0.35 GeV`. The pair condition is existential: in an
 event with more than two photons, any pair may satisfy it. Its upper boundary
 is deliberately looser than the nominal post-processing pi0 window, whose
 upper edge is approximately `0.285 GeV`; candidate choice and all final
@@ -276,31 +273,19 @@ corrections; the post config extends the nominal RGK EPPI0 base selection and
 loads the `6.535RGK_INCLUSIVE_GEMC_100M` sampling-fraction parameters:
 
 ```bash
-./build/hipo2root configs/processing/rgk/6.535/eppi0_mc_acceptance.json \
+./build/hipo2root configs/processing/rgk/6.535/eppi0_GEMC.json \
   /path/to/rgk/6.535/gemc 0 1000000
 
 ./build/post_process configs/post/rgk/6.535/eppi0_mc_acceptance.json \
-  6.535_rgk_eppi0_mc_acceptance.root 1000000
+  6.535_rgk_eppi0_GEMC.root 1000000
 ```
 
-Example processing commands on ifarm for the lower-threshold phase-space family:
+For a quick loose-selection comparison of a radiative production, reuse the
+same converter output with the radiative post config:
 
 ```bash
-./build/hipo2root configs/processing/rgk/6.535/aao_rad_q2_0.7_ep_1.00.json \
-  /path/to/compatible/production 5 100000
-
 ./build/post_process configs/post/rgk/6.535/aao_rad_eppi0_loose.json \
-  6.535_rgk_aao_rad_q2_0.7_ep_1.00.root 100000
-```
-
-Use the other processing config for the tighter generated phase-space family:
-
-```bash
-./build/hipo2root configs/processing/rgk/6.535/aao_rad_q2_0.9_ep_1.15.json \
-  /path/to/compatible/production 5 100000
-
-./build/post_process configs/post/rgk/6.535/aao_rad_eppi0_loose.json \
-  6.535_rgk_aao_rad_q2_0.9_ep_1.15.root 100000
+  6.535_rgk_eppi0_GEMC.root 100000
 ```
 
 Compare any set of labeled selected outputs with the generic comparison tool.

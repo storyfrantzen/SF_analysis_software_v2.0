@@ -210,7 +210,7 @@ stage_data_exclusivity() {
 stage_convert_mc() {
     local log_file=$1
     run_in_root_dir "$log_file" "$BUILD_DIR/hipo2root" \
-        "$REPO_ROOT/configs/processing/rgk/6.535/eppi0_mc_acceptance.json" \
+        "$REPO_ROOT/configs/processing/rgk/6.535/eppi0_GEMC.json" \
         "$MC_INPUT" "$MAX_FILES" "$PROGRESS_EVENTS"
 }
 
@@ -218,13 +218,13 @@ stage_select_mc() {
     local log_file=$1
     run_in_root_dir "$log_file" "$BUILD_DIR/post_process" \
         "$REPO_ROOT/configs/post/rgk/6.535/eppi0_mc_acceptance.json" \
-        "$ROOT_DIR/6.535_rgk_eppi0_mc_acceptance.root" "$PROGRESS_EVENTS"
+        "$ROOT_DIR/6.535_rgk_eppi0_GEMC.root" "$PROGRESS_EVENTS"
 }
 
 stage_check_mc_keys() {
     local log_file=$1
     run_command "$log_file" python3 "$REPO_ROOT/analysis/check_event_keys.py" \
-        "$ROOT_DIR/6.535_rgk_eppi0_mc_acceptance.root"
+        "$ROOT_DIR/6.535_rgk_eppi0_GEMC.root"
 }
 
 stage_mc_exclusivity() {
@@ -241,7 +241,7 @@ stage_mc_exclusivity() {
 stage_response() {
     local log_file=$1
     run_command "$log_file" python3 "$REPO_ROOT/analysis/run_analysis.py" response-root \
-        "$ROOT_DIR/6.535_rgk_eppi0_mc_acceptance.root" \
+        "$ROOT_DIR/6.535_rgk_eppi0_GEMC.root" \
         "$ROOT_DIR/6.535_rgk_eppi0_mc_acceptance_selected.root" \
         --config "$REPO_ROOT/configs/analysis/rgk/6.535.json" \
         --output-dir "$RESULTS_DIR/response" \
@@ -360,7 +360,7 @@ if ((DRY_RUN == 0)); then
         cp "$REPO_ROOT/configs/analysis/rgk/6.535.json" "$PROVENANCE_DIR/analysis-config.json"
         cp "$REPO_ROOT/configs/processing/rgk/6.535/eppi0_data.json" \
             "$PROVENANCE_DIR/processing-data-config.json"
-        cp "$REPO_ROOT/configs/processing/rgk/6.535/eppi0_mc_acceptance.json" \
+        cp "$REPO_ROOT/configs/processing/rgk/6.535/eppi0_GEMC.json" \
             "$PROVENANCE_DIR/processing-mc-config.json"
         cp "$REPO_ROOT/configs/post/rgk/6.535/eppi0_data.json" \
             "$PROVENANCE_DIR/post-data-config.json"

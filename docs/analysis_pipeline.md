@@ -343,7 +343,7 @@ gamma`. Invalid generator topologies remain represented with
 After this row is saved, the normal `finalState` and DIS skim apply only to the
 `rParticles` tree. This permits a compact REC numerator without
 removing generated events from the denominator. Use
-`configs/processing/rgk/6.535/eppi0_mc_acceptance.json` as the reference.
+`configs/processing/rgk/6.535/eppi0_GEMC.json` as the reference.
 
 Channel-specific derived quantities should be isolated behind small channel logic functions. The eppi0 derived variables and loose exclusivity checks now live behind the eppi0 logic path, which is enabled when the configured roles include `electron`, `proton`, and two `gamma` particles. Future channels should follow that pattern: keep role selection and primitive cuts generic, then add a narrow function for channel-specific kinematics and output branches.
 

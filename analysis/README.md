@@ -149,7 +149,7 @@ selected ROOT files:
 
 ```bash
 python3 analysis/run_analysis.py response-root \
-  6.535_rgk_eppi0_mc_acceptance.root selected_mc.root \
+  6.535_rgk_eppi0_GEMC.root selected_mc.root \
   --config configs/analysis/rgk/6.535.json --output-dir results/response \
   --dictionary build/libROOTBranchesDict.dylib
 ```
@@ -372,7 +372,7 @@ the adapter requires `--beam-energy` to reconstruct those quantities:
 
 ```bash
 python3 analysis/build_event_sample.py \
-  6.535_rgk_eppi0_mc_acceptance.root selected_mc.root mc_events.npz
+  6.535_rgk_eppi0_GEMC.root selected_mc.root mc_events.npz
 ```
 
 For generated-versus-reconstructed visualization of a large production, use
@@ -380,7 +380,7 @@ the reverse join instead of materializing one output row per generated event:
 
 ```bash
 python3 analysis/build_event_sample.py \
-  6.535_rgk_eppi0_mc_acceptance.root \
+  6.535_rgk_eppi0_GEMC.root \
   6.535_rgk_eppi0_mc_acceptance_selected.root \
   samples/rgk_6.535_matched_mc_events.npz \
   --dictionary build/libROOTBranchesDict.so \
@@ -455,7 +455,7 @@ the full path only when duplicate basenames must be disambiguated.
 Check both identities after converting more than one input file:
 
 ```bash
-python3 analysis/check_event_keys.py 6.535_rgk_eppi0_mc_acceptance.root
+python3 analysis/check_event_keys.py 6.535_rgk_eppi0_GEMC.root
 ```
 
 Repeated `(runNum,eventNum)` keys are expected for the tested GEMC production;
@@ -650,7 +650,7 @@ The preferred converter configuration enables `gEvents`, applies REC
 topology/DIS skims only to `rParticles`, and sets
 `saveUnmatchedMC` to false. This retains the generated denominator in one
 lightweight scalar row per event. See
-`configs/processing/rgk/6.535/eppi0_mc_acceptance.json`.
+`configs/processing/rgk/6.535/eppi0_GEMC.json`.
 
 For older files without `gEvents`, an unbiased denominator still
 requires an unrestricted matched conversion with unmatched particle-level GEN
