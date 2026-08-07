@@ -12,6 +12,14 @@ Restore saved controls. Plot tools such as ghost overlays, mean guides, profiles
 and reference curves are available from the visible Plot tools button as well as
 the canvas context menu.
 
+Clicking a histogram point or 2D bin pins its crosshair and axis-value labels.
+Click the same point again to unpin it. Additional points remain visible for
+direct comparison and receive distinct colors and letter labels (`A`, `B`, and
+so on). Pinned values are panel-specific, update with filter changes, and clear
+automatically when the plotted variables, axes, binning, or facet layout changes.
+When click-to-select fit endpoints is enabled, canvas clicks remain reserved for
+the fit-range picker.
+
 ## Usage
 
 Run the package from the repository root:

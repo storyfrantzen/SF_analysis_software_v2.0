@@ -3731,6 +3731,8 @@ function makePanel(key, xvar, yvar) {{
     filterState: makeFilterState(),
     ghostPlot: null,
     referenceCurves: [],
+    pinnedMarkers: [],
+    nextPinnedMarkerColor: 0,
     lastPlot: null,
     stats: {{selected: 0, meanX: NaN, meanY: NaN}}
   }};
@@ -4680,11 +4682,11 @@ function attachEvents() {{
   }});
   for (const key of panelKeys) {{
     el("plot" + key).addEventListener("mousemove", event => showHoverInfo(event, key));
-    el("plot" + key).addEventListener("click", event => handleFitRangeClick(event, key));
+    el("plot" + key).addEventListener("click", event => handleCanvasClick(event, key));
     el("plot" + key).addEventListener("contextmenu", event => showCanvasContextMenu(event, key));
     el("plot" + key).addEventListener("mouseleave", () => {{
-      setHoverText(key, "");
-      clearHoverOverlay(key);
+      setHoverText(key, pinnedMarkerSummary(key));
+      renderPinnedMarkers(key);
       hideColorScaleMarker(key);
     }});
   }}
@@ -5123,15 +5125,15 @@ function fitClickArea(lastPlot, px, py) {{
 function handleFitRangeClick(event, key) {{
   const panel = panels[key];
   const lastPlot = panel?.lastPlot;
-  if (!panel || !lastPlot || !panel.fitRangeClick || !panelHasFit(panel)) return;
+  if (!panel || !lastPlot || !panel.fitRangeClick || !panelHasFit(panel)) return false;
   const rect = el("plot" + key).getBoundingClientRect();
   const px = event.clientX - rect.left;
   const py = event.clientY - rect.top;
   const area = fitClickArea(lastPlot, px, py);
-  if (!area) return;
+  if (!area) return true;
   const pw = area.width - area.left - area.right;
   const xValue = lastPlot.xMin + (px - area.left) / pw * (lastPlot.xMax - lastPlot.xMin);
-  if (!Number.isFinite(xValue)) return;
+  if (!Number.isFinite(xValue)) return true;
   activePanel = key;
   if (!Number.isFinite(panel.fitRangeMin) || Number.isFinite(panel.fitRangeMax)) {{
     panel.fitRangeMin = xValue;
@@ -5147,6 +5149,12 @@ function handleFitRangeClick(event, key) {{
   renderActiveFilterControls();
   syncControlsFromPanel();
   update();
+  return true;
+}}
+
+function handleCanvasClick(event, key) {{
+  if (handleFitRangeClick(event, key)) return;
+  togglePinnedMarker(event, key);
 }}
 
 function setMode(next) {{
@@ -5343,6 +5351,7 @@ function update() {{
     if (key === activePanel) activeMask = mask;
     if (panel.mode === "1d") draw1d(panel, mask);
     else draw2d(panel, mask);
+    renderPinnedMarkers(key);
   }}
   updateActiveStats();
   renderPreview(activeMask || selectedMask(filterStateForPanel(activePanel)));
@@ -7993,11 +8002,175 @@ function prepareHoverOverlay(key) {{
   return {{ctx, width: canvasRect.width, height: canvasRect.height}};
 }}
 
+const PIN_MARKER_COLORS = [
+  "#ff5f57", "#2f9bff", "#20b26b", "#b66dff", "#ff9f1c", "#00a6a6", "#e64980", "#7c8a00"
+];
+
+function pinnedMarkerColor(index) {{
+  return PIN_MARKER_COLORS[Math.abs(index) % PIN_MARKER_COLORS.length];
+}}
+
+function pinnedMarkerLabel(index) {{
+  return index < 26 ? String.fromCharCode(65 + index) : `P${{index + 1}}`;
+}}
+
+function plotMarkerSignature(lastPlot) {{
+  if (!lastPlot) return "";
+  return JSON.stringify([
+    lastPlot.mode, lastPlot.xName || "", lastPlot.x2Name || "", lastPlot.yName || "", lastPlot.y2Name || "",
+    lastPlot.splitName || "", lastPlot.splitSignature || "", lastPlot.bins || 0, lastPlot.xBins || 0,
+    lastPlot.yBins || 0, lastPlot.xMin, lastPlot.xMax, lastPlot.yMin, lastPlot.yMax
+  ]);
+}}
+
+function markerAreaAt(lastPlot, px, py) {{
+  const facets = (lastPlot.mode === "1d-facet" || lastPlot.mode === "2d-facet") ? lastPlot.facets : null;
+  if (facets) {{
+    for (let index = 0; index < facets.length; index++) {{
+      const area = facets[index].area;
+      const pw = area.width - area.left - area.right;
+      const ph = area.height - area.top - area.bottom;
+      if (px >= area.left && px <= area.left + pw && py >= area.top && py <= area.top + ph) {{
+        return {{area, facetIndex: index}};
+      }}
+    }}
+    return null;
+  }}
+  const area = lastPlot.area;
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  return px >= area.left && px <= area.left + pw && py >= area.top && py <= area.top + ph
+    ? {{area, facetIndex: -1}}
+    : null;
+}}
+
+function pinnedMarkerAt(key, px, py) {{
+  const lastPlot = panels[key]?.lastPlot;
+  if (!lastPlot) return null;
+  const hitArea = markerAreaAt(lastPlot, px, py);
+  if (!hitArea) return null;
+  const {{area, facetIndex}} = hitArea;
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  const signature = plotMarkerSignature(lastPlot);
+  if (lastPlot.mode === "1d" || lastPlot.mode === "1d-facet") {{
+    const bin = clamp(Math.floor((px - area.left) / pw * lastPlot.bins), 0, lastPlot.bins - 1);
+    return {{id: `${{signature}}:${{facetIndex}}:${{bin}}`, signature, facetIndex, bin}};
+  }}
+  const xi = clamp(Math.floor((px - area.left) / pw * lastPlot.xBins), 0, lastPlot.xBins - 1);
+  const yi = clamp(Math.floor((area.top + ph - py) / ph * lastPlot.yBins), 0, lastPlot.yBins - 1);
+  return {{id: `${{signature}}:${{facetIndex}}:${{xi}}:${{yi}}`, signature, facetIndex, xi, yi}};
+}}
+
+function resolvePinnedMarker(panel, marker) {{
+  const lastPlot = panel?.lastPlot;
+  if (!lastPlot || marker.signature !== plotMarkerSignature(lastPlot)) return null;
+  const facet = marker.facetIndex >= 0 ? lastPlot.facets?.[marker.facetIndex] : null;
+  const area = facet?.area || lastPlot.area;
+  if (!area) return null;
+  const pw = area.width - area.left - area.right;
+  const ph = area.height - area.top - area.bottom;
+  const facetText = facet ? `${{facet.label}}; ` : "";
+  if (lastPlot.mode === "1d" || lastPlot.mode === "1d-facet") {{
+    if (marker.bin < 0 || marker.bin >= lastPlot.bins) return null;
+    const counts = facet ? facet.counts : lastPlot.counts;
+    const value = counts?.[marker.bin];
+    if (!Number.isFinite(value)) return null;
+    const x0 = lastPlot.xMin + marker.bin / lastPlot.bins * (lastPlot.xMax - lastPlot.xMin);
+    const x1 = lastPlot.xMin + (marker.bin + 1) / lastPlot.bins * (lastPlot.xMax - lastPlot.xMin);
+    const xValue = (x0 + x1) / 2;
+    const xPixel = area.left + (marker.bin + 0.5) / lastPlot.bins * pw;
+    const yPixel = area.top + ph - (lastPlot.yMax > 0 ? value / lastPlot.yMax * ph : 0);
+    return {{
+      area, xPixel, yPixel, xValue, yValue: value, yLabelText: fmt(value),
+      summary: `${{facetText}}x=${{fmt(xValue)}}, ${{lastPlot.density ? "density" : "count"}}=${{fmt(value)}}`
+    }};
+  }}
+  if (marker.xi < 0 || marker.xi >= lastPlot.xBins || marker.yi < 0 || marker.yi >= lastPlot.yBins) return null;
+  const counts = facet ? facet.counts : lastPlot.counts;
+  const count = counts?.[marker.yi * lastPlot.xBins + marker.xi];
+  const x0 = lastPlot.xMin + marker.xi / lastPlot.xBins * (lastPlot.xMax - lastPlot.xMin);
+  const x1 = lastPlot.xMin + (marker.xi + 1) / lastPlot.xBins * (lastPlot.xMax - lastPlot.xMin);
+  const y0 = lastPlot.yMin + marker.yi / lastPlot.yBins * (lastPlot.yMax - lastPlot.yMin);
+  const y1 = lastPlot.yMin + (marker.yi + 1) / lastPlot.yBins * (lastPlot.yMax - lastPlot.yMin);
+  const xValue = (x0 + x1) / 2;
+  const yValue = (y0 + y1) / 2;
+  const xPixel = area.left + (marker.xi + 0.5) / lastPlot.xBins * pw;
+  const yPixel = area.top + ph - (marker.yi + 0.5) / lastPlot.yBins * ph;
+  return {{
+    area, xPixel, yPixel, xValue, yValue, yLabelText: fmt(yValue),
+    summary: `${{facetText}}x=${{fmt(xValue)}}, y=${{fmt(yValue)}}, ${{lastPlot.density ? "density" : "count"}}=${{fmt(count)}}`
+  }};
+}}
+
+function drawPinnedMarkersOnOverlay(key, overlay) {{
+  const panel = panels[key];
+  if (!panel || !overlay) return;
+  const signature = plotMarkerSignature(panel.lastPlot);
+  panel.pinnedMarkers = (panel.pinnedMarkers || []).filter(marker => marker.signature === signature);
+  panel.pinnedMarkers.forEach((marker, lane) => {{
+    const resolved = resolvePinnedMarker(panel, marker);
+    if (!resolved) return;
+    drawCrosshairOnOverlay(
+      overlay, resolved.area, resolved.xPixel, resolved.yPixel, resolved.xValue, resolved.yValue,
+      resolved.yLabelText, pinnedMarkerColor(marker.colorIndex), pinnedMarkerLabel(marker.colorIndex), lane
+    );
+  }});
+}}
+
+function renderPinnedMarkers(key) {{
+  const panel = panels[key];
+  if (panel) {{
+    const signature = plotMarkerSignature(panel.lastPlot);
+    panel.pinnedMarkers = (panel.pinnedMarkers || []).filter(marker => marker.signature === signature);
+  }}
+  if (!panel?.pinnedMarkers?.length) {{
+    clearHoverOverlay(key);
+    return;
+  }}
+  const overlay = prepareHoverOverlay(key);
+  drawPinnedMarkersOnOverlay(key, overlay);
+}}
+
+function pinnedMarkerSummary(key) {{
+  const panel = panels[key];
+  if (!panel?.pinnedMarkers?.length) return "";
+  const summaries = [];
+  for (const marker of panel.pinnedMarkers) {{
+    const resolved = resolvePinnedMarker(panel, marker);
+    if (resolved) summaries.push(`${{pinnedMarkerLabel(marker.colorIndex)}}: ${{resolved.summary}}`);
+  }}
+  return summaries.length ? `Pinned · ${{summaries.join(" | ")}}` : "";
+}}
+
+function togglePinnedMarker(event, key) {{
+  const panel = panels[key];
+  const rect = el("plot" + key).getBoundingClientRect();
+  const marker = pinnedMarkerAt(key, event.clientX - rect.left, event.clientY - rect.top);
+  if (!panel || !marker) return;
+  const existing = (panel.pinnedMarkers || []).findIndex(item => item.id === marker.id);
+  if (existing >= 0) {{
+    panel.pinnedMarkers.splice(existing, 1);
+  }} else {{
+    marker.colorIndex = panel.nextPinnedMarkerColor++;
+    panel.pinnedMarkers.push(marker);
+  }}
+  setHoverText(key, pinnedMarkerSummary(key));
+  renderPinnedMarkers(key);
+  hideColorScaleMarker(key);
+}}
+
 function drawHoverCrosshair(key, area, xPixel, yPixel, xValue, yValue, yLabelText = null) {{
   const overlay = prepareHoverOverlay(key);
   if (!overlay) return;
+  drawPinnedMarkersOnOverlay(key, overlay);
+  drawCrosshairOnOverlay(overlay, area, xPixel, yPixel, xValue, yValue, yLabelText);
+}}
+
+function drawCrosshairOnOverlay(overlay, area, xPixel, yPixel, xValue, yValue, yLabelText = null, color = null, markerLabel = "", lane = 0) {{
   const {{ctx, width, height}} = overlay;
   const c = colors();
+  const strokeColor = color || c.fg;
   const pw = area.width - area.left - area.right;
   const ph = area.height - area.top - area.bottom;
   const x = clamp(xPixel, area.left, area.left + pw);
@@ -8007,7 +8180,7 @@ function drawHoverCrosshair(key, area, xPixel, yPixel, xValue, yValue, yLabelTex
   ctx.rect(area.left, area.top, pw, ph);
   ctx.clip();
   ctx.globalAlpha = 0.82;
-  ctx.strokeStyle = c.fg;
+  ctx.strokeStyle = strokeColor;
   ctx.lineWidth = 1;
   ctx.setLineDash([5, 4]);
   ctx.beginPath();
@@ -8020,14 +8193,15 @@ function drawHoverCrosshair(key, area, xPixel, yPixel, xValue, yValue, yLabelTex
   ctx.globalAlpha = 0.95;
   ctx.beginPath();
   ctx.arc(x, y, 3, 0, Math.PI * 2);
-  ctx.fillStyle = c.fg;
+  ctx.fillStyle = strokeColor;
   ctx.fill();
   ctx.restore();
-  drawHoverAxisLabel(ctx, fmt(xValue), x, area.top + ph + 7, "x", width, height);
-  drawHoverAxisLabel(ctx, yLabelText || fmt(yValue), area.left - 8, y, "y", width, height);
+  const prefix = markerLabel ? `${{markerLabel}} · ` : "";
+  drawHoverAxisLabel(ctx, prefix + fmt(xValue), x, area.top + ph + 7 + lane * 18, "x", width, height, strokeColor);
+  drawHoverAxisLabel(ctx, prefix + (yLabelText || fmt(yValue)), area.left - 8 + lane * 8, y, "y", width, height, strokeColor);
 }}
 
-function drawHoverAxisLabel(ctx, text, x, y, placement, width, height) {{
+function drawHoverAxisLabel(ctx, text, x, y, placement, width, height, color = null) {{
   const c = colors();
   const label = String(text);
   ctx.save();
@@ -8049,9 +8223,9 @@ function drawHoverAxisLabel(ctx, text, x, y, placement, width, height) {{
   ctx.globalAlpha = 0.96;
   ctx.fillRect(left, top, boxW, boxH);
   ctx.globalAlpha = 1;
-  ctx.strokeStyle = c.border;
+  ctx.strokeStyle = color || c.border;
   ctx.strokeRect(left, top, boxW, boxH);
-  ctx.fillStyle = c.fg;
+  ctx.fillStyle = color || c.fg;
   ctx.textAlign = "center";
   ctx.fillText(label, left + boxW / 2, top + boxH / 2);
   ctx.restore();
@@ -8113,8 +8287,8 @@ function showHoverInfo(event, key) {{
   const pw = area.width - area.left - area.right;
   const ph = area.height - area.top - area.bottom;
   if (px < area.left || px > area.left + pw || py < area.top || py > area.top + ph) {{
-    setHoverText(key, "");
-    clearHoverOverlay(key);
+    setHoverText(key, pinnedMarkerSummary(key));
+    renderPinnedMarkers(key);
     hideColorScaleMarker(key);
     return;
   }}
@@ -8195,8 +8369,8 @@ function showFacetHover(px, py, key) {{
     showColorScaleMarkers(key, facet.colorScale, value, overlayValue);
     return;
   }}
-  setHoverText(key, "");
-  clearHoverOverlay(key);
+  setHoverText(key, pinnedMarkerSummary(key));
+  renderPinnedMarkers(key);
   hideColorScaleMarker(key);
 }}
 
