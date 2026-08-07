@@ -65,6 +65,49 @@ Run the dependency-light tests from the repository root:
 python3 -m unittest discover -s analysis/tests -v
 ```
 
+## Generic ROOT distribution comparisons
+
+`compare_root_distributions.py` overlays any number of labeled ROOT samples and
+uses one labeled sample as the reference for ratio panels and quantitative shape
+comparisons. The labels and paths are supplied entirely on the command line:
+
+```bash
+python3 analysis/compare_root_distributions.py --density \
+  --sample reference=/path/to/reference_selected.root \
+  --sample candidate_a=/path/to/candidate_a_selected.root \
+  --sample candidate_b=/path/to/candidate_b_selected.root \
+  --reference reference \
+  --output-dir results/root_comparison
+```
+
+Every compared column receives a Jensen-Shannon divergence and total-variation
+distance in `shape_metrics.csv`; both compare normalized bin probabilities over
+the displayed histogram range and are independent of the `--density` display
+choice. The divergence uses natural logarithms and ranges from zero to
+`ln(2)`; total variation ranges from zero to one. `summary.json` contains the
+same metrics together with per-column entry, mean, RMS, minimum, and maximum
+values.
+
+Pair a selected sample with its converter output to include processing counters,
+accumulated charge, and the ratio of selected rows to input events in
+`sample_summary.csv`:
+
+```bash
+python3 analysis/compare_root_distributions.py \
+  --sample reference=/path/to/reference_selected.root \
+  --sample candidate=/path/to/candidate_selected.root \
+  --processing-root reference=/path/to/reference_converter.root \
+  --processing-root candidate=/path/to/candidate_converter.root \
+  --reference reference \
+  --output-dir results/root_comparison
+```
+
+The row-to-event ratio is a selection fraction only for trees with one selected
+row per event. For particle-level trees it is intentionally reported as
+`selected_rows_per_input_event`, not as an efficiency. Use `--where`, `--tree`,
+and `--columns` to apply the same comparison machinery to other ROOT schemas;
+the default tree is the canonical selected-event tree, `sEvents`.
+
 For the RGA 10.604 GeV workflow, use
 `configs/analysis/rga/10.604.json` together with the matching processing and
 post-processing files under `configs/*/rga/10.604/`.
