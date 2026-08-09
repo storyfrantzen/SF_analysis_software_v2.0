@@ -11,7 +11,7 @@ On ifarm, first load the environment used by this repository:
 module use /cvmfs/oasis.opensciencegrid.org/jlab/scicomp/sw/el9/modulefiles
 module use /scigroup/cvmfs/hallb/clas12/sw/modulefiles
 module load clas12/5.4
-module load qadb/3.1
+module load qadb/3.4.0
 ```
 
 Then run from the repository clone. Replace the example inputs with the exact

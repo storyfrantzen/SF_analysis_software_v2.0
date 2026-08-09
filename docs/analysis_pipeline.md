@@ -63,7 +63,7 @@ interval, so mixed-run converter files can be normalized after filtering the
 selected candidates by `runNum`. The per-run charge sum reproduces the legacy
 file-level total; the latter remains available for backward compatibility.
 
-Load QADB before configuring and building on JLab, for example `module load qadb/3.1`.
+Load QADB before configuring and building on JLab, for example `module load qadb/3.4.0`.
 If QADB is requested by a config but was unavailable at build time, `hipo2root` exits with
 an explicit error.
 

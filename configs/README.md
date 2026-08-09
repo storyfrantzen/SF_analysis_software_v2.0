@@ -19,12 +19,13 @@ kinematic corrections. Post configurations define candidate construction and
 tuneable detector/physics cuts. Analysis configurations contain binning,
 target, and normalization settings.
 
-The complete RGA 10.604 GeV EPPI0 pair is:
+The complete RGA 10.604 GeV EPPI0 set is:
 
 - `processing/rga/10.604/eppi0_data.json`;
-- `processing/rga/10.604/eppi0_mc_acceptance.json`;
+- `processing/rga/10.604/eppi0_data_full_dst.json`;
+- `processing/rga/10.604/eppi0_GEMC.json`;
 - `post/rga/10.604/eppi0_data.json`;
-- `post/rga/10.604/eppi0_mc_acceptance.json`;
+- `post/rga/10.604/eppi0_GEMC.json`;
 - `analysis/rga/10.604.json`.
 
 Both post-processing files extend `post/rga/10.604/eppi0_base.json` so the
@@ -40,7 +41,7 @@ The active RGK 6.535 GeV files are:
 - `post/rgk/6.535/eppi0_base.json`;
 - `post/rgk/6.535/aao_rad_eppi0_loose.json`;
 - `processing/rgk/6.535/eppi0_GEMC.json`;
-- `post/rgk/6.535/eppi0_mc_acceptance.json`;
+- `post/rgk/6.535/eppi0_GEMC.json`;
 - `processing/rgk/6.535/calibration/sidis_electrons_data.json`;
 - `processing/rgk/6.535/calibration/sidis_electrons_mc.json`;
 - `processing/rgk/6.535/calibration/proton_energy_loss_mc.json`;
@@ -131,14 +132,14 @@ From the repository root:
 ./build/hipo2root configs/processing/rga/10.604/eppi0_data.json \
   /path/to/rga/eppi0/data
 
-./build/hipo2root configs/processing/rga/10.604/eppi0_mc_acceptance.json \
+./build/hipo2root configs/processing/rga/10.604/eppi0_GEMC.json \
   /path/to/rga/gemc
 
 ./build/post_process configs/post/rga/10.604/eppi0_data.json \
   10.604_rga_eppi0_data.root
 
-./build/post_process configs/post/rga/10.604/eppi0_mc_acceptance.json \
-  10.604_rga_eppi0_mc_acceptance.root
+./build/post_process configs/post/rga/10.604/eppi0_GEMC.json \
+  10.604_rga_eppi0_GEMC.root
 
 ./build/post_process configs/post/rga/10.604/eppi0_cut_diagnostics.json \
   10.604_rga_eppi0_data.root
@@ -153,6 +154,23 @@ branches. The post-processing stage accepts proton detector IDs 1 (FD) and 2
 (CD), applies PID-appropriate RGA fiducials, and applies the three electron
 sampling-fraction components to FD electrons. FT electrons bypass the FD-only
 sampling-fraction requirements.
+
+For conversion of complete RGA reconstructed-DST holdings, use the dedicated
+storage-efficient data config:
+
+```bash
+./build/hipo2root configs/processing/rga/10.604/eppi0_data_full_dst.json \
+  /path/to/rga/10.604/reconstructed/dsts 0 1000000
+
+./build/post_process configs/post/rga/10.604/eppi0_data.json \
+  10.604_rga_eppi0_data_full_dst.root 1000000
+```
+
+Like its RGK counterpart, this config retains the normal QADB policy, writes
+only electron, proton, and photon rows, requires reconstructed `Q2 >= 1` and
+`W >= 2`, and keeps the provisional broad region `y <= 0.95`. It accepts an
+event when any photon pair has `0 <= m_gg <= 0.35 GeV`; final candidate choice
+and analysis cuts remain downstream.
 
 ## RGA sampling-fraction rederivation test
 
@@ -276,7 +294,7 @@ loads the `6.535RGK_INCLUSIVE_GEMC_100M` sampling-fraction parameters:
 ./build/hipo2root configs/processing/rgk/6.535/eppi0_GEMC.json \
   /path/to/rgk/6.535/gemc 0 1000000
 
-./build/post_process configs/post/rgk/6.535/eppi0_mc_acceptance.json \
+./build/post_process configs/post/rgk/6.535/eppi0_GEMC.json \
   6.535_rgk_eppi0_GEMC.root 1000000
 ```
 

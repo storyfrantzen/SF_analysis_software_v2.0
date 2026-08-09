@@ -217,7 +217,7 @@ stage_convert_mc() {
 stage_select_mc() {
     local log_file=$1
     run_in_root_dir "$log_file" "$BUILD_DIR/post_process" \
-        "$REPO_ROOT/configs/post/rgk/6.535/eppi0_mc_acceptance.json" \
+        "$REPO_ROOT/configs/post/rgk/6.535/eppi0_GEMC.json" \
         "$ROOT_DIR/6.535_rgk_eppi0_GEMC.root" "$PROGRESS_EVENTS"
 }
 
@@ -230,7 +230,7 @@ stage_check_mc_keys() {
 stage_mc_exclusivity() {
     local log_file=$1
     run_command "$log_file" python3 "$REPO_ROOT/analysis/derive_exclusivity.py" \
-        "$ROOT_DIR/6.535_rgk_eppi0_mc_acceptance_selected.root" \
+        "$ROOT_DIR/6.535_rgk_eppi0_GEMC_selected.root" \
         --format selected-root \
         --dictionary "$BUILD_DIR/libROOTBranchesDict.so" \
         --config "$REPO_ROOT/configs/analysis/rgk/6.535.json" \
@@ -242,7 +242,7 @@ stage_response() {
     local log_file=$1
     run_command "$log_file" python3 "$REPO_ROOT/analysis/run_analysis.py" response-root \
         "$ROOT_DIR/6.535_rgk_eppi0_GEMC.root" \
-        "$ROOT_DIR/6.535_rgk_eppi0_mc_acceptance_selected.root" \
+        "$ROOT_DIR/6.535_rgk_eppi0_GEMC_selected.root" \
         --config "$REPO_ROOT/configs/analysis/rgk/6.535.json" \
         --output-dir "$RESULTS_DIR/response" \
         --dictionary "$BUILD_DIR/libROOTBranchesDict.so" \
@@ -364,7 +364,7 @@ if ((DRY_RUN == 0)); then
             "$PROVENANCE_DIR/processing-mc-config.json"
         cp "$REPO_ROOT/configs/post/rgk/6.535/eppi0_data.json" \
             "$PROVENANCE_DIR/post-data-config.json"
-        cp "$REPO_ROOT/configs/post/rgk/6.535/eppi0_mc_acceptance.json" \
+        cp "$REPO_ROOT/configs/post/rgk/6.535/eppi0_GEMC.json" \
             "$PROVENANCE_DIR/post-mc-config.json"
         cp "$REPO_ROOT/parameters/proton_energy_loss/6.535RGK_INCLUSIVE_GEMC_100M.json" \
             "$PROVENANCE_DIR/proton-energy-loss.json"

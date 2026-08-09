@@ -381,7 +381,7 @@ the reverse join instead of materializing one output row per generated event:
 ```bash
 python3 analysis/build_event_sample.py \
   6.535_rgk_eppi0_GEMC.root \
-  6.535_rgk_eppi0_mc_acceptance_selected.root \
+  6.535_rgk_eppi0_GEMC_selected.root \
   samples/rgk_6.535_matched_mc_events.npz \
   --dictionary build/libROOTBranchesDict.so \
   --matched-only --chunk-size 250000 --progress-chunks 4
