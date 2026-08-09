@@ -1,6 +1,6 @@
 {
     "extends": "eppi0_base.json",
-    "outputFile": "10.604_rga_eppi0_mc_acceptance_selected.root",
+    "outputFile": "10.604_rga_eppi0_GEMC_selected.root",
     "samplingFraction": {
         "sigma": {
             "paramsFile": "../../../../parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_t+1_clasdisGEMC.json"
