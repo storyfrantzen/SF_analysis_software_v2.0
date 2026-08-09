@@ -6,9 +6,10 @@
 #include "Config.h"
 
 namespace {
-void writeConfig(const std::filesystem::path& path, int torus) {
+void writeConfig(const std::filesystem::path& path, int torus, long long maxEvents) {
     std::ofstream output(path);
-    output << "{\"beamEnergy\":10.604,\"torus\":" << torus << "}";
+    output << "{\"beamEnergy\":10.604,\"torus\":" << torus
+           << ",\"maxEvents\":" << maxEvents << "}";
 }
 }
 
@@ -16,15 +17,15 @@ int main() {
     const auto validPath = std::filesystem::current_path() / "test_config_torus_valid.json";
     const auto invalidPath = std::filesystem::current_path() / "test_config_torus_invalid.json";
 
-    writeConfig(validPath, -1);
+    writeConfig(validPath, -1, 50000000);
     const Config valid(validPath.string());
     std::filesystem::remove(validPath);
-    if (valid.torus != -1) {
-        std::cerr << "conversion config did not retain torus polarity\n";
+    if (valid.torus != -1 || valid.maxEvents != 50000000) {
+        std::cerr << "conversion config did not retain torus/event limits\n";
         return 1;
     }
 
-    writeConfig(invalidPath, 2);
+    writeConfig(invalidPath, -1, 0);
     bool rejected = false;
     try {
         const Config invalid(invalidPath.string());
@@ -33,7 +34,7 @@ int main() {
     }
     std::filesystem::remove(invalidPath);
     if (!rejected) {
-        std::cerr << "conversion config accepted invalid torus polarity\n";
+        std::cerr << "conversion config accepted an invalid event limit\n";
         return 1;
     }
     return 0;

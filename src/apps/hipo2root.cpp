@@ -654,6 +654,9 @@ int main(int argc, char** argv) {
               << "[INFO] Progress    : "
               << (progressEvery > 0 ? std::to_string(progressEvery) + " events" : "disabled")
               << "\n"
+              << "[INFO] Event limit : "
+              << (cfg.maxEvents > 0 ? std::to_string(cfg.maxEvents) : "unlimited")
+              << "\n"
               << "[INFO] Corrections : "
               << (corrections.enabled() ? "enabled" : "disabled") << "\n";
 
@@ -742,7 +745,12 @@ int main(int argc, char** argv) {
     const Clock::time_point startTime = Clock::now();
     std::unordered_map<std::uint64_t, std::string> sourceFileCatalog;
 
+    bool eventLimitReached = false;
     for (std::size_t fileIndex = 0; fileIndex < hipoFiles.size(); ++fileIndex) {
+        if (cfg.maxEvents > 0 && nTotal >= cfg.maxEvents) {
+            eventLimitReached = true;
+            break;
+        }
         const auto& hipoPath = hipoFiles[fileIndex];
         std::cout << "[INFO] Processing: " << hipoPath << "\n";
 
@@ -821,7 +829,7 @@ int main(int argc, char** argv) {
             lastProgressEvent = nTotal;
         };
 
-        while (c12.next()) {
+        while ((cfg.maxEvents <= 0 || nTotal < cfg.maxEvents) && c12.next()) {
             ++nTotal;
             const std::uint64_t currentSourceEventIndex = sourceEventIndex++;
 
@@ -930,6 +938,9 @@ int main(int argc, char** argv) {
             ++nWritten;
             maybePrintProgress();
         }
+        if (cfg.maxEvents > 0 && nTotal >= cfg.maxEvents) {
+            eventLimitReached = true;
+        }
     }
 
     if (progressEvery > 0 && nTotal != lastProgressEvent) {
@@ -952,6 +963,7 @@ int main(int argc, char** argv) {
     const double elapsed = std::chrono::duration<double>(Clock::now() - startTime).count();
     std::cout << "\n[DONE]\n"
               << "  Total events      : " << nTotal    << "\n"
+              << "  Event limit reached: " << (eventLimitReached ? "yes" : "no") << "\n"
               << "  Failed QADB       : " << nQAFail   << "\n"
               << "  Failed final state: " << nFSFail   << "\n"
               << "  Failed skim       : " << nSkimFail << "\n"
@@ -987,7 +999,10 @@ int main(int argc, char** argv) {
     summary.Branch("QADBEnabled", &qadbEnabled, "QADBEnabled/O");
     summary.Branch("QADBDatabase", &qadbDatabase);
     summary.Branch("QADBRejectDefects", &qadbRejectDefects);
+    long long configuredMaxEvents = cfg.maxEvents;
+    summary.Branch("ConfiguredMaxEvents", &configuredMaxEvents, "ConfiguredMaxEvents/L");
     summary.Branch("TotalEvents", &nTotal, "TotalEvents/L");
+    summary.Branch("EventLimitReached", &eventLimitReached, "EventLimitReached/O");
     summary.Branch("FailedQADB", &nQAFail, "FailedQADB/L");
     summary.Branch("FailedFinalState", &nFSFail, "FailedFinalState/L");
     summary.Branch("FailedSkim", &nSkimFail, "FailedSkim/L");

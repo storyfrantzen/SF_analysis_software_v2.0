@@ -187,6 +187,13 @@ The production configs point to the canonical output names below and therefore
 fail fast until the matching calibration has been derived. Keep torus `+1` and
 `-1` inputs separate throughout.
 
+All six RGA calibration processing configs set `maxEvents: 50000000`, an exact
+global input-event cap across all supplied files. The four electron
+sampling-fraction conversion configs also set `outputPids: [11]`, so they keep
+the inclusive electron event selection without writing unrelated particle
+rows. `hipo2root` prints the configured event limit at startup and records both
+`ConfiguredMaxEvents` and `EventLimitReached` in its `Summary` tree.
+
 ## RGA Fall 2018 calibration rederivation
 
 The converter accepts either directories or explicit `.hipo` files. Run these
@@ -205,6 +212,7 @@ The calibration configs deliberately apply no existing proton correction.
 python3 scripts/derive_proton_energy_loss.py \
   10.604_rga_fa18_torus+1_proton_energy_loss_mc.root \
   --detector both \
+  --max-rows 50000000 \
   --output parameters/proton_energy_loss/10.604RGA_FA18_torus+1_proton_energy_loss.json \
   --plot-dir calibration_plots/proton_energy_loss/rga_fa18_torus+1 \
   --dataset-tag 10.604RGA_FA18_torus+1 --beam-energy 10.604
@@ -216,6 +224,7 @@ python3 scripts/derive_proton_energy_loss.py \
 python3 scripts/derive_proton_energy_loss.py \
   10.604_rga_fa18_torus-1_proton_energy_loss_mc.root \
   --detector both \
+  --max-rows 50000000 \
   --output parameters/proton_energy_loss/10.604RGA_FA18_torus-1_proton_energy_loss.json \
   --plot-dir calibration_plots/proton_energy_loss/rga_fa18_torus-1 \
   --dataset-tag 10.604RGA_FA18_torus-1 --beam-energy 10.604
@@ -243,6 +252,7 @@ vertex window are applied by the processing/post pair.
 
 python3 scripts/derive_sampling_fraction.py \
   10.604_rga_fa18_torus+1_electron_sf_candidates.root \
+  --max-rows 50000000 \
   --output parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_torus+1_data.json \
   --plot-dir calibration_plots/sampling_fraction/rga_fa18_torus+1_data \
   --dataset-tag 10.604RGA_FA18_torus+1_data \
@@ -259,6 +269,7 @@ python3 scripts/derive_sampling_fraction.py \
 
 python3 scripts/derive_sampling_fraction.py \
   10.604_rga_fa18_torus-1_electron_sf_candidates.root \
+  --max-rows 50000000 \
   --output parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_torus-1_data.json \
   --plot-dir calibration_plots/sampling_fraction/rga_fa18_torus-1_data \
   --dataset-tag 10.604RGA_FA18_torus-1_data \
@@ -281,6 +292,7 @@ Run the electron-only chain on separate polarity-matched GEMC productions.
 
 python3 scripts/derive_sampling_fraction.py \
   10.604_rga_fa18_torus+1_gemc_electron_sf_candidates.root --gemc \
+  --max-rows 50000000 \
   --output parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_torus+1_GEMC.json \
   --plot-dir calibration_plots/sampling_fraction/rga_fa18_torus+1_GEMC \
   --dataset-tag 10.604RGA_FA18_torus+1_GEMC \
@@ -296,6 +308,7 @@ python3 scripts/derive_sampling_fraction.py \
 
 python3 scripts/derive_sampling_fraction.py \
   10.604_rga_fa18_torus-1_gemc_electron_sf_candidates.root --gemc \
+  --max-rows 50000000 \
   --output parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_torus-1_GEMC.json \
   --plot-dir calibration_plots/sampling_fraction/rga_fa18_torus-1_GEMC \
   --dataset-tag 10.604RGA_FA18_torus-1_GEMC \

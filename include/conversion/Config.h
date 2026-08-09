@@ -58,6 +58,7 @@ struct Config {
     std::vector<FinalState> finalState;
     bool inclusive = false;
     std::vector<int> outputPids;
+    long long maxEvents = -1;
 
     // ── DIS skim ──────────────────────────────
     bool   enableSkim = true;
@@ -138,6 +139,12 @@ struct Config {
         torus = j.value("torus", torus);
         if (torus != -1 && torus != 0 && torus != 1) {
             throw std::runtime_error("torus must be -1, 0, or 1");
+        }
+        if (j.contains("maxEvents")) {
+            maxEvents = j.at("maxEvents").get<long long>();
+            if (maxEvents <= 0) {
+                throw std::runtime_error("maxEvents must be a positive integer");
+            }
         }
 
         enableSkim = j.value("enableSkim", enableSkim);

@@ -212,7 +212,9 @@ The energy-specific processing configs keep events with at least one reconstruct
 `hipo2root` accepts one or more input HIPO files/directories and prints progress
 every 1,000,000 input events. Its optional trailing arguments are
 `[max_files] [progress_events]`; use `0` for `progress_events` to disable its
-progress messages.
+progress messages. A processing config may additionally set a positive
+`maxEvents` value to impose an exact global input-event limit across all files;
+this is independent of both trailing arguments.
 
 During reader construction, `hipo2root` suppresses the known CLAS12ROOT warning
 caused by `RICH::Particle` lacking the generic `detector` schema item. RICH is

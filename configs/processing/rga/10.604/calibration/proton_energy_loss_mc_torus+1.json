@@ -3,6 +3,7 @@
 
     "beamEnergy": 10.604,
     "torus": 1,
+    "maxEvents": 50000000,
 
     "finalState": [
         { "pid": 2212, "count": 1, "mode": "atleast" }
