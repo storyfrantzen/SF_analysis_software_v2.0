@@ -1,6 +1,6 @@
 {
     "outputMode": "candidates",
-    "outputFile": "10.604_rga_eppi0_cut_diagnostics.root",
+    "outputFile": "10.604_rga_fa18_torus+1_eppi0_cut_diagnostics.root",
     "beamEnergy": 10.604,
     "torus": 1,
     "saveFailedCandidates": true,
@@ -22,7 +22,7 @@
         },
         "sigma": {
             "numSigma": 3.5,
-            "paramsFile": "../../../../parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_t+1_nSIDIS_5files.json"
+            "paramsFile": "../../../../parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_torus+1_data.json"
         }
     },
 
@@ -37,6 +37,7 @@
                 "cuts": [
                     { "name": "electron.trigger", "op": "firstPidInstance" },
                     { "name": "electron.min_p", "op": "minP", "min": 1.0 },
+                    { "name": "electron.vertex", "op": "vzRange", "min": -18.0, "max": 10.0, "mode": "tag" },
                     { "name": "electron.fiducial", "op": "fiducial", "mode": "tag" },
                     { "name": "electron.min_pcal", "op": "minPcalEnergy", "mode": "tag" },
                     { "name": "electron.sf_diagonal", "op": "samplingFractionDiagonal", "mode": "tag" },

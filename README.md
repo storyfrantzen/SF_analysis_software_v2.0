@@ -27,7 +27,7 @@ Processing configs live in `configs/processing/<run-group>/<energy>/`, so an
 RGA data run looks like:
 
 ```bash
-./build/hipo2root configs/processing/rga/10.604/eppi0_data.json /path/to/hipo/files
+./build/hipo2root configs/processing/rga/10.604/eppi0_data_torus+1.json /path/to/hipo/files
 ```
 
 Production configurations are organized by run group and energy. The complete
@@ -35,16 +35,22 @@ RGA 10.604 GeV EPPI0 data/acceptance-MC set lives under
 `configs/{processing,post}/rga/10.604/`, with its numerical analysis settings at
 `configs/analysis/rga/10.604.json`. See `configs/README.md` for the layout.
 
-The RGA EPPI0 configuration accepts FD or CD protons, applies the calibrated
-FD/CD proton energy-loss corrections during conversion, and applies the RGA
-DC, FT, ECAL, and CVT fiducial definitions plus the torus +1 electron
-sampling-fraction cuts during candidate selection.
+RGA Fall 2018 processing and post-selection configs are split explicitly by
+torus polarity. They accept FD or CD protons, apply the corresponding FD/CD
+proton correction during conversion, and apply polarity-aware RGA DC, FT,
+ECAL, and CVT fiducials during candidate selection. They also require the
+polarity-specific electron vertex windows: `-18 <= vz <= 10 cm` for torus `+1` and
+`-13 <= vz <= 12 cm` for torus `-1`.
+
+RGA calibration parameter JSON files are intentionally not committed. The
+production configs fail fast until the six polarity-specific proton and
+sampling-fraction outputs documented in `configs/README.md` have been derived.
 
 For matched REC/GEN proton rows used to derive the RGA energy-loss correction:
 
 ```bash
 ./build/hipo2root \
-  configs/processing/rga/10.604/calibration/proton_energy_loss_mc.json \
+  configs/processing/rga/10.604/calibration/proton_energy_loss_mc_torus+1.json \
   /path/to/hipo/files
 ```
 
@@ -108,7 +114,7 @@ particle rows should be written. For example, proton energy-loss calibration
 configs require events with at least one reconstructed proton and set
 `outputPids: [2212]` so the ROOT tree stores only proton rows.
 
-`post_process` performs ROOT post-processing. The initial module builds one EPPI0 candidate per event and applies configurable fiducial, sampling-fraction, topology, and loose exclusivity cuts. Post-processing configs are grouped by run group and energy, for example `configs/post/rga/10.604/eppi0_data.json`.
+`post_process` performs ROOT post-processing. The initial module builds one EPPI0 candidate per event and applies configurable fiducial, sampling-fraction, topology, and loose exclusivity cuts. Post-processing configs are grouped by run group and energy, for example `configs/post/rga/10.604/eppi0_data_torus+1.json`.
 
 ## Acceptance and cross-section analysis
 

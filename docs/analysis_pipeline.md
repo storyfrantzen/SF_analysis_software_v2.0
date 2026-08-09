@@ -62,6 +62,9 @@ top-level `TParameter<double>` named `AccumulatedCharge`. It also writes a
 interval, so mixed-run converter files can be normalized after filtering the
 selected candidates by `runNum`. The per-run charge sum reproduces the legacy
 file-level total; the latter remains available for backward compatibility.
+When a processing config declares `torus`, the converter also writes that
+value as the top-level `TParameter<int>` named `TorusPolarity`; zero means the
+polarity was not specified by an older or polarity-independent config.
 
 Load QADB before configuring and building on JLab, for example `module load qadb/3.4.0`.
 If QADB is requested by a config but was unavailable at build time, `hipo2root` exits with
@@ -122,7 +125,7 @@ ECAL cuts. This allows one RGA post-processing configuration to enable
 `DCEdges_RGA`, `FT_RGA`, `ECAL_RGA`, and `CVT_RGA` without requiring nonexistent
 DC information from photons or calorimeter information from protons.
 
-This keeps a cut like `removeCVTPhi(min, max)` reusable across channels and systematic variations. The current primitive vocabulary includes `minP`, `maxP`, `pRange`, `betaRange`, `minCalEnergy`, `firstPidInstance`, `rejectDetector` for backward compatibility, `rejectSameSectorAsRole`, `vertexDiff`, `removeCVTPhi`, `fiducial`, `minPcalEnergy`, `samplingFractionDiagonal`, and `samplingFractionSigma`. The combined `samplingFraction` operation remains available for older configs.
+This keeps a cut like `removeCVTPhi(min, max)` reusable across channels and systematic variations. The current primitive vocabulary includes `minP`, `maxP`, `pRange`, `betaRange`, `vzRange`, `minCalEnergy`, `firstPidInstance`, `rejectDetector` for backward compatibility, `rejectSameSectorAsRole`, `vertexDiff`, `removeCVTPhi`, `fiducial`, `minPcalEnergy`, `samplingFractionDiagonal`, and `samplingFractionSigma`. `vzRange` is inclusive at both configured bounds and rejects non-finite vertices. The combined `samplingFraction` operation remains available for older configs.
 
 The `post_process` workflow reads `channel.particles` in order and recursively builds valid candidate combinations. This makes the topology generic enough for channels beyond eppi0. Every channel gets the generic selected-particle branches such as `selectedRoles`, `selectedIdx`, `selectedPid`, and `selectedP`, plus standardized scalar branches for every configured role. A single proton role writes `protonIdx`, `protonPid`, `protonDet`, `protonSector`, `protonP`, `protonTheta`, and `protonPhi`; repeated roles receive numbered names such as `gamma1P` and `gamma2P`. Electron-derived DIS branches `Q2`, `nu`, and `xB` are added when the `electron` role is selected. Downstream converters can therefore copy scalar branches without interpreting role vectors. Use `firstPidInstance` on the electron role when it must be the trigger/scattered electron, meaning the first particle with that PID in the reconstructed bank.
 
@@ -202,7 +205,7 @@ python3 scripts/derive_sampling_fraction.py 6.535_rgk_electron_sf_candidates.roo
   --torus 1
 ```
 
-The energy-specific processing configs keep events with at least one reconstructed electron, apply QADB filtering, and use loose DIS cuts. The corresponding RGA calibration config is `configs/processing/rga/10.604/calibration/sidis_electrons_data.json`. The candidate post-processing configs select one FD electron, apply the appropriate DC-edge and run-group ECAL fiducials, and write explicit selected-electron branches such as `electronP`, `electronSector`, and `electronEPCAL`. They deliberately apply no sampling-fraction cuts. The derivation script then applies the minimum-PCAL and diagonal preselection before fitting the sigma band.
+The energy-specific processing configs keep events with at least one reconstructed electron, apply QADB filtering, and use loose DIS cuts. RGA Fall 2018 uses separate `sidis_electrons_data_torus+1.json` and `sidis_electrons_data_torus-1.json` configs. The matching candidate post-processing config selects one FD electron, applies the polarity-dependent DC edge, the RGA ECAL fiducial, and the appropriate absolute electron vertex window (`[-18, 10] cm` for torus `+1`, `[-13, 12] cm` for torus `-1`). It writes explicit selected-electron branches such as `electronP`, `electronSector`, and `electronEPCAL` while deliberately applying no sampling-fraction cuts. The derivation script then applies the minimum-PCAL and diagonal preselection before fitting the sigma band.
 
 `post_process` prints progress every 1,000,000 input rows by default. Pass a third argument to change that interval, or `0` to disable progress messages.
 

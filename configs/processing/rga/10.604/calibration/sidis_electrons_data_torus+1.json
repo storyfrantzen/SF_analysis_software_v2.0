@@ -1,7 +1,8 @@
 {
-    "outputFile": "10.604_rga_sidis_electrons.root",
+    "outputFile": "10.604_rga_fa18_torus+1_sidis_electrons.root",
 
     "beamEnergy": 10.604,
+    "torus": 1,
 
     "qadb": {
         "enabled": true,

@@ -52,6 +52,7 @@ struct Config {
 
     // ── Beam ──────────────────────────────────
     double beamEnergy = 10.6;
+    int torus = 0;
 
     // ── Final state filter ────────────────────
     std::vector<FinalState> finalState;
@@ -134,6 +135,10 @@ struct Config {
         }
 
         beamEnergy = j.value("beamEnergy", beamEnergy);
+        torus = j.value("torus", torus);
+        if (torus != -1 && torus != 0 && torus != 1) {
+            throw std::runtime_error("torus must be -1, 0, or 1");
+        }
 
         enableSkim = j.value("enableSkim", enableSkim);
         Q2_min     = j.value("Q2_min",     Q2_min);

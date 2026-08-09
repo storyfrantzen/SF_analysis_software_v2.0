@@ -1,7 +1,8 @@
 {
-    "outputFile": "10.604_rga_eppi0_data_full_dst.root",
+    "outputFile": "10.604_rga_fa18_torus+1_eppi0_data.root",
 
     "beamEnergy": 10.604,
+    "torus": 1,
 
     "qadb": {
         "enabled": true,
@@ -16,7 +17,7 @@
         "allowMiscRuns": []
     },
 
-    "kinematicCorrections": "../../../../parameters/proton_energy_loss/10.604RGA_FA18_t1_clasdisP2_rederived.json",
+    "kinematicCorrections": "../../../../parameters/proton_energy_loss/10.604RGA_FA18_torus+1_proton_energy_loss.json",
 
     "finalState": [
         { "pid": 11, "count": 1, "mode": "atleast" },
@@ -24,18 +25,11 @@
         { "pid": 22, "count": 2, "mode": "atleast" }
     ],
     "inclusive": true,
-    "outputPids": [11, 2212, 22],
 
     "enableSkim": true,
     "Q2_min": 1.0,
     "W_min": 2.0,
-    "y_max": 0.95,
-
-    "diphotonMassSkim": {
-        "enabled": true,
-        "minGeV": 0.0,
-        "maxGeV": 0.35
-    },
+    "y_max": 0.8,
 
     "fillMC": false
 }

@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.10)
 project(Hipo2Root)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+include(CTest)
 
 # ROOT setup
 find_package(ROOT REQUIRED)
@@ -121,3 +122,26 @@ target_link_libraries(
   EG
   pthread
 )
+
+if(BUILD_TESTING)
+  add_executable(
+    test_conversion_config
+    ${PROJECT_SOURCE_DIR}/tests/test_conversion_config.cpp
+  )
+  add_test(NAME conversion_config COMMAND test_conversion_config)
+
+  add_executable(
+    test_post_cuts
+    ${PROJECT_SOURCE_DIR}/tests/test_post_cuts.cpp
+    ${POST_PROCESSING_SOURCES}
+    $<TARGET_OBJECTS:ROOTBranchesDictObjects>
+  )
+  target_compile_definitions(test_post_cuts PRIVATE POST_PROCESSING_ONLY)
+  target_link_libraries(
+    test_post_cuts
+    ${ROOT_LIBRARIES}
+    EG
+    pthread
+  )
+  add_test(NAME post_cuts COMMAND test_post_cuts)
+endif()

@@ -1,0 +1,32 @@
+{
+    "outputFile": "10.604_rga_fa18_torus-1_sidis_electrons.root",
+
+    "beamEnergy": 10.604,
+    "torus": -1,
+
+    "qadb": {
+        "enabled": true,
+        "database": "latest",
+        "rejectDefects": [
+            "MarginalOutlier",
+            "TerminalOutlier",
+            "TotalOutlier",
+            "SectorLoss",
+            "LowLiveTime"
+        ],
+        "allowMiscRuns": []
+    },
+
+    "finalState": [
+        { "pid": 11, "count": 1, "mode": "atleast" }
+    ],
+
+    "inclusive": true,
+
+    "enableSkim": true,
+    "Q2_min": 1.0,
+    "W_min": 2.0,
+    "y_max": 0.8,
+
+    "fillMC": false
+}

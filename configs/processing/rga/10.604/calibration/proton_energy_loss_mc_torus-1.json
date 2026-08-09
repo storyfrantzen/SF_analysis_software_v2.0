@@ -1,7 +1,8 @@
 {
-    "outputFile": "10.604_rga_proton_energy_loss_mc.root",
+    "outputFile": "10.604_rga_fa18_torus-1_proton_energy_loss_mc.root",
 
     "beamEnergy": 10.604,
+    "torus": -1,
 
     "finalState": [
         { "pid": 2212, "count": 1, "mode": "atleast" }

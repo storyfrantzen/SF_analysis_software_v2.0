@@ -632,6 +632,8 @@ int main(int argc, char** argv) {
               << "[INFO] REC trees   : " << TreeNames::rEvents
               << ", " << TreeNames::rParticles << "\n"
               << "[INFO] Beam energy : " << cfg.beamEnergy << " GeV\n"
+              << "[INFO] Torus       : "
+              << (cfg.torus == 0 ? "unspecified" : std::to_string(cfg.torus)) << "\n"
               << "[INFO] Fill MC     : " << (cfg.fillMC ? "yes" : "no") << "\n"
               << "[INFO] Match MC    : " << (cfg.matchMC ? "yes" : "no") << "\n"
               << "[INFO] GEN events  : "
@@ -1042,6 +1044,8 @@ int main(int argc, char** argv) {
 
     TParameter<double> chargeMetadata("AccumulatedCharge", accumulatedCharge);
     chargeMetadata.Write();
+    TParameter<int> torusMetadata("TorusPolarity", cfg.torus);
+    torusMetadata.Write();
 
     outFile->Write();
     outFile->Close();
