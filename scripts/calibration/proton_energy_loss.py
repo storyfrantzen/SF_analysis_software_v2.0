@@ -299,6 +299,7 @@ def maybe_plot(arrays: dict[str, np.ndarray],
                theta_range_mode: ThetaRangeMode = "quantile",
                theta_trim_quantile: float = 0.001) -> None:
     import matplotlib.pyplot as plt
+    from matplotlib.ticker import FormatStrFormatter, MaxNLocator
 
     output_dir.mkdir(parents=True, exist_ok=True)
     p = arrays["rec.p"]
@@ -319,7 +320,16 @@ def maybe_plot(arrays: dict[str, np.ndarray],
             cmap="magma",
             cmin=1,
         )
-        fig.colorbar(hist[3], ax=ax)
+        colorbar = fig.colorbar(hist[3], ax=ax)
+        colorbar.locator = MaxNLocator(nbins=5)
+        colorbar.formatter = FormatStrFormatter("%.3g")
+        colorbar.update_ticks()
+        ax.set_xlim(cfg.momentum_range)
+        ax.set_ylim(residual_range)
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+        ax.xaxis.set_major_formatter(FormatStrFormatter("%.3g"))
+        ax.yaxis.set_major_formatter(FormatStrFormatter("%.3g"))
         ax.set_xlabel("p_rec [GeV]")
         ax.set_ylabel(name)
         ax.set_title(f"{detector_name} {name}")
@@ -329,6 +339,7 @@ def maybe_plot(arrays: dict[str, np.ndarray],
         f"{detector_name} proton residuals vs reconstructed momentum",
         dataset_tag,
         beam_energy,
+        tight_layout=False,
     )
     plt.close(fig)
 
@@ -406,7 +417,16 @@ def maybe_plot(arrays: dict[str, np.ndarray],
             cmap="viridis",
             cmin=1,
         )
-        fig.colorbar(hist[3], ax=ax)
+        colorbar = fig.colorbar(hist[3], ax=ax)
+        colorbar.locator = MaxNLocator(nbins=5)
+        colorbar.formatter = FormatStrFormatter("%.3g")
+        colorbar.update_ticks()
+        ax.set_xlim(theta_range)
+        ax.set_ylim(residual_range)
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+        ax.xaxis.set_major_formatter(FormatStrFormatter("%.3g"))
+        ax.yaxis.set_major_formatter(FormatStrFormatter("%.3g"))
         ax.set_xlabel("theta_rec [deg]")
         ax.set_ylabel(name)
         ax.set_title(f"{detector_name} {name}")
@@ -416,6 +436,7 @@ def maybe_plot(arrays: dict[str, np.ndarray],
         f"{detector_name} proton residuals vs reconstructed theta",
         dataset_tag,
         beam_energy,
+        tight_layout=False,
     )
     plt.close(fig)
 
