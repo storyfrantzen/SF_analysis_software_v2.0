@@ -1,0 +1,119 @@
+{
+  "_metadata": {
+    "createdUtc": "2026-08-10T18:55:40.196458+00:00",
+    "datasetTag": "10.604RGA_FA18_torus+1_data_y085_p2",
+    "beamEnergy": 10.604,
+    "inputFile": "/volatile/clas12/storyf/rga_fa18_calibrations_100M/torus+1/sf_y085_p2/10.604_rga_fa18_torus+1_electron_sf_candidates.root",
+    "inputTree": "sEvents",
+    "inputElectronCount": 10000000,
+    "selectedElectronCount": 9618100,
+    "sectorCounts": {
+      "sector_1": 1159385,
+      "sector_2": 1549737,
+      "sector_3": 1788700,
+      "sector_4": 1782913,
+      "sector_5": 1683136,
+      "sector_6": 1654229
+    },
+    "sectorIndependentFit": false,
+    "fitConfig": {
+      "momentumRange": [
+        2.000000238418579,
+        8.408437728881836
+      ],
+      "requestedMomentumRange": [
+        2.0,
+        10.0
+      ],
+      "momentumBins": 22,
+      "polyDegree": 2,
+      "minBinEntries": 30,
+      "maxRows": 10000000,
+      "preselection": {
+        "minPcalEnergy": 0.07,
+        "diagonal": {
+          "yScale": 1.0,
+          "xScale": 1.0,
+          "threshold": 0.2,
+          "momentumThreshold": 4.5
+        }
+      }
+    },
+    "notes": "Conversion y<=0.85; post-selection electron p>=2 GeV",
+    "runGroup": "RGA",
+    "skim": "DST",
+    "torus": 1
+  },
+  "sector_1": {
+    "mu_coeffs": [
+      -0.0006150412729017907,
+      0.006182611664279497,
+      0.23453016374709004
+    ],
+    "sigma_coeffs": [
+      0.0002791537420861943,
+      -0.004242909469295453,
+      0.027703278815098653
+    ]
+  },
+  "sector_2": {
+    "mu_coeffs": [
+      -0.0009616434031849625,
+      0.011205352126980499,
+      0.21686566494464998
+    ],
+    "sigma_coeffs": [
+      0.00014561056782831088,
+      -0.0028023049095464592,
+      0.025591171112039603
+    ]
+  },
+  "sector_3": {
+    "mu_coeffs": [
+      -0.0012521305615298959,
+      0.013296740447149928,
+      0.21714670694311017
+    ],
+    "sigma_coeffs": [
+      0.0002120704870807678,
+      -0.003848297225794684,
+      0.02795493017867866
+    ]
+  },
+  "sector_4": {
+    "mu_coeffs": [
+      -0.0006088319726800612,
+      0.007807595873484605,
+      0.2252198066605286
+    ],
+    "sigma_coeffs": [
+      7.22914733719303e-05,
+      -0.001897623421293522,
+      0.0232950466876809
+    ]
+  },
+  "sector_5": {
+    "mu_coeffs": [
+      -0.00031248122315423975,
+      0.005363775626259312,
+      0.225768306382832
+    ],
+    "sigma_coeffs": [
+      0.0003782009736885773,
+      -0.004849412013433238,
+      0.028693470415044886
+    ]
+  },
+  "sector_6": {
+    "mu_coeffs": [
+      -0.0008725873985459227,
+      0.009548101535320812,
+      0.22180025887205274
+    ],
+    "sigma_coeffs": [
+      0.0001937984604029057,
+      -0.0034957713988818294,
+      0.026292547719014535
+    ]
+  }
+}
