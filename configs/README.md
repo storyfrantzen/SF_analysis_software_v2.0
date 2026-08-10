@@ -172,7 +172,8 @@ storage-efficient data config:
 
 Like its RGK counterpart, this config retains the normal QADB policy, writes
 only electron, proton, and photon rows, requires reconstructed `Q2 >= 1` and
-`W >= 2`, and requires `y <= 0.8`. It accepts an
+`W >= 2`, and requires `y <= 0.85`. Post-processing additionally requires
+electron momentum `p >= 2 GeV`. It accepts an
 event when any photon pair has `0 <= m_gg <= 0.35 GeV`; final candidate choice
 and analysis cuts remain downstream.
 
@@ -187,12 +188,15 @@ The production configs point to the canonical output names below and therefore
 fail fast until the matching calibration has been derived. Keep torus `+1` and
 `-1` inputs separate throughout.
 
-All six RGA calibration processing configs set `maxEvents: 50000000`, an exact
-global input-event cap across all supplied files. The four electron
-sampling-fraction conversion configs also set `outputPids: [11]`, so they keep
+The two RGA proton energy-loss processing configs set `maxEvents: 50000000`;
+the four electron sampling-fraction processing configs set
+`maxEvents: 100000000`. Each is an exact global input-event cap across all
+supplied files. The electron configs also set `outputPids: [11]`, so they keep
 the inclusive electron event selection without writing unrelated particle
-rows. `hipo2root` prints the configured event limit at startup and records both
-`ConfiguredMaxEvents` and `EventLimitReached` in its `Summary` tree.
+rows, and preflight each HIPO input in a child process so malformed inputs can
+be skipped safely. `hipo2root` prints the configured event limit at startup and
+records both `ConfiguredMaxEvents` and `EventLimitReached` in its `Summary`
+tree.
 
 ## RGA Fall 2018 calibration rederivation
 
@@ -237,8 +241,9 @@ the samples contain matched proton rows and no electron selection.
 ### Data sampling-fraction parameters
 
 Use the full representative Fall 2018 electron skims for each polarity. QADB,
-`Q2 >= 1`, `W >= 2`, `y <= 0.8`, DC/ECAL fiducials, and the correct electron
-vertex window are applied by the processing/post pair.
+`Q2 >= 1`, `W >= 2`, `y <= 0.85`, DC/ECAL fiducials, electron momentum
+`p >= 2 GeV`, and the correct electron vertex window are applied by the
+processing/post pair.
 
 ```bash
 ./build/hipo2root \
@@ -252,7 +257,7 @@ vertex window are applied by the processing/post pair.
 
 python3 scripts/derive_sampling_fraction.py \
   10.604_rga_fa18_torus+1_electron_sf_candidates.root \
-  --max-rows 50000000 \
+  --tree sEvents --max-rows 10000000 --p-min 2.0 \
   --output parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_torus+1_data.json \
   --plot-dir calibration_plots/sampling_fraction/rga_fa18_torus+1_data \
   --dataset-tag 10.604RGA_FA18_torus+1_data \
@@ -260,7 +265,7 @@ python3 scripts/derive_sampling_fraction.py \
 
 ./build/hipo2root \
   configs/processing/rga/10.604/calibration/sidis_electrons_data_torus-1.json \
-  /cache/clas12/rg-a/production/recon/fall2018/torus-1/pass2/train/nSidis/ \
+  /cache/clas12/rg-a/production/recon/fall2018/torus-1/pass2/main/train/nSidis/ \
   0 1000000
 
 ./build/post_process \
@@ -269,7 +274,7 @@ python3 scripts/derive_sampling_fraction.py \
 
 python3 scripts/derive_sampling_fraction.py \
   10.604_rga_fa18_torus-1_electron_sf_candidates.root \
-  --max-rows 50000000 \
+  --tree sEvents --max-rows 10000000 --p-min 2.0 \
   --output parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_torus-1_data.json \
   --plot-dir calibration_plots/sampling_fraction/rga_fa18_torus-1_data \
   --dataset-tag 10.604RGA_FA18_torus-1_data \
@@ -292,7 +297,7 @@ Run the electron-only chain on separate polarity-matched GEMC productions.
 
 python3 scripts/derive_sampling_fraction.py \
   10.604_rga_fa18_torus+1_gemc_electron_sf_candidates.root --gemc \
-  --max-rows 50000000 \
+  --tree sEvents --max-rows 10000000 --p-min 2.0 \
   --output parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_torus+1_GEMC.json \
   --plot-dir calibration_plots/sampling_fraction/rga_fa18_torus+1_GEMC \
   --dataset-tag 10.604RGA_FA18_torus+1_GEMC \
@@ -308,7 +313,7 @@ python3 scripts/derive_sampling_fraction.py \
 
 python3 scripts/derive_sampling_fraction.py \
   10.604_rga_fa18_torus-1_gemc_electron_sf_candidates.root --gemc \
-  --max-rows 50000000 \
+  --tree sEvents --max-rows 10000000 --p-min 2.0 \
   --output parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_torus-1_GEMC.json \
   --plot-dir calibration_plots/sampling_fraction/rga_fa18_torus-1_GEMC \
   --dataset-tag 10.604RGA_FA18_torus-1_GEMC \

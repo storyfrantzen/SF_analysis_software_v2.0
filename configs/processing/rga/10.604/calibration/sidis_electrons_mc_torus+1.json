@@ -3,10 +3,15 @@
 
     "beamEnergy": 10.604,
     "torus": 1,
-    "maxEvents": 50000000,
+    "maxEvents": 100000000,
 
     "qadb": {
         "enabled": false
+    },
+
+    "inputValidation": {
+        "enabled": true,
+        "skipMalformed": true
     },
 
     "finalState": [
@@ -18,7 +23,7 @@
     "enableSkim": true,
     "Q2_min": 1.0,
     "W_min": 2.0,
-    "y_max": 0.8,
+    "y_max": 0.85,
 
     "fillMC": false
 }
