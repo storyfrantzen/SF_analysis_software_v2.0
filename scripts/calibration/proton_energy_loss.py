@@ -306,7 +306,19 @@ def maybe_plot(arrays: dict[str, np.ndarray],
     theta_range = resolve_theta_range(arrays, cfg, theta_range_mode, theta_trim_quantile)
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
     for ax, (name, col) in zip(axes, RESIDUAL_COLUMNS.items()):
-        hist = ax.hist2d(p, arrays[col], bins=80, cmap="magma", cmin=1)
+        residual_range = resolve_residual_range(
+            arrays, name, cfg, residual_range_mode, residual_trim_quantile
+        )
+        residual_mask = residual_range_mask(arrays, name, residual_range)
+        plot_mask = residual_mask & np.isfinite(p)
+        hist = ax.hist2d(
+            p[plot_mask],
+            arrays[col][plot_mask],
+            bins=80,
+            range=[cfg.momentum_range, residual_range],
+            cmap="magma",
+            cmin=1,
+        )
         fig.colorbar(hist[3], ax=ax)
         ax.set_xlabel("p_rec [GeV]")
         ax.set_ylabel(name)
@@ -376,7 +388,24 @@ def maybe_plot(arrays: dict[str, np.ndarray],
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
     for ax, (name, col) in zip(axes, RESIDUAL_COLUMNS.items()):
-        hist = ax.hist2d(theta, arrays[col], bins=80, cmap="viridis", cmin=1)
+        residual_range = resolve_residual_range(
+            arrays, name, cfg, residual_range_mode, residual_trim_quantile
+        )
+        residual_mask = residual_range_mask(arrays, name, residual_range)
+        plot_mask = (
+            residual_mask
+            & np.isfinite(theta)
+            & (theta >= theta_range[0])
+            & (theta <= theta_range[1])
+        )
+        hist = ax.hist2d(
+            theta[plot_mask],
+            arrays[col][plot_mask],
+            bins=80,
+            range=[theta_range, residual_range],
+            cmap="viridis",
+            cmin=1,
+        )
         fig.colorbar(hist[3], ax=ax)
         ax.set_xlabel("theta_rec [deg]")
         ax.set_ylabel(name)
