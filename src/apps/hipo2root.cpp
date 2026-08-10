@@ -62,8 +62,8 @@ std::string pidBranchToken(int pid) {
 }
 
 struct ReconstructedEventOutput {
-    std::uint64_t sourceFileId = INVALID_SOURCE_ID;
-    std::uint64_t sourceEventIndex = INVALID_SOURCE_ID;
+    ULong64_t sourceFileId = INVALID_SOURCE_ID;
+    ULong64_t sourceEventIndex = INVALID_SOURCE_ID;
     int runNum = -999;
     int eventNum = -999;
     int helicity = -999;
@@ -708,7 +708,7 @@ int main(int argc, char** argv) {
         gEvent.registerBranches(*gEvents);
     }
     TTree* sourceFilesTree = nullptr;
-    std::uint64_t catalogSourceFileId = INVALID_SOURCE_ID;
+    ULong64_t catalogSourceFileId = INVALID_SOURCE_ID;
     std::string catalogSourceFileName;
     int catalogStratumFlatIndex = -1;
     double catalogGeneratorWeight = 1.0;

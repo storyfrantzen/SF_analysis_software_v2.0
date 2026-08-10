@@ -139,8 +139,8 @@ void printProgress(Long64_t currentRow,
 }
 
 struct CandidateOutput {
-    std::uint64_t sourceFileId = INVALID_SOURCE_ID;
-    std::uint64_t sourceEventIndex = INVALID_SOURCE_ID;
+    ULong64_t sourceFileId = INVALID_SOURCE_ID;
+    ULong64_t sourceEventIndex = INVALID_SOURCE_ID;
     int runNum = -999;
     int eventNum = -999;
     int helicity = -999;
@@ -299,8 +299,8 @@ struct CandidateOutput {
 };
 
 struct SelectedParticleOutput {
-    std::uint64_t sourceFileId = INVALID_SOURCE_ID;
-    std::uint64_t sourceEventIndex = INVALID_SOURCE_ID;
+    ULong64_t sourceFileId = INVALID_SOURCE_ID;
+    ULong64_t sourceEventIndex = INVALID_SOURCE_ID;
     int runNum = -999;
     int eventNum = -999;
     std::string role;
@@ -409,8 +409,11 @@ public:
 private:
     TTree* tree_ = nullptr;
     Long64_t nextEntry_ = 0;
-    std::uint64_t sourceFileId_ = INVALID_SOURCE_ID;
-    std::uint64_t sourceEventIndex_ = INVALID_SOURCE_ID;
+    // These addresses are bound directly to ROOT `/l` leaves. Use ROOT's
+    // exact 64-bit typedef: std::uint64_t is unsigned long on LP64 Linux,
+    // whereas TLeaf::SetAddress requires ULong64_t (unsigned long long).
+    ULong64_t sourceFileId_ = INVALID_SOURCE_ID;
+    ULong64_t sourceEventIndex_ = INVALID_SOURCE_ID;
     int runNum_ = -999;
     int eventNum_ = -999;
     std::vector<int>* topologyPids_ = nullptr;
