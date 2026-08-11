@@ -64,7 +64,7 @@ struct Config {
     bool   enableSkim = true;
     double Q2_min     = 1.0;
     double W_min      = 2.0;
-    double y_max      = 0.8;
+    double electronP_min = 0.0;
     DiphotonMassSkimConfig diphotonMassSkim;
 
     // ── MC ────────────────────────────────────
@@ -150,7 +150,15 @@ struct Config {
         enableSkim = j.value("enableSkim", enableSkim);
         Q2_min     = j.value("Q2_min",     Q2_min);
         W_min      = j.value("W_min",      W_min);
-        y_max      = j.value("y_max",      y_max);
+        if (j.contains("y_max")) {
+            throw std::runtime_error(
+                "y_max is no longer supported; configure electron_p_min instead"
+            );
+        }
+        electronP_min = j.value("electron_p_min", electronP_min);
+        if (!std::isfinite(electronP_min) || electronP_min < 0.0) {
+            throw std::runtime_error("electron_p_min must be finite and nonnegative");
+        }
 
         if (j.contains("diphotonMassSkim")) {
             const auto& skim = j["diphotonMassSkim"];

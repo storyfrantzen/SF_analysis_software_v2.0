@@ -1763,7 +1763,7 @@ def command_bin_centering_merge(args: argparse.Namespace) -> None:
         "resonance",
         "phase_space_Q2_min",
         "phase_space_W_min",
-        "phase_space_y_max",
+        "phase_space_electron_p_min",
     )
 
     for path, partial in zip(args.partials, partials):
@@ -2002,7 +2002,11 @@ def command_cross_section(args: argparse.Namespace) -> None:
             beam_energy,
             q2_minimum=1.0 if phase_space.q2_min is None else phase_space.q2_min,
             w_minimum=2.0 if phase_space.w_min is None else phase_space.w_min,
-            y_maximum=0.8 if phase_space.y_max is None else phase_space.y_max,
+            electron_p_minimum=(
+                0.0
+                if phase_space.electron_p_min is None
+                else phase_space.electron_p_min
+            ),
         )
     )
     # Construct center arrays through the binning itself to avoid order mistakes.

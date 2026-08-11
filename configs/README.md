@@ -172,10 +172,10 @@ storage-efficient data config:
 
 Like its RGK counterpart, this config retains the normal QADB policy, writes
 only electron, proton, and photon rows, requires reconstructed `Q2 >= 1` and
-`W >= 2`, and requires `y <= 0.85`. Post-processing additionally requires
-electron momentum `p >= 2 GeV`. It accepts an
-event when any photon pair has `0 <= m_gg <= 0.35 GeV`; final candidate choice
-and analysis cuts remain downstream.
+`W >= 2`, and uses a padded conversion threshold `p_e >= 1.5 GeV`.
+Post-processing applies the nominal analysis threshold `p_e >= 2 GeV`. It
+accepts an event when any photon pair has `0 <= m_gg <= 0.35 GeV`; final
+candidate choice and analysis cuts remain downstream.
 
 Use the matching `_torus-1.json` processing and post config for inbending
 Fall 2018 samples. The converter records the declared polarity as the ROOT
@@ -183,10 +183,10 @@ Fall 2018 samples. The converter records the declared polarity as the ROOT
 for torus `+1` and `-13 <= vz <= 12 cm` for torus `-1`; the torus sign also
 controls the DC-edge definition.
 
-No RGA proton-energy-loss or sampling-fraction parameter JSON is committed.
-The production configs point to the canonical output names below and therefore
-fail fast until the matching calibration has been derived. Keep torus `+1` and
-`-1` inputs separate throughout.
+The canonical RGA proton-energy-loss and sampling-fraction parameter JSONs are
+committed under `parameters/`, and the production configs reference them
+directly. The derivation commands below document how those files were made.
+Keep torus `+1` and `-1` inputs separate throughout.
 
 The two RGA proton energy-loss processing configs set `maxEvents: 50000000`;
 the four electron sampling-fraction processing configs set
@@ -241,9 +241,9 @@ the samples contain matched proton rows and no electron selection.
 ### Data sampling-fraction parameters
 
 Use the full representative Fall 2018 electron skims for each polarity. QADB,
-`Q2 >= 1`, `W >= 2`, `y <= 0.85`, DC/ECAL fiducials, electron momentum
-`p >= 2 GeV`, and the correct electron vertex window are applied by the
-processing/post pair.
+`Q2 >= 1`, `W >= 2`, and a padded `p >= 1.5 GeV` requirement are applied in
+conversion. DC/ECAL fiducials, the nominal `p >= 2 GeV` threshold, and the
+correct electron vertex window are applied in post-processing.
 
 ```bash
 ./build/hipo2root \
@@ -333,9 +333,10 @@ edge cuts, and the same FD/CD proton treatment.
 The unified `eppi0_GEMC.json` processing config is used for both radiative and
 non-radiative GEMC. It preserves every generated event in `gEvents` before the
 reconstructed topology and DIS skim, while requiring reconstructed `Q2 >= 1`,
-`W >= 2`, and the provisional broad bound `y <= 0.95`. The optional
-`aao_rad_eppi0_loose.json` post config keeps a loose photon selection for quick
-radiative-production shape checks.
+`W >= 2`, and a padded electron momentum threshold `p_e >= 0.3 GeV`.
+Post-processing and analysis apply the nominal `p_e >= 1 GeV` threshold. The
+optional `aao_rad_eppi0_loose.json` post config keeps a loose photon selection
+for quick radiative-production shape checks.
 
 For RGK 6.535 GeV data processing, use the data config pair. The processing
 config enables QADB, applies the `6.535RGK_INCLUSIVE_GEMC_100M` proton

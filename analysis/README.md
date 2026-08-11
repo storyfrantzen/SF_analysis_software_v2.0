@@ -517,9 +517,12 @@ The radiative-correction command streams Born and radiative LUND files directly
 into configured analysis bins, using the same electron-proton Trento phi
 convention as the rest of this package. If the analysis config contains a
 `phase_space` block, each filled bin is interpreted as the rectangular 4D bin
-intersected with those generated-level DIS cuts. For the current RGK/RGA
-configs this is `Q2 >= 1`, `W >= 2`, and `y <= 0.8`, matching the processing
-skim region. Its output is a native `C_rad.npz`
+intersected with those generated-level DIS cuts. Both current configs require
+`Q2 >= 1` and `W >= 2`. RGA directly requires generated electron momentum
+`p_e >= 2 GeV`, while RGK directly requires `p_e >= 1 GeV`. These match the
+nominal post-selection thresholds without a redundant `y` cut. Conversion is
+intentionally padded to `1.5 GeV` for RGA and `0.3 GeV` for RGK so alternate
+post-selection thresholds can be studied. Its output is a native `C_rad.npz`
 artifact consumed by `unfold --radiative-correction`; reliability masks and
 correction uncertainties are propagated into the self-contained unfolding
 result. For AAO-generated samples, pass the generator `sig_sum` integrated cross

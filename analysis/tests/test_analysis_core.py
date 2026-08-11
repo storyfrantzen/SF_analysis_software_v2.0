@@ -134,7 +134,7 @@ class ResponseTests(unittest.TestCase):
                             "minus_t": [0.1, 0.3],
                             "phi_deg": [0.0, 360.0],
                         },
-                        "phase_space": {"y_max": 0.3},
+                        "phase_space": {"electron_p_min": 5.0},
                     }
                 ),
                 encoding="utf-8",
@@ -171,7 +171,7 @@ class ResponseTests(unittest.TestCase):
             q2=np.array([1.2, 1.2, 1.2]),
             xb=np.array([0.2, 0.8, 0.8]),
             number_of_bins=1,
-            phase_space=AnalysisPhaseSpace(y_max=0.3),
+            phase_space=AnalysisPhaseSpace(electron_p_min=5.0),
             beam_energy=6.535,
         )
         np.testing.assert_array_equal(mask, [False, True, False])
@@ -544,7 +544,7 @@ class RadiativeCorrectionTests(unittest.TestCase):
                 bins,
                 beam_energy=6.535,
                 chunk_size=1,
-                phase_space=AnalysisPhaseSpace(y_max=0.3),
+                phase_space=AnalysisPhaseSpace(electron_p_min=5.0),
             )
         self.assertEqual(result.events_seen, 1)
         self.assertEqual(result.topology_events, 1)
@@ -711,7 +711,7 @@ class NormalizationTests(unittest.TestCase):
             6.535,
             q2_minimum=0.0,
             w_minimum=1.0,
-            y_maximum=1.0,
+            electron_p_minimum=0.0,
             integration_points=100,
         )
         rectangular = 0.02 * 0.01 * 2.0 * 2.0 * np.pi
@@ -734,7 +734,11 @@ class NormalizationTests(unittest.TestCase):
                         "target_molar_mass_g": 1.008,
                         "pi0_to_gg_branching_ratio": 0.988,
                         "minimum_acceptance": 0.005,
-                        "phase_space": {"Q2_min": 1.0, "W_min": 2.0, "y_max": 0.8},
+                        "phase_space": {
+                            "Q2_min": 1.0,
+                            "W_min": 2.0,
+                            "electron_p_min": 1.0,
+                        },
                         "binning": {
                             "Q2": [1.2, 1.4],
                             "xB": [0.2, 0.3],
@@ -819,7 +823,7 @@ class BinCenteringTests(unittest.TestCase):
             6.535,
             flat_d4sigma,
             samples_per_dimension=2,
-            phase_space=AnalysisPhaseSpace(y_max=0.35),
+            phase_space=AnalysisPhaseSpace(electron_p_min=4.2),
         )
         self.assertGreater(int(unrestricted.n_physical.sum()), int(restricted.n_physical.sum()))
         self.assertGreater(int(restricted.n_physical.sum()), 0)

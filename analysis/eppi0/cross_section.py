@@ -6,6 +6,7 @@ import numpy as np
 
 from .binning import AnalysisBinning
 from .exclusive_kinematics import t_limits_pi0
+from .phase_space import ELECTRON_MASS_GEV, scattered_electron_momentum
 
 
 ELECTRON_CHARGE_C = 1.602176634e-19
@@ -54,7 +55,7 @@ def physical_bin_volumes(
     proton_mass: float = 0.9382720813,
     q2_minimum: float = 1.0,
     w_minimum: float = 2.0,
-    y_maximum: float = 0.8,
+    electron_p_minimum: float = 0.0,
     integration_points: int = DEFAULT_VOLUME_INTEGRATION_POINTS,
 ) -> np.ndarray:
     """Return selected exclusive `(Q2, xB, t, phi)` volumes in GeV^4 rad."""
@@ -72,19 +73,24 @@ def physical_bin_volumes(
             x = x_low + (np.arange(integration_points) + 0.5) * dx
             q2_mesh, xb_mesh = np.meshgrid(q2, x, indexing="ij")
             w2 = proton_mass**2 + q2_mesh * (1.0 / xb_mesh - 1.0)
-            y = q2_mesh / (2.0 * proton_mass * beam_energy * xb_mesh)
-            eprime = beam_energy * (1.0 - y)
+            electron_p = scattered_electron_momentum(
+                q2_mesh,
+                xb_mesh,
+                beam_energy,
+                proton_mass=proton_mass,
+            )
+            electron_energy = np.sqrt(electron_p**2 + ELECTRON_MASS_GEV**2)
             sin2_half = np.divide(
                 q2_mesh,
-                4.0 * beam_energy * eprime,
+                4.0 * beam_energy * electron_energy,
                 out=np.full_like(q2_mesh, np.nan),
-                where=eprime > 0.0,
+                where=electron_energy > 0.0,
             )
             selected = (
                 (q2_mesh >= q2_minimum)
                 & (w2 >= w_minimum**2)
-                & (y <= y_maximum)
-                & (eprime > 0.0)
+                & (electron_p >= electron_p_minimum)
+                & (electron_energy > 0.0)
                 & (sin2_half > 0.0)
                 & (sin2_half < 1.0)
             )

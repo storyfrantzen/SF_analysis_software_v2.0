@@ -456,7 +456,11 @@ bool passesDISSkim(const Config& cfg, clas12::clas12reader& c12) {
                                                     Kinematics::massForPid(11));
     const Kinematics::DIS dis = Kinematics::dis(lvE, cfg.beamEnergy);
 
-    return (dis.Q2 >= cfg.Q2_min && dis.W >= cfg.W_min && dis.y <= cfg.y_max);
+    return (
+        dis.Q2 >= cfg.Q2_min
+        && dis.W >= cfg.W_min
+        && lvE.P() >= cfg.electronP_min
+    );
 }
 
 bool passesDiphotonMassSkim(const Config& cfg, clas12::clas12reader& c12) {
@@ -678,7 +682,7 @@ int main(int argc, char** argv) {
     if (cfg.enableSkim) {
         std::cout << "[INFO] DIS skim: Q2 >= " << cfg.Q2_min
                   << ", W >= "  << cfg.W_min
-                  << ", y <= " << cfg.y_max << "\n";
+                  << ", electron p >= " << cfg.electronP_min << " GeV\n";
     }
     if (cfg.diphotonMassSkim.enabled) {
         std::cout << "[INFO] Diphoton mass skim: at least one pair in ["
@@ -1001,6 +1005,18 @@ int main(int argc, char** argv) {
     summary.Branch("QADBRejectDefects", &qadbRejectDefects);
     long long configuredMaxEvents = cfg.maxEvents;
     summary.Branch("ConfiguredMaxEvents", &configuredMaxEvents, "ConfiguredMaxEvents/L");
+    bool disSkimEnabled = cfg.enableSkim;
+    double configuredQ2Min = cfg.Q2_min;
+    double configuredWMin = cfg.W_min;
+    double configuredElectronPMin = cfg.electronP_min;
+    summary.Branch("DISSkimEnabled", &disSkimEnabled, "DISSkimEnabled/O");
+    summary.Branch("ConfiguredQ2Min", &configuredQ2Min, "ConfiguredQ2Min/D");
+    summary.Branch("ConfiguredWMin", &configuredWMin, "ConfiguredWMin/D");
+    summary.Branch(
+        "ConfiguredElectronPMin",
+        &configuredElectronPMin,
+        "ConfiguredElectronPMin/D"
+    );
     summary.Branch("TotalEvents", &nTotal, "TotalEvents/L");
     summary.Branch("EventLimitReached", &eventLimitReached, "EventLimitReached/O");
     summary.Branch("FailedQADB", &nQAFail, "FailedQADB/L");
