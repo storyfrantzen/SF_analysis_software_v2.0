@@ -456,6 +456,33 @@ python3 scripts/derive_sampling_fraction.py \
   --beam-energy 6.535 --run-group RGK --skim clasdis_pass2 --torus 1
 ```
 
+The sampling-fraction derivation uses a mode-seeded, iteratively clipped
+Gaussian-core estimator (`iterative_truncated_gaussian_core`, version 1) in
+every momentum bin.  Its truncated width is
+corrected back to the corresponding Gaussian sigma before the momentum
+dependence is fitted.  This prevents non-electron populations and calorimeter
+tails from redefining the electron resolution as the full-distribution RMS.
+The bin's observed core momentum mean is used as its fit coordinate, and both
+the mean and width momentum fits use their estimated uncertainties.  The
+output metadata records every bin's population, retained core fraction,
+Gaussian chi-square, convergence status, fitted values, and uncertainties.
+
+The diagnostic directory includes:
+
+- `sampling_fraction_sector_fits.png`: sector distributions and Gaussian-core
+  profiles under the parameter curves;
+- `sampling_fraction_profile_residuals.png`: fractional residuals of the core
+  mean and width from their momentum fits;
+- `sampling_fraction_core_fit_quality.png`: per-bin Gaussian chi-square and
+  retained core fraction;
+- `sampling_fraction_pulls.png`: standardized event residuals and the fraction
+  retained by a 3.5-sigma window;
+- `sampling_fraction_diagonal_cut.png`: the independent diagonal-cut check.
+
+With `--gemc`, one aggregate parameter fit is still copied to all sectors, but
+the sector-fit plot and validation metadata retain the six actual sector
+profiles so detector asymmetries remain visible.
+
 For proton energy loss:
 
 ```bash
