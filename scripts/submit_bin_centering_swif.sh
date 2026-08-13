@@ -15,9 +15,10 @@ Options:
   --run                 Start the workflow after creating all jobs.
                         Without this flag the workflow remains suspended.
   --stamp UTC_STAMP     Stage identifier (default: current UTC time).
-  --repo PATH           Repository root (default: inferred from this script).
+  --repo PATH           Repository root (default:
+                        /work/clas12/storyf/SF_analysis_software_v2.0).
   --base PATH           Campaign base directory
-                        (default: /w/hallb-scshelf2102/clas12/$USER).
+                        (default: /w/hallb-scshelf2102/clas12/storyf).
   --aao-xsec PATH       Compiled aao_xsec executable.
   --maid-table PATH     maid07-PPpi.tbl input.
   --module-setup PATH   JLab tcsh module setup file.
@@ -37,13 +38,14 @@ die() {
 }
 
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
-SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
-DEFAULT_REPO="$(dirname "$SCRIPT_DIR")"
+
+DEFAULT_REPO="/work/clas12/storyf/SF_analysis_software_v2.0"
+DEFAULT_BASE="/w/hallb-scshelf2102/clas12/storyf"
 
 RUN_WORKFLOW=0
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 REPO="$DEFAULT_REPO"
-BASE="/w/hallb-scshelf2102/clas12/${USER}"
+BASE="$DEFAULT_BASE"
 CHUNKS=100
 AAO_XSEC=""
 MAID_TABLE="/group/clas/parms/spp_tbl/maid07-PPpi.tbl"
@@ -116,6 +118,7 @@ AAO_XSEC="$(readlink -f "$AAO_XSEC")"
 MAID_TABLE="$(readlink -f "$MAID_TABLE")"
 MODULE_SETUP="$(readlink -f "$MODULE_SETUP")"
 WORKER="$REPO/scripts/run_bin_centering_swif_job.csh"
+EXPECTED_DRIVER="$REPO/scripts/submit_bin_centering_swif.sh"
 
 command -v swif2 >/dev/null 2>&1 || die "swif2 is not available"
 command -v python3 >/dev/null 2>&1 || die "python3 is not available"
@@ -124,6 +127,15 @@ command -v sha256sum >/dev/null 2>&1 || die "sha256sum is not available"
 [[ -r "$MAID_TABLE" ]] || die "MAID table is not readable: $MAID_TABLE"
 [[ -r "$MODULE_SETUP" ]] || die "module setup is not readable: $MODULE_SETUP"
 [[ -r "$WORKER" ]] || die "worker script is not readable: $WORKER"
+[[ "$SCRIPT_PATH" == "$(readlink -f "$EXPECTED_DRIVER")" ]] || \
+    die "run the driver from $EXPECTED_DRIVER (or pass the matching --repo)"
+
+printf 'Resolved production paths:\n'
+printf '  repo=%s\n' "$REPO"
+printf '  campaign_base=%s\n' "$BASE"
+printf '  module_setup=%s\n' "$MODULE_SETUP"
+printf '  aao_xsec=%s\n' "$AAO_XSEC"
+printf '  maid_table=%s\n' "$MAID_TABLE"
 
 declare -a CAMPAIGNS=(rgk6535 rga10604)
 declare -A CAMPAIGN_ROOT=(

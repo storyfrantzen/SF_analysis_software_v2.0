@@ -607,6 +607,7 @@ For the JLab production scan at `N=10,20,30`, use the repository submission
 driver rather than embedding a multi-statement shell program in every SWIF job:
 
 ```bash
+cd /work/clas12/storyf/SF_analysis_software_v2.0
 bash scripts/submit_bin_centering_swif.sh --run
 ```
 
