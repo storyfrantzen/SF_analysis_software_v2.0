@@ -603,6 +603,21 @@ Repeat with larger `--N` values, for example `N=2,4,6,8`, and compare the
 merged `C_BC` artifacts to assess convergence. To summarize and visualize a
 scan after merging all requested `C_BC_N*.npz` files:
 
+For the JLab production scan at `N=10,20,30`, use the repository submission
+driver rather than embedding a multi-statement shell program in every SWIF job:
+
+```bash
+bash scripts/submit_bin_centering_swif.sh --run
+```
+
+The driver freezes the analysis code, configuration, AAO executable, MAID
+table, module setup, driver, worker, job manifest, Git state, and hashes under
+the campaign correction directories. It creates two phase-0 jobs (one RGK and
+one RGA real output) and releases the remaining jobs only after both phase-0
+jobs succeed. The RGA result is common to the torus+1 and torus-1 campaigns.
+Use `--help` to override input paths, the UTC stage stamp, or the number of
+chunks.
+
 ```bash
 python3 scripts/plot_bin_centering_convergence.py results/bin_centering_convergence/rgk_6.535 \
   --n-values 2 4 6 8 \
