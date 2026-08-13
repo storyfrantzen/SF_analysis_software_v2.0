@@ -89,6 +89,16 @@ class ConfigPhaseSpaceConsistencyTests(unittest.TestCase):
                         )
             self.assertGreater(role_count, 0)
 
+    def test_rga_post_electrons_are_fd_only(self) -> None:
+        role_count = 0
+        for path in sorted(self.CASES["rga"]["post"].rglob("*.json")):
+            config = json.loads(path.read_text(encoding="utf-8"))
+            for role in electron_roles(config):
+                role_count += 1
+                with self.subTest(path=path):
+                    self.assertEqual(role.get("detectors"), [1])
+        self.assertGreater(role_count, 0)
+
     def test_generated_phase_space_uses_scattered_electron_momentum(self) -> None:
         q2 = np.array([1.2, 1.2])
         xb = np.array([0.2, 0.8])

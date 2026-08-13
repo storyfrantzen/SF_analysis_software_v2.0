@@ -46,6 +46,24 @@ bool evaluateMinCalEnergy(const RecBranches& particle, double min) {
     const auto decision = cuts.evaluateParticle(particle, gamma, {particle}, {});
     return decision.pass;
 }
+
+bool evaluateSameSectorVeto(const RecBranches& photon, const RecBranches& electron) {
+    PostCutConfig cfg;
+    ParticleRoleSpec gamma;
+    gamma.role = "gamma";
+    gamma.pid = 22;
+
+    PrimitiveCutSpec sameSector;
+    sameSector.name = "gamma.not_electron_sector";
+    sameSector.op = "rejectSameSectorAsRole";
+    sameSector.refRole = "electron";
+    gamma.cuts.push_back(sameSector);
+
+    const Cuts cuts(cfg);
+    const std::map<std::string, const RecBranches*> selected = {{"electron", &electron}};
+    const auto decision = cuts.evaluateParticle(photon, gamma, {photon, electron}, selected);
+    return decision.pass;
+}
 }
 
 int main() {
@@ -111,6 +129,39 @@ int main() {
     fdPhoton.E_PCAL = fdPhoton.E_ECIN = fdPhoton.E_ECOUT = 1.0;
     if (evaluateMinCalEnergy(fdPhoton, 0.15)) {
         std::cerr << "minCalEnergy accepted a detector without supported calorimetry\n";
+        return 1;
+    }
+
+    RecBranches fdElectron;
+    fdElectron.pid = 11;
+    fdElectron.det = 1;
+    fdElectron.sector = 3;
+
+    fdPhoton.det = 1;
+    fdPhoton.sector = 3;
+    if (evaluateSameSectorVeto(fdPhoton, fdElectron)) {
+        std::cerr << "same-sector veto accepted an FD photon in the FD electron sector\n";
+        return 1;
+    }
+    fdPhoton.sector = 4;
+    if (!evaluateSameSectorVeto(fdPhoton, fdElectron)) {
+        std::cerr << "same-sector veto rejected an FD photon in a different FD sector\n";
+        return 1;
+    }
+
+    ftPhoton.det = 0;
+    ftPhoton.sector = fdElectron.sector;
+    if (!evaluateSameSectorVeto(ftPhoton, fdElectron)) {
+        std::cerr << "same-sector veto compared an FT photon with an FD electron sector\n";
+        return 1;
+    }
+
+    RecBranches ftElectron = fdElectron;
+    ftElectron.det = 0;
+    fdPhoton.det = 1;
+    fdPhoton.sector = ftElectron.sector;
+    if (!evaluateSameSectorVeto(fdPhoton, ftElectron)) {
+        std::cerr << "same-sector veto compared an FD photon with an FT electron sector\n";
         return 1;
     }
     return 0;

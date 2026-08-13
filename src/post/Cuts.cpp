@@ -515,7 +515,9 @@ CutDecision Cuts::evaluateParticle(const RecBranches& p,
             apply(p.det != cut.detector);
         } else if (cut.op == "rejectSameSectorAsRole") {
             const auto ref = selected.find(cut.refRole);
-            apply(ref == selected.end() || !ref->second || p.sector != ref->second->sector);
+            const bool comparableFDPair = ref != selected.end() && ref->second &&
+                                          p.det == 1 && ref->second->det == 1;
+            apply(!comparableFDPair || p.sector != ref->second->sector);
         } else if (cut.op == "vertexDiff") {
             const auto ref = selected.find(cut.refRole);
             const bool pass = ref == selected.end() || !ref->second ||
