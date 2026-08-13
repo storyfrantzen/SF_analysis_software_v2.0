@@ -21,6 +21,11 @@ from eppi0.data_efficiency import (
     fit_linear_yield,
     load_selection_mask,
 )
+from eppi0.gemc_efficiency import (
+    attach_relative_gemc_efficiencies,
+    fit_linear_efficiency,
+    load_gemc_efficiencies,
+)
 from study_data_efficiency import main as study_main
 
 
@@ -122,6 +127,88 @@ class DataEfficiencyTests(unittest.TestCase):
         self.assertEqual(sum(record.signal_events for record in records), int(mask.sum()))
         self.assertEqual(validation["signal_events"], int(mask.sum()))
 
+    def test_minimum_group_charge_fraction_excludes_small_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            sample, manifest = self.write_inputs(directory)
+            with np.load(sample) as data:
+                arrays = {key: data[key] for key in data.files}
+            charges = np.asarray(arrays["beam_charge_by_run_c"], dtype=float)
+            charges[0] = 1.0e-12
+            arrays["beam_charge_by_run_c"] = charges
+            arrays["beam_charge_c"] = np.asarray(charges.sum())
+            np.savez_compressed(sample, **arrays)
+
+            records, validation = build_run_yields(
+                sample,
+                manifest,
+                include_classes=("L5", "P4", "P3"),
+                minimum_group_charge_fraction=0.01,
+            )
+            groups = aggregate_current_groups(records)
+
+        low_charge = next(record for record in records if record.run == 1001)
+        self.assertFalse(low_charge.included)
+        self.assertIn("below_minimum_group_charge_fraction", low_charge.exclusion_reason)
+        self.assertAlmostEqual(low_charge.group_charge_fraction, 1.0 / 1001.0)
+        self.assertEqual(validation["runs_below_minimum_group_charge_fraction"], [1001])
+        l5 = next(group for group in groups if group.group == "L5")
+        self.assertEqual(l5.run_numbers, [1002])
+
+    def test_gemc_response_metadata_fit_and_relative_efficiency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            edges = {
+                "q2_edges": np.asarray([1.0, 2.0, 3.0]),
+                "xb_edges": np.asarray([0.1, 0.2]),
+                "t_edges": np.asarray([0.1, 0.2]),
+                "phi_edges": np.asarray([0.0, 180.0]),
+            }
+            truth = np.asarray([100.0, 100.0])
+            no_background = directory / "response_0.npz"
+            merged = directory / "response_60.npz"
+            np.savez_compressed(
+                no_background,
+                truth_total=truth,
+                efficiency=np.asarray([0.8, 0.8]),
+                **edges,
+            )
+            np.savez_compressed(
+                merged,
+                truth_total=truth,
+                efficiency=np.asarray([0.68, 0.68]),
+                **edges,
+            )
+            manifest = directory / "gemc.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "samples": [
+                            {
+                                "label": "no_background",
+                                "current_nA": 0.0,
+                                "response_meta": no_background.name,
+                            },
+                            {
+                                "label": "merged_60nA",
+                                "current_nA": 60.0,
+                                "response_meta": merged.name,
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            points, validation = load_gemc_efficiencies(manifest)
+            fit = fit_linear_efficiency(points)
+            attach_relative_gemc_efficiencies(points, fit)
+
+        self.assertTrue(validation["truth_totals_match_reference"])
+        self.assertAlmostEqual(fit.intercept, 0.8)
+        self.assertAlmostEqual(fit.slope_per_nA, -0.002)
+        self.assertAlmostEqual(points[1].relative_efficiency, 0.85)
+        self.assertEqual(fit.ndf, 0)
+
     def test_selected_run_without_charge_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -151,6 +238,46 @@ class DataEfficiencyTests(unittest.TestCase):
             directory = Path(tmp)
             sample, manifest = self.write_inputs(directory)
             output = directory / "output"
+            edges = {
+                "q2_edges": np.asarray([1.0, 2.0]),
+                "xb_edges": np.asarray([0.1, 0.2]),
+                "t_edges": np.asarray([0.1, 0.2]),
+                "phi_edges": np.asarray([0.0, 360.0]),
+            }
+            response_0 = directory / "response_0.npz"
+            response_60 = directory / "response_60.npz"
+            np.savez_compressed(
+                response_0,
+                truth_total=np.asarray([1000.0]),
+                efficiency=np.asarray([0.8]),
+                **edges,
+            )
+            np.savez_compressed(
+                response_60,
+                truth_total=np.asarray([1000.0]),
+                efficiency=np.asarray([0.68]),
+                **edges,
+            )
+            gemc_manifest = directory / "gemc.json"
+            gemc_manifest.write_text(
+                json.dumps(
+                    {
+                        "samples": [
+                            {
+                                "label": "no_background",
+                                "current_nA": 0.0,
+                                "response_meta": str(response_0),
+                            },
+                            {
+                                "label": "merged_60nA",
+                                "current_nA": 60.0,
+                                "response_meta": str(response_60),
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
             arguments = [
                 "study_data_efficiency.py",
                 str(sample),
@@ -162,6 +289,10 @@ class DataEfficiencyTests(unittest.TestCase):
                 "P3",
                 "--exclude-run",
                 "1001",
+                "--minimum-group-charge-fraction",
+                "0.001",
+                "--gemc-manifest",
+                str(gemc_manifest),
                 "--output-dir",
                 str(output),
             ]
@@ -171,8 +302,10 @@ class DataEfficiencyTests(unittest.TestCase):
 
             self.assertEqual(result, 0)
             self.assertAlmostEqual(summary["fit"]["intercept_events_per_nC"], 100.0)
+            self.assertAlmostEqual(summary["gemc"]["fit"]["intercept"], 0.8)
             self.assertTrue((output / "run_yields.csv").is_file())
             self.assertTrue((output / "current_group_yields.csv").is_file())
+            self.assertTrue((output / "gemc_efficiency_points.csv").is_file())
             self.assertGreater((output / "data_efficiency_diagnostics.pdf").stat().st_size, 0)
 
 

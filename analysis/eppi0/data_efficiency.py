@@ -27,6 +27,7 @@ class RunYield:
     failed_qadb_events: int | None
     yield_events_per_nC: float | None
     statistical_uncertainty_events_per_nC: float | None
+    group_charge_fraction: float | None
     included: bool
     exclusion_reason: str
 
@@ -153,11 +154,15 @@ def build_run_yields(
     include_qualities: Iterable[str] = ("unflagged",),
     include_runs: Iterable[int] = (),
     exclude_runs: Iterable[int] = (),
+    minimum_group_charge_fraction: float = 0.0,
 ) -> tuple[list[RunYield], dict]:
     include_class_set = set(include_classes)
     include_quality_set = set(include_qualities)
     include_run_set = {int(run) for run in include_runs}
     exclude_run_set = {int(run) for run in exclude_runs}
+    minimum_group_charge_fraction = float(minimum_group_charge_fraction)
+    if not 0.0 <= minimum_group_charge_fraction < 1.0:
+        raise ValueError("minimum_group_charge_fraction must be in [0,1)")
     if not include_class_set and not include_run_set:
         raise ValueError("at least one included run class or explicit run is required")
 
@@ -253,10 +258,15 @@ def build_run_yields(
                 failed_qadb_events=failed_events.get(run),
                 yield_events_per_nC=yield_value,
                 statistical_uncertainty_events_per_nC=uncertainty,
+                group_charge_fraction=None,
                 included=not reasons,
                 exclusion_reason=";".join(reasons),
             )
         )
+
+    low_contribution_runs = apply_minimum_group_charge_fraction(
+        records, minimum_group_charge_fraction
+    )
 
     run_charge_sum_c = float(sum(charge_map.values()))
     charge_difference_c = (
@@ -273,8 +283,49 @@ def build_run_yields(
         "charge_difference_c": charge_difference_c,
         "selected_runs_missing_charge": missing_charge_runs,
         "charge_runs_missing_manifest": sorted(set(charge_map).difference(manifest_runs)),
+        "minimum_group_charge_fraction": minimum_group_charge_fraction,
+        "runs_below_minimum_group_charge_fraction": low_contribution_runs,
     }
     return records, validation
+
+
+def apply_minimum_group_charge_fraction(
+    records: Iterable[RunYield], minimum_fraction: float
+) -> list[int]:
+    """Reject otherwise eligible runs carrying too little of their group's charge.
+
+    Fractions are calculated once from all runs that pass the ordinary class,
+    current-quality, and explicit-run filters.  This preserves an auditable
+    denominator and avoids order-dependent iterative removal.
+    """
+    minimum_fraction = float(minimum_fraction)
+    if not 0.0 <= minimum_fraction < 1.0:
+        raise ValueError("minimum_fraction must be in [0,1)")
+    grouped: dict[str, list[RunYield]] = {}
+    for record in records:
+        if record.included:
+            if record.run_class is None:
+                raise ValueError(f"included run {record.run} has no run class")
+            grouped.setdefault(record.run_class, []).append(record)
+
+    rejected: list[int] = []
+    for name, members in grouped.items():
+        total_charge = float(sum(member.charge_c for member in members))
+        if total_charge <= 0.0:
+            raise ValueError(f"current group {name} has nonpositive eligible charge")
+        for member in members:
+            fraction = member.charge_c / total_charge
+            member.group_charge_fraction = float(fraction)
+            if fraction < minimum_fraction:
+                member.included = False
+                reason = "below_minimum_group_charge_fraction"
+                member.exclusion_reason = (
+                    f"{member.exclusion_reason};{reason}"
+                    if member.exclusion_reason
+                    else reason
+                )
+                rejected.append(member.run)
+    return sorted(rejected)
 
 
 def aggregate_current_groups(records: Iterable[RunYield]) -> list[CurrentGroupYield]:

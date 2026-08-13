@@ -224,6 +224,74 @@ Use `--fit-level runs` only as a diagnostic. The nominal group-level fit avoids
 treating the many runs within one production setting as independent current
 settings.
 
+To prevent a negligible-charge run from moving the effective current of a
+run-class group, set a minimum within-group QADB-charge contribution:
+
+```bash
+python3 analysis/study_data_efficiency.py data_events.npz \
+  --selection-mask results/data_exclusivity.npy \
+  --include-classes L4 L5 P4 P3 \
+  --minimum-group-charge-fraction 0.01 \
+  --output-dir results/data_efficiency/rgk_6.535_charge_filtered
+```
+
+Here `0.01` means one percent, not one percent per run. The fraction is
+calculated once within each run class after current-quality and explicit-run
+filters. Rejected runs remain in `run_yields.csv` with
+`below_minimum_group_charge_fraction`, and their calculated fraction remains
+available in `group_charge_fraction`. The procedure is intentionally not
+iterative, so the denominator and rejected set do not depend on removal order.
+
+An optional GEMC manifest adds accepted/generated efficiencies, a linear
+current fit, and an overlay on the first diagnostics page. Each response must
+have been built with the same analysis binning and the same fixed numerical MC
+exclusivity definition:
+
+```json
+{
+  "schema_version": 1,
+  "samples": [
+    {
+      "label": "no_background",
+      "current_nA": 0.0,
+      "response_meta": "/path/to/no_background/response_meta.npz"
+    },
+    {
+      "label": "merged_60nA",
+      "current_nA": 60.0,
+      "response_meta": "/path/to/merged_60nA/response_meta.npz"
+    }
+  ]
+}
+```
+
+Pass it with `--gemc-manifest /path/to/gemc_efficiency_manifest.json`. The GEMC
+numerator is `sum_i(truth_total_i * efficiency_i)`, which counts selected
+events generated and reconstructed inside the analysis phase space without
+including feed-in. The denominator is `sum_i(truth_total_i)`. Relative data
+and GEMC efficiencies are both normalized to their fitted zero-current
+intercepts on the overlay. `gemc_efficiency_points.csv` and the complete GEMC
+fit are also written.
+
+The same two points can be supplied directly without creating a JSON file:
+
+```bash
+python3 analysis/study_data_efficiency.py data_events.npz \
+  --selection-mask results/data_exclusivity.npy \
+  --gemc-sample no_background 0 /path/to/no_background/response_meta.npz \
+  --gemc-sample merged_60nA 60 /path/to/merged_60nA/response_meta.npz \
+  --output-dir results/data_efficiency/rgk_6.535_data_gemc
+```
+
+Use the same generated events for the no-background and merged samples when
+possible. The tool requires identical response bin edges and warns when the
+truth totals differ. With only the zero-background and one merged-current
+sample, the straight line is the assumed two-point model and cannot test
+curvature. For weighted response metadata, provide
+`statistical_uncertainty` in the corresponding manifest entry when a validated
+uncertainty is available; otherwise the reported binomial uncertainty is only
+an effective-weight approximation.
+
 For interactive cut studies and quick detector/topology comparisons, build a
 standalone histogram browser from either compact NPZ samples or selected ROOT
 trees:

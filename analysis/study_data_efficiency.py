@@ -20,6 +20,12 @@ from eppi0.data_efficiency import (
     fit_linear_yield,
     run_yield_rows,
 )
+from eppi0.gemc_efficiency import (
+    attach_relative_gemc_efficiencies,
+    fit_linear_efficiency,
+    load_gemc_efficiency_samples,
+    load_gemc_efficiencies,
+)
 
 
 DEFAULT_MANIFEST = (
@@ -84,6 +90,34 @@ def parse_args() -> argparse.Namespace:
         help="Fit charge-aggregated run classes or individual runs",
     )
     parser.add_argument(
+        "--minimum-group-charge-fraction",
+        type=float,
+        default=0.0,
+        help=(
+            "Exclude an otherwise eligible run when its QADB charge is less than this "
+            "fraction of the eligible charge in its run-class group (default: 0)"
+        ),
+    )
+    gemc_input = parser.add_mutually_exclusive_group()
+    gemc_input.add_argument(
+        "--gemc-manifest",
+        type=Path,
+        help=(
+            "Optional JSON manifest of current-tagged GEMC response_meta.npz files; "
+            "fit and overlay their accepted/generated efficiencies"
+        ),
+    )
+    gemc_input.add_argument(
+        "--gemc-sample",
+        action="append",
+        nargs=3,
+        metavar=("LABEL", "CURRENT_NA", "RESPONSE_META"),
+        help=(
+            "Add one GEMC response point directly; repeat for zero-background and "
+            "merged-current samples"
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("results/data_efficiency/rgk_6.535"),
@@ -102,19 +136,49 @@ def main() -> int:
         include_qualities=args.include_qualities,
         include_runs=args.include_run,
         exclude_runs=args.exclude_run,
+        minimum_group_charge_fraction=args.minimum_group_charge_fraction,
     )
     groups = aggregate_current_groups(records)
     fit = fit_linear_yield(records, groups, fit_level=args.fit_level)
     attach_relative_efficiencies(groups, fit)
 
-    warnings = study_warnings(args, records, groups, fit, validation)
+    gemc_points = None
+    gemc_fit = None
+    gemc_validation = None
+    gemc_source = None
+    if args.gemc_manifest is not None:
+        gemc_points, gemc_validation = load_gemc_efficiencies(args.gemc_manifest)
+        gemc_source = {"manifest": str(args.gemc_manifest.resolve())}
+    elif args.gemc_sample is not None:
+        sample_entries = [
+            {
+                "label": label,
+                "current_nA": float(current),
+                "response_meta": response_meta,
+            }
+            for label, current, response_meta in args.gemc_sample
+        ]
+        gemc_points, gemc_validation = load_gemc_efficiency_samples(
+            sample_entries, base_directory=Path.cwd()
+        )
+        gemc_source = {"command_line_samples": sample_entries}
+    if gemc_points is not None:
+        gemc_fit = fit_linear_efficiency(gemc_points)
+        attach_relative_gemc_efficiencies(gemc_points, gemc_fit)
+
+    warnings = study_warnings(
+        args, records, groups, fit, validation, gemc_points, gemc_fit, gemc_validation
+    )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     run_csv = args.output_dir / "run_yields.csv"
     group_csv = args.output_dir / "current_group_yields.csv"
     summary_json = args.output_dir / "fit_summary.json"
     plots_pdf = args.output_dir / "data_efficiency_diagnostics.pdf"
+    gemc_csv = args.output_dir / "gemc_efficiency_points.csv"
     write_csv(run_csv, run_yield_rows(records))
     write_csv(group_csv, current_group_rows(groups))
+    if gemc_points is not None:
+        write_csv(gemc_csv, [asdict(point) for point in gemc_points])
 
     summary = {
         "schema_version": 1,
@@ -135,6 +199,7 @@ def main() -> int:
             "include_qualities": args.include_qualities,
             "include_runs": args.include_run,
             "exclude_runs": args.exclude_run,
+            "minimum_group_charge_fraction": args.minimum_group_charge_fraction,
         },
         "validation": validation,
         "fit": asdict(fit),
@@ -147,16 +212,43 @@ def main() -> int:
         ],
         "warnings": warnings,
     }
+    if gemc_points is not None and gemc_fit is not None:
+        summary["gemc"] = {
+            "source": gemc_source,
+            "validation": gemc_validation,
+            "fit": asdict(gemc_fit),
+            "points": [asdict(point) for point in gemc_points],
+        }
     summary_json.write_text(
         json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n",
         encoding="utf-8",
     )
-    write_plots(plots_pdf, records, groups, fit, args.selection_mask is not None)
+    write_plots(
+        plots_pdf,
+        records,
+        groups,
+        fit,
+        args.selection_mask is not None,
+        gemc_points=gemc_points,
+        gemc_fit=gemc_fit,
+    )
 
     print(f"Candidate events: {validation['candidate_events']}")
     print(f"Signal events: {validation['signal_events']}")
     print(f"Included runs: {sum(record.included for record in records)}")
     print(f"Current groups: {len(groups)}")
+    print(
+        "Runs below minimum group charge fraction: "
+        f"{len(validation['runs_below_minimum_group_charge_fraction'])}"
+    )
+    if validation["runs_below_minimum_group_charge_fraction"]:
+        print(
+            "Low-charge run exclusions: "
+            + ", ".join(
+                str(run)
+                for run in validation["runs_below_minimum_group_charge_fraction"]
+            )
+        )
     print(
         "Zero-current yield: "
         f"{fit.intercept_events_per_nC:.8g} +/- "
@@ -167,16 +259,37 @@ def main() -> int:
         f"{fit.slope_events_per_nC_per_nA:.8g} +/- "
         f"{fit.slope_uncertainty_events_per_nC_per_nA:.8g} events/(nC nA)"
     )
+    if gemc_fit is not None:
+        print(
+            "GEMC zero-current efficiency: "
+            f"{gemc_fit.intercept:.8g} +/- {gemc_fit.intercept_uncertainty:.8g}"
+        )
+        print(
+            "GEMC current slope: "
+            f"{gemc_fit.slope_per_nA:.8g} +/- "
+            f"{gemc_fit.slope_uncertainty_per_nA:.8g} per nA"
+        )
     for warning in warnings:
         print(f"WARNING: {warning}")
     print(f"Wrote {run_csv}")
     print(f"Wrote {group_csv}")
+    if gemc_points is not None:
+        print(f"Wrote {gemc_csv}")
     print(f"Wrote {summary_json}")
     print(f"Wrote {plots_pdf}")
     return 0
 
 
-def study_warnings(args, records, groups, fit, validation) -> list[str]:
+def study_warnings(
+    args,
+    records,
+    groups,
+    fit,
+    validation,
+    gemc_points=None,
+    gemc_fit=None,
+    gemc_validation=None,
+) -> list[str]:
     warnings: list[str] = []
     if args.selection_mask is None:
         warnings.append(
@@ -220,6 +333,31 @@ def study_warnings(args, records, groups, fit, validation) -> list[str]:
         warnings.append("No runs passed the requested filters.")
     if len(groups) < 2:
         warnings.append("Fewer than two current groups were included.")
+    if validation.get("runs_below_minimum_group_charge_fraction"):
+        warnings.append(
+            "Runs below the minimum within-group charge fraction were excluded after the "
+            "ordinary run filters."
+        )
+    if gemc_fit is not None and gemc_fit.points < 3:
+        warnings.append(
+            "The GEMC current fit has only two points; it implements the assumed linear "
+            "zero-background-to-merged interpolation but cannot test curvature."
+        )
+    if gemc_validation is not None and not gemc_validation.get(
+        "truth_totals_match_reference", False
+    ):
+        warnings.append(
+            "GEMC truth totals differ among current samples; use matched generated events "
+            "or validate that generator-distribution differences do not bias the global efficiency."
+        )
+    if gemc_points is not None and any(
+        point.uncertainty_model == "binomial_effective_weight_approximation"
+        for point in gemc_points
+    ):
+        warnings.append(
+            "At least one GEMC sample is weighted; its binomial statistical uncertainty is "
+            "only an approximation unless an explicit uncertainty is supplied in the manifest."
+        )
     return warnings
 
 
@@ -242,7 +380,16 @@ def _prepare_matplotlib() -> None:
     os.environ.setdefault("XDG_CACHE_HOME", str(xdg_dir))
 
 
-def write_plots(path, records, groups, fit, has_selection_mask: bool) -> None:
+def write_plots(
+    path,
+    records,
+    groups,
+    fit,
+    has_selection_mask: bool,
+    *,
+    gemc_points=None,
+    gemc_fit=None,
+) -> None:
     _prepare_matplotlib()
     import matplotlib
 
@@ -266,6 +413,10 @@ def write_plots(path, records, groups, fit, has_selection_mask: bool) -> None:
         for index, name in enumerate(plotted_classes)
     }
     selection_label = "fixed-mask signal" if has_selection_mask else "all selected candidates"
+    show_relative = gemc_points is not None and gemc_fit is not None
+    if show_relative and fit.intercept_events_per_nC <= 0.0:
+        raise ValueError("data zero-current intercept must be positive for a GEMC overlay")
+    data_scale = 100.0 / fit.intercept_events_per_nC if show_relative else 1.0
 
     with PdfPages(path) as pdf:
         fig, (axis, residual_axis) = plt.subplots(
@@ -279,7 +430,7 @@ def write_plots(path, records, groups, fit, has_selection_mask: bool) -> None:
             ]
             axis.scatter(
                 [record.current_nA for record in members],
-                [record.yield_events_per_nC for record in members],
+                [record.yield_events_per_nC * data_scale for record in members],
                 color=colors[name],
                 marker="x",
                 s=28,
@@ -292,8 +443,11 @@ def write_plots(path, records, groups, fit, has_selection_mask: bool) -> None:
             members = [record for record in included if record.run_class == name]
             axis.errorbar(
                 [record.current_nA for record in members],
-                [record.yield_events_per_nC for record in members],
-                yerr=[record.statistical_uncertainty_events_per_nC for record in members],
+                [record.yield_events_per_nC * data_scale for record in members],
+                yerr=[
+                    record.statistical_uncertainty_events_per_nC * data_scale
+                    for record in members
+                ],
                 fmt="o",
                 markersize=4,
                 linewidth=0.8,
@@ -303,8 +457,8 @@ def write_plots(path, records, groups, fit, has_selection_mask: bool) -> None:
             )
         axis.errorbar(
             [group.effective_current_nA for group in groups],
-            [group.yield_events_per_nC for group in groups],
-            yerr=[group.statistical_uncertainty_events_per_nC for group in groups],
+            [group.yield_events_per_nC * data_scale for group in groups],
+            yerr=[group.statistical_uncertainty_events_per_nC * data_scale for group in groups],
             fmt="s",
             markersize=7,
             color="black",
@@ -312,20 +466,54 @@ def write_plots(path, records, groups, fit, has_selection_mask: bool) -> None:
             label="charge-aggregated groups",
             zorder=4,
         )
-        max_current = max([group.effective_current_nA for group in groups] + [1.0])
+        max_current = max(
+            [group.effective_current_nA for group in groups]
+            + ([point.current_nA for point in gemc_points] if gemc_points else [])
+            + [1.0]
+        )
         fit_current = np.linspace(0.0, max_current * 1.08, 200)
-        axis.plot(fit_current, fit.predict(fit_current), color="black", label="linear fit")
+        axis.plot(
+            fit_current,
+            fit.predict(fit_current) * data_scale,
+            color="black",
+            label="data linear fit" if show_relative else "linear fit",
+        )
         axis.scatter(
             [0.0],
-            [fit.intercept_events_per_nC],
+            [fit.intercept_events_per_nC * data_scale],
             marker="*",
             s=110,
             color="black",
             label="zero-current extrapolation",
             zorder=5,
         )
-        axis.set_ylabel("Yield (events/nC)")
-        axis.set_title(f"RGK data current study: {selection_label}")
+        if show_relative:
+            gemc_scale = 100.0 / gemc_fit.intercept
+            axis.errorbar(
+                [point.current_nA for point in gemc_points],
+                [point.efficiency * gemc_scale for point in gemc_points],
+                yerr=[point.statistical_uncertainty * gemc_scale for point in gemc_points],
+                fmt="D",
+                markersize=6,
+                markerfacecolor="white",
+                color="#1f77b4",
+                linewidth=1.2,
+                label="GEMC accepted/generated",
+                zorder=5,
+            )
+            axis.plot(
+                fit_current,
+                gemc_fit.predict(fit_current) * gemc_scale,
+                color="#1f77b4",
+                linestyle="--",
+                linewidth=1.5,
+                label="GEMC linear fit",
+            )
+            axis.set_ylabel("Efficiency relative to fitted 0 nA (%)")
+            axis.set_title(f"RGK data/GEMC current study: {selection_label}")
+        else:
+            axis.set_ylabel("Yield (events/nC)")
+            axis.set_title(f"RGK data current study: {selection_label}")
         axis.grid(True, alpha=0.25)
         axis.legend(fontsize="x-small", ncol=3)
 
