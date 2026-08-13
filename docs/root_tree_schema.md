@@ -40,6 +40,9 @@ This reconstructed-particle table contains one `rec` object per retained
 reconstructed particle and an optional matched `gen` object.
 `rec.particleIdx` is the position in the complete
 `c12.getDetParticles()` list, so PID filtering can leave gaps.
+Detector-specific calorimeter deposits are stored as `E_FTCAL` for FT rows and
+as `E_PCAL`, `E_ECIN`, and `E_ECOUT` for FD rows; fields for other detectors
+remain non-finite.
 
 For backward compatibility, this tree temporarily retains the repeated
 `event` object used by existing post-processing, calibration scripts, and old

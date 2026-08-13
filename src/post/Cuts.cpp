@@ -500,7 +500,12 @@ CutDecision Cuts::evaluateParticle(const RecBranches& p,
             apply(isFinite(p.vz) && isFinite(cut.min) && isFinite(cut.max) &&
                   p.vz >= cut.min && p.vz <= cut.max);
         } else if (cut.op == "minCalEnergy") {
-            const double calEnergy = p.E_PCAL + p.E_ECIN + p.E_ECOUT;
+            double calEnergy = NAN;
+            if (p.det == 0) {
+                calEnergy = p.E_FTCAL;
+            } else if (p.det == 1) {
+                calEnergy = p.E_PCAL + p.E_ECIN + p.E_ECOUT;
+            }
             apply(isFinite(calEnergy) && isFinite(cut.min) && calEnergy >= cut.min);
         } else if (cut.op == "firstPidInstance") {
             apply(isFirstPidInstance(p, eventParticles));

@@ -28,7 +28,7 @@ from eppi0.event_sample import (
     generated_sample_from_tree,
     join_reconstructed,
 )
-from eppi0.exclusivity import apply_cuts, derive_cuts
+from eppi0.exclusivity import apply_cuts, derive_cuts, load_cuts, save_cuts
 from eppi0.harmonics import fit_phi
 from eppi0.response import build_response, build_response_from_counts
 from eppi0.radiative_correction import (
@@ -39,6 +39,7 @@ from eppi0.radiative_correction import (
 )
 from eppi0.root_response import _truth_inside_mask
 from eppi0.phase_space import AnalysisPhaseSpace
+from eppi0.topology import INVALID_TOPOLOGY, ft_photon_count
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
 from run_analysis import (
     command_response,
@@ -370,6 +371,10 @@ class EventSampleTests(unittest.TestCase):
             "electronP": np.array([3.0, 3.2]),
             "protonP": np.array([1.0, 1.1]),
             "gamma1P": np.array([0.8, 0.9]),
+            "eDet": np.array([1, 0]),
+            "pDet": np.array([1, 2]),
+            "g1Det": np.array([1, 0]),
+            "g2Det": np.array([1, 1]),
         }
         values = reconstructed_columns(rec, list(rec))
         self.assertNotIn("rec_runNum", values)
@@ -380,6 +385,11 @@ class EventSampleTests(unittest.TestCase):
         np.testing.assert_allclose(values["rec_electronP"], [3.0, 3.2])
         np.testing.assert_allclose(values["rec_protonP"], [1.0, 1.1])
         np.testing.assert_allclose(values["rec_gamma1P"], [0.8, 0.9])
+        np.testing.assert_array_equal(values["rec_electron_detector"], [1, 0])
+        np.testing.assert_array_equal(values["rec_proton_detector"], [1, 2])
+        np.testing.assert_array_equal(values["rec_gamma1_detector"], [1, 0])
+        np.testing.assert_array_equal(values["rec_gamma2_detector"], [1, 1])
+        np.testing.assert_array_equal(values["rec_ft_photon_count"], [0, 1])
 
     def test_generated_particle_columns_align_to_generated_events(self) -> None:
         run = np.full(8, 11)
@@ -426,6 +436,13 @@ class EventSampleTests(unittest.TestCase):
 
 
 class ExclusivityTests(unittest.TestCase):
+    def test_ft_photon_count_is_order_independent(self) -> None:
+        counts = ft_photon_count(
+            np.array([1, 0, 1, 0, 2]),
+            np.array([1, 1, 0, 0, 1]),
+        )
+        np.testing.assert_array_equal(counts, [0, 1, 1, 2, INVALID_TOPOLOGY])
+
     def test_global_cut_table_can_be_reused(self) -> None:
         rng = np.random.default_rng(4)
         count = 200
@@ -436,14 +453,75 @@ class ExclusivityTests(unittest.TestCase):
             )
         }
         detector = np.ones(count, dtype=int)
+        ft_photons = np.zeros(count, dtype=int)
         zeros = np.zeros(count, dtype=int)
         cuts = derive_cuts(
-            values, detector, zeros, zeros, zeros,
+            values, detector, ft_photons, zeros, zeros, zeros,
             topologies=(1,), minimum_events=20, global_mode=True,
         )
-        mask = apply_cuts(cuts, values, detector, zeros, zeros, zeros)
-        self.assertEqual(cuts.group_ids.tolist(), [1])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cuts.npz"
+            save_cuts(str(path), cuts)
+            cuts = load_cuts(str(path))
+        mask = apply_cuts(cuts, values, detector, ft_photons, zeros, zeros, zeros)
+        self.assertEqual(cuts.group_ids.tolist(), [4])
         self.assertGreater(mask.sum(), count // 2)
+
+    def test_cut_windows_are_distinct_for_zero_one_and_two_ft_photons(self) -> None:
+        rng = np.random.default_rng(17)
+        rows_per_topology = 100
+        ft_photons = np.repeat(np.arange(3), rows_per_topology)
+        values = {
+            "rec_m_gg": np.concatenate(
+                [rng.normal(10.0 * topology, 0.1, rows_per_topology) for topology in range(3)]
+            )
+        }
+        detector = np.ones(ft_photons.size, dtype=int)
+        zeros = np.zeros(ft_photons.size, dtype=int)
+        cuts = derive_cuts(
+            values,
+            detector,
+            ft_photons,
+            zeros,
+            zeros,
+            zeros,
+            variables=("rec_m_gg",),
+            topologies=(1,),
+            minimum_events=20,
+            global_mode=False,
+        )
+        self.assertEqual(cuts.group_ids.size, 3)
+
+        target_values = {"rec_m_gg": np.array([0.0, 10.0, 20.0, 0.0])}
+        target_ft_photons = np.array([0, 1, 2, 2])
+        target_detector = np.ones(4, dtype=int)
+        target_bins = np.zeros(4, dtype=int)
+        mask = apply_cuts(
+            cuts,
+            target_values,
+            target_detector,
+            target_ft_photons,
+            target_bins,
+            target_bins,
+            target_bins,
+        )
+        np.testing.assert_array_equal(mask, [True, True, True, False])
+
+    def test_legacy_cut_table_requires_rederivation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy_cuts.npz"
+            np.savez_compressed(
+                path,
+                variables=np.array(["rec_m_gg"]),
+                group_ids=np.array([1]),
+                lower=np.array([[0.0]]),
+                upper=np.array([[1.0]]),
+                global_mode=True,
+                n_sigma=3.0,
+                minimum_events=50,
+            )
+            with self.assertRaisesRegex(ValueError, "predates FT-photon topology"):
+                load_cuts(str(path))
 
 
 class UnfoldingTests(unittest.TestCase):

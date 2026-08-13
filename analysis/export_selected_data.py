@@ -8,9 +8,12 @@ from pathlib import Path
 
 import numpy as np
 
+from eppi0.topology import ft_photon_count
+
 
 COLUMNS = [
-    "runNum", "eventNum", "Q2", "xB", "t", "trentoPhi", "pDet",
+    "runNum", "eventNum", "Q2", "xB", "t", "trentoPhi",
+    "eDet", "pDet", "g1Det", "g2Det",
     "m_gg", "m2_miss", "m2_epX", "m_eggX", "E_miss", "pT_miss",
 ]
 
@@ -81,7 +84,7 @@ def main() -> int:
         "processing_root": str(args.processing_root.resolve()),
         "selected_events": int(len(arrays["Q2"])),
         "run_charge_metadata": has_run_charge,
-        "schema_version": 3 if has_run_charge else (2 if has_t_pi0 else 1),
+        "schema_version": 4,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     output = dict(
@@ -91,7 +94,11 @@ def main() -> int:
         rec_xB=arrays["xB"],
         rec_minus_t=arrays["t"],
         rec_trento_phi=arrays["trentoPhi"],
+        rec_electron_detector=arrays["eDet"],
         rec_proton_detector=arrays["pDet"],
+        rec_gamma1_detector=arrays["g1Det"],
+        rec_gamma2_detector=arrays["g2Det"],
+        rec_ft_photon_count=ft_photon_count(arrays["g1Det"], arrays["g2Det"]),
         rec_m_gg=arrays["m_gg"],
         rec_m2_miss=arrays["m2_miss"],
         rec_m2_epX=arrays["m2_epX"],

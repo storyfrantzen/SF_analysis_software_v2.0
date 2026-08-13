@@ -125,9 +125,14 @@ ECAL cuts. This allows one RGA post-processing configuration to enable
 `DCEdges_RGA`, `FT_RGA`, `ECAL_RGA`, and `CVT_RGA` without requiring nonexistent
 DC information from photons or calorimeter information from protons.
 
-This keeps a cut like `removeCVTPhi(min, max)` reusable across channels and systematic variations. The current primitive vocabulary includes `minP`, `maxP`, `pRange`, `betaRange`, `vzRange`, `minCalEnergy`, `firstPidInstance`, `rejectDetector` for backward compatibility, `rejectSameSectorAsRole`, `vertexDiff`, `removeCVTPhi`, `fiducial`, `minPcalEnergy`, `samplingFractionDiagonal`, and `samplingFractionSigma`. `vzRange` is inclusive at both configured bounds and rejects non-finite vertices. The combined `samplingFraction` operation remains available for older configs.
+This keeps a cut like `removeCVTPhi(min, max)` reusable across channels and systematic variations. The current primitive vocabulary includes `minP`, `maxP`, `pRange`, `betaRange`, `vzRange`, `minCalEnergy`, `firstPidInstance`, `rejectDetector` for backward compatibility, `rejectSameSectorAsRole`, `vertexDiff`, `removeCVTPhi`, `fiducial`, `minPcalEnergy`, `samplingFractionDiagonal`, and `samplingFractionSigma`. `vzRange` is inclusive at both configured bounds and rejects non-finite vertices. `minCalEnergy` uses the FTCAL deposit for FT particles and the summed PCAL, ECIN, and ECOUT deposits for FD particles. The combined `samplingFraction` operation remains available for older configs.
 
 The `post_process` workflow reads `channel.particles` in order and recursively builds valid candidate combinations. This makes the topology generic enough for channels beyond eppi0. Every channel gets the generic selected-particle branches such as `selectedRoles`, `selectedIdx`, `selectedPid`, and `selectedP`, plus standardized scalar branches for every configured role. A single proton role writes `protonIdx`, `protonPid`, `protonDet`, `protonSector`, `protonP`, `protonTheta`, and `protonPhi`; repeated roles receive numbered names such as `gamma1P` and `gamma2P`. Electron-derived DIS branches `Q2`, `nu`, and `xB` are added when the `electron` role is selected. Downstream converters can therefore copy scalar branches without interpreting role vectors. Use `firstPidInstance` on the electron role when it must be the trigger/scattered electron, meaning the first particle with that PID in the reconstructed bank.
+
+EPPI0 event samples derive an order-independent `rec_ft_photon_count` from the
+selected tree's `g1Det` and `g2Det` branches. Exclusivity windows use the proton
+detector and this 0/1/2 FT-photon category in both global and bin-local modes;
+bin-local groups additionally include the configured Q2, xB, and -t indices.
 
 For EPPI0, all eligible proton-by-photon-pair combinations are evaluated before
 one candidate is retained. RGK uses `candidateSelection.method` set to

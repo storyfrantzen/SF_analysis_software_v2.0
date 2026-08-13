@@ -157,7 +157,11 @@ they are stored. Raw proton values and correction deltas remain in the ROOT
 branches. The post-processing stage accepts proton detector IDs 1 (FD) and 2
 (CD), applies PID-appropriate RGA fiducials, and applies the three electron
 sampling-fraction components to FD electrons. FT electrons bypass the FD-only
-sampling-fraction requirements.
+sampling-fraction requirements. The photon calorimeter-energy cut uses the
+FTCAL deposit for FT photons and the summed PCAL, ECIN, and ECOUT deposits for
+FD photons, with the same configured minimum for both detectors. Downstream
+exclusivity derivation separates FD/FD, mixed FT/FD, and FT/FT photon pairs
+within each proton-detector category.
 
 For conversion of complete RGA reconstructed-DST holdings, use the dedicated
 storage-efficient data config:

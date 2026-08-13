@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from eppi0.binning import from_config
 from eppi0.exclusivity import DEFAULT_VARIABLES, apply_cuts, derive_cuts, load_cuts, save_cuts
+from eppi0.topology import ft_photon_count
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,11 +42,31 @@ def parse_args() -> argparse.Namespace:
 
 def arrays(sample) -> tuple[dict[str, np.ndarray], tuple[np.ndarray, ...]]:
     values = {name: sample[name] for name in DEFAULT_VARIABLES}
+    if "rec_ft_photon_count" in sample:
+        ft_photons = sample["rec_ft_photon_count"]
+    else:
+        gamma1_name = _first_available(
+            sample, "rec_gamma1_detector", "rec_g1Det", "rec_gamma1Det"
+        )
+        gamma2_name = _first_available(
+            sample, "rec_gamma2_detector", "rec_g2Det", "rec_gamma2Det"
+        )
+        ft_photons = ft_photon_count(sample[gamma1_name], sample[gamma2_name])
     return values, (
         sample["rec_proton_detector"],
+        ft_photons,
         sample["rec_Q2"],
         sample["rec_xB"],
         sample["rec_minus_t"],
+    )
+
+
+def _first_available(sample, *names: str) -> str:
+    for name in names:
+        if name in sample:
+            return name
+    raise KeyError(
+        "event sample lacks selected-photon detector topology; rebuild or re-export it"
     )
 
 
@@ -71,7 +92,10 @@ def selected_root_arrays(path: Path, dictionary: Path | None, tree_name: str):
     if not tree:
         root_file.Close()
         raise RuntimeError(f"Could not find tree {tree_name} in {root_path}")
-    columns = ["pDet", "Q2", "xB", "t", "m_gg", "pT_miss", "m2_epX", "m_eggX", "E_miss", "m2_miss"]
+    columns = [
+        "pDet", "g1Det", "g2Det", "Q2", "xB", "t", "m_gg", "pT_miss",
+        "m2_epX", "m_eggX", "E_miss", "m2_miss",
+    ]
     missing = [name for name in columns if not tree.GetBranch(name)]
     root_file.Close()
     if missing:
@@ -86,7 +110,13 @@ def selected_root_arrays(path: Path, dictionary: Path | None, tree_name: str):
         "rec_E_miss": raw["E_miss"],
         "rec_m2_miss": raw["m2_miss"],
     }
-    return values, (raw["pDet"], raw["Q2"], raw["xB"], raw["t"])
+    return values, (
+        raw["pDet"],
+        ft_photon_count(raw["g1Det"], raw["g2Det"]),
+        raw["Q2"],
+        raw["xB"],
+        raw["t"],
+    )
 
 
 def load_arrays(path: Path, input_format: str, dictionary: Path | None, tree_name: str):
@@ -99,7 +129,7 @@ def load_arrays(path: Path, input_format: str, dictionary: Path | None, tree_nam
 def main() -> int:
     args = parse_args()
     binning = from_config(args.config)
-    reference_values, (detector, q2, xb, minus_t) = load_arrays(
+    reference_values, (detector, ft_photons, q2, xb, minus_t) = load_arrays(
         args.sample, args.format, args.dictionary, args.tree
     )
     iq2, ixb, it, _ = binning.indices(q2, xb, minus_t, np.zeros_like(q2))
@@ -109,6 +139,7 @@ def main() -> int:
         cuts = derive_cuts(
             reference_values,
             detector,
+            ft_photons,
             iq2,
             ixb,
             it,
@@ -119,11 +150,11 @@ def main() -> int:
         args.cuts.parent.mkdir(parents=True, exist_ok=True)
         save_cuts(str(args.cuts), cuts)
 
-    target_values, (detector, q2, xb, minus_t) = load_arrays(
+    target_values, (detector, ft_photons, q2, xb, minus_t) = load_arrays(
         args.apply_to or args.sample, args.format, args.dictionary, args.tree
     )
     iq2, ixb, it, _ = binning.indices(q2, xb, minus_t, np.zeros_like(q2))
-    mask = apply_cuts(cuts, target_values, detector, iq2, ixb, it)
+    mask = apply_cuts(cuts, target_values, detector, ft_photons, iq2, ixb, it)
     args.mask.parent.mkdir(parents=True, exist_ok=True)
     np.save(args.mask, mask)
     print(f"Cut groups: {cuts.group_ids.size}")

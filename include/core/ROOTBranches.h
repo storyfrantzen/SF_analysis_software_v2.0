@@ -94,6 +94,7 @@ struct RecBranches : public TObject {
     // ── FT (det == 0 only, else NAN) ──────────────────────
     double xFT    = NAN;
     double yFT    = NAN;
+    double E_FTCAL = NAN;
 
     // ── FD DC trajectory (det == 1 only, else NAN) ────────
     double xDC1   = NAN,  yDC1  = NAN;
@@ -125,7 +126,7 @@ struct RecBranches : public TObject {
               double pCorr, double thetaCorr, double phiCorr);
     #endif
 
-    ClassDef(RecBranches, 5);
+    ClassDef(RecBranches, 6);
 };
 
 // ─── GenBranches ─────────────────────────────────────────────────────────────────

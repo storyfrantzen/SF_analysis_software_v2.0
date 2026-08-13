@@ -15,7 +15,7 @@ with no accepted reconstructed candidate.  Each row needs:
 - reconstructed values for the same coordinates, or `NaN` when no candidate is
   reconstructed;
 - a reconstructed-selection flag;
-- the reconstructed proton topology;
+- the reconstructed proton detector and selected-photon FT multiplicity;
 - the generated-event weight, defaulting to one.
 
 Reconstructed DIS and final-state cuts may be applied to
@@ -167,7 +167,10 @@ provide a `RunCharge` tree; the exporter preserves its run numbers, charges,
 and QADB event counters as `beam_charge_run`, `beam_charge_by_run_c`,
 `run_total_events`, `run_passed_qadb_events`, and
 `run_failed_qadb_events`. This permits charge-normalized run filtering without
-splitting the original HIPO production by run.
+splitting the original HIPO production by run. The artifact also records the
+selected electron, proton, and two photon detector IDs and the derived
+`rec_ft_photon_count`, whose values 0, 1, and 2 are independent of photon
+ordering.
 
 ## Data current-efficiency study
 
@@ -464,7 +467,12 @@ columns used by the visualizer. This artifact is intended for reconstruction
 diagnostics, not as the generated denominator for response construction.
 
 `derive_exclusivity.py` preserves the legacy sequential variable order and
-global/per-bin modes. The nominal legacy-faithful procedure is to derive
+global/per-bin modes. Local windows are now derived separately for
+`(proton detector, number of FT photons, Q2 bin, xB bin, -t bin)`. Global mode
+retains the first two topology components while pooling kinematic bins. Thus
+FD/FD, mixed FT/FD, and FT/FT photon pairs never share resolution windows, and
+the two possible orderings of a mixed pair remain one physical category. The
+nominal legacy-faithful procedure is to derive
 separate `n`-sigma windows for data and GEMC. GEMC exclusivity peaks are often
 narrower than data, so equal numerical boundaries would not represent equal
 resolution-relative signal regions. Save both cut tables and their retained
@@ -485,8 +493,10 @@ python3 analysis/derive_exclusivity.py mc_events.npz \
 ```
 
 Pass the GEMC mask to `response --selection-mask` and the data mask to
-`unfold --selection-mask`. Use `--global-cuts` for one set of windows per proton
-topology when individual kinematic bins lack sufficient statistics.
+`unfold --selection-mask`. Use `--global-cuts` for one set of windows per
+proton-detector/photon-topology combination when individual kinematic bins lack
+sufficient statistics. Cut tables produced before photon-topology grouping are
+incompatible and must be re-derived rather than passed with `--reuse-cuts`.
 
 For large GEMC production, derive the GEMC exclusivity mask directly from the
 selected-candidate ROOT file instead of reading the dense generated-event NPZ:

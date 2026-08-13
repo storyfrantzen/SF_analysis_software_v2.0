@@ -81,7 +81,7 @@ void RecBranches::reset() {
     vz = NAN;
     time = NAN;
 
-    xFT = yFT = NAN;
+    xFT = yFT = E_FTCAL = NAN;
     xDC1 = yDC1 = xDC2 = yDC2 = xDC3 = yDC3 = NAN;
     edgeDC1 = edgeDC2 = edgeDC3 = NAN;
     xPCAL = yPCAL = NAN;
@@ -144,6 +144,7 @@ void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx) {
     if (det == 0) {
         xFT = safeGet(rec->ft(clas12::FTCAL)->getX());
         yFT = safeGet(rec->ft(clas12::FTCAL)->getY());
+        E_FTCAL = safeGet(rec->ft(clas12::FTCAL)->getEnergy());
     }
 
     // ── FD ───────────────────────────────────────────────
