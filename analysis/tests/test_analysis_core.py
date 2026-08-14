@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 from scipy.sparse import csr_matrix, eye, save_npz
@@ -21,6 +22,10 @@ from eppi0.cross_section import (
     integrated_luminosity_fb,
     physical_bin_volumes,
     virtual_photon_flux,
+)
+from eppi0.current_efficiency import (
+    RelativeLinearEfficiency,
+    correction_artifact,
 )
 from eppi0.event_sample import (
     build_generated_sample,
@@ -597,6 +602,118 @@ class UnfoldingTests(unittest.TestCase):
         self.assertEqual(result["unfolded"][flat], 1.0)
         self.assertEqual(result["corrected_yield"][flat], 0.5)
 
+    def test_unfold_applies_run_current_weights_and_weighted_statistics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            config_path = tmpdir / "analysis.json"
+            data_path = tmpdir / "data.npz"
+            matrix_path = tmpdir / "response.npz"
+            meta_path = tmpdir / "response_meta.npz"
+            correction_path = tmpdir / "current_efficiency_correction.json"
+            output_path = tmpdir / "unfolding.npz"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "beam_energy": 6.535,
+                        "minimum_acceptance": 0.005,
+                        "binning": {
+                            "Q2": [1.0, 1.5],
+                            "xB": [0.1, 0.3],
+                            "minus_t": [0.1, 0.3],
+                            "phi_deg": [0.0, 360.0],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            np.savez_compressed(
+                data_path,
+                run=np.asarray([1001, 1002]),
+                rec_Q2=np.asarray([1.2, 1.4]),
+                rec_xB=np.asarray([0.2, 0.2]),
+                rec_minus_t=np.asarray([0.2, 0.2]),
+                rec_trento_phi=np.asarray([0.1, 0.1]),
+                rec_selected=np.asarray([True, True]),
+                beam_charge_c=np.asarray(2.0e-9),
+            )
+            save_npz(matrix_path, eye(1, format="csr"))
+            np.savez_compressed(
+                meta_path,
+                efficiency=np.ones(1),
+                feed_in_fraction=0.0,
+                feed_in_shape=np.zeros(1),
+                response_variance_sum=np.zeros(1),
+            )
+            data_model = RelativeLinearEfficiency(
+                100.0, -1.0, ((0.0, 0.0), (0.0, 0.0))
+            )
+            gemc_model = RelativeLinearEfficiency(
+                0.8, -0.002, ((0.0, 0.0), (0.0, 0.0))
+            )
+            records = [
+                SimpleNamespace(
+                    run=1001,
+                    current_nA=0.0,
+                    charge_c=1.0e-9,
+                    run_class="L5",
+                    current_quality="unflagged",
+                    included=True,
+                    exclusion_reason="",
+                ),
+                SimpleNamespace(
+                    run=1002,
+                    current_nA=60.0,
+                    charge_c=1.0e-9,
+                    run_class="P3",
+                    current_quality="unflagged",
+                    included=True,
+                    exclusion_reason="",
+                ),
+            ]
+            payload = correction_artifact(
+                data_model=data_model,
+                gemc_model=gemc_model,
+                reference_current_nA=60.0,
+                reference_label="merged_60nA",
+                reference_response_meta=meta_path,
+                run_records=records,
+                sources={},
+            )
+            correction_path.write_text(json.dumps(payload), encoding="utf-8")
+            args = argparse.Namespace(
+                data=data_path,
+                response_matrix=matrix_path,
+                response_meta=meta_path,
+                config=config_path,
+                output=output_path,
+                selection_mask=None,
+                iterations=0,
+                bootstrap=0,
+                seed=12345,
+                radiative_correction=None,
+                current_efficiency_correction=correction_path,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_unfold(args)
+            with np.load(output_path, allow_pickle=False) as result:
+                measured = float(result["measured"][0])
+                variance = float(result["measured_variance"][0])
+                q2_mean = float(result["Q2_mean"][0])
+                applied = bool(result["current_efficiency_applied"])
+
+        low_current_weight = 0.85
+        high_current_weight = 0.85 / 0.4
+        self.assertAlmostEqual(measured, low_current_weight + high_current_weight)
+        self.assertAlmostEqual(
+            variance, low_current_weight**2 + high_current_weight**2
+        )
+        self.assertAlmostEqual(
+            q2_mean,
+            (1.2 * low_current_weight + 1.4 * high_current_weight)
+            / (low_current_weight + high_current_weight),
+        )
+        self.assertTrue(applied)
+
 
 class RadiativeCorrectionTests(unittest.TestCase):
     def test_lund_histogram_streams_into_configured_bins(self) -> None:
@@ -835,6 +952,9 @@ class NormalizationTests(unittest.TestCase):
                 corrected_uncertainty=np.asarray([10.0]),
                 Q2_mean=np.asarray([1.35]),
                 xB_mean=np.asarray([0.28]),
+                current_efficiency_applied=np.asarray(True),
+                current_efficiency_D_reference=np.asarray(0.98),
+                current_efficiency_model_json=np.asarray('{"schema_version": 1}'),
             )
             shape = (1, 1, 1, 1)
             np.savez_compressed(
@@ -867,6 +987,11 @@ class NormalizationTests(unittest.TestCase):
         self.assertEqual(output["flux_xb_mean"].item(), 0.24)
         self.assertEqual(output["uncentered_q2_mean"].item(), 1.35)
         self.assertEqual(output["uncentered_xb_mean"].item(), 0.28)
+        self.assertTrue(output["current_efficiency_applied"].item())
+        self.assertEqual(output["current_efficiency_D_reference"].item(), 0.98)
+        self.assertEqual(
+            output["current_efficiency_model_json"].item(), '{"schema_version": 1}'
+        )
 
 
 class BinCenteringTests(unittest.TestCase):

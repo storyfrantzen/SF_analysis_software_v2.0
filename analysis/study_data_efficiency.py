@@ -20,6 +20,11 @@ from eppi0.data_efficiency import (
     fit_linear_yield,
     run_yield_rows,
 )
+from eppi0.current_efficiency import (
+    CurrentEfficiencyCorrection,
+    RelativeLinearEfficiency,
+    correction_artifact,
+)
 from eppi0.gemc_efficiency import (
     attach_relative_gemc_efficiencies,
     fit_linear_efficiency,
@@ -118,6 +123,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--reference-current-na",
+        type=float,
+        help=(
+            "Merged-background current of the GEMC response used downstream. When omitted, "
+            "infer it only if the GEMC inputs contain exactly one positive current."
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("results/data_efficiency/rgk_6.535"),
@@ -165,6 +178,55 @@ def main() -> int:
     if gemc_points is not None:
         gemc_fit = fit_linear_efficiency(gemc_points)
         attach_relative_gemc_efficiencies(gemc_points, gemc_fit)
+    elif args.reference_current_na is not None:
+        raise ValueError("--reference-current-na requires GEMC efficiency inputs")
+
+    correction = None
+    correction_payload = None
+    reference_point = None
+    if gemc_points is not None and gemc_fit is not None:
+        reference_point = resolve_reference_point(gemc_points, args.reference_current_na)
+        data_model = RelativeLinearEfficiency(
+            intercept=fit.intercept_events_per_nC,
+            slope_per_nA=fit.slope_events_per_nC_per_nA,
+            covariance=tuple(tuple(row) for row in fit.covariance),
+        )
+        gemc_model = RelativeLinearEfficiency(
+            intercept=gemc_fit.intercept,
+            slope_per_nA=gemc_fit.slope_per_nA,
+            covariance=tuple(tuple(row) for row in gemc_fit.covariance),
+        )
+        correction_payload = correction_artifact(
+            data_model=data_model,
+            gemc_model=gemc_model,
+            reference_current_nA=reference_point.current_nA,
+            reference_label=reference_point.label,
+            reference_response_meta=Path(reference_point.response_meta),
+            run_records=records,
+            sources={
+                "data_sample": str(args.sample.resolve()),
+                "current_manifest": str(args.manifest.resolve()),
+                "selection_mask": (
+                    str(args.selection_mask.resolve()) if args.selection_mask else None
+                ),
+                "gemc": gemc_source,
+            },
+        )
+        correction = CurrentEfficiencyCorrection(
+            data_model=data_model,
+            gemc_model=gemc_model,
+            reference_current_nA=reference_point.current_nA,
+            reference_label=reference_point.label,
+            reference_response_meta=reference_point.response_meta,
+            reference_response_meta_sha256=correction_payload["reference"][
+                "response_meta_sha256"
+            ],
+            run_currents_nA={
+                int(run): float(values["current_nA"])
+                for run, values in correction_payload["runs"].items()
+            },
+            payload=correction_payload,
+        )
 
     warnings = study_warnings(
         args, records, groups, fit, validation, gemc_points, gemc_fit, gemc_validation
@@ -175,13 +237,14 @@ def main() -> int:
     summary_json = args.output_dir / "fit_summary.json"
     plots_pdf = args.output_dir / "data_efficiency_diagnostics.pdf"
     gemc_csv = args.output_dir / "gemc_efficiency_points.csv"
+    correction_json = args.output_dir / "current_efficiency_correction.json"
     write_csv(run_csv, run_yield_rows(records))
     write_csv(group_csv, current_group_rows(groups))
     if gemc_points is not None:
         write_csv(gemc_csv, [asdict(point) for point in gemc_points])
 
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "study": "RGK charge-normalized data yield versus beam current",
         "interpretation": (
             "Relative data efficiency only after fixed signal selection and "
@@ -219,6 +282,18 @@ def main() -> int:
             "fit": asdict(gemc_fit),
             "points": [asdict(point) for point in gemc_points],
         }
+        summary["current_efficiency_correction"] = {
+            "artifact": str(correction_json.resolve()),
+            "method": correction_payload["method"],
+            "reference": correction_payload["reference"],
+            "fit_included_runs": correction_payload["fit_included_runs"],
+            "application_run_count": len(correction_payload["runs"]),
+        }
+        correction_json.write_text(
+            json.dumps(correction_payload, indent=2, sort_keys=True, allow_nan=False)
+            + "\n",
+            encoding="utf-8",
+        )
     summary_json.write_text(
         json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n",
         encoding="utf-8",
@@ -231,6 +306,7 @@ def main() -> int:
         args.selection_mask is not None,
         gemc_points=gemc_points,
         gemc_fit=gemc_fit,
+        correction=correction,
     )
 
     print(f"Candidate events: {validation['candidate_events']}")
@@ -269,15 +345,48 @@ def main() -> int:
             f"{gemc_fit.slope_per_nA:.8g} +/- "
             f"{gemc_fit.slope_uncertainty_per_nA:.8g} per nA"
         )
+        print(
+            "Reference correction: "
+            f"I_ref={correction.reference_current_nA:.8g} nA, "
+            f"D(I_ref)={correction.d_reference:.8g}"
+        )
     for warning in warnings:
         print(f"WARNING: {warning}")
     print(f"Wrote {run_csv}")
     print(f"Wrote {group_csv}")
     if gemc_points is not None:
         print(f"Wrote {gemc_csv}")
+        print(f"Wrote {correction_json}")
     print(f"Wrote {summary_json}")
     print(f"Wrote {plots_pdf}")
     return 0
+
+
+def resolve_reference_point(points, requested_current_nA):
+    if requested_current_nA is None:
+        positive_currents = sorted(
+            {float(point.current_nA) for point in points if point.current_nA > 0.0}
+        )
+        if len(positive_currents) != 1:
+            raise ValueError(
+                "--reference-current-na is required unless the GEMC inputs contain exactly "
+                "one positive merged-background current"
+            )
+        requested_current_nA = positive_currents[0]
+    requested_current_nA = float(requested_current_nA)
+    if not np.isfinite(requested_current_nA) or requested_current_nA < 0.0:
+        raise ValueError("--reference-current-na must be finite and nonnegative")
+    matches = [
+        point
+        for point in points
+        if np.isclose(point.current_nA, requested_current_nA, rtol=0.0, atol=1.0e-9)
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            "the reference current must identify exactly one supplied GEMC response; "
+            f"found {len(matches)} matches at {requested_current_nA:g} nA"
+        )
+    return matches[0]
 
 
 def study_warnings(
@@ -389,6 +498,7 @@ def write_plots(
     *,
     gemc_points=None,
     gemc_fit=None,
+    correction=None,
 ) -> None:
     _prepare_matplotlib()
     import matplotlib
@@ -518,26 +628,90 @@ def write_plots(
         axis.legend(fontsize="x-small", ncol=3)
 
         group_current = np.asarray([group.effective_current_nA for group in groups])
-        group_residual = np.asarray([group.yield_events_per_nC for group in groups]) - fit.predict(
-            group_current
-        )
-        group_uncertainty = np.asarray(
-            [group.statistical_uncertainty_events_per_nC for group in groups]
-        )
-        residual_axis.errorbar(
-            group_current,
-            group_residual / group_uncertainty,
-            yerr=np.ones(group_current.size),
-            fmt="s",
-            color="black",
-        )
-        residual_axis.axhline(0.0, color="0.3", linewidth=1.0)
+        if show_relative:
+            if correction is None:
+                raise ValueError("a current-efficiency correction model is required for D(I)")
+            d_curve, d_curve_uncertainty = correction.d_factor(fit_current)
+            residual_axis.plot(fit_current, d_curve, color="black", label="fit ratio")
+            residual_axis.fill_between(
+                fit_current,
+                d_curve - d_curve_uncertainty,
+                d_curve + d_curve_uncertainty,
+                color="0.6",
+                alpha=0.25,
+                linewidth=0.0,
+                label="fit uncertainty",
+            )
+            group_data_eta = np.asarray(
+                [group.yield_events_per_nC for group in groups], dtype=float
+            ) / fit.intercept_events_per_nC
+            group_data_sigma = np.asarray(
+                [group.statistical_uncertainty_events_per_nC for group in groups],
+                dtype=float,
+            ) / fit.intercept_events_per_nC
+            group_mc_eta = correction.gemc_model.relative_efficiency(group_current)
+            group_mc_sigma = correction.gemc_model.relative_uncertainty(group_current)
+            group_d = group_data_eta / group_mc_eta
+            group_d_sigma = np.sqrt(
+                (group_data_sigma / group_mc_eta) ** 2
+                + (group_data_eta * group_mc_sigma / group_mc_eta**2) ** 2
+            )
+            residual_axis.errorbar(
+                group_current,
+                group_d,
+                yerr=group_d_sigma,
+                fmt="s",
+                color="black",
+                label="data group / MC fit",
+            )
+            residual_axis.axhline(1.0, color="0.3", linewidth=1.0)
+            residual_axis.set_ylabel(r"$D(I)=\eta_{data}/\eta_{MC}$")
+            residual_axis.legend(fontsize="xx-small", ncol=2)
+        else:
+            group_residual = np.asarray(
+                [group.yield_events_per_nC for group in groups]
+            ) - fit.predict(group_current)
+            group_uncertainty = np.asarray(
+                [group.statistical_uncertainty_events_per_nC for group in groups]
+            )
+            residual_axis.errorbar(
+                group_current,
+                group_residual / group_uncertainty,
+                yerr=np.ones(group_current.size),
+                fmt="s",
+                color="black",
+            )
+            residual_axis.axhline(0.0, color="0.3", linewidth=1.0)
+            residual_axis.set_ylabel("Pull")
         residual_axis.set_xlabel("RCDB beam current (nA)")
-        residual_axis.set_ylabel("Pull")
         residual_axis.grid(True, alpha=0.25)
         fig.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)
+
+        if show_relative:
+            group_residual = np.asarray(
+                [group.yield_events_per_nC for group in groups]
+            ) - fit.predict(group_current)
+            group_uncertainty = np.asarray(
+                [group.statistical_uncertainty_events_per_nC for group in groups]
+            )
+            fig, pull_axis = plt.subplots(figsize=(8.5, 4.5))
+            pull_axis.errorbar(
+                group_current,
+                group_residual / group_uncertainty,
+                yerr=np.ones(group_current.size),
+                fmt="s",
+                color="black",
+            )
+            pull_axis.axhline(0.0, color="0.3", linewidth=1.0)
+            pull_axis.set_xlabel("RCDB beam current (nA)")
+            pull_axis.set_ylabel("Pull")
+            pull_axis.set_title("Data current-fit pulls")
+            pull_axis.grid(True, alpha=0.25)
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
 
         fig, (yield_axis, charge_axis) = plt.subplots(2, 1, figsize=(8.5, 8.5), sharex=True)
         for name in classes:

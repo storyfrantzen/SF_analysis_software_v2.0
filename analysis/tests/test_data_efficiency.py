@@ -21,6 +21,7 @@ from eppi0.data_efficiency import (
     fit_linear_yield,
     load_selection_mask,
 )
+from eppi0.current_efficiency import load_current_efficiency_correction
 from eppi0.gemc_efficiency import (
     attach_relative_gemc_efficiencies,
     fit_linear_efficiency,
@@ -299,13 +300,22 @@ class DataEfficiencyTests(unittest.TestCase):
             with patch.object(sys, "argv", arguments), contextlib.redirect_stdout(io.StringIO()):
                 result = study_main()
             summary = json.loads((output / "fit_summary.json").read_text(encoding="utf-8"))
+            correction = load_current_efficiency_correction(
+                output / "current_efficiency_correction.json"
+            )
 
             self.assertEqual(result, 0)
             self.assertAlmostEqual(summary["fit"]["intercept_events_per_nC"], 100.0)
             self.assertAlmostEqual(summary["gemc"]["fit"]["intercept"], 0.8)
+            self.assertAlmostEqual(correction.reference_current_nA, 60.0)
+            self.assertAlmostEqual(correction.d_reference, 0.4 / 0.85)
+            weight, _ = correction.weights_for_currents(60.0)
+            self.assertAlmostEqual(float(weight), 0.85 / 0.4)
+            self.assertIn(1001, correction.run_currents_nA)
             self.assertTrue((output / "run_yields.csv").is_file())
             self.assertTrue((output / "current_group_yields.csv").is_file())
             self.assertTrue((output / "gemc_efficiency_points.csv").is_file())
+            self.assertTrue((output / "current_efficiency_correction.json").is_file())
             self.assertGreater((output / "data_efficiency_diagnostics.pdf").stat().st_size, 0)
 
 

@@ -129,6 +129,8 @@ python3 analysis/run_analysis.py radiative-correction born_lund/ rad_lund/ \
 python3 analysis/run_analysis.py unfold data_events.npz \
   results/response/response_matrix.npz results/response/response_meta.npz \
   --config configs/analysis/rgk/6.535.json --output results/unfolding.npz \
+  --current-efficiency-correction \
+    results/data_efficiency/rgk_6.535/current_efficiency_correction.json \
   --radiative-correction results/C_rad.npz
 
 python3 analysis/run_analysis.py bin-centering \
@@ -218,10 +220,14 @@ The output directory contains:
 - `current_group_yields.csv`: charge-aggregated fit points and their relative
   efficiencies;
 - `fit_summary.json`: inputs, filters, charge validation, fit covariance,
-  warnings, and zero-current result;
+  warnings, zero-current result, and the selected GEMC reference response;
+- `current_efficiency_correction.json` (when GEMC inputs are supplied): the
+  fitted data and GEMC models, `D(I)`, reference-response fingerprint, all
+  usable run currents, and the nominal per-run unfolding weights;
 - `data_efficiency_diagnostics.pdf`: current-dependence, fit pulls, and
-  included-run stability plots. Excluded runs remain visible on the current
-  plot as crosses colored and labeled by their manifest run class.
+  included-run stability plots. With GEMC inputs, the lower panel of the first
+  page is `D(I) = eta_data(I) / eta_MC(I)`. Excluded runs remain visible on the
+  current plot as crosses colored and labeled by their manifest run class.
 
 Use `--fit-level runs` only as a diagnostic. The nominal group-level fit avoids
 treating the many runs within one production setting as independent current
@@ -268,13 +274,52 @@ exclusivity definition:
 }
 ```
 
-Pass it with `--gemc-manifest /path/to/gemc_efficiency_manifest.json`. The GEMC
-numerator is `sum_i(truth_total_i * efficiency_i)`, which counts selected
+Pass it with `--gemc-manifest /path/to/gemc_efficiency_manifest.json`. If there
+is exactly one positive-current GEMC point, that point is inferred to be the
+reference response used downstream. Otherwise select the actual response with
+`--reference-current-na`. For example:
+
+```bash
+python3 analysis/study_data_efficiency.py data_events.npz \
+  --selection-mask results/data_exclusivity.npy \
+  --include-classes L4 L5 P4 P3 \
+  --gemc-manifest /path/to/gemc_efficiency_manifest.json \
+  --reference-current-na 60 \
+  --output-dir results/data_efficiency/rgk_6.535
+```
+
+The GEMC numerator is `sum_i(truth_total_i * efficiency_i)`, which counts selected
 events generated and reconstructed inside the analysis phase space without
 including feed-in. The denominator is `sum_i(truth_total_i)`. Relative data
 and GEMC efficiencies are both normalized to their fitted zero-current
 intercepts on the overlay. `gemc_efficiency_points.csv` and the complete GEMC
 fit are also written.
+
+The scalar correction consumed by `unfold` is
+
+`w_r = eta_MC(I_ref) / eta_data(I_r)`
+
+for each selected event from run `r`. Equivalently,
+
+`w_r = [eta_data(I_ref) / eta_data(I_r)] / D(I_ref)`.
+
+The weighted reconstructed histogram is unfolded with the response built at
+`I_ref`; the resulting yield is still normalized by the original physical beam
+charge. The study filters determine which runs constrain the fit, not which
+runs belong to the physics dataset. The correction artifact therefore carries
+every charge-bearing run with a usable manifest current, records each run's fit
+inclusion separately, and `unfold` stops if a selected event has no usable
+current. Remove runs from the physics dataset explicitly rather than relying on
+fit exclusions to remove them.
+
+`unfold` verifies the SHA-256 fingerprint of `response_meta.npz` against the
+chosen reference sample before applying any weights. It stores the complete
+correction JSON, the reference current, `D(I_ref)`, weight range, unweighted
+counts, weighted counts, and `sum(w^2)` in its output. Weighted bin means and
+bootstrap statistical fluctuations use the same event weights. The fit-model
+uncertainties recorded per run in the JSON are correlated calibration
+uncertainties; they are intentionally preserved for systematic variations and
+are not folded into the statistical `corrected_uncertainty` array.
 
 The same two points can be supplied directly without creating a JSON file:
 

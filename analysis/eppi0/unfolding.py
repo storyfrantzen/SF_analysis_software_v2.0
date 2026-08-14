@@ -86,15 +86,29 @@ def bootstrap_uncertainty(
     seed: int | None = None,
     feed_in_fraction: float = 0.0,
     feed_in_shape: Array | None = None,
+    measured_variance: Array | None = None,
 ) -> tuple[Array, Array]:
     if experiments <= 0:
         raise ValueError("experiments must be positive")
     measured = np.asarray(measured, dtype=float)
-    shape = np.zeros_like(measured) if feed_in_shape is None else np.asarray(feed_in_shape, dtype=float)
+    variance = (
+        measured
+        if measured_variance is None
+        else np.asarray(measured_variance, dtype=float)
+    )
+    if variance.shape != measured.shape:
+        raise ValueError("measured variance dimensions do not match measured spectrum")
+    if np.any(~np.isfinite(variance)) or np.any(variance < 0.0):
+        raise ValueError("measured variance must be finite and nonnegative")
+    shape = (
+        np.zeros_like(measured)
+        if feed_in_shape is None
+        else np.asarray(feed_in_shape, dtype=float)
+    )
     rng = np.random.default_rng(seed)
     samples = np.empty((experiments, measured.size), dtype=float)
     for index in range(experiments):
-        fluctuated = rng.poisson(measured).astype(float)
+        fluctuated = _fluctuate_weighted_poisson(rng, measured, variance)
         corrected = subtract_feed_in(fluctuated, feed_in_fraction, shape)
         samples[index] = iterative_bayes(
             response_core,
@@ -105,6 +119,32 @@ def bootstrap_uncertainty(
             minimum_acceptance=minimum_acceptance,
         ).unfolded
     return samples.mean(axis=0), samples.std(axis=0, ddof=1)
+
+
+def _fluctuate_weighted_poisson(
+    rng: np.random.Generator, measured: Array, variance: Array
+) -> Array:
+    """Moment-match a weighted Poisson sum using an effective count and scale."""
+    measured = np.asarray(measured, dtype=float)
+    variance = np.asarray(variance, dtype=float)
+    fluctuated = np.zeros_like(measured)
+    positive = (measured > 0.0) & (variance > 0.0)
+    scale = np.divide(
+        variance,
+        measured,
+        out=np.ones_like(measured),
+        where=positive,
+    )
+    effective_count = np.divide(
+        measured,
+        scale,
+        out=np.zeros_like(measured),
+        where=positive,
+    )
+    fluctuated[positive] = (
+        rng.poisson(effective_count[positive]).astype(float) * scale[positive]
+    )
+    return fluctuated
 
 
 def _kl(new: Array, old: Array) -> float:

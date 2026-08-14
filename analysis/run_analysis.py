@@ -24,6 +24,10 @@ from eppi0.cross_section import (
     physical_bin_volumes,
     reduced_cross_section,
 )
+from eppi0.current_efficiency import (
+    load_current_efficiency_correction,
+    response_meta_sha256,
+)
 from eppi0.response import build_response
 from eppi0.radiative_correction import compute_radiative_correction
 from eppi0.root_response import build_response_from_root
@@ -33,6 +37,17 @@ from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes, subtract_fee
 
 
 C_RAD_DIAGNOSTIC_PLOT_RANGE = (0.0, 2.0)
+
+CURRENT_EFFICIENCY_PROVENANCE_FIELDS = (
+    "current_efficiency_applied",
+    "current_efficiency_artifact",
+    "current_efficiency_reference_current_nA",
+    "current_efficiency_eta_mc_reference",
+    "current_efficiency_D_reference",
+    "current_efficiency_weight_min",
+    "current_efficiency_weight_max",
+    "current_efficiency_model_json",
+)
 
 
 @dataclass(frozen=True)
@@ -105,6 +120,14 @@ def parser() -> argparse.ArgumentParser:
     unfold.add_argument("--iterations", type=int, default=25)
     unfold.add_argument("--bootstrap", type=int, default=200)
     unfold.add_argument("--seed", type=int, default=12345)
+    unfold.add_argument(
+        "--current-efficiency-correction",
+        type=Path,
+        help=(
+            "JSON from study_data_efficiency.py; apply eta_MC(I_ref)/eta_data(I_run) "
+            "event weights before unfolding"
+        ),
+    )
     unfold.add_argument("--radiative-correction", type=Path,
                         help="Legacy-compatible NPZ containing C_rad, delta_C, and reliable")
 
@@ -525,7 +548,35 @@ def command_unfold(args: argparse.Namespace) -> None:
         selected &= np.asarray(data["rec_selected"], dtype=bool)
     if args.selection_mask:
         selected &= _load_mask(args.selection_mask, selected.size)
-    measured = np.bincount(rec_flat[selected], minlength=binning.size).astype(float)
+    current_efficiency_path = getattr(args, "current_efficiency_correction", None)
+    current_efficiency = None
+    selected_weights = np.ones(int(selected.sum()), dtype=float)
+    if current_efficiency_path is not None:
+        current_efficiency = load_current_efficiency_correction(current_efficiency_path)
+        actual_response_hash = response_meta_sha256(args.response_meta)
+        if actual_response_hash != current_efficiency.reference_response_meta_sha256:
+            raise ValueError(
+                "the response metadata does not match the current-efficiency reference "
+                f"sample ({current_efficiency.reference_label}, "
+                f"{current_efficiency.reference_current_nA:g} nA)"
+            )
+        if "run" not in data.files:
+            raise ValueError(
+                "--current-efficiency-correction requires a data sample with a run array"
+            )
+        event_runs = np.asarray(data["run"], dtype=np.int64)
+        if event_runs.shape != selected.shape:
+            raise ValueError("data run array shape does not match reconstructed events")
+        selected_weights = current_efficiency.event_weights(event_runs[selected])
+    measured_unweighted = np.bincount(
+        rec_flat[selected], minlength=binning.size
+    ).astype(float)
+    measured = np.bincount(
+        rec_flat[selected], weights=selected_weights, minlength=binning.size
+    ).astype(float)
+    measured_variance = np.bincount(
+        rec_flat[selected], weights=selected_weights**2, minlength=binning.size
+    ).astype(float)
     efficiency = metadata["efficiency"]
     corrected = subtract_feed_in(
         measured, float(metadata["feed_in_fraction"]), metadata["feed_in_shape"]
@@ -537,7 +588,10 @@ def command_unfold(args: argparse.Namespace) -> None:
         unfolded = acceptance_corrected.copy()
         kl = np.empty(0)
         sigma_stat = np.divide(
-            np.sqrt(measured), efficiency, out=np.zeros_like(measured), where=efficiency > minimum_acceptance
+            np.sqrt(measured_variance),
+            efficiency,
+            out=np.zeros_like(measured),
+            where=efficiency > minimum_acceptance,
         )
     else:
         result = iterative_bayes(
@@ -560,6 +614,7 @@ def command_unfold(args: argparse.Namespace) -> None:
             seed=args.seed,
             feed_in_fraction=float(metadata["feed_in_fraction"]),
             feed_in_shape=metadata["feed_in_shape"],
+            measured_variance=measured_variance,
         )
     sensitivity = np.divide(
         unfolded, efficiency, out=np.zeros_like(unfolded), where=efficiency > minimum_acceptance
@@ -604,12 +659,15 @@ def command_unfold(args: argparse.Namespace) -> None:
             "minus_t": data["rec_minus_t"][selected],
             "phi": np.mod(data["rec_trento_phi"][selected], 2.0 * np.pi) * 180.0 / np.pi,
         },
+        weights=selected_weights,
     )
     beam_charge = float(data["beam_charge_c"]) if "beam_charge_c" in data.files else np.nan
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         args.output,
         measured=measured,
+        measured_unweighted=measured_unweighted,
+        measured_variance=measured_variance,
         acceptance_corrected=acceptance_corrected,
         unfolded=unfolded,
         sigma_stat=sigma_stat,
@@ -632,8 +690,43 @@ def command_unfold(args: argparse.Namespace) -> None:
         iterations=args.iterations,
         bootstrap=args.bootstrap,
         random_seed=args.seed,
+        current_efficiency_applied=current_efficiency is not None,
+        current_efficiency_artifact=(
+            str(Path(current_efficiency_path).resolve())
+            if current_efficiency_path is not None
+            else ""
+        ),
+        current_efficiency_reference_current_nA=(
+            current_efficiency.reference_current_nA
+            if current_efficiency is not None
+            else np.nan
+        ),
+        current_efficiency_eta_mc_reference=(
+            current_efficiency.eta_mc_reference
+            if current_efficiency is not None
+            else np.nan
+        ),
+        current_efficiency_D_reference=(
+            current_efficiency.d_reference if current_efficiency is not None else np.nan
+        ),
+        current_efficiency_weight_min=float(selected_weights.min())
+        if selected_weights.size
+        else np.nan,
+        current_efficiency_weight_max=float(selected_weights.max())
+        if selected_weights.size
+        else np.nan,
+        current_efficiency_model_json=(
+            json.dumps(current_efficiency.payload, sort_keys=True)
+            if current_efficiency is not None
+            else ""
+        ),
     )
-    print(f"Measured in-range events: {measured.sum():.0f}")
+    print(f"Measured in-range events: {measured_unweighted.sum():.0f}")
+    if current_efficiency is not None:
+        print(
+            "Current-efficiency weighted yield: "
+            f"{measured.sum():.8g} (I_ref={current_efficiency.reference_current_nA:g} nA)"
+        )
     print(f"Wrote {args.output}")
 
 
@@ -2136,6 +2229,9 @@ def command_cross_section(args: argparse.Namespace) -> None:
                 "and uncertainty divided by C_BC"
             ),
         )
+    for name in CURRENT_EFFICIENCY_PROVENANCE_FIELDS:
+        if name in result.files:
+            payload[name] = result[name]
     np.savez_compressed(args.output, **payload)
     print(f"Integrated luminosity: {luminosity:.6g} fb^-1")
     if args.bin_centering:
@@ -2151,14 +2247,17 @@ def command_harmonics(args: argparse.Namespace) -> None:
         cross_section["phi_edges"],
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        args.output,
+    payload = dict(
         **fits,
         coefficient_names=np.asarray(["A", "B", "C"]),
         q2_edges=cross_section["q2_edges"],
         xb_edges=cross_section["xb_edges"],
         t_edges=cross_section["t_edges"],
     )
+    for name in CURRENT_EFFICIENCY_PROVENANCE_FIELDS:
+        if name in cross_section.files:
+            payload[name] = cross_section[name]
+    np.savez_compressed(args.output, **payload)
     print(f"Successful fits: {np.isfinite(fits['chi2_ndf']).sum()}")
     print(f"Wrote {args.output}")
 
