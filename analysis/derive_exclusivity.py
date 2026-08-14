@@ -42,6 +42,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fit-histogram-bins", type=int, default=160)
     parser.add_argument("--minimum-signal-fraction", type=float, default=0.1)
     parser.add_argument("--minimum-peak-significance", type=float, default=3.0)
+    parser.add_argument("--maximum-local-sigma-ratio", type=float, default=2.0)
+    parser.add_argument(
+        "--maximum-local-center-shift-sigma", type=float, default=2.5
+    )
     parser.add_argument("--reuse-cuts", action="store_true")
     return parser.parse_args()
 
@@ -158,6 +162,8 @@ def main() -> int:
             fit_histogram_bins=args.fit_histogram_bins,
             minimum_signal_fraction=args.minimum_signal_fraction,
             minimum_peak_significance=args.minimum_peak_significance,
+            maximum_local_sigma_ratio=args.maximum_local_sigma_ratio,
+            maximum_local_center_shift_sigma=args.maximum_local_center_shift_sigma,
         )
         if cuts.group_ids.size == 0:
             raise RuntimeError("No complete exclusivity cut groups could be derived")

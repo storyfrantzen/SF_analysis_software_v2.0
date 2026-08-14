@@ -621,6 +621,33 @@ class ExclusivityTests(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(cuts.lower)))
         self.assertTrue(np.all(np.isfinite(cuts.upper)))
 
+    def test_broad_local_hump_uses_topology_consistency_fallback(self) -> None:
+        rng = np.random.default_rng(47)
+        narrow = rng.normal(0.02, 0.06, 1500)
+        broad = rng.normal(0.10, 0.24, 300)
+        values = {"toy_peak": np.concatenate((narrow, broad))}
+        detector = np.ones(1800, dtype=int)
+        ft_photons = np.zeros(1800, dtype=int)
+        iq2 = np.concatenate((np.zeros(1500, dtype=int), np.ones(300, dtype=int)))
+        zeros = np.zeros(1800, dtype=int)
+        cuts = derive_cuts(
+            values,
+            detector,
+            ft_photons,
+            iq2,
+            zeros,
+            zeros,
+            variables=("toy_peak",),
+            topologies=(1,),
+            minimum_events=50,
+        )
+        self.assertEqual(cuts.group_ids.size, 2)
+        self.assertEqual(cuts.window_source[0, 0], "local")
+        self.assertEqual(
+            cuts.window_source[1, 0], "topology_consistency_fallback"
+        )
+        self.assertLess(cuts.sigmas[1, 0], 0.12)
+
     def test_tail_based_cut_table_requires_rederivation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "tail_based_cuts.npz"
@@ -643,6 +670,7 @@ class ExclusivityTests(unittest.TestCase):
             for estimator in (
                 "mode-seeded-iterative-gaussian-core-v1",
                 "binned-gaussian-linear-background-mixture-v2",
+                "binned-gaussian-core-tail-background-mixture-v3",
             ):
                 path = Path(tmp) / f"{estimator}.npz"
                 np.savez_compressed(

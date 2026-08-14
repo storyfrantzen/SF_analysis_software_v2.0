@@ -534,6 +534,10 @@ whether each window was local or topology-pooled. The command also prints the
 median center, sigma, bounds, core fraction, significance, and model counts for
 every variable. Absolute expected-center and maximum-width sanity limits reject
 pathological fits rather than allowing an inflated sigma to validate itself.
+In addition, a local window must remain within the configured width ratio and
+center shift of its same-proton-detector/same-FT topology reference. An
+otherwise valid but inconsistent local hump is recorded as a
+`topology_consistency_fallback`, making this hierarchical decision auditable.
 The nominal procedure is to
 derive separate `n`-sigma windows for data and GEMC. GEMC exclusivity peaks are
 often narrower than data, so equal numerical boundaries would not represent

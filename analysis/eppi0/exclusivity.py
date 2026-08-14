@@ -8,7 +8,7 @@ import numpy as np
 Array = np.ndarray
 
 GROUPING = "proton-detector+ft-photon-count-v1"
-ESTIMATOR = "binned-gaussian-core-tail-background-mixture-v3"
+ESTIMATOR = "binned-gaussian-core-tail-background-mixture-v4"
 _TOPOLOGY_RADIX = 4
 _BIN_RADIX = 128
 
@@ -91,6 +91,8 @@ class ExclusivityCuts:
     fit_histogram_bins: int
     minimum_signal_fraction: float
     minimum_peak_significance: float
+    maximum_local_sigma_ratio: float
+    maximum_local_center_shift_sigma: float
     grouping: str
     estimator: str
 
@@ -114,6 +116,8 @@ def derive_cuts(
     fit_histogram_bins: int = 160,
     minimum_signal_fraction: float = 0.1,
     minimum_peak_significance: float = 3.0,
+    maximum_local_sigma_ratio: float = 2.0,
+    maximum_local_center_shift_sigma: float = 2.5,
 ) -> ExclusivityCuts:
     """Derive sequential signal-plus-background windows with topology fallbacks.
 
@@ -131,6 +135,8 @@ def derive_cuts(
         fit_histogram_bins,
         minimum_signal_fraction,
         minimum_peak_significance,
+        maximum_local_sigma_ratio,
+        maximum_local_center_shift_sigma,
     )
     detector = np.asarray(proton_detector, dtype=np.int64)
     ft_photons = np.asarray(ft_photons, dtype=np.int64)
@@ -159,7 +165,7 @@ def derive_cuts(
     peak_significance = np.zeros(shape, dtype=float)
     iterations = np.zeros(shape, dtype=np.int64)
     fit_model = np.full(shape, "", dtype="<U24")
-    window_source = np.full(shape, "", dtype="<U24")
+    window_source = np.full(shape, "", dtype="<U32")
 
     order = np.argsort(groups, kind="stable")
     sorted_groups = groups[order]
@@ -219,10 +225,19 @@ def derive_cuts(
                 maximum_center_deviation,
                 maximum_sigma,
             )
+            reference = pooled.get(int(group_topologies[group_index]))
             estimate = local
             source = "local"
-            if estimate is None:
-                estimate = pooled.get(int(group_topologies[group_index]))
+            if local is not None and reference is not None and not _locally_consistent(
+                local,
+                reference,
+                maximum_local_sigma_ratio,
+                maximum_local_center_shift_sigma,
+            ):
+                estimate = reference
+                source = "topology_consistency_fallback"
+            elif estimate is None:
+                estimate = reference
                 source = "topology_fallback"
             if estimate is None:
                 active[group_index] = False
@@ -274,6 +289,8 @@ def derive_cuts(
         fit_histogram_bins=fit_histogram_bins,
         minimum_signal_fraction=minimum_signal_fraction,
         minimum_peak_significance=minimum_peak_significance,
+        maximum_local_sigma_ratio=maximum_local_sigma_ratio,
+        maximum_local_center_shift_sigma=maximum_local_center_shift_sigma,
         grouping=GROUPING,
         estimator=ESTIMATOR,
     )
@@ -329,6 +346,8 @@ def estimate_window(
     fit_histogram_bins: int = 160,
     minimum_signal_fraction: float = 0.1,
     minimum_peak_significance: float = 3.0,
+    maximum_local_sigma_ratio: float = 2.0,
+    maximum_local_center_shift_sigma: float = 2.5,
 ) -> tuple[float, float] | None:
     """Return an n-sigma window from a Gaussian-plus-linear-background fit."""
     _validate_settings(
@@ -340,6 +359,8 @@ def estimate_window(
         fit_histogram_bins,
         minimum_signal_fraction,
         minimum_peak_significance,
+        maximum_local_sigma_ratio,
+        maximum_local_center_shift_sigma,
     )
     estimate = _estimate_core(
         values,
@@ -388,6 +409,8 @@ def save_cuts(path: str, cuts: ExclusivityCuts) -> None:
         fit_histogram_bins=cuts.fit_histogram_bins,
         minimum_signal_fraction=cuts.minimum_signal_fraction,
         minimum_peak_significance=cuts.minimum_peak_significance,
+        maximum_local_sigma_ratio=cuts.maximum_local_sigma_ratio,
+        maximum_local_center_shift_sigma=cuts.maximum_local_center_shift_sigma,
         grouping=cuts.grouping,
         estimator=cuts.estimator,
     )
@@ -434,6 +457,10 @@ def load_cuts(path: str) -> ExclusivityCuts:
         fit_histogram_bins=int(saved["fit_histogram_bins"]),
         minimum_signal_fraction=float(saved["minimum_signal_fraction"]),
         minimum_peak_significance=float(saved["minimum_peak_significance"]),
+        maximum_local_sigma_ratio=float(saved["maximum_local_sigma_ratio"]),
+        maximum_local_center_shift_sigma=float(
+            saved["maximum_local_center_shift_sigma"]
+        ),
         grouping=grouping,
         estimator=estimator,
     )
@@ -604,6 +631,18 @@ def _mixture_weights(
     return weights, max_iterations
 
 
+def _locally_consistent(
+    local: CoreEstimate,
+    reference: CoreEstimate,
+    maximum_sigma_ratio: float,
+    maximum_center_shift_sigma: float,
+) -> bool:
+    if local.sigma > maximum_sigma_ratio * reference.sigma:
+        return False
+    center_shift = abs(local.center - reference.center)
+    return center_shift <= maximum_center_shift_sigma * reference.sigma
+
+
 def _mode_seed(
     values: Array,
     histogram_bins: int,
@@ -656,6 +695,8 @@ def _validate_settings(
     fit_histogram_bins: int,
     minimum_signal_fraction: float,
     minimum_peak_significance: float,
+    maximum_local_sigma_ratio: float,
+    maximum_local_center_shift_sigma: float,
 ) -> None:
     if not np.isfinite(n_sigma) or n_sigma <= 0:
         raise ValueError("n_sigma must be positive")
@@ -673,6 +714,13 @@ def _validate_settings(
         raise ValueError("minimum_signal_fraction must be in (0, 1]")
     if not np.isfinite(minimum_peak_significance) or minimum_peak_significance <= 0:
         raise ValueError("minimum_peak_significance must be positive")
+    if not np.isfinite(maximum_local_sigma_ratio) or maximum_local_sigma_ratio < 1:
+        raise ValueError("maximum_local_sigma_ratio must be at least 1")
+    if (
+        not np.isfinite(maximum_local_center_shift_sigma)
+        or maximum_local_center_shift_sigma <= 0
+    ):
+        raise ValueError("maximum_local_center_shift_sigma must be positive")
 
 
 def _group_ids(
