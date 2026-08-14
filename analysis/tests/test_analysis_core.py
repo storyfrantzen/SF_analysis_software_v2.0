@@ -33,7 +33,13 @@ from eppi0.event_sample import (
     generated_sample_from_tree,
     join_reconstructed,
 )
-from eppi0.exclusivity import apply_cuts, derive_cuts, load_cuts, save_cuts
+from eppi0.exclusivity import (
+    apply_cuts,
+    derive_cuts,
+    estimate_window,
+    load_cuts,
+    save_cuts,
+)
 from eppi0.harmonics import fit_phi
 from eppi0.response import build_response, build_response_from_counts
 from eppi0.radiative_correction import (
@@ -452,10 +458,12 @@ class ExclusivityTests(unittest.TestCase):
         rng = np.random.default_rng(4)
         count = 200
         values = {
-            name: rng.normal(0.0, 1.0, count)
-            for name in (
-                "rec_m_gg", "rec_pT_miss", "rec_m2_epX", "rec_m_eggX", "rec_E_miss", "rec_m2_miss"
-            )
+            "rec_m_gg": rng.normal(0.135, 0.01, count),
+            "rec_pT_miss": np.abs(rng.normal(0.0, 0.05, count)),
+            "rec_m2_epX": rng.normal(0.018, 0.05, count),
+            "rec_m_eggX": rng.normal(0.938, 0.05, count),
+            "rec_E_miss": rng.normal(0.0, 0.1, count),
+            "rec_m2_miss": rng.normal(0.0, 0.05, count),
         }
         detector = np.ones(count, dtype=int)
         ft_photons = np.zeros(count, dtype=int)
@@ -477,7 +485,7 @@ class ExclusivityTests(unittest.TestCase):
         rows_per_topology = 100
         ft_photons = np.repeat(np.arange(3), rows_per_topology)
         values = {
-            "rec_m_gg": np.concatenate(
+            "toy_peak": np.concatenate(
                 [rng.normal(10.0 * topology, 0.1, rows_per_topology) for topology in range(3)]
             )
         }
@@ -490,14 +498,14 @@ class ExclusivityTests(unittest.TestCase):
             zeros,
             zeros,
             zeros,
-            variables=("rec_m_gg",),
+            variables=("toy_peak",),
             topologies=(1,),
             minimum_events=20,
             global_mode=False,
         )
         self.assertEqual(cuts.group_ids.size, 3)
 
-        target_values = {"rec_m_gg": np.array([0.0, 10.0, 20.0, 0.0])}
+        target_values = {"toy_peak": np.array([0.0, 10.0, 20.0, 0.0])}
         target_ft_photons = np.array([0, 1, 2, 2])
         target_detector = np.ones(4, dtype=int)
         target_bins = np.zeros(4, dtype=int)
@@ -511,6 +519,64 @@ class ExclusivityTests(unittest.TestCase):
             target_bins,
         )
         np.testing.assert_array_equal(mask, [True, True, True, False])
+
+    def test_gaussian_core_window_rejects_broad_background_tails(self) -> None:
+        rng = np.random.default_rng(23)
+        signal = rng.normal(0.02, 0.06, 5000)
+        background = rng.uniform(-2.0, 3.0, 2000)
+        window = estimate_window(
+            np.concatenate((signal, background)),
+            n_sigma=3.0,
+            minimum_events=50,
+            expected_center=0.02,
+        )
+        self.assertIsNotNone(window)
+        lower, upper = window
+        self.assertLess(upper - lower, 0.5)
+        self.assertAlmostEqual(0.5 * (lower + upper), 0.02, delta=0.03)
+
+    def test_sparse_group_uses_same_topology_fallback(self) -> None:
+        rng = np.random.default_rng(29)
+        dense = rng.normal(0.0, 0.1, 400)
+        sparse = rng.normal(0.0, 0.1, 10)
+        values = {"toy_peak": np.concatenate((dense, sparse))}
+        detector = np.ones(410, dtype=int)
+        ft_photons = np.zeros(410, dtype=int)
+        iq2 = np.concatenate((np.zeros(400, dtype=int), np.ones(10, dtype=int)))
+        zeros = np.zeros(410, dtype=int)
+        cuts = derive_cuts(
+            values,
+            detector,
+            ft_photons,
+            iq2,
+            zeros,
+            zeros,
+            variables=("toy_peak",),
+            topologies=(1,),
+            minimum_events=50,
+        )
+        self.assertEqual(cuts.group_ids.size, 2)
+        self.assertEqual(cuts.window_source[0, 0], "local")
+        self.assertEqual(cuts.window_source[1, 0], "topology_fallback")
+        self.assertTrue(np.all(np.isfinite(cuts.lower)))
+        self.assertTrue(np.all(np.isfinite(cuts.upper)))
+
+    def test_tail_based_cut_table_requires_rederivation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tail_based_cuts.npz"
+            np.savez_compressed(
+                path,
+                variables=np.array(["rec_m_gg"]),
+                group_ids=np.array([4]),
+                lower=np.array([[0.0]]),
+                upper=np.array([[1.0]]),
+                global_mode=True,
+                n_sigma=3.0,
+                minimum_events=50,
+                grouping="proton-detector+ft-photon-count-v1",
+            )
+            with self.assertRaisesRegex(ValueError, "predates the robust Gaussian-core"):
+                load_cuts(str(path))
 
     def test_legacy_cut_table_requires_rederivation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

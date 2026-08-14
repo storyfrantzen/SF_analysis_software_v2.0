@@ -36,6 +36,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--global-cuts", action="store_true")
     parser.add_argument("--n-sigma", type=float, default=3.0)
     parser.add_argument("--minimum-events", type=int, default=50)
+    parser.add_argument("--core-clip-sigma", type=float, default=2.0)
+    parser.add_argument("--core-max-iterations", type=int, default=12)
+    parser.add_argument("--core-convergence", type=float, default=1.0e-4)
+    parser.add_argument("--core-histogram-bins", type=int, default=100)
+    parser.add_argument("--minimum-core-fraction", type=float, default=0.2)
     parser.add_argument("--reuse-cuts", action="store_true")
     return parser.parse_args()
 
@@ -146,9 +151,18 @@ def main() -> int:
             n_sigma=args.n_sigma,
             minimum_events=args.minimum_events,
             global_mode=args.global_cuts,
+            core_clip_sigma=args.core_clip_sigma,
+            core_max_iterations=args.core_max_iterations,
+            core_convergence=args.core_convergence,
+            core_histogram_bins=args.core_histogram_bins,
+            minimum_core_fraction=args.minimum_core_fraction,
         )
+        if cuts.group_ids.size == 0:
+            raise RuntimeError("No complete exclusivity cut groups could be derived")
         args.cuts.parent.mkdir(parents=True, exist_ok=True)
         save_cuts(str(args.cuts), cuts)
+    if cuts.group_ids.size == 0:
+        raise RuntimeError("Exclusivity cut table contains no complete groups")
 
     target_values, (detector, ft_photons, q2, xb, minus_t) = load_arrays(
         args.apply_to or args.sample, args.format, args.dictionary, args.tree
@@ -158,6 +172,16 @@ def main() -> int:
     args.mask.parent.mkdir(parents=True, exist_ok=True)
     np.save(args.mask, mask)
     print(f"Cut groups: {cuts.group_ids.size}")
+    local = int(np.count_nonzero(cuts.window_source == "local"))
+    fallback = int(np.count_nonzero(cuts.window_source == "topology_fallback"))
+    print(f"Windows: local={local}, topology fallback={fallback}")
+    for index, name in enumerate(cuts.variables):
+        print(
+            f"  {name}: center median={np.median(cuts.centers[:, index]):.7g}, "
+            f"sigma median={np.median(cuts.sigmas[:, index]):.7g}, "
+            f"lower median={np.median(cuts.lower[:, index]):.7g}, "
+            f"upper median={np.median(cuts.upper[:, index]):.7g}"
+        )
     print(f"Passing events: {mask.sum()}/{mask.size}")
     if args.format == "selected-root":
         print("Mask rows correspond to selected ROOT candidates; pass this mask to response-root.")
