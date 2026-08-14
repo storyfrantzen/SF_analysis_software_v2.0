@@ -178,13 +178,18 @@ def main() -> int:
     fallback = int(np.count_nonzero(cuts.window_source == "topology_fallback"))
     print(f"Windows: local={local}, topology fallback={fallback}")
     for index, name in enumerate(cuts.variables):
+        models, model_counts = np.unique(cuts.fit_model[:, index], return_counts=True)
+        model_summary = ", ".join(
+            f"{model}={count}" for model, count in zip(models, model_counts, strict=True)
+        )
         print(
             f"  {name}: center median={np.median(cuts.centers[:, index]):.7g}, "
             f"sigma median={np.median(cuts.sigmas[:, index]):.7g}, "
             f"lower median={np.median(cuts.lower[:, index]):.7g}, "
             f"upper median={np.median(cuts.upper[:, index]):.7g}, "
             f"signal fraction median={np.median(cuts.signal_fractions[:, index]):.4g}, "
-            f"significance median={np.median(cuts.peak_significance[:, index]):.4g}"
+            f"significance median={np.median(cuts.peak_significance[:, index]):.4g}, "
+            f"models: {model_summary}"
         )
     print(f"Passing events: {mask.sum()}/{mask.size}")
     if args.format == "selected-root":

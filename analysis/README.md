@@ -512,12 +512,13 @@ columns used by the visualizer. This artifact is intended for reconstruction
 diagnostics, not as the generated denominator for response construction.
 
 `derive_exclusivity.py` preserves the sequential variable order and
-global/per-bin modes. Each peak is estimated with a mode-seeded, bounded
-Gaussian signal plus a nonnegative linear background. The signal/background
-fractions are fitted as a binned mixture, and the final window is the requested
-number of fitted signal sigmas. This prevents either percentile tails or
-background-contaminated sigma clipping from defining the resolution. Local
-windows are derived separately for
+global/per-bin modes. Each peak is estimated with a mode-seeded narrow Gaussian
+core, an optional broad Gaussian tail, and a nonnegative linear background.
+The simpler core-plus-background and core-plus-tail-plus-background hypotheses
+are selected with the Bayesian information criterion. The final window is the
+requested number of narrow-core sigmas. This prevents percentile tails,
+background-contaminated sigma clipping, or a broad resolution tail from
+defining the core resolution. Local windows are derived separately for
 `(proton detector, number of FT photons, Q2 bin, xB bin, -t bin)`. Global mode
 retains the first two topology components while pooling kinematic bins. Thus
 FD/FD, mixed FT/FD, and FT/FT photon pairs never share resolution windows, and
@@ -527,11 +528,13 @@ When a local kinematic group has too few surviving events or an unstable core,
 its window falls back to the sequentially selected sample pooled over the same
 proton detector and FT-photon multiplicity. A group is retained only if all six
 variables have finite windows; cuts are never silently disabled. The cut NPZ
-records fitted centers and sigmas, fit and fitted-signal entry counts, signal
-fractions, peak significances, iteration counts, and whether each window was
-local or topology-pooled. The command also prints the median center, sigma,
-bounds, signal fraction, and significance for every variable so obviously
-nonphysical tables can be caught before response construction. The nominal procedure is to
+records fitted centers and sigmas, fit and fitted-core entry counts, core
+fractions, peak significances, selected fit models, iteration counts, and
+whether each window was local or topology-pooled. The command also prints the
+median center, sigma, bounds, core fraction, significance, and model counts for
+every variable. Absolute expected-center and maximum-width sanity limits reject
+pathological fits rather than allowing an inflated sigma to validate itself.
+The nominal procedure is to
 derive separate `n`-sigma windows for data and GEMC. GEMC exclusivity peaks are
 often narrower than data, so equal numerical boundaries would not represent
 equal resolution-relative signal regions. Save both cut tables and their

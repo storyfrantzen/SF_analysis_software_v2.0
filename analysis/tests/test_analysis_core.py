@@ -563,6 +563,38 @@ class ExclusivityTests(unittest.TestCase):
         )
         self.assertIsNone(window)
 
+    def test_core_plus_broad_tail_recovers_narrow_resolution(self) -> None:
+        rng = np.random.default_rng(41)
+        core = rng.normal(0.02, 0.06, 4000)
+        tail = rng.normal(0.07, 0.22, 5000)
+        background = rng.uniform(-2.0, 3.0, 1000)
+        window = estimate_window(
+            np.concatenate((core, tail, background)),
+            n_sigma=3.0,
+            minimum_events=50,
+            expected_center=0.018,
+            maximum_center_deviation=0.20,
+            maximum_sigma=0.20,
+        )
+        self.assertIsNotNone(window)
+        lower, upper = window
+        self.assertGreater(0.5 * (upper - lower), 0.12)
+        self.assertLess(0.5 * (upper - lower), 0.23)
+        self.assertAlmostEqual(0.5 * (lower + upper), 0.02, delta=0.04)
+
+    def test_expected_center_validation_does_not_scale_with_bad_width(self) -> None:
+        rng = np.random.default_rng(43)
+        wrong_peak = rng.normal(3.5, 1.4, 4000)
+        window = estimate_window(
+            wrong_peak,
+            n_sigma=3.0,
+            minimum_events=50,
+            expected_center=0.018,
+            maximum_center_deviation=0.20,
+            maximum_sigma=0.20,
+        )
+        self.assertIsNone(window)
+
     def test_sparse_group_uses_same_topology_fallback(self) -> None:
         rng = np.random.default_rng(29)
         dense = rng.normal(0.0, 0.1, 400)
@@ -606,23 +638,29 @@ class ExclusivityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "predates signal-background fitting"):
                 load_cuts(str(path))
 
-    def test_sigma_clipped_cut_table_requires_rederivation(self) -> None:
+    def test_previous_fitted_cut_tables_require_rederivation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "sigma_clipped_cuts.npz"
-            np.savez_compressed(
-                path,
-                variables=np.array(["rec_m_gg"]),
-                group_ids=np.array([4]),
-                lower=np.array([[0.0]]),
-                upper=np.array([[1.0]]),
-                global_mode=True,
-                n_sigma=3.0,
-                minimum_events=50,
-                grouping="proton-detector+ft-photon-count-v1",
-                estimator="mode-seeded-iterative-gaussian-core-v1",
-            )
-            with self.assertRaisesRegex(ValueError, "unsupported exclusivity estimator"):
-                load_cuts(str(path))
+            for estimator in (
+                "mode-seeded-iterative-gaussian-core-v1",
+                "binned-gaussian-linear-background-mixture-v2",
+            ):
+                path = Path(tmp) / f"{estimator}.npz"
+                np.savez_compressed(
+                    path,
+                    variables=np.array(["rec_m_gg"]),
+                    group_ids=np.array([4]),
+                    lower=np.array([[0.0]]),
+                    upper=np.array([[1.0]]),
+                    global_mode=True,
+                    n_sigma=3.0,
+                    minimum_events=50,
+                    grouping="proton-detector+ft-photon-count-v1",
+                    estimator=estimator,
+                )
+                with self.assertRaisesRegex(
+                    ValueError, "unsupported exclusivity estimator"
+                ):
+                    load_cuts(str(path))
 
     def test_legacy_cut_table_requires_rederivation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

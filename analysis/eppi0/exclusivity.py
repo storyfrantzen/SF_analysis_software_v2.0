@@ -8,7 +8,7 @@ import numpy as np
 Array = np.ndarray
 
 GROUPING = "proton-detector+ft-photon-count-v1"
-ESTIMATOR = "binned-gaussian-linear-background-mixture-v2"
+ESTIMATOR = "binned-gaussian-core-tail-background-mixture-v3"
 _TOPOLOGY_RADIX = 4
 _BIN_RADIX = 128
 
@@ -35,6 +35,21 @@ _PHYSICAL_LOWER_BOUNDS = {
     "rec_pT_miss": 0.0,
     "rec_m_eggX": 0.0,
 }
+_MAXIMUM_CENTER_DEVIATIONS = {
+    "rec_m_gg": 0.08,
+    "rec_m2_epX": 0.20,
+    "rec_m_eggX": 0.40,
+    "rec_E_miss": 1.0,
+    "rec_m2_miss": 1.0,
+}
+_MAXIMUM_SIGMAS = {
+    "rec_m_gg": 0.08,
+    "rec_pT_miss": 0.50,
+    "rec_m2_epX": 0.20,
+    "rec_m_eggX": 0.30,
+    "rec_E_miss": 1.0,
+    "rec_m2_miss": 1.0,
+}
 _SIGMA_SCALES = np.asarray((0.40, 0.55, 0.70, 0.85, 1.0, 1.2, 1.45))
 _CENTER_OFFSETS = np.asarray((-1.0, -0.67, -0.33, 0.0, 0.33, 0.67, 1.0))
 
@@ -49,6 +64,7 @@ class CoreEstimate:
     signal_fraction: float
     peak_significance: float
     iterations: int
+    fit_model: str
 
 
 @dataclass(frozen=True)
@@ -64,6 +80,7 @@ class ExclusivityCuts:
     signal_fractions: Array
     peak_significance: Array
     iterations: Array
+    fit_model: Array
     window_source: Array
     global_mode: bool
     n_sigma: float
@@ -141,6 +158,7 @@ def derive_cuts(
     signal_fractions = np.zeros(shape, dtype=float)
     peak_significance = np.zeros(shape, dtype=float)
     iterations = np.zeros(shape, dtype=np.int64)
+    fit_model = np.full(shape, "", dtype="<U24")
     window_source = np.full(shape, "", dtype="<U24")
 
     order = np.argsort(groups, kind="stable")
@@ -161,6 +179,8 @@ def derive_cuts(
     for variable_index, name in enumerate(variables):
         expected_center = _EXPECTED_CENTERS.get(name)
         physical_lower = _PHYSICAL_LOWER_BOUNDS.get(name)
+        maximum_center_deviation = _MAXIMUM_CENTER_DEVIATIONS.get(name)
+        maximum_sigma = _MAXIMUM_SIGMAS.get(name)
         pooled: dict[int, CoreEstimate | None] = {}
         for topology in np.unique(group_topologies[active]):
             pieces = [
@@ -179,6 +199,8 @@ def derive_cuts(
                 minimum_peak_significance,
                 expected_center,
                 physical_lower,
+                maximum_center_deviation,
+                maximum_sigma,
             )
 
         for group_index in np.flatnonzero(active):
@@ -194,6 +216,8 @@ def derive_cuts(
                 minimum_peak_significance,
                 expected_center,
                 physical_lower,
+                maximum_center_deviation,
+                maximum_sigma,
             )
             estimate = local
             source = "local"
@@ -221,6 +245,7 @@ def derive_cuts(
             signal_fractions[group_index, variable_index] = estimate.signal_fraction
             peak_significance[group_index, variable_index] = estimate.peak_significance
             iterations[group_index, variable_index] = estimate.iterations
+            fit_model[group_index, variable_index] = estimate.fit_model
             window_source[group_index, variable_index] = source
             raw = arrays[name][rows]
             running[group_index] &= np.isfinite(raw) & (raw >= lo) & (raw <= hi)
@@ -238,6 +263,7 @@ def derive_cuts(
         signal_fractions=signal_fractions[retained],
         peak_significance=peak_significance[retained],
         iterations=iterations[retained],
+        fit_model=fit_model[retained],
         window_source=window_source[retained],
         global_mode=global_mode,
         n_sigma=n_sigma,
@@ -295,6 +321,8 @@ def estimate_window(
     *,
     expected_center: float | None = None,
     physical_lower: float | None = None,
+    maximum_center_deviation: float | None = None,
+    maximum_sigma: float | None = None,
     fit_window_sigma: float = 5.0,
     fit_max_iterations: int = 100,
     fit_convergence: float = 1.0e-5,
@@ -324,6 +352,8 @@ def estimate_window(
         minimum_peak_significance,
         expected_center,
         physical_lower,
+        maximum_center_deviation,
+        maximum_sigma,
     )
     if estimate is None:
         return None
@@ -347,6 +377,7 @@ def save_cuts(path: str, cuts: ExclusivityCuts) -> None:
         signal_fractions=cuts.signal_fractions,
         peak_significance=cuts.peak_significance,
         iterations=cuts.iterations,
+        fit_model=cuts.fit_model,
         window_source=cuts.window_source,
         global_mode=cuts.global_mode,
         n_sigma=cuts.n_sigma,
@@ -392,6 +423,7 @@ def load_cuts(path: str) -> ExclusivityCuts:
         signal_fractions=saved["signal_fractions"],
         peak_significance=saved["peak_significance"],
         iterations=saved["iterations"],
+        fit_model=saved["fit_model"],
         window_source=saved["window_source"],
         global_mode=bool(saved["global_mode"]),
         n_sigma=float(saved["n_sigma"]),
@@ -416,6 +448,7 @@ def load_cuts(path: str) -> ExclusivityCuts:
         cuts.signal_fractions,
         cuts.peak_significance,
         cuts.iterations,
+        cuts.fit_model,
         cuts.window_source,
     )
     if any(array.shape != expected_shape for array in diagnostic_arrays):
@@ -436,6 +469,8 @@ def _estimate_core(
     minimum_peak_significance: float,
     expected_center: float | None,
     physical_lower: float | None,
+    maximum_center_deviation: float | None,
+    maximum_sigma: float | None,
 ) -> CoreEstimate | None:
     finite = np.asarray(values, dtype=float)
     finite = finite[np.isfinite(finite)]
@@ -469,7 +504,7 @@ def _estimate_core(
     background_left /= np.sum(background_left)
     background_right /= np.sum(background_right)
 
-    best: tuple[float, float, float, Array, int] | None = None
+    best: tuple[float, float, float, Array, int, bool] | None = None
     for sigma_scale in _SIGMA_SCALES:
         sigma = float(seed_sigma * sigma_scale)
         if sigma <= 0 or sigma >= 0.5 * span:
@@ -483,36 +518,59 @@ def _estimate_core(
             if not np.isfinite(signal_sum) or signal_sum <= 0:
                 continue
             signal /= signal_sum
-            components = np.vstack((signal, background_left, background_right))
-            weights, iterations = _mixture_weights(
-                counts, components, max_iterations, convergence
-            )
-            density = np.maximum(weights @ components, np.finfo(float).tiny)
-            nll = float(-np.sum(counts * np.log(density)))
-            if best is None or nll < best[0]:
-                best = (nll, center, sigma, weights, iterations)
+            tail_sigma = max(2.5 * sigma, 1.75 * seed_sigma)
+            tail = np.exp(-0.5 * ((x - center) / tail_sigma) ** 2)
+            tail /= np.sum(tail)
+            for use_tail, components in (
+                (False, np.vstack((signal, background_left, background_right))),
+                (
+                    True,
+                    np.vstack((signal, tail, background_left, background_right)),
+                ),
+            ):
+                weights, iterations = _mixture_weights(
+                    counts, components, max_iterations, convergence
+                )
+                density = np.maximum(weights @ components, np.finfo(float).tiny)
+                nll = float(-np.sum(counts * np.log(density)))
+                free_weights = components.shape[0] - 1
+                bic = 2.0 * nll + free_weights * np.log(selected.size)
+                if best is None or bic < best[0]:
+                    best = (bic, center, sigma, weights, iterations, use_tail)
 
     if best is None:
         return None
-    _, center, sigma, weights, iterations = best
+    _, center, sigma, weights, iterations, use_tail = best
     signal_fraction = float(weights[0])
     signal_entries = signal_fraction * selected.size
     core = np.abs(x - center) <= 2.0 * sigma
     signal_shape = np.exp(-0.5 * ((x - center) / sigma) ** 2)
     signal_shape /= np.sum(signal_shape)
+    tail_sigma = max(2.5 * sigma, 1.75 * seed_sigma)
+    tail_shape = np.exp(-0.5 * ((x - center) / tail_sigma) ** 2)
+    tail_shape /= np.sum(tail_shape)
     signal_core = signal_entries * float(np.sum(signal_shape[core]))
-    background_core = selected.size * float(
-        weights[1] * np.sum(background_left[core])
-        + weights[2] * np.sum(background_right[core])
-    )
+    if use_tail:
+        background_core = selected.size * float(
+            weights[1] * np.sum(tail_shape[core])
+            + weights[2] * np.sum(background_left[core])
+            + weights[3] * np.sum(background_right[core])
+        )
+    else:
+        background_core = selected.size * float(
+            weights[1] * np.sum(background_left[core])
+            + weights[2] * np.sum(background_right[core])
+        )
     significance = signal_core / np.sqrt(max(signal_core + background_core, 1.0))
     bin_width = float(edges[1] - edges[0])
     if signal_fraction < minimum_signal_fraction:
         return None
     if significance < minimum_peak_significance:
         return None
-    if expected_center is not None:
-        tolerance = max(3.0 * sigma, 2.0 * bin_width)
+    if maximum_sigma is not None and sigma > maximum_sigma:
+        return None
+    if expected_center is not None and maximum_center_deviation is not None:
+        tolerance = max(maximum_center_deviation, 2.0 * bin_width)
         if abs(center - expected_center) > tolerance:
             return None
     return CoreEstimate(
@@ -524,6 +582,7 @@ def _estimate_core(
         signal_fraction=signal_fraction,
         peak_significance=float(significance),
         iterations=iterations,
+        fit_model="core+tail+linear" if use_tail else "core+linear",
     )
 
 
