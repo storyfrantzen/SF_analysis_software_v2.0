@@ -40,6 +40,7 @@ from eppi0.exclusivity import (
     load_cuts,
     save_cuts,
 )
+from eppi0.exclusivity_models import estimate_model
 from eppi0.harmonics import fit_phi
 from eppi0.response import build_response, build_response_from_counts
 from eppi0.radiative_correction import (
@@ -447,6 +448,32 @@ class EventSampleTests(unittest.TestCase):
 
 
 class ExclusivityTests(unittest.TestCase):
+    def _fit_model(
+        self,
+        variable: str,
+        values: np.ndarray,
+        expected_center: float | None,
+        physical_lower: float | None,
+    ):
+        estimate, reason = estimate_model(
+            values,
+            variable,
+            3.0,
+            50,
+            5.0,
+            100,
+            1.0e-5,
+            160,
+            0.1,
+            3.0,
+            expected_center,
+            physical_lower,
+            1.0,
+            1.0,
+        )
+        self.assertIsNotNone(estimate, reason)
+        return estimate
+
     def test_ft_photon_count_is_order_independent(self) -> None:
         counts = ft_photon_count(
             np.array([1, 0, 1, 0, 2]),
@@ -478,7 +505,128 @@ class ExclusivityTests(unittest.TestCase):
             cuts = load_cuts(str(path))
         mask = apply_cuts(cuts, values, detector, ft_photons, zeros, zeros, zeros)
         self.assertEqual(cuts.group_ids.tolist(), [4])
+        self.assertEqual(cuts.populated_group_ids.tolist(), [4])
+        self.assertEqual(cuts.dropped_group_ids.size, 0)
+        self.assertAlmostEqual(cuts.signal_containment, 0.9973002039)
+        self.assertEqual(cuts.fit_parameter_names.shape, (1, 6, 8))
+        self.assertTrue(np.any(cuts.fit_parameter_names != ""))
         self.assertGreater(mask.sum(), count // 2)
+
+    def test_mass_and_transverse_momentum_use_physical_signal_models(self) -> None:
+        rng = np.random.default_rng(59)
+        mgg = np.concatenate(
+            (rng.normal(0.135, 0.010, 8000), rng.uniform(0.07, 0.20, 2000))
+        )
+        mgg_fit = self._fit_model("rec_m_gg", mgg, 0.1349768, 0.0)
+        self.assertEqual(mgg_fit.fit_model, "gaussian+sideband-linear")
+        self.assertAlmostEqual(mgg_fit.center, 0.135, delta=0.005)
+
+        px = rng.normal(0.025, 0.015, 9000)
+        py = rng.normal(0.0, 0.015, 9000)
+        pt = np.concatenate((np.hypot(px, py), rng.uniform(0.0, 0.18, 1200)))
+        pt_fit = self._fit_model("rec_pT_miss", pt, None, 0.0)
+        self.assertIn(pt_fit.fit_model, ("rice+linear", "rayleigh+linear"))
+        self.assertEqual(pt_fit.lower, 0.0)
+        self.assertGreater(pt_fit.upper, pt_fit.center)
+
+    def test_missing_mass_uses_split_gaussian_only_when_supported(self) -> None:
+        rng = np.random.default_rng(61)
+        symmetric = np.concatenate(
+            (rng.normal(0.938, 0.05, 9000), rng.uniform(0.5, 1.4, 1000))
+        )
+        symmetric_fit = self._fit_model("rec_m_eggX", symmetric, 0.9382721, 0.0)
+        self.assertEqual(symmetric_fit.fit_model, "gaussian+linear")
+
+        left, right = 0.025, 0.090
+        count = 12000
+        choose_left = rng.random(count) < left / (left + right)
+        residual = np.where(
+            choose_left,
+            -np.abs(rng.normal(0.0, left, count)),
+            np.abs(rng.normal(0.0, right, count)),
+        )
+        asymmetric = np.concatenate(
+            (0.938 + residual, rng.uniform(0.45, 1.55, 1000))
+        )
+        asymmetric_fit = self._fit_model(
+            "rec_m_eggX", asymmetric, 0.9382721, 0.0
+        )
+        self.assertEqual(asymmetric_fit.fit_model, "split-gaussian+linear")
+        self.assertGreater(
+            asymmetric_fit.upper - asymmetric_fit.center,
+            asymmetric_fit.center - asymmetric_fit.lower,
+        )
+
+    def test_missing_energy_and_missing_mass_squared_use_asymmetric_models(self) -> None:
+        rng = np.random.default_rng(67)
+        missing_energy = np.concatenate(
+            (
+                rng.normal(0.0, 0.05, 6500),
+                rng.normal(0.0, 0.05, 2000) + rng.exponential(0.15, 2000),
+                rng.uniform(-0.5, 0.7, 1500),
+            )
+        )
+        energy_fit = self._fit_model("rec_E_miss", missing_energy, 0.0, None)
+        self.assertEqual(
+            energy_fit.fit_model, "gaussian+positive-exgaussian+linear"
+        )
+        self.assertGreater(
+            energy_fit.upper - energy_fit.center,
+            energy_fit.center - energy_fit.lower,
+        )
+
+        left, right = 0.008, 0.025
+        count = 12000
+        choose_left = rng.random(count) < left / (left + right)
+        missing_mass_squared = np.where(
+            choose_left,
+            -rng.exponential(left, count),
+            rng.exponential(right, count),
+        )
+        missing_mass_squared = np.concatenate(
+            (missing_mass_squared, rng.uniform(-0.15, 0.20, 1200))
+        )
+        mass_squared_fit = self._fit_model(
+            "rec_m2_miss", missing_mass_squared, 0.0, None
+        )
+        self.assertEqual(
+            mass_squared_fit.fit_model, "asymmetric-laplace+linear"
+        )
+        self.assertGreater(
+            mass_squared_fit.upper - mass_squared_fit.center,
+            mass_squared_fit.center - mass_squared_fit.lower,
+        )
+
+    def test_global_mode_is_default_and_records_dropped_topologies(self) -> None:
+        rng = np.random.default_rng(53)
+        dense = rng.normal(0.0, 0.1, 200)
+        sparse = rng.normal(1.0, 0.1, 10)
+        values = {"toy_peak": np.concatenate((dense, sparse))}
+        detector = np.ones(210, dtype=int)
+        ft_photons = np.concatenate(
+            (np.zeros(200, dtype=int), np.ones(10, dtype=int))
+        )
+        iq2 = np.concatenate(
+            (np.zeros(100, dtype=int), np.ones(100, dtype=int), np.zeros(10, dtype=int))
+        )
+        zeros = np.zeros(210, dtype=int)
+        cuts = derive_cuts(
+            values,
+            detector,
+            ft_photons,
+            iq2,
+            zeros,
+            zeros,
+            variables=("toy_peak",),
+            topologies=(1,),
+            minimum_events=50,
+        )
+        self.assertTrue(cuts.global_mode)
+        self.assertEqual(cuts.group_ids.tolist(), [4])
+        self.assertEqual(cuts.populated_group_ids.tolist(), [4, 5])
+        self.assertEqual(cuts.dropped_group_ids.tolist(), [5])
+        self.assertEqual(cuts.dropped_variables.tolist(), ["toy_peak"])
+        self.assertIn("too few finite entries", cuts.dropped_reasons[0])
 
     def test_cut_windows_are_distinct_for_zero_one_and_two_ft_photons(self) -> None:
         rng = np.random.default_rng(17)
@@ -614,6 +762,7 @@ class ExclusivityTests(unittest.TestCase):
             variables=("toy_peak",),
             topologies=(1,),
             minimum_events=50,
+            global_mode=False,
         )
         self.assertEqual(cuts.group_ids.size, 2)
         self.assertEqual(cuts.window_source[0, 0], "local")
@@ -640,6 +789,7 @@ class ExclusivityTests(unittest.TestCase):
             variables=("toy_peak",),
             topologies=(1,),
             minimum_events=50,
+            global_mode=False,
         )
         self.assertEqual(cuts.group_ids.size, 2)
         self.assertEqual(cuts.window_source[0, 0], "local")
@@ -671,6 +821,7 @@ class ExclusivityTests(unittest.TestCase):
                 "mode-seeded-iterative-gaussian-core-v1",
                 "binned-gaussian-linear-background-mixture-v2",
                 "binned-gaussian-core-tail-background-mixture-v3",
+                "binned-gaussian-core-tail-background-mixture-v4",
             ):
                 path = Path(tmp) / f"{estimator}.npz"
                 np.savez_compressed(

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import erf, sqrt
 
 import numpy as np
+
+from .exclusivity_models import FitEstimate, estimate_model, maximum_fit_parameters
 
 
 Array = np.ndarray
 
 GROUPING = "proton-detector+ft-photon-count-v1"
-ESTIMATOR = "binned-gaussian-core-tail-background-mixture-v4"
+ESTIMATOR = "topology-variable-signal-models-v5"
 _TOPOLOGY_RADIX = 4
 _BIN_RADIX = 128
 
@@ -50,21 +53,6 @@ _MAXIMUM_SIGMAS = {
     "rec_E_miss": 1.0,
     "rec_m2_miss": 1.0,
 }
-_SIGMA_SCALES = np.asarray((0.40, 0.55, 0.70, 0.85, 1.0, 1.2, 1.45))
-_CENTER_OFFSETS = np.asarray((-1.0, -0.67, -0.33, 0.0, 0.33, 0.67, 1.0))
-
-
-@dataclass(frozen=True)
-class CoreEstimate:
-    center: float
-    sigma: float
-    entries: int
-    fit_entries: int
-    signal_entries: float
-    signal_fraction: float
-    peak_significance: float
-    iterations: int
-    fit_model: str
 
 
 @dataclass(frozen=True)
@@ -81,9 +69,16 @@ class ExclusivityCuts:
     peak_significance: Array
     iterations: Array
     fit_model: Array
+    fit_parameter_names: Array
+    fit_parameter_values: Array
     window_source: Array
+    populated_group_ids: Array
+    dropped_group_ids: Array
+    dropped_variables: Array
+    dropped_reasons: Array
     global_mode: bool
     n_sigma: float
+    signal_containment: float
     minimum_events: int
     fit_window_sigma: float
     fit_max_iterations: int
@@ -109,7 +104,7 @@ def derive_cuts(
     photon_topologies: tuple[int, ...] = (0, 1, 2),
     n_sigma: float = 3.0,
     minimum_events: int = 50,
-    global_mode: bool = False,
+    global_mode: bool = True,
     fit_window_sigma: float = 5.0,
     fit_max_iterations: int = 100,
     fit_convergence: float = 1.0e-5,
@@ -121,10 +116,11 @@ def derive_cuts(
 ) -> ExclusivityCuts:
     """Derive sequential signal-plus-background windows with topology fallbacks.
 
-    A bounded Gaussian signal and nonnegative linear background are fitted in
-    each local kinematic group. If that fit is sparse or insignificant, the
-    group inherits the fit pooled over the same proton detector and FT-photon
-    multiplicity. Every retained group has a finite window for every variable.
+    A variable-specific signal and smooth background are fitted in each
+    selected group. Global mode pools kinematic bins within detector topology.
+    In per-bin mode, a sparse or insignificant local fit inherits the fit
+    pooled over the same proton detector and FT-photon multiplicity. Every
+    retained group has a finite signal-containment window for every variable.
     """
     _validate_settings(
         n_sigma,
@@ -164,8 +160,13 @@ def derive_cuts(
     signal_fractions = np.zeros(shape, dtype=float)
     peak_significance = np.zeros(shape, dtype=float)
     iterations = np.zeros(shape, dtype=np.int64)
-    fit_model = np.full(shape, "", dtype="<U24")
+    fit_model = np.full(shape, "", dtype="<U64")
+    parameter_shape = (*shape, maximum_fit_parameters())
+    fit_parameter_names = np.full(parameter_shape, "", dtype="<U32")
+    fit_parameter_values = np.full(parameter_shape, np.nan)
     window_source = np.full(shape, "", dtype="<U32")
+    dropped_variables = np.full(populated.size, "", dtype="<U64")
+    dropped_reasons = np.full(populated.size, "", dtype="<U256")
 
     order = np.argsort(groups, kind="stable")
     sorted_groups = groups[order]
@@ -187,15 +188,17 @@ def derive_cuts(
         physical_lower = _PHYSICAL_LOWER_BOUNDS.get(name)
         maximum_center_deviation = _MAXIMUM_CENTER_DEVIATIONS.get(name)
         maximum_sigma = _MAXIMUM_SIGMAS.get(name)
-        pooled: dict[int, CoreEstimate | None] = {}
+        pooled: dict[int, tuple[FitEstimate | None, str]] = {}
         for topology in np.unique(group_topologies[active]):
             pieces = [
                 arrays[name][group_rows[index][running[index]]]
                 for index in np.flatnonzero(active & (group_topologies == topology))
             ]
             pooled_values = np.concatenate(pieces) if pieces else np.empty(0)
-            pooled[int(topology)] = _estimate_core(
+            pooled[int(topology)] = estimate_model(
                 pooled_values,
+                name,
+                n_sigma,
                 minimum_events,
                 fit_window_sigma,
                 fit_max_iterations,
@@ -211,8 +214,10 @@ def derive_cuts(
 
         for group_index in np.flatnonzero(active):
             rows = group_rows[group_index]
-            local = _estimate_core(
+            local, local_reason = estimate_model(
                 arrays[name][rows[running[group_index]]],
+                name,
+                n_sigma,
                 minimum_events,
                 fit_window_sigma,
                 fit_max_iterations,
@@ -225,7 +230,10 @@ def derive_cuts(
                 maximum_center_deviation,
                 maximum_sigma,
             )
-            reference = pooled.get(int(group_topologies[group_index]))
+            reference, reference_reason = pooled.get(
+                int(group_topologies[group_index]),
+                (None, "topology reference was not constructed"),
+            )
             estimate = local
             source = "local"
             if local is not None and reference is not None and not _locally_consistent(
@@ -241,14 +249,18 @@ def derive_cuts(
                 source = "topology_fallback"
             if estimate is None:
                 active[group_index] = False
+                dropped_variables[group_index] = name
+                dropped_reasons[group_index] = (
+                    f"local fit: {local_reason}; topology fit: {reference_reason}"
+                )
                 continue
 
-            lo = estimate.center - n_sigma * estimate.sigma
-            hi = estimate.center + n_sigma * estimate.sigma
-            if physical_lower is not None:
-                lo = max(lo, physical_lower)
+            lo = estimate.lower
+            hi = estimate.upper
             if not (np.isfinite(lo) and np.isfinite(hi) and lo < hi):
                 active[group_index] = False
+                dropped_variables[group_index] = name
+                dropped_reasons[group_index] = "derived window was non-finite or empty"
                 continue
 
             lower[group_index, variable_index] = lo
@@ -261,11 +273,28 @@ def derive_cuts(
             peak_significance[group_index, variable_index] = estimate.peak_significance
             iterations[group_index, variable_index] = estimate.iterations
             fit_model[group_index, variable_index] = estimate.fit_model
+            parameter_count = len(estimate.parameter_names)
+            fit_parameter_names[
+                group_index, variable_index, :parameter_count
+            ] = estimate.parameter_names
+            fit_parameter_values[
+                group_index, variable_index, :parameter_count
+            ] = estimate.parameter_values
             window_source[group_index, variable_index] = source
             raw = arrays[name][rows]
             running[group_index] &= np.isfinite(raw) & (raw >= lo) & (raw <= hi)
 
-    retained = active & np.all(np.isfinite(lower) & np.isfinite(upper), axis=1)
+    complete = np.all(np.isfinite(lower) & np.isfinite(upper), axis=1)
+    retained = active & complete
+    unexplained = ~retained & (dropped_reasons == "")
+    for group_index in np.flatnonzero(unexplained):
+        missing = np.flatnonzero(
+            ~(np.isfinite(lower[group_index]) & np.isfinite(upper[group_index]))
+        )
+        if missing.size:
+            dropped_variables[group_index] = variables[int(missing[0])]
+        dropped_reasons[group_index] = "cut table was incomplete"
+    dropped = ~retained
     return ExclusivityCuts(
         variables=variables,
         group_ids=populated[retained].astype(np.int64, copy=False),
@@ -279,9 +308,16 @@ def derive_cuts(
         peak_significance=peak_significance[retained],
         iterations=iterations[retained],
         fit_model=fit_model[retained],
+        fit_parameter_names=fit_parameter_names[retained],
+        fit_parameter_values=fit_parameter_values[retained],
         window_source=window_source[retained],
+        populated_group_ids=populated.astype(np.int64, copy=False),
+        dropped_group_ids=populated[dropped].astype(np.int64, copy=False),
+        dropped_variables=dropped_variables[dropped],
+        dropped_reasons=dropped_reasons[dropped],
         global_mode=global_mode,
         n_sigma=n_sigma,
+        signal_containment=float(erf(n_sigma / sqrt(2.0))),
         minimum_events=minimum_events,
         fit_window_sigma=fit_window_sigma,
         fit_max_iterations=fit_max_iterations,
@@ -349,7 +385,7 @@ def estimate_window(
     maximum_local_sigma_ratio: float = 2.0,
     maximum_local_center_shift_sigma: float = 2.5,
 ) -> tuple[float, float] | None:
-    """Return an n-sigma window from a Gaussian-plus-linear-background fit."""
+    """Return a Gaussian-equivalent containment window for a peaked variable."""
     _validate_settings(
         n_sigma,
         minimum_events,
@@ -362,8 +398,10 @@ def estimate_window(
         maximum_local_sigma_ratio,
         maximum_local_center_shift_sigma,
     )
-    estimate = _estimate_core(
+    estimate, _ = estimate_model(
         values,
+        "rec_m2_epX",
+        n_sigma,
         minimum_events,
         fit_window_sigma,
         fit_max_iterations,
@@ -378,10 +416,7 @@ def estimate_window(
     )
     if estimate is None:
         return None
-    lo = estimate.center - n_sigma * estimate.sigma
-    if physical_lower is not None:
-        lo = max(lo, physical_lower)
-    return float(lo), float(estimate.center + n_sigma * estimate.sigma)
+    return estimate.lower, estimate.upper
 
 
 def save_cuts(path: str, cuts: ExclusivityCuts) -> None:
@@ -399,9 +434,16 @@ def save_cuts(path: str, cuts: ExclusivityCuts) -> None:
         peak_significance=cuts.peak_significance,
         iterations=cuts.iterations,
         fit_model=cuts.fit_model,
+        fit_parameter_names=cuts.fit_parameter_names,
+        fit_parameter_values=cuts.fit_parameter_values,
         window_source=cuts.window_source,
+        populated_group_ids=cuts.populated_group_ids,
+        dropped_group_ids=cuts.dropped_group_ids,
+        dropped_variables=cuts.dropped_variables,
+        dropped_reasons=cuts.dropped_reasons,
         global_mode=cuts.global_mode,
         n_sigma=cuts.n_sigma,
+        signal_containment=cuts.signal_containment,
         minimum_events=cuts.minimum_events,
         fit_window_sigma=cuts.fit_window_sigma,
         fit_max_iterations=cuts.fit_max_iterations,
@@ -447,9 +489,32 @@ def load_cuts(path: str) -> ExclusivityCuts:
         peak_significance=saved["peak_significance"],
         iterations=saved["iterations"],
         fit_model=saved["fit_model"],
+        fit_parameter_names=saved["fit_parameter_names"],
+        fit_parameter_values=saved["fit_parameter_values"],
         window_source=saved["window_source"],
+        populated_group_ids=(
+            saved["populated_group_ids"]
+            if "populated_group_ids" in saved.files
+            else saved["group_ids"]
+        ),
+        dropped_group_ids=(
+            saved["dropped_group_ids"]
+            if "dropped_group_ids" in saved.files
+            else np.empty(0, dtype=np.int64)
+        ),
+        dropped_variables=(
+            saved["dropped_variables"]
+            if "dropped_variables" in saved.files
+            else np.empty(0, dtype="<U1")
+        ),
+        dropped_reasons=(
+            saved["dropped_reasons"]
+            if "dropped_reasons" in saved.files
+            else np.empty(0, dtype="<U1")
+        ),
         global_mode=bool(saved["global_mode"]),
         n_sigma=float(saved["n_sigma"]),
+        signal_containment=float(saved["signal_containment"]),
         minimum_events=int(saved["minimum_events"]),
         fit_window_sigma=float(saved["fit_window_sigma"]),
         fit_max_iterations=int(saved["fit_max_iterations"]),
@@ -482,158 +547,21 @@ def load_cuts(path: str) -> ExclusivityCuts:
         raise ValueError("exclusivity cut table has inconsistent array shapes")
     if not np.all(np.isfinite(cuts.lower) & np.isfinite(cuts.upper)):
         raise ValueError("exclusivity cut table contains inactive windows")
+    parameter_shape = (*expected_shape, maximum_fit_parameters())
+    if cuts.fit_parameter_names.shape != parameter_shape:
+        raise ValueError("exclusivity cut table has inconsistent fit parameters")
+    if cuts.fit_parameter_values.shape != parameter_shape:
+        raise ValueError("exclusivity cut table has inconsistent fit parameters")
+    if cuts.dropped_group_ids.shape != cuts.dropped_variables.shape:
+        raise ValueError("exclusivity cut table has inconsistent dropped-group diagnostics")
+    if cuts.dropped_group_ids.shape != cuts.dropped_reasons.shape:
+        raise ValueError("exclusivity cut table has inconsistent dropped-group diagnostics")
     return cuts
 
 
-def _estimate_core(
-    values: Array,
-    minimum_events: int,
-    fit_window_sigma: float,
-    max_iterations: int,
-    convergence: float,
-    histogram_bins: int,
-    minimum_signal_fraction: float,
-    minimum_peak_significance: float,
-    expected_center: float | None,
-    physical_lower: float | None,
-    maximum_center_deviation: float | None,
-    maximum_sigma: float | None,
-) -> CoreEstimate | None:
-    finite = np.asarray(values, dtype=float)
-    finite = finite[np.isfinite(finite)]
-    entries = int(finite.size)
-    if entries < minimum_events:
-        return None
-
-    seed = _mode_seed(finite, histogram_bins, expected_center)
-    if seed is None:
-        return None
-    seed_center, seed_sigma = seed
-    qlo, qhi = np.quantile(finite, [0.005, 0.995])
-    fit_lo = max(float(qlo), seed_center - fit_window_sigma * seed_sigma)
-    fit_hi = min(float(qhi), seed_center + fit_window_sigma * seed_sigma)
-    if physical_lower is not None:
-        fit_lo = max(fit_lo, physical_lower)
-    if not (np.isfinite(fit_lo) and np.isfinite(fit_hi) and fit_hi > fit_lo):
-        return None
-    selected = finite[(finite >= fit_lo) & (finite <= fit_hi)]
-    minimum_fit_entries = max(20, int(np.ceil(0.5 * minimum_events)))
-    if selected.size < minimum_fit_entries:
-        return None
-
-    bins = min(histogram_bins, max(20, 2 * int(np.sqrt(selected.size))))
-    counts, edges = np.histogram(selected, bins=bins, range=(fit_lo, fit_hi))
-    x = 0.5 * (edges[:-1] + edges[1:])
-    span = fit_hi - fit_lo
-    u = np.clip((x - fit_lo) / span, 0.0, 1.0)
-    background_left = 2.0 * (1.0 - u)
-    background_right = 2.0 * u
-    background_left /= np.sum(background_left)
-    background_right /= np.sum(background_right)
-
-    best: tuple[float, float, float, Array, int, bool] | None = None
-    for sigma_scale in _SIGMA_SCALES:
-        sigma = float(seed_sigma * sigma_scale)
-        if sigma <= 0 or sigma >= 0.5 * span:
-            continue
-        for center_offset in _CENTER_OFFSETS:
-            center = float(seed_center + center_offset * seed_sigma)
-            if not fit_lo < center < fit_hi:
-                continue
-            signal = np.exp(-0.5 * ((x - center) / sigma) ** 2)
-            signal_sum = float(np.sum(signal))
-            if not np.isfinite(signal_sum) or signal_sum <= 0:
-                continue
-            signal /= signal_sum
-            tail_sigma = max(2.5 * sigma, 1.75 * seed_sigma)
-            tail = np.exp(-0.5 * ((x - center) / tail_sigma) ** 2)
-            tail /= np.sum(tail)
-            for use_tail, components in (
-                (False, np.vstack((signal, background_left, background_right))),
-                (
-                    True,
-                    np.vstack((signal, tail, background_left, background_right)),
-                ),
-            ):
-                weights, iterations = _mixture_weights(
-                    counts, components, max_iterations, convergence
-                )
-                density = np.maximum(weights @ components, np.finfo(float).tiny)
-                nll = float(-np.sum(counts * np.log(density)))
-                free_weights = components.shape[0] - 1
-                bic = 2.0 * nll + free_weights * np.log(selected.size)
-                if best is None or bic < best[0]:
-                    best = (bic, center, sigma, weights, iterations, use_tail)
-
-    if best is None:
-        return None
-    _, center, sigma, weights, iterations, use_tail = best
-    signal_fraction = float(weights[0])
-    signal_entries = signal_fraction * selected.size
-    core = np.abs(x - center) <= 2.0 * sigma
-    signal_shape = np.exp(-0.5 * ((x - center) / sigma) ** 2)
-    signal_shape /= np.sum(signal_shape)
-    tail_sigma = max(2.5 * sigma, 1.75 * seed_sigma)
-    tail_shape = np.exp(-0.5 * ((x - center) / tail_sigma) ** 2)
-    tail_shape /= np.sum(tail_shape)
-    signal_core = signal_entries * float(np.sum(signal_shape[core]))
-    if use_tail:
-        background_core = selected.size * float(
-            weights[1] * np.sum(tail_shape[core])
-            + weights[2] * np.sum(background_left[core])
-            + weights[3] * np.sum(background_right[core])
-        )
-    else:
-        background_core = selected.size * float(
-            weights[1] * np.sum(background_left[core])
-            + weights[2] * np.sum(background_right[core])
-        )
-    significance = signal_core / np.sqrt(max(signal_core + background_core, 1.0))
-    bin_width = float(edges[1] - edges[0])
-    if signal_fraction < minimum_signal_fraction:
-        return None
-    if significance < minimum_peak_significance:
-        return None
-    if maximum_sigma is not None and sigma > maximum_sigma:
-        return None
-    if expected_center is not None and maximum_center_deviation is not None:
-        tolerance = max(maximum_center_deviation, 2.0 * bin_width)
-        if abs(center - expected_center) > tolerance:
-            return None
-    return CoreEstimate(
-        center=center,
-        sigma=sigma,
-        entries=entries,
-        fit_entries=int(selected.size),
-        signal_entries=float(signal_entries),
-        signal_fraction=signal_fraction,
-        peak_significance=float(significance),
-        iterations=iterations,
-        fit_model="core+tail+linear" if use_tail else "core+linear",
-    )
-
-
-def _mixture_weights(
-    counts: Array,
-    components: Array,
-    max_iterations: int,
-    convergence: float,
-) -> tuple[Array, int]:
-    weights = np.full(components.shape[0], 1.0 / components.shape[0])
-    total = float(np.sum(counts))
-    for iteration in range(1, max_iterations + 1):
-        density = np.maximum(weights @ components, np.finfo(float).tiny)
-        responsibilities = components * weights[:, None] / density[None, :]
-        next_weights = (responsibilities @ counts) / total
-        if np.max(np.abs(next_weights - weights)) <= convergence:
-            return next_weights, iteration
-        weights = next_weights
-    return weights, max_iterations
-
-
 def _locally_consistent(
-    local: CoreEstimate,
-    reference: CoreEstimate,
+    local: FitEstimate,
+    reference: FitEstimate,
     maximum_sigma_ratio: float,
     maximum_center_shift_sigma: float,
 ) -> bool:
@@ -641,49 +569,6 @@ def _locally_consistent(
         return False
     center_shift = abs(local.center - reference.center)
     return center_shift <= maximum_center_shift_sigma * reference.sigma
-
-
-def _mode_seed(
-    values: Array,
-    histogram_bins: int,
-    expected_center: float | None,
-) -> tuple[float, float] | None:
-    lo, hi = np.quantile(values, [0.005, 0.995])
-    if not (np.isfinite(lo) and np.isfinite(hi) and hi > lo):
-        return None
-    bins = min(histogram_bins, max(16, int(np.sqrt(values.size))))
-    counts, edges = np.histogram(values, bins=bins, range=(lo, hi))
-    if not np.any(counts):
-        return None
-    smoothed = np.convolve(counts.astype(float), [1.0, 2.0, 1.0], mode="same")
-    centers = 0.5 * (edges[:-1] + edges[1:])
-    baseline = float(np.median(smoothed))
-    global_peak = int(np.argmax(smoothed))
-    local_maximum = np.ones(smoothed.size, dtype=bool)
-    local_maximum[1:] &= smoothed[1:] >= smoothed[:-1]
-    local_maximum[:-1] &= smoothed[:-1] >= smoothed[1:]
-    threshold = baseline + 0.35 * max(0.0, smoothed[global_peak] - baseline)
-    candidates = np.flatnonzero(local_maximum & (smoothed >= threshold))
-    peak = global_peak
-    if expected_center is not None and candidates.size:
-        peak = int(candidates[np.argmin(np.abs(centers[candidates] - expected_center))])
-
-    half_height = baseline + 0.5 * max(0.0, smoothed[peak] - baseline)
-    left = peak
-    while left > 0 and smoothed[left] >= half_height:
-        left -= 1
-    right = peak
-    while right < smoothed.size - 1 and smoothed[right] >= half_height:
-        right += 1
-    bin_width = float(edges[1] - edges[0])
-    sigma = max(float(centers[right] - centers[left]) / 2.355, bin_width)
-    if not np.isfinite(sigma) or sigma <= 0:
-        return None
-    center = float(centers[peak])
-    near_peak = values[np.abs(values - center) <= 1.5 * sigma]
-    if near_peak.size:
-        center = float(np.median(near_peak))
-    return center, sigma
 
 
 def _validate_settings(
@@ -738,3 +623,11 @@ def _group_ids(
         return topology
     iq2, ixb, it = [np.asarray(item, dtype=np.int64) for item in (iq2, ixb, it)]
     return (((topology * _BIN_RADIX) + iq2) * _BIN_RADIX + ixb) * _BIN_RADIX + it
+
+
+def topology_ids_from_groups(group_ids: Array, global_mode: bool) -> Array:
+    """Recover detector-topology IDs from global or kinematically binned groups."""
+    groups = np.asarray(group_ids, dtype=np.int64)
+    if global_mode:
+        return groups
+    return groups // (_BIN_RADIX**3)

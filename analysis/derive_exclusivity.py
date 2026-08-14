@@ -12,7 +12,15 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from eppi0.binning import from_config
-from eppi0.exclusivity import DEFAULT_VARIABLES, apply_cuts, derive_cuts, load_cuts, save_cuts
+from eppi0.exclusivity import (
+    DEFAULT_VARIABLES,
+    ExclusivityCuts,
+    apply_cuts,
+    derive_cuts,
+    load_cuts,
+    save_cuts,
+    topology_ids_from_groups,
+)
 from eppi0.topology import ft_photon_count
 
 
@@ -33,8 +41,29 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dictionary", type=Path, help="ROOT dictionary shared library for selected-root input")
     parser.add_argument("--tree", default="sEvents", help="ROOT tree name for selected-root input")
-    parser.add_argument("--global-cuts", action="store_true")
-    parser.add_argument("--n-sigma", type=float, default=3.0)
+    grouping = parser.add_mutually_exclusive_group()
+    grouping.add_argument(
+        "--global-cuts",
+        dest="global_cuts",
+        action="store_true",
+        help="Pool kinematic bins within each detector topology (default)",
+    )
+    grouping.add_argument(
+        "--per-bin-cuts",
+        dest="global_cuts",
+        action="store_false",
+        help="Derive local Q2/xB/-t windows with same-topology fallbacks",
+    )
+    parser.set_defaults(global_cuts=True)
+    parser.add_argument(
+        "--n-sigma",
+        type=float,
+        default=3.0,
+        help=(
+            "Gaussian-equivalent signal containment; 3 gives 99.73%% "
+            "containment for every fitted signal model"
+        ),
+    )
     parser.add_argument("--minimum-events", type=int, default=50)
     parser.add_argument("--fit-window-sigma", type=float, default=5.0)
     parser.add_argument("--fit-max-iterations", type=int, default=100)
@@ -136,6 +165,30 @@ def load_arrays(path: Path, input_format: str, dictionary: Path | None, tree_nam
     return arrays(sample)
 
 
+def print_group_diagnostics(cuts: ExclusivityCuts) -> None:
+    print(
+        f"Cut groups: populated={cuts.populated_group_ids.size}, "
+        f"retained={cuts.group_ids.size}, dropped={cuts.dropped_group_ids.size}"
+    )
+    if not cuts.dropped_group_ids.size:
+        return
+    print("Dropped cut groups:")
+    topologies = topology_ids_from_groups(
+        cuts.dropped_group_ids, cuts.global_mode
+    )
+    for group_id, topology, variable, reason in zip(
+        cuts.dropped_group_ids,
+        topologies,
+        cuts.dropped_variables,
+        cuts.dropped_reasons,
+        strict=True,
+    ):
+        print(
+            f"  group_id={int(group_id)}, pDet={int(topology) // 4}, "
+            f"FT photons={int(topology) % 4}, failed_at={variable}: {reason}"
+        )
+
+
 def main() -> int:
     args = parse_args()
     binning = from_config(args.config)
@@ -165,12 +218,13 @@ def main() -> int:
             maximum_local_sigma_ratio=args.maximum_local_sigma_ratio,
             maximum_local_center_shift_sigma=args.maximum_local_center_shift_sigma,
         )
-        if cuts.group_ids.size == 0:
-            raise RuntimeError("No complete exclusivity cut groups could be derived")
         args.cuts.parent.mkdir(parents=True, exist_ok=True)
         save_cuts(str(args.cuts), cuts)
+    print_group_diagnostics(cuts)
     if cuts.group_ids.size == 0:
-        raise RuntimeError("Exclusivity cut table contains no complete groups")
+        raise RuntimeError(
+            f"No complete exclusivity cut groups; diagnostics saved to {args.cuts}"
+        )
 
     target_values, (detector, ft_photons, q2, xb, minus_t) = load_arrays(
         args.apply_to or args.sample, args.format, args.dictionary, args.tree
@@ -179,10 +233,19 @@ def main() -> int:
     mask = apply_cuts(cuts, target_values, detector, ft_photons, iq2, ixb, it)
     args.mask.parent.mkdir(parents=True, exist_ok=True)
     np.save(args.mask, mask)
-    print(f"Cut groups: {cuts.group_ids.size}")
     local = int(np.count_nonzero(cuts.window_source == "local"))
     fallback = int(np.count_nonzero(cuts.window_source == "topology_fallback"))
-    print(f"Windows: local={local}, topology fallback={fallback}")
+    consistency = int(
+        np.count_nonzero(cuts.window_source == "topology_consistency_fallback")
+    )
+    print(
+        f"Windows: local={local}, topology fallback={fallback}, "
+        f"topology consistency fallback={consistency}"
+    )
+    print(
+        f"Signal containment: {100.0 * cuts.signal_containment:.5g}% "
+        f"(Gaussian-equivalent n={cuts.n_sigma:g})"
+    )
     for index, name in enumerate(cuts.variables):
         models, model_counts = np.unique(cuts.fit_model[:, index], return_counts=True)
         model_summary = ", ".join(
@@ -190,7 +253,7 @@ def main() -> int:
         )
         print(
             f"  {name}: center median={np.median(cuts.centers[:, index]):.7g}, "
-            f"sigma median={np.median(cuts.sigmas[:, index]):.7g}, "
+            f"characteristic-scale median={np.median(cuts.sigmas[:, index]):.7g}, "
             f"lower median={np.median(cuts.lower[:, index]):.7g}, "
             f"upper median={np.median(cuts.upper[:, index]):.7g}, "
             f"signal fraction median={np.median(cuts.signal_fractions[:, index]):.4g}, "

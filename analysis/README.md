@@ -512,12 +512,30 @@ columns used by the visualizer. This artifact is intended for reconstruction
 diagnostics, not as the generated denominator for response construction.
 
 `derive_exclusivity.py` preserves the sequential variable order and
-global/per-bin modes. Each peak is estimated with a mode-seeded narrow Gaussian
-core, an optional broad Gaussian tail, and a nonnegative linear background.
-The simpler core-plus-background and core-plus-tail-plus-background hypotheses
-are selected with the Bayesian information criterion. The final window is the
-requested number of narrow-core sigmas. This prevents percentile tails,
-background-contaminated sigma clipping, or a broad resolution tail from
+global/per-bin modes. Global-by-topology pooling is the default because this
+exclusive channel is generally too sparse for stable fine-bin fits. Pass
+`--per-bin-cuts` to opt into local `(Q2, xB, -t)` groups with same-topology
+fallbacks; the explicit `--global-cuts` spelling remains accepted. The signal
+model follows the geometry of each exclusivity quantity:
+
+- `rec_m_gg`: Gaussian signal with the linear-background slope constrained by
+  sidebands;
+- `rec_pT_miss`: Rice signal, with Rayleigh retained as its nested zero-offset
+  limit;
+- `rec_m2_epX`: narrow Gaussian core plus optional broad Gaussian nuisance tail
+  and a nonnegative linear background;
+- `rec_m_eggX`: Gaussian signal, promoted to a split Gaussian only when the
+  Bayesian information criterion supports the extra asymmetry parameter;
+- `rec_E_miss`: Gaussian core, with an optional positive ex-Gaussian signal
+  tail selected by the Bayesian information criterion; and
+- `rec_m2_miss`: Laplace cusp, promoted to an asymmetric Laplace only when the
+  Bayesian information criterion supports distinct left and right scales.
+
+The `--n-sigma` value specifies a Gaussian-equivalent signal probability (for
+example, `3` means 99.73%). Non-Gaussian windows are obtained from their fitted
+signal CDF at that containment. The broad `rec_m2_epX` nuisance component does
+not enlarge its established narrow-core window. This prevents percentile
+tails, background-contaminated sigma clipping, or a broad resolution tail from
 defining the core resolution. Local windows are derived separately for
 `(proton detector, number of FT photons, Q2 bin, xB bin, -t bin)`. Global mode
 retains the first two topology components while pooling kinematic bins. Thus
@@ -528,18 +546,21 @@ When a local kinematic group has too few surviving events or an unstable core,
 its window falls back to the sequentially selected sample pooled over the same
 proton detector and FT-photon multiplicity. A group is retained only if all six
 variables have finite windows; cuts are never silently disabled. The cut NPZ
-records fitted centers and sigmas, fit and fitted-core entry counts, core
-fractions, peak significances, selected fit models, iteration counts, and
-whether each window was local or topology-pooled. The command also prints the
-median center, sigma, bounds, core fraction, significance, and model counts for
-every variable. Absolute expected-center and maximum-width sanity limits reject
+records every initially populated group and, for any removed group, the first
+failed variable and exact fit/window rejection reason. It also records fitted
+centers, characteristic scales, fit and fitted-signal entry counts, signal
+fractions, peak significances, selected fit models, named fit parameters,
+signal containment, iteration counts, and whether each window was local or
+topology-pooled. The command also prints the median center, scale, bounds,
+signal fraction, significance, and model counts for every variable. Absolute
+expected-center and maximum-width sanity limits reject
 pathological fits rather than allowing an inflated sigma to validate itself.
 In addition, a local window must remain within the configured width ratio and
 center shift of its same-proton-detector/same-FT topology reference. An
 otherwise valid but inconsistent local hump is recorded as a
 `topology_consistency_fallback`, making this hierarchical decision auditable.
 The nominal procedure is to
-derive separate `n`-sigma windows for data and GEMC. GEMC exclusivity peaks are
+derive separate equal-containment windows for data and GEMC. GEMC exclusivity peaks are
 often narrower than data, so equal numerical boundaries would not represent
 equal resolution-relative signal regions. Save both cut tables and their
 retained fractions. Applying one common numerical table to both samples remains
@@ -559,9 +580,9 @@ python3 analysis/derive_exclusivity.py mc_events.npz \
 ```
 
 Pass the GEMC mask to `response --selection-mask` and the data mask to
-`unfold --selection-mask`. Use `--global-cuts` for one set of windows per
-proton-detector/photon-topology combination when one deliberately wants fully
-pooled windows rather than automatic per-window fallback. Cut tables produced
+`unfold --selection-mask`. Use `--per-bin-cuts` only when one deliberately wants
+local kinematic windows with automatic same-topology fallback instead of the
+default pooled topology windows. Cut tables produced
 before photon-topology grouping or before signal/background fitting are
 incompatible and must be re-derived rather than passed with `--reuse-cuts`.
 
