@@ -459,7 +459,7 @@ class ExclusivityTests(unittest.TestCase):
         count = 200
         values = {
             "rec_m_gg": rng.normal(0.135, 0.01, count),
-            "rec_pT_miss": np.abs(rng.normal(0.0, 0.05, count)),
+            "rec_pT_miss": rng.normal(0.1, 0.02, count),
             "rec_m2_epX": rng.normal(0.018, 0.05, count),
             "rec_m_eggX": rng.normal(0.938, 0.05, count),
             "rec_E_miss": rng.normal(0.0, 0.1, count),
@@ -532,8 +532,36 @@ class ExclusivityTests(unittest.TestCase):
         )
         self.assertIsNotNone(window)
         lower, upper = window
-        self.assertLess(upper - lower, 0.5)
+        self.assertGreater(0.5 * (upper - lower), 0.12)
+        self.assertLess(0.5 * (upper - lower), 0.22)
         self.assertAlmostEqual(0.5 * (lower + upper), 0.02, delta=0.03)
+
+    def test_gaussian_core_window_rejects_sloped_background(self) -> None:
+        rng = np.random.default_rng(31)
+        signal = rng.normal(0.02, 0.06, 5000)
+        background = rng.triangular(-2.0, 3.0, 3.0, 2500)
+        window = estimate_window(
+            np.concatenate((signal, background)),
+            n_sigma=3.0,
+            minimum_events=50,
+            expected_center=0.02,
+        )
+        self.assertIsNotNone(window)
+        lower, upper = window
+        self.assertGreater(0.5 * (upper - lower), 0.12)
+        self.assertLess(0.5 * (upper - lower), 0.22)
+        self.assertAlmostEqual(0.5 * (lower + upper), 0.02, delta=0.03)
+
+    def test_background_without_signal_is_rejected(self) -> None:
+        rng = np.random.default_rng(37)
+        background = rng.triangular(-2.0, 3.0, 3.0, 7000)
+        window = estimate_window(
+            background,
+            n_sigma=3.0,
+            minimum_events=50,
+            expected_center=0.02,
+        )
+        self.assertIsNone(window)
 
     def test_sparse_group_uses_same_topology_fallback(self) -> None:
         rng = np.random.default_rng(29)
@@ -575,7 +603,25 @@ class ExclusivityTests(unittest.TestCase):
                 minimum_events=50,
                 grouping="proton-detector+ft-photon-count-v1",
             )
-            with self.assertRaisesRegex(ValueError, "predates the robust Gaussian-core"):
+            with self.assertRaisesRegex(ValueError, "predates signal-background fitting"):
+                load_cuts(str(path))
+
+    def test_sigma_clipped_cut_table_requires_rederivation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sigma_clipped_cuts.npz"
+            np.savez_compressed(
+                path,
+                variables=np.array(["rec_m_gg"]),
+                group_ids=np.array([4]),
+                lower=np.array([[0.0]]),
+                upper=np.array([[1.0]]),
+                global_mode=True,
+                n_sigma=3.0,
+                minimum_events=50,
+                grouping="proton-detector+ft-photon-count-v1",
+                estimator="mode-seeded-iterative-gaussian-core-v1",
+            )
+            with self.assertRaisesRegex(ValueError, "unsupported exclusivity estimator"):
                 load_cuts(str(path))
 
     def test_legacy_cut_table_requires_rederivation(self) -> None:

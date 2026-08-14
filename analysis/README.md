@@ -512,10 +512,12 @@ columns used by the visualizer. This artifact is intended for reconstruction
 diagnostics, not as the generated denominator for response construction.
 
 `derive_exclusivity.py` preserves the sequential variable order and
-global/per-bin modes. Each peak is estimated with a mode-seeded, iterative
-Gaussian-core fit; the final window is the requested number of fitted core
-sigmas. This avoids turning non-Gaussian signal-plus-background tails into an
-almost full-range percentile window. Local windows are derived separately for
+global/per-bin modes. Each peak is estimated with a mode-seeded, bounded
+Gaussian signal plus a nonnegative linear background. The signal/background
+fractions are fitted as a binned mixture, and the final window is the requested
+number of fitted signal sigmas. This prevents either percentile tails or
+background-contaminated sigma clipping from defining the resolution. Local
+windows are derived separately for
 `(proton detector, number of FT photons, Q2 bin, xB bin, -t bin)`. Global mode
 retains the first two topology components while pooling kinematic bins. Thus
 FD/FD, mixed FT/FD, and FT/FT photon pairs never share resolution windows, and
@@ -525,10 +527,11 @@ When a local kinematic group has too few surviving events or an unstable core,
 its window falls back to the sequentially selected sample pooled over the same
 proton detector and FT-photon multiplicity. A group is retained only if all six
 variables have finite windows; cuts are never silently disabled. The cut NPZ
-records fitted centers and sigmas, fit/core entry counts, iteration counts, and
-whether each window was local or topology-pooled. The command also prints the
-median center, sigma, and bounds for every variable so obviously nonphysical
-tables can be caught before response construction. The nominal procedure is to
+records fitted centers and sigmas, fit and fitted-signal entry counts, signal
+fractions, peak significances, iteration counts, and whether each window was
+local or topology-pooled. The command also prints the median center, sigma,
+bounds, signal fraction, and significance for every variable so obviously
+nonphysical tables can be caught before response construction. The nominal procedure is to
 derive separate `n`-sigma windows for data and GEMC. GEMC exclusivity peaks are
 often narrower than data, so equal numerical boundaries would not represent
 equal resolution-relative signal regions. Save both cut tables and their
@@ -552,7 +555,7 @@ Pass the GEMC mask to `response --selection-mask` and the data mask to
 `unfold --selection-mask`. Use `--global-cuts` for one set of windows per
 proton-detector/photon-topology combination when one deliberately wants fully
 pooled windows rather than automatic per-window fallback. Cut tables produced
-before photon-topology grouping or before the robust core estimator are
+before photon-topology grouping or before signal/background fitting are
 incompatible and must be re-derived rather than passed with `--reuse-cuts`.
 
 For large GEMC production, derive the GEMC exclusivity mask directly from the

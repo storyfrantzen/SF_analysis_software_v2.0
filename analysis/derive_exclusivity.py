@@ -36,11 +36,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--global-cuts", action="store_true")
     parser.add_argument("--n-sigma", type=float, default=3.0)
     parser.add_argument("--minimum-events", type=int, default=50)
-    parser.add_argument("--core-clip-sigma", type=float, default=2.0)
-    parser.add_argument("--core-max-iterations", type=int, default=12)
-    parser.add_argument("--core-convergence", type=float, default=1.0e-4)
-    parser.add_argument("--core-histogram-bins", type=int, default=100)
-    parser.add_argument("--minimum-core-fraction", type=float, default=0.2)
+    parser.add_argument("--fit-window-sigma", type=float, default=5.0)
+    parser.add_argument("--fit-max-iterations", type=int, default=100)
+    parser.add_argument("--fit-convergence", type=float, default=1.0e-5)
+    parser.add_argument("--fit-histogram-bins", type=int, default=160)
+    parser.add_argument("--minimum-signal-fraction", type=float, default=0.1)
+    parser.add_argument("--minimum-peak-significance", type=float, default=3.0)
     parser.add_argument("--reuse-cuts", action="store_true")
     return parser.parse_args()
 
@@ -151,11 +152,12 @@ def main() -> int:
             n_sigma=args.n_sigma,
             minimum_events=args.minimum_events,
             global_mode=args.global_cuts,
-            core_clip_sigma=args.core_clip_sigma,
-            core_max_iterations=args.core_max_iterations,
-            core_convergence=args.core_convergence,
-            core_histogram_bins=args.core_histogram_bins,
-            minimum_core_fraction=args.minimum_core_fraction,
+            fit_window_sigma=args.fit_window_sigma,
+            fit_max_iterations=args.fit_max_iterations,
+            fit_convergence=args.fit_convergence,
+            fit_histogram_bins=args.fit_histogram_bins,
+            minimum_signal_fraction=args.minimum_signal_fraction,
+            minimum_peak_significance=args.minimum_peak_significance,
         )
         if cuts.group_ids.size == 0:
             raise RuntimeError("No complete exclusivity cut groups could be derived")
@@ -180,7 +182,9 @@ def main() -> int:
             f"  {name}: center median={np.median(cuts.centers[:, index]):.7g}, "
             f"sigma median={np.median(cuts.sigmas[:, index]):.7g}, "
             f"lower median={np.median(cuts.lower[:, index]):.7g}, "
-            f"upper median={np.median(cuts.upper[:, index]):.7g}"
+            f"upper median={np.median(cuts.upper[:, index]):.7g}, "
+            f"signal fraction median={np.median(cuts.signal_fractions[:, index]):.4g}, "
+            f"significance median={np.median(cuts.peak_significance[:, index]):.4g}"
         )
     print(f"Passing events: {mask.sum()}/{mask.size}")
     if args.format == "selected-root":

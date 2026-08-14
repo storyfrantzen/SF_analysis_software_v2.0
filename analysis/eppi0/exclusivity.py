@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 
 import numpy as np
 
@@ -9,7 +8,7 @@ import numpy as np
 Array = np.ndarray
 
 GROUPING = "proton-detector+ft-photon-count-v1"
-ESTIMATOR = "mode-seeded-iterative-gaussian-core-v1"
+ESTIMATOR = "binned-gaussian-linear-background-mixture-v2"
 _TOPOLOGY_RADIX = 4
 _BIN_RADIX = 128
 
@@ -26,7 +25,6 @@ _PI0_MASS_GEV = 0.1349768
 _PROTON_MASS_GEV = 0.9382721
 _EXPECTED_CENTERS = {
     "rec_m_gg": _PI0_MASS_GEV,
-    "rec_pT_miss": 0.0,
     "rec_m2_epX": _PI0_MASS_GEV**2,
     "rec_m_eggX": _PROTON_MASS_GEV,
     "rec_E_miss": 0.0,
@@ -37,6 +35,8 @@ _PHYSICAL_LOWER_BOUNDS = {
     "rec_pT_miss": 0.0,
     "rec_m_eggX": 0.0,
 }
+_SIGMA_SCALES = np.asarray((0.40, 0.55, 0.70, 0.85, 1.0, 1.2, 1.45))
+_CENTER_OFFSETS = np.asarray((-1.0, -0.67, -0.33, 0.0, 0.33, 0.67, 1.0))
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,10 @@ class CoreEstimate:
     center: float
     sigma: float
     entries: int
-    core_entries: int
+    fit_entries: int
+    signal_entries: float
+    signal_fraction: float
+    peak_significance: float
     iterations: int
 
 
@@ -57,17 +60,20 @@ class ExclusivityCuts:
     centers: Array
     sigmas: Array
     fit_entries: Array
-    core_entries: Array
+    signal_entries: Array
+    signal_fractions: Array
+    peak_significance: Array
     iterations: Array
     window_source: Array
     global_mode: bool
     n_sigma: float
     minimum_events: int
-    core_clip_sigma: float
-    core_max_iterations: int
-    core_convergence: float
-    core_histogram_bins: int
-    minimum_core_fraction: float
+    fit_window_sigma: float
+    fit_max_iterations: int
+    fit_convergence: float
+    fit_histogram_bins: int
+    minimum_signal_fraction: float
+    minimum_peak_significance: float
     grouping: str
     estimator: str
 
@@ -85,27 +91,29 @@ def derive_cuts(
     n_sigma: float = 3.0,
     minimum_events: int = 50,
     global_mode: bool = False,
-    core_clip_sigma: float = 2.0,
-    core_max_iterations: int = 12,
-    core_convergence: float = 1.0e-4,
-    core_histogram_bins: int = 100,
-    minimum_core_fraction: float = 0.2,
+    fit_window_sigma: float = 5.0,
+    fit_max_iterations: int = 100,
+    fit_convergence: float = 1.0e-5,
+    fit_histogram_bins: int = 160,
+    minimum_signal_fraction: float = 0.1,
+    minimum_peak_significance: float = 3.0,
 ) -> ExclusivityCuts:
-    """Derive sequential signal-core windows with topology-pooled fallbacks.
+    """Derive sequential signal-plus-background windows with topology fallbacks.
 
-    A local window is estimated independently in each kinematic group. When a
-    local group is sparse or its core fit is unstable, it inherits a window
-    pooled only over the same proton detector and FT-photon multiplicity. A
-    group is retained only when every sequential variable has a finite window.
+    A bounded Gaussian signal and nonnegative linear background are fitted in
+    each local kinematic group. If that fit is sparse or insignificant, the
+    group inherits the fit pooled over the same proton detector and FT-photon
+    multiplicity. Every retained group has a finite window for every variable.
     """
     _validate_settings(
         n_sigma,
         minimum_events,
-        core_clip_sigma,
-        core_max_iterations,
-        core_convergence,
-        core_histogram_bins,
-        minimum_core_fraction,
+        fit_window_sigma,
+        fit_max_iterations,
+        fit_convergence,
+        fit_histogram_bins,
+        minimum_signal_fraction,
+        minimum_peak_significance,
     )
     detector = np.asarray(proton_detector, dtype=np.int64)
     ft_photons = np.asarray(ft_photons, dtype=np.int64)
@@ -129,7 +137,9 @@ def derive_cuts(
     centers = np.full(shape, np.nan)
     sigmas = np.full(shape, np.nan)
     fit_entries = np.zeros(shape, dtype=np.int64)
-    core_entries = np.zeros(shape, dtype=np.int64)
+    signal_entries = np.zeros(shape, dtype=float)
+    signal_fractions = np.zeros(shape, dtype=float)
+    peak_significance = np.zeros(shape, dtype=float)
     iterations = np.zeros(shape, dtype=np.int64)
     window_source = np.full(shape, "", dtype="<U24")
 
@@ -149,6 +159,8 @@ def derive_cuts(
     active = np.ones(populated.size, dtype=bool)
 
     for variable_index, name in enumerate(variables):
+        expected_center = _EXPECTED_CENTERS.get(name)
+        physical_lower = _PHYSICAL_LOWER_BOUNDS.get(name)
         pooled: dict[int, CoreEstimate | None] = {}
         for topology in np.unique(group_topologies[active]):
             pieces = [
@@ -159,12 +171,14 @@ def derive_cuts(
             pooled[int(topology)] = _estimate_core(
                 pooled_values,
                 minimum_events,
-                core_clip_sigma,
-                core_max_iterations,
-                core_convergence,
-                core_histogram_bins,
-                minimum_core_fraction,
-                expected_center=_EXPECTED_CENTERS.get(name),
+                fit_window_sigma,
+                fit_max_iterations,
+                fit_convergence,
+                fit_histogram_bins,
+                minimum_signal_fraction,
+                minimum_peak_significance,
+                expected_center,
+                physical_lower,
             )
 
         for group_index in np.flatnonzero(active):
@@ -172,12 +186,14 @@ def derive_cuts(
             local = _estimate_core(
                 arrays[name][rows[running[group_index]]],
                 minimum_events,
-                core_clip_sigma,
-                core_max_iterations,
-                core_convergence,
-                core_histogram_bins,
-                minimum_core_fraction,
-                expected_center=_EXPECTED_CENTERS.get(name),
+                fit_window_sigma,
+                fit_max_iterations,
+                fit_convergence,
+                fit_histogram_bins,
+                minimum_signal_fraction,
+                minimum_peak_significance,
+                expected_center,
+                physical_lower,
             )
             estimate = local
             source = "local"
@@ -190,8 +206,8 @@ def derive_cuts(
 
             lo = estimate.center - n_sigma * estimate.sigma
             hi = estimate.center + n_sigma * estimate.sigma
-            if name in _PHYSICAL_LOWER_BOUNDS:
-                lo = max(lo, _PHYSICAL_LOWER_BOUNDS[name])
+            if physical_lower is not None:
+                lo = max(lo, physical_lower)
             if not (np.isfinite(lo) and np.isfinite(hi) and lo < hi):
                 active[group_index] = False
                 continue
@@ -200,8 +216,10 @@ def derive_cuts(
             upper[group_index, variable_index] = hi
             centers[group_index, variable_index] = estimate.center
             sigmas[group_index, variable_index] = estimate.sigma
-            fit_entries[group_index, variable_index] = estimate.entries
-            core_entries[group_index, variable_index] = estimate.core_entries
+            fit_entries[group_index, variable_index] = estimate.fit_entries
+            signal_entries[group_index, variable_index] = estimate.signal_entries
+            signal_fractions[group_index, variable_index] = estimate.signal_fraction
+            peak_significance[group_index, variable_index] = estimate.peak_significance
             iterations[group_index, variable_index] = estimate.iterations
             window_source[group_index, variable_index] = source
             raw = arrays[name][rows]
@@ -216,17 +234,20 @@ def derive_cuts(
         centers=centers[retained],
         sigmas=sigmas[retained],
         fit_entries=fit_entries[retained],
-        core_entries=core_entries[retained],
+        signal_entries=signal_entries[retained],
+        signal_fractions=signal_fractions[retained],
+        peak_significance=peak_significance[retained],
         iterations=iterations[retained],
         window_source=window_source[retained],
         global_mode=global_mode,
         n_sigma=n_sigma,
         minimum_events=minimum_events,
-        core_clip_sigma=core_clip_sigma,
-        core_max_iterations=core_max_iterations,
-        core_convergence=core_convergence,
-        core_histogram_bins=core_histogram_bins,
-        minimum_core_fraction=minimum_core_fraction,
+        fit_window_sigma=fit_window_sigma,
+        fit_max_iterations=fit_max_iterations,
+        fit_convergence=fit_convergence,
+        fit_histogram_bins=fit_histogram_bins,
+        minimum_signal_fraction=minimum_signal_fraction,
+        minimum_peak_significance=minimum_peak_significance,
         grouping=GROUPING,
         estimator=ESTIMATOR,
     )
@@ -261,8 +282,6 @@ def apply_cuts(
         raw = np.asarray(values[name], dtype=float)
         lo = cuts.lower[positions[rows], variable_index]
         hi = cuts.upper[positions[rows], variable_index]
-        # Robust cut tables are complete by construction. Refuse malformed
-        # tables rather than silently disabling a sequential variable.
         if not np.all(np.isfinite(lo) & np.isfinite(hi)):
             raise ValueError("exclusivity cut table contains inactive windows")
         mask[rows] &= np.isfinite(raw[rows]) & (raw[rows] >= lo) & (raw[rows] <= hi)
@@ -275,38 +294,43 @@ def estimate_window(
     minimum_events: int,
     *,
     expected_center: float | None = None,
-    core_clip_sigma: float = 2.0,
-    core_max_iterations: int = 12,
-    core_convergence: float = 1.0e-4,
-    core_histogram_bins: int = 100,
-    minimum_core_fraction: float = 0.2,
+    physical_lower: float | None = None,
+    fit_window_sigma: float = 5.0,
+    fit_max_iterations: int = 100,
+    fit_convergence: float = 1.0e-5,
+    fit_histogram_bins: int = 160,
+    minimum_signal_fraction: float = 0.1,
+    minimum_peak_significance: float = 3.0,
 ) -> tuple[float, float] | None:
-    """Return a symmetric n-sigma window around a robust Gaussian core."""
+    """Return an n-sigma window from a Gaussian-plus-linear-background fit."""
     _validate_settings(
         n_sigma,
         minimum_events,
-        core_clip_sigma,
-        core_max_iterations,
-        core_convergence,
-        core_histogram_bins,
-        minimum_core_fraction,
+        fit_window_sigma,
+        fit_max_iterations,
+        fit_convergence,
+        fit_histogram_bins,
+        minimum_signal_fraction,
+        minimum_peak_significance,
     )
     estimate = _estimate_core(
         values,
         minimum_events,
-        core_clip_sigma,
-        core_max_iterations,
-        core_convergence,
-        core_histogram_bins,
-        minimum_core_fraction,
+        fit_window_sigma,
+        fit_max_iterations,
+        fit_convergence,
+        fit_histogram_bins,
+        minimum_signal_fraction,
+        minimum_peak_significance,
         expected_center,
+        physical_lower,
     )
     if estimate is None:
         return None
-    return (
-        float(estimate.center - n_sigma * estimate.sigma),
-        float(estimate.center + n_sigma * estimate.sigma),
-    )
+    lo = estimate.center - n_sigma * estimate.sigma
+    if physical_lower is not None:
+        lo = max(lo, physical_lower)
+    return float(lo), float(estimate.center + n_sigma * estimate.sigma)
 
 
 def save_cuts(path: str, cuts: ExclusivityCuts) -> None:
@@ -319,17 +343,20 @@ def save_cuts(path: str, cuts: ExclusivityCuts) -> None:
         centers=cuts.centers,
         sigmas=cuts.sigmas,
         fit_entries=cuts.fit_entries,
-        core_entries=cuts.core_entries,
+        signal_entries=cuts.signal_entries,
+        signal_fractions=cuts.signal_fractions,
+        peak_significance=cuts.peak_significance,
         iterations=cuts.iterations,
         window_source=cuts.window_source,
         global_mode=cuts.global_mode,
         n_sigma=cuts.n_sigma,
         minimum_events=cuts.minimum_events,
-        core_clip_sigma=cuts.core_clip_sigma,
-        core_max_iterations=cuts.core_max_iterations,
-        core_convergence=cuts.core_convergence,
-        core_histogram_bins=cuts.core_histogram_bins,
-        minimum_core_fraction=cuts.minimum_core_fraction,
+        fit_window_sigma=cuts.fit_window_sigma,
+        fit_max_iterations=cuts.fit_max_iterations,
+        fit_convergence=cuts.fit_convergence,
+        fit_histogram_bins=cuts.fit_histogram_bins,
+        minimum_signal_fraction=cuts.minimum_signal_fraction,
+        minimum_peak_significance=cuts.minimum_peak_significance,
         grouping=cuts.grouping,
         estimator=cuts.estimator,
     )
@@ -346,11 +373,13 @@ def load_cuts(path: str) -> ExclusivityCuts:
         raise ValueError(f"unsupported exclusivity grouping: {grouping}")
     if "estimator" not in saved.files:
         raise ValueError(
-            "exclusivity cut table predates the robust Gaussian-core estimator; re-derive it"
+            "exclusivity cut table predates signal-background fitting; re-derive it"
         )
     estimator = str(np.asarray(saved["estimator"]).item())
     if estimator != ESTIMATOR:
-        raise ValueError(f"unsupported exclusivity estimator: {estimator}")
+        raise ValueError(
+            f"unsupported exclusivity estimator: {estimator}; re-derive the cut table"
+        )
     cuts = ExclusivityCuts(
         variables=tuple(str(item) for item in saved["variables"]),
         group_ids=saved["group_ids"],
@@ -359,17 +388,20 @@ def load_cuts(path: str) -> ExclusivityCuts:
         centers=saved["centers"],
         sigmas=saved["sigmas"],
         fit_entries=saved["fit_entries"],
-        core_entries=saved["core_entries"],
+        signal_entries=saved["signal_entries"],
+        signal_fractions=saved["signal_fractions"],
+        peak_significance=saved["peak_significance"],
         iterations=saved["iterations"],
         window_source=saved["window_source"],
         global_mode=bool(saved["global_mode"]),
         n_sigma=float(saved["n_sigma"]),
         minimum_events=int(saved["minimum_events"]),
-        core_clip_sigma=float(saved["core_clip_sigma"]),
-        core_max_iterations=int(saved["core_max_iterations"]),
-        core_convergence=float(saved["core_convergence"]),
-        core_histogram_bins=int(saved["core_histogram_bins"]),
-        minimum_core_fraction=float(saved["minimum_core_fraction"]),
+        fit_window_sigma=float(saved["fit_window_sigma"]),
+        fit_max_iterations=int(saved["fit_max_iterations"]),
+        fit_convergence=float(saved["fit_convergence"]),
+        fit_histogram_bins=int(saved["fit_histogram_bins"]),
+        minimum_signal_fraction=float(saved["minimum_signal_fraction"]),
+        minimum_peak_significance=float(saved["minimum_peak_significance"]),
         grouping=grouping,
         estimator=estimator,
     )
@@ -380,7 +412,9 @@ def load_cuts(path: str) -> ExclusivityCuts:
         cuts.centers,
         cuts.sigmas,
         cuts.fit_entries,
-        cuts.core_entries,
+        cuts.signal_entries,
+        cuts.signal_fractions,
+        cuts.peak_significance,
         cuts.iterations,
         cuts.window_source,
     )
@@ -394,12 +428,14 @@ def load_cuts(path: str) -> ExclusivityCuts:
 def _estimate_core(
     values: Array,
     minimum_events: int,
-    clip_sigma: float,
+    fit_window_sigma: float,
     max_iterations: int,
     convergence: float,
     histogram_bins: int,
-    minimum_core_fraction: float,
+    minimum_signal_fraction: float,
+    minimum_peak_significance: float,
     expected_center: float | None,
+    physical_lower: float | None,
 ) -> CoreEstimate | None:
     finite = np.asarray(values, dtype=float)
     finite = finite[np.isfinite(finite)]
@@ -410,32 +446,103 @@ def _estimate_core(
     seed = _mode_seed(finite, histogram_bins, expected_center)
     if seed is None:
         return None
-    center, sigma = seed
-    sigma_correction = _truncated_normal_sigma_correction(clip_sigma)
-    minimum_core_events = max(12, int(math.ceil(0.5 * minimum_events)))
-    iterations = 0
-    for iterations in range(1, max_iterations + 1):
-        core = np.abs(finite - center) <= clip_sigma * sigma
-        if np.count_nonzero(core) < minimum_core_events:
-            return None
-        next_center = float(np.mean(finite[core]))
-        clipped_sigma = float(np.std(finite[core], ddof=1))
-        next_sigma = clipped_sigma * sigma_correction
-        if not np.isfinite(next_sigma) or next_sigma <= np.finfo(float).eps:
-            return None
-        center_change = abs(next_center - center) / next_sigma
-        sigma_change = abs(next_sigma - sigma) / next_sigma
-        center, sigma = next_center, next_sigma
-        if max(center_change, sigma_change) <= convergence:
-            break
+    seed_center, seed_sigma = seed
+    qlo, qhi = np.quantile(finite, [0.005, 0.995])
+    fit_lo = max(float(qlo), seed_center - fit_window_sigma * seed_sigma)
+    fit_hi = min(float(qhi), seed_center + fit_window_sigma * seed_sigma)
+    if physical_lower is not None:
+        fit_lo = max(fit_lo, physical_lower)
+    if not (np.isfinite(fit_lo) and np.isfinite(fit_hi) and fit_hi > fit_lo):
+        return None
+    selected = finite[(finite >= fit_lo) & (finite <= fit_hi)]
+    minimum_fit_entries = max(20, int(np.ceil(0.5 * minimum_events)))
+    if selected.size < minimum_fit_entries:
+        return None
 
-    core = np.abs(finite - center) <= clip_sigma * sigma
-    core_count = int(np.count_nonzero(core))
-    if core_count < minimum_core_events or core_count / entries < minimum_core_fraction:
+    bins = min(histogram_bins, max(20, 2 * int(np.sqrt(selected.size))))
+    counts, edges = np.histogram(selected, bins=bins, range=(fit_lo, fit_hi))
+    x = 0.5 * (edges[:-1] + edges[1:])
+    span = fit_hi - fit_lo
+    u = np.clip((x - fit_lo) / span, 0.0, 1.0)
+    background_left = 2.0 * (1.0 - u)
+    background_right = 2.0 * u
+    background_left /= np.sum(background_left)
+    background_right /= np.sum(background_right)
+
+    best: tuple[float, float, float, Array, int] | None = None
+    for sigma_scale in _SIGMA_SCALES:
+        sigma = float(seed_sigma * sigma_scale)
+        if sigma <= 0 or sigma >= 0.5 * span:
+            continue
+        for center_offset in _CENTER_OFFSETS:
+            center = float(seed_center + center_offset * seed_sigma)
+            if not fit_lo < center < fit_hi:
+                continue
+            signal = np.exp(-0.5 * ((x - center) / sigma) ** 2)
+            signal_sum = float(np.sum(signal))
+            if not np.isfinite(signal_sum) or signal_sum <= 0:
+                continue
+            signal /= signal_sum
+            components = np.vstack((signal, background_left, background_right))
+            weights, iterations = _mixture_weights(
+                counts, components, max_iterations, convergence
+            )
+            density = np.maximum(weights @ components, np.finfo(float).tiny)
+            nll = float(-np.sum(counts * np.log(density)))
+            if best is None or nll < best[0]:
+                best = (nll, center, sigma, weights, iterations)
+
+    if best is None:
         return None
-    if expected_center is not None and abs(center - expected_center) > 3.0 * sigma:
+    _, center, sigma, weights, iterations = best
+    signal_fraction = float(weights[0])
+    signal_entries = signal_fraction * selected.size
+    core = np.abs(x - center) <= 2.0 * sigma
+    signal_shape = np.exp(-0.5 * ((x - center) / sigma) ** 2)
+    signal_shape /= np.sum(signal_shape)
+    signal_core = signal_entries * float(np.sum(signal_shape[core]))
+    background_core = selected.size * float(
+        weights[1] * np.sum(background_left[core])
+        + weights[2] * np.sum(background_right[core])
+    )
+    significance = signal_core / np.sqrt(max(signal_core + background_core, 1.0))
+    bin_width = float(edges[1] - edges[0])
+    if signal_fraction < minimum_signal_fraction:
         return None
-    return CoreEstimate(center, sigma, entries, core_count, iterations)
+    if significance < minimum_peak_significance:
+        return None
+    if expected_center is not None:
+        tolerance = max(3.0 * sigma, 2.0 * bin_width)
+        if abs(center - expected_center) > tolerance:
+            return None
+    return CoreEstimate(
+        center=center,
+        sigma=sigma,
+        entries=entries,
+        fit_entries=int(selected.size),
+        signal_entries=float(signal_entries),
+        signal_fraction=signal_fraction,
+        peak_significance=float(significance),
+        iterations=iterations,
+    )
+
+
+def _mixture_weights(
+    counts: Array,
+    components: Array,
+    max_iterations: int,
+    convergence: float,
+) -> tuple[Array, int]:
+    weights = np.full(components.shape[0], 1.0 / components.shape[0])
+    total = float(np.sum(counts))
+    for iteration in range(1, max_iterations + 1):
+        density = np.maximum(weights @ components, np.finfo(float).tiny)
+        responsibilities = components * weights[:, None] / density[None, :]
+        next_weights = (responsibilities @ counts) / total
+        if np.max(np.abs(next_weights - weights)) <= convergence:
+            return next_weights, iteration
+        weights = next_weights
+    return weights, max_iterations
 
 
 def _mode_seed(
@@ -446,21 +553,23 @@ def _mode_seed(
     lo, hi = np.quantile(values, [0.005, 0.995])
     if not (np.isfinite(lo) and np.isfinite(hi) and hi > lo):
         return None
-    bins = min(histogram_bins, max(24, 2 * int(np.sqrt(values.size))))
+    bins = min(histogram_bins, max(16, int(np.sqrt(values.size))))
     counts, edges = np.histogram(values, bins=bins, range=(lo, hi))
     if not np.any(counts):
         return None
-    smoothed = np.convolve(
-        counts.astype(float), [1.0, 2.0, 3.0, 2.0, 1.0], mode="same"
-    )
+    smoothed = np.convolve(counts.astype(float), [1.0, 2.0, 1.0], mode="same")
     centers = 0.5 * (edges[:-1] + edges[1:])
-    peak = int(np.argmax(smoothed))
-    if expected_center is not None:
-        candidates = np.flatnonzero(smoothed >= 0.5 * smoothed[peak])
-        if candidates.size:
-            peak = int(candidates[np.argmin(np.abs(centers[candidates] - expected_center))])
-
     baseline = float(np.median(smoothed))
+    global_peak = int(np.argmax(smoothed))
+    local_maximum = np.ones(smoothed.size, dtype=bool)
+    local_maximum[1:] &= smoothed[1:] >= smoothed[:-1]
+    local_maximum[:-1] &= smoothed[:-1] >= smoothed[1:]
+    threshold = baseline + 0.35 * max(0.0, smoothed[global_peak] - baseline)
+    candidates = np.flatnonzero(local_maximum & (smoothed >= threshold))
+    peak = global_peak
+    if expected_center is not None and candidates.size:
+        peak = int(candidates[np.argmin(np.abs(centers[candidates] - expected_center))])
+
     half_height = baseline + 0.5 * max(0.0, smoothed[peak] - baseline)
     left = peak
     while left > 0 and smoothed[left] >= half_height:
@@ -479,38 +588,32 @@ def _mode_seed(
     return center, sigma
 
 
-def _truncated_normal_sigma_correction(clip_sigma: float) -> float:
-    normalization = math.erf(clip_sigma / math.sqrt(2.0))
-    phi = math.exp(-0.5 * clip_sigma * clip_sigma) / math.sqrt(2.0 * math.pi)
-    variance = 1.0 - 2.0 * clip_sigma * phi / normalization
-    if not np.isfinite(variance) or variance <= 0:
-        raise ValueError("core clip sigma gives an invalid truncated-normal variance")
-    return 1.0 / math.sqrt(variance)
-
-
 def _validate_settings(
     n_sigma: float,
     minimum_events: int,
-    core_clip_sigma: float,
-    core_max_iterations: int,
-    core_convergence: float,
-    core_histogram_bins: int,
-    minimum_core_fraction: float,
+    fit_window_sigma: float,
+    fit_max_iterations: int,
+    fit_convergence: float,
+    fit_histogram_bins: int,
+    minimum_signal_fraction: float,
+    minimum_peak_significance: float,
 ) -> None:
     if not np.isfinite(n_sigma) or n_sigma <= 0:
         raise ValueError("n_sigma must be positive")
     if minimum_events < 12:
         raise ValueError("minimum_events must be at least 12")
-    if not np.isfinite(core_clip_sigma) or core_clip_sigma <= 1.0:
-        raise ValueError("core_clip_sigma must be greater than 1")
-    if core_max_iterations < 1:
-        raise ValueError("core_max_iterations must be positive")
-    if not np.isfinite(core_convergence) or core_convergence <= 0:
-        raise ValueError("core_convergence must be positive")
-    if core_histogram_bins < 10:
-        raise ValueError("core_histogram_bins must be at least 10")
-    if not np.isfinite(minimum_core_fraction) or not 0 < minimum_core_fraction <= 1:
-        raise ValueError("minimum_core_fraction must be in (0, 1]")
+    if not np.isfinite(fit_window_sigma) or fit_window_sigma <= 2.0:
+        raise ValueError("fit_window_sigma must be greater than 2")
+    if fit_max_iterations < 1:
+        raise ValueError("fit_max_iterations must be positive")
+    if not np.isfinite(fit_convergence) or fit_convergence <= 0:
+        raise ValueError("fit_convergence must be positive")
+    if fit_histogram_bins < 20:
+        raise ValueError("fit_histogram_bins must be at least 20")
+    if not np.isfinite(minimum_signal_fraction) or not 0 < minimum_signal_fraction <= 1:
+        raise ValueError("minimum_signal_fraction must be in (0, 1]")
+    if not np.isfinite(minimum_peak_significance) or minimum_peak_significance <= 0:
+        raise ValueError("minimum_peak_significance must be positive")
 
 
 def _group_ids(
@@ -527,5 +630,4 @@ def _group_ids(
     if global_mode:
         return topology
     iq2, ixb, it = [np.asarray(item, dtype=np.int64) for item in (iq2, ixb, it)]
-    # Pairing is collision-free for the supported nonnegative bin indices.
     return (((topology * _BIN_RADIX) + iq2) * _BIN_RADIX + ixb) * _BIN_RADIX + it
