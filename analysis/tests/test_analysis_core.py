@@ -856,7 +856,20 @@ class ExclusivityTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "diagnostics.pdf"
-            rendered = render_diagnostics(cuts, output)
+            import matplotlib
+
+            hostile_style = {
+                "savefig.transparent": True,
+                "figure.facecolor": "none",
+                "axes.facecolor": "none",
+                "text.color": "white",
+                "axes.labelcolor": "white",
+                "axes.edgecolor": "white",
+                "xtick.color": "white",
+                "ytick.color": "white",
+            }
+            with matplotlib.rc_context(rc=hostile_style):
+                rendered = render_diagnostics(cuts, output)
             self.assertEqual(rendered, (4,))
             self.assertGreater(output.stat().st_size, 1000)
 

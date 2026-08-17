@@ -9,6 +9,38 @@ from .exclusivity import ExclusivityCuts, topology_ids_from_groups
 
 Array = np.ndarray
 
+_PDF_STYLE = {
+    "figure.facecolor": "white",
+    "axes.facecolor": "white",
+    "savefig.facecolor": "white",
+    "savefig.edgecolor": "white",
+    "savefig.transparent": False,
+    "font.family": "DejaVu Sans",
+    "font.size": 9.0,
+    "text.color": "black",
+    "axes.edgecolor": "#202020",
+    "axes.labelcolor": "black",
+    "axes.titlecolor": "black",
+    "axes.titlesize": 10.0,
+    "axes.labelsize": 9.0,
+    "xtick.color": "black",
+    "ytick.color": "black",
+    "xtick.labelsize": 8.0,
+    "ytick.labelsize": 8.0,
+    "grid.color": "#b0b0b0",
+    "grid.alpha": 0.35,
+    "legend.fontsize": 8.0,
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+}
+
+_OBSERVED_COLOR = "#202020"
+_TOTAL_COLOR = "#000000"
+_CUT_COMPONENT_COLOR = "#0072B2"
+_NUISANCE_COLOR = "#D55E00"
+_BACKGROUND_COLOR = "#CC3311"
+_BOUNDARY_COLOR = "#009E73"
+
 
 def diagnostic_group_ids(
     cuts: ExclusivityCuts,
@@ -51,15 +83,29 @@ def render_diagnostics(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     positions = np.searchsorted(cuts.group_ids, selected_ids)
 
-    with PdfPages(output_path) as pdf:
-        _summary_page(cuts, selected_ids, pdf, plt)
-        for group_id, position in zip(selected_ids, positions, strict=True):
-            _group_page(cuts, int(group_id), int(position), pdf, plt)
+    with matplotlib.rc_context(rc=_PDF_STYLE):
+        with PdfPages(
+            output_path,
+            metadata={
+                "Title": "Exclusivity fit and cut-flow diagnostics",
+                "Subject": cuts.estimator,
+            },
+        ) as pdf:
+            _summary_page(cuts, selected_ids, pdf, plt)
+            for group_id, position in zip(selected_ids, positions, strict=True):
+                _group_page(cuts, int(group_id), int(position), pdf, plt)
     return tuple(int(item) for item in selected_ids)
 
 
 def _summary_page(cuts, selected_ids, pdf, plt) -> None:
-    figure, axes = plt.subplots(2, 3, figsize=(15, 8.5), constrained_layout=True)
+    figure, axes = plt.subplots(
+        2,
+        3,
+        figsize=(15, 8.5),
+        constrained_layout=True,
+        facecolor="white",
+    )
+    figure.patch.set_alpha(1.0)
     figure.suptitle(
         "Exclusivity fit audit\n"
         f"{cuts.estimator}; groups={cuts.group_ids.size}; plotted={selected_ids.size}; "
@@ -67,7 +113,9 @@ def _summary_page(cuts, selected_ids, pdf, plt) -> None:
         f"converged={cuts.refinement_converged}; "
         f"max boundary change={cuts.maximum_boundary_change:.3g}\n"
         "boundary-change history="
-        + ", ".join(f"{value:.3g}" for value in cuts.boundary_change_history)
+        + ", ".join(f"{value:.3g}" for value in cuts.boundary_change_history),
+        color="black",
+        fontsize=12,
     )
     for index, (axis, name) in enumerate(zip(axes.flat, cuts.variables, strict=True)):
         reduced = cuts.pearson_chi2[:, index] / np.maximum(cuts.fit_ndof[:, index], 1)
@@ -77,17 +125,41 @@ def _summary_page(cuts, selected_ids, pdf, plt) -> None:
             out=np.full(cuts.group_ids.size, np.nan),
             where=cuts.nminus1_entries[:, index] > 0,
         )
-        axis.scatter(reduced, efficiency, s=18, alpha=0.75)
+        axis.scatter(
+            reduced,
+            efficiency,
+            s=28,
+            color=_CUT_COMPONENT_COLOR,
+            edgecolor=_OBSERVED_COLOR,
+            linewidth=0.4,
+            alpha=1.0,
+            zorder=3,
+        )
         for group_id, x_value, y_value in zip(
             cuts.group_ids, reduced, efficiency, strict=True
         ):
             if group_id in selected_ids and np.isfinite(x_value + y_value):
-                axis.annotate(str(int(group_id)), (x_value, y_value), fontsize=6)
-        axis.set_title(name)
-        axis.set_xlabel("Pearson chi-square / ndof")
-        axis.set_ylabel("N-1 cut efficiency")
-        axis.grid(alpha=0.25)
-    pdf.savefig(figure)
+                axis.annotate(
+                    str(int(group_id)),
+                    (x_value, y_value),
+                    xytext=(4, 4),
+                    textcoords="offset points",
+                    color="black",
+                    fontsize=7,
+                )
+        axis.set_title(name, color="black")
+        axis.set_xlabel("Pearson chi-square / ndof", color="black")
+        axis.set_ylabel("N-1 cut efficiency", color="black")
+        axis.set_ylim(-0.03, 1.03)
+        _style_axis(axis)
+    pdf.savefig(
+        figure,
+        facecolor="white",
+        edgecolor="white",
+        transparent=False,
+        bbox_inches="tight",
+        pad_inches=0.12,
+    )
     plt.close(figure)
 
 
@@ -95,11 +167,21 @@ def _group_page(cuts, group_id, position, pdf, plt) -> None:
     topology = int(
         topology_ids_from_groups(np.asarray([group_id]), cuts.global_mode)[0]
     )
-    figure, axes = plt.subplots(2, 3, figsize=(15, 8.5), constrained_layout=True)
+    figure, axes = plt.subplots(
+        2,
+        3,
+        figsize=(15, 8.5),
+        constrained_layout=False,
+        facecolor="white",
+    )
+    figure.patch.set_alpha(1.0)
     figure.suptitle(
         f"group {group_id}: proton detector={topology // 4}, "
-        f"FT photons={topology % 4}"
+        f"FT photons={topology % 4}",
+        color="black",
+        fontsize=12,
     )
+    legend_entries = {}
     for variable_index, (axis, name) in enumerate(
         zip(axes.flat, cuts.variables, strict=True)
     ):
@@ -117,18 +199,55 @@ def _group_page(cuts, group_id, position, pdf, plt) -> None:
             observed,
             yerr=np.sqrt(np.maximum(observed, 1.0)),
             fmt=".",
-            color="black",
-            markersize=2.5,
-            linewidth=0.6,
+            color=_OBSERVED_COLOR,
+            ecolor="#606060",
+            markersize=3.0,
+            linewidth=0.7,
+            alpha=0.9,
             label="observed",
         )
-        axis.plot(centers, expected, color="black", linewidth=1.2, label="total fit")
-        axis.plot(centers, cut_signal, color="tab:blue", label="cut component")
+        axis.plot(
+            centers,
+            expected,
+            color=_TOTAL_COLOR,
+            linewidth=1.7,
+            label="total fit",
+        )
+        axis.plot(
+            centers,
+            cut_signal,
+            color=_CUT_COMPONENT_COLOR,
+            linewidth=1.5,
+            label="cut component",
+        )
         if np.any(noncut > 0.0):
-            axis.plot(centers, noncut, color="tab:orange", label="fitted nuisance/tail")
-        axis.plot(centers, background, color="tab:red", label="background")
-        axis.axvline(cuts.lower[position, variable_index], color="tab:green", linestyle="--")
-        axis.axvline(cuts.upper[position, variable_index], color="tab:green", linestyle="--")
+            axis.plot(
+                centers,
+                noncut,
+                color=_NUISANCE_COLOR,
+                linewidth=1.5,
+                label="fitted nuisance/tail",
+            )
+        axis.plot(
+            centers,
+            background,
+            color=_BACKGROUND_COLOR,
+            linewidth=1.3,
+            label="background",
+        )
+        axis.axvline(
+            cuts.lower[position, variable_index],
+            color=_BOUNDARY_COLOR,
+            linewidth=1.4,
+            linestyle="--",
+            label="cut boundary",
+        )
+        axis.axvline(
+            cuts.upper[position, variable_index],
+            color=_BOUNDARY_COLOR,
+            linewidth=1.4,
+            linestyle="--",
+        )
         reduced = cuts.pearson_chi2[position, variable_index] / max(
             cuts.fit_ndof[position, variable_index], 1
         )
@@ -138,13 +257,16 @@ def _group_page(cuts, group_id, position, pdf, plt) -> None:
             if cuts.nminus1_entries[position, variable_index]
             else float("nan")
         )
-        axis.set_title(name)
-        axis.set_xlabel(
-            f"{cuts.fit_model[position, variable_index]}\n"
-            f"cut={cuts.cut_components[variable_index]}, "
-            f"containment={cuts.cut_containments[variable_index]:.5f}"
+        axis.set_title(
+            f"{name}\n{cuts.fit_model[position, variable_index]}",
+            color="black",
         )
-        axis.set_ylabel("entries / bin")
+        axis.set_xlabel(
+            f"cut={cuts.cut_components[variable_index]}, "
+            f"containment={cuts.cut_containments[variable_index]:.5f}",
+            color="black",
+        )
+        axis.set_ylabel("entries / bin", color="black")
         axis.text(
             0.02,
             0.97,
@@ -161,17 +283,51 @@ def _group_page(cuts, group_id, position, pdf, plt) -> None:
             f"N-1 efficiency: {nminus1_efficiency:.4f}",
             transform=axis.transAxes,
             va="top",
+            color="black",
             fontsize=7,
-            bbox={"facecolor": "white", "alpha": 0.78, "edgecolor": "none"},
+            zorder=10,
+            bbox={
+                "facecolor": "white",
+                "alpha": 0.92,
+                "edgecolor": "#808080",
+                "linewidth": 0.4,
+                "boxstyle": "square,pad=0.25",
+            },
         )
-        axis.grid(alpha=0.2)
-    handles, labels = axes.flat[0].get_legend_handles_labels()
+        axis.ticklabel_format(
+            axis="y", style="sci", scilimits=(0, 0), useMathText=True
+        )
+        _style_axis(axis)
+        for handle, label in zip(*axis.get_legend_handles_labels(), strict=True):
+            legend_entries.setdefault(label, handle)
     figure.legend(
-        handles,
-        labels,
-        loc="lower center",
-        bbox_to_anchor=(0.5, -0.01),
-        ncol=5,
+        legend_entries.values(),
+        legend_entries.keys(),
+        loc="center left",
+        bbox_to_anchor=(0.885, 0.5),
+        ncol=1,
+        frameon=True,
+        facecolor="white",
+        edgecolor="#606060",
+        labelcolor="black",
     )
-    pdf.savefig(figure)
+    figure.tight_layout(rect=(0.0, 0.025, 0.875, 0.94), h_pad=1.5, w_pad=1.2)
+    pdf.savefig(
+        figure,
+        facecolor="white",
+        edgecolor="white",
+        transparent=False,
+        bbox_inches="tight",
+        pad_inches=0.12,
+    )
     plt.close(figure)
+
+
+def _style_axis(axis) -> None:
+    axis.set_facecolor("white")
+    axis.patch.set_alpha(1.0)
+    axis.tick_params(axis="both", colors="black", labelcolor="black")
+    axis.grid(True, color="#b0b0b0", alpha=0.35, linewidth=0.6)
+    for spine in axis.spines.values():
+        spine.set_color("#202020")
+        spine.set_linewidth(0.8)
