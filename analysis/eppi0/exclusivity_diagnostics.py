@@ -157,8 +157,6 @@ def _summary_page(cuts, selected_ids, pdf, plt) -> None:
         facecolor="white",
         edgecolor="white",
         transparent=False,
-        bbox_inches="tight",
-        pad_inches=0.12,
     )
     plt.close(figure)
 
@@ -368,8 +366,6 @@ def _group_page(cuts, group_id, position, pdf, plt) -> None:
         facecolor="white",
         edgecolor="white",
         transparent=False,
-        bbox_inches="tight",
-        pad_inches=0.12,
     )
     plt.close(figure)
 

@@ -938,6 +938,17 @@ class ExclusivityTests(unittest.TestCase):
                 rendered = render_diagnostics(cuts, output)
             self.assertEqual(rendered, (4,))
             self.assertGreater(output.stat().st_size, 1000)
+            import re
+
+            media_boxes = re.findall(
+                rb"/MediaBox\s*\[\s*0\s+0\s+([0-9.eE+-]+)\s+"
+                rb"([0-9.eE+-]+)\s*\]",
+                output.read_bytes(),
+            )
+            self.assertEqual(len(media_boxes), 2)
+            for width, height in media_boxes:
+                self.assertLess(float(width), 1200.0)
+                self.assertLess(float(height), 700.0)
 
     def test_core_plus_broad_tail_recovers_narrow_resolution(self) -> None:
         rng = np.random.default_rng(41)
