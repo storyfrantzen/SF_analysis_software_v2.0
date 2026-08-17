@@ -248,8 +248,8 @@ def derivation_settings(args: argparse.Namespace) -> dict[str, object]:
     if not isinstance(refinement, dict):
         raise ValueError("exclusivity refinement section must be an object")
     refinement_options = {
-        "refinement_max_iterations": ("maximum_iterations", 3),
-        "refinement_min_iterations": ("minimum_iterations", 2),
+        "refinement_max_iterations": ("maximum_iterations", 8),
+        "refinement_min_iterations": ("minimum_iterations", 3),
         "refinement_boundary_tolerance": ("boundary_relative_tolerance", 0.02),
     }
     for argument, (key, default) in refinement_options.items():
@@ -361,6 +361,10 @@ def main() -> int:
         f"N-1 refinement: iterations={cuts.refinement_iterations}, "
         f"converged={cuts.refinement_converged}, maximum relative boundary "
         f"change={cuts.maximum_boundary_change:.5g}"
+    )
+    print(
+        "Boundary-change history: "
+        + ", ".join(f"{value:.5g}" for value in cuts.boundary_change_history)
     )
     print(f"Passing events: {mask.sum()}/{mask.size}")
     if args.format == "selected-root":

@@ -11,7 +11,7 @@ from .exclusivity_models import FitEstimate, estimate_model, maximum_fit_paramet
 Array = np.ndarray
 
 GROUPING = "proton-detector+ft-photon-count-v1"
-ESTIMATOR = "topology-variable-signal-models-iterative-v6"
+ESTIMATOR = "topology-variable-signal-models-iterative-v7"
 _TOPOLOGY_RADIX = 4
 _BIN_RADIX = 128
 
@@ -116,6 +116,7 @@ class ExclusivityCuts:
     refinement_iterations: int
     refinement_converged: bool
     maximum_boundary_change: float
+    boundary_change_history: Array
     refinement_max_iterations: int
     refinement_min_iterations: int
     refinement_boundary_tolerance: float
@@ -156,8 +157,8 @@ def derive_cuts(
     maximum_local_center_shift_sigma: float = 2.5,
     cut_containments: dict[str, float] | None = None,
     cut_components: dict[str, str] | None = None,
-    refinement_max_iterations: int = 3,
-    refinement_min_iterations: int = 2,
+    refinement_max_iterations: int = 8,
+    refinement_min_iterations: int = 3,
     refinement_boundary_tolerance: float = 0.02,
     continuous_refinement: bool = True,
 ) -> ExclusivityCuts:
@@ -442,32 +443,41 @@ def derive_cuts(
         ] = estimate.background_counts
         window_source[group_index, variable_index] = source
 
-    # Seed every variable from the same uncut population. This makes the
-    # initialization independent of variable order; the Jacobi-style N-1
-    # iterations below then update all boundaries simultaneously.
-    uncut = [np.ones(rows.size, dtype=bool) for rows in group_rows]
-    initial_active = active.copy()
-    initial_results = [
-        fit_stage(variable_index, uncut, initial_active)
-        for variable_index, _ in enumerate(variables)
-    ]
-    for group_index in np.flatnonzero(initial_active):
-        for variable_index, name in enumerate(variables):
-            estimate, reason, _ = initial_results[variable_index][group_index]
+    # Bootstrap in one fixed physics order so that combinatorial backgrounds in
+    # the later missing quantities do not dominate their initial fits. The
+    # ordering is based on variable identity, not the caller's tuple order.
+    initialization_rank = {
+        name: index for index, name in enumerate(DEFAULT_VARIABLES)
+    }
+    initialization_order = sorted(
+        range(len(variables)),
+        key=lambda index: (initialization_rank.get(variables[index], 1000), index),
+    )
+    running = [np.ones(rows.size, dtype=bool) for rows in group_rows]
+    for variable_index in initialization_order:
+        name = variables[variable_index]
+        stage_active = active.copy()
+        results = fit_stage(variable_index, running, stage_active)
+        for group_index in np.flatnonzero(stage_active):
+            estimate, reason, source = results[group_index]
             if estimate is None:
                 active[group_index] = False
                 dropped_variables[group_index] = name
-                dropped_reasons[group_index] = f"initial fit: {reason}"
-                break
-    for group_index in np.flatnonzero(active):
-        for variable_index, _ in enumerate(variables):
-            estimate, _, source = initial_results[variable_index][group_index]
-            assert estimate is not None
+                dropped_reasons[group_index] = f"bootstrap fit: {reason}"
+                continue
             store_estimate(group_index, variable_index, estimate, source)
+            rows = group_rows[group_index]
+            raw = arrays[name][rows]
+            running[group_index] &= (
+                np.isfinite(raw)
+                & (raw >= estimate.lower)
+                & (raw <= estimate.upper)
+            )
 
     refinement_iterations = 0
     refinement_converged = refinement_max_iterations == 0
     maximum_boundary_change = 0.0
+    boundary_change_history = []
     for refinement_index in range(refinement_max_iterations):
         stage_active = active.copy()
         snapshot_lower = lower.copy()
@@ -522,6 +532,7 @@ def derive_cuts(
                 store_estimate(group_index, variable_index, estimate, source)
         refinement_iterations = refinement_index + 1
         maximum_boundary_change = max(changes, default=0.0)
+        boundary_change_history.append(maximum_boundary_change)
         if (
             refinement_iterations >= refinement_min_iterations
             and maximum_boundary_change <= refinement_boundary_tolerance
@@ -634,6 +645,7 @@ def derive_cuts(
         refinement_iterations=refinement_iterations,
         refinement_converged=refinement_converged,
         maximum_boundary_change=maximum_boundary_change,
+        boundary_change_history=np.asarray(boundary_change_history, dtype=float),
         refinement_max_iterations=refinement_max_iterations,
         refinement_min_iterations=refinement_min_iterations,
         refinement_boundary_tolerance=refinement_boundary_tolerance,
@@ -793,6 +805,7 @@ def save_cuts(path: str, cuts: ExclusivityCuts) -> None:
         refinement_iterations=cuts.refinement_iterations,
         refinement_converged=cuts.refinement_converged,
         maximum_boundary_change=cuts.maximum_boundary_change,
+        boundary_change_history=cuts.boundary_change_history,
         refinement_max_iterations=cuts.refinement_max_iterations,
         refinement_min_iterations=cuts.refinement_min_iterations,
         refinement_boundary_tolerance=cuts.refinement_boundary_tolerance,
@@ -897,6 +910,7 @@ def load_cuts(path: str) -> ExclusivityCuts:
         refinement_iterations=int(saved["refinement_iterations"]),
         refinement_converged=bool(saved["refinement_converged"]),
         maximum_boundary_change=float(saved["maximum_boundary_change"]),
+        boundary_change_history=saved["boundary_change_history"],
         refinement_max_iterations=int(saved["refinement_max_iterations"]),
         refinement_min_iterations=int(saved["refinement_min_iterations"]),
         refinement_boundary_tolerance=float(
@@ -976,6 +990,8 @@ def load_cuts(path: str) -> ExclusivityCuts:
         raise ValueError("exclusivity cut table has inconsistent cut containments")
     if cuts.cut_components.shape != variable_shape:
         raise ValueError("exclusivity cut table has inconsistent cut components")
+    if cuts.boundary_change_history.shape != (cuts.refinement_iterations,):
+        raise ValueError("exclusivity cut table has inconsistent convergence history")
     if cuts.dropped_group_ids.shape != cuts.dropped_variables.shape:
         raise ValueError("exclusivity cut table has inconsistent dropped-group diagnostics")
     if cuts.dropped_group_ids.shape != cuts.dropped_reasons.shape:

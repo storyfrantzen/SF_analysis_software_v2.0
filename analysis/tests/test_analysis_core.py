@@ -510,7 +510,7 @@ class ExclusivityTests(unittest.TestCase):
         self.assertNotIn("global_cuts", settings)
         self.assertEqual(settings["cut_components"]["rec_E_miss"], "core")
         self.assertEqual(settings["cut_components"]["rec_pT_miss"], "signal")
-        self.assertEqual(settings["refinement_max_iterations"], 3)
+        self.assertEqual(settings["refinement_max_iterations"], 8)
 
     def test_global_cut_table_can_be_reused(self) -> None:
         rng = np.random.default_rng(4)
@@ -548,9 +548,13 @@ class ExclusivityTests(unittest.TestCase):
         self.assertTrue(np.all(cuts.extrapolated_cut_entries == 0))
         self.assertTrue(np.all(cuts.lower >= cuts.fit_lower))
         self.assertTrue(np.all(cuts.upper <= cuts.fit_upper))
-        self.assertGreaterEqual(cuts.refinement_iterations, 2)
-        self.assertEqual(cuts.refinement_max_iterations, 3)
-        self.assertEqual(cuts.refinement_min_iterations, 2)
+        self.assertGreaterEqual(cuts.refinement_iterations, 3)
+        self.assertEqual(cuts.refinement_max_iterations, 8)
+        self.assertEqual(cuts.refinement_min_iterations, 3)
+        self.assertEqual(
+            cuts.boundary_change_history.shape,
+            (cuts.refinement_iterations,),
+        )
         self.assertAlmostEqual(cuts.refinement_boundary_tolerance, 0.02)
         self.assertTrue(cuts.continuous_refinement)
         self.assertGreater(mask.sum(), count // 2)
@@ -968,6 +972,7 @@ class ExclusivityTests(unittest.TestCase):
                 "binned-gaussian-core-tail-background-mixture-v3",
                 "binned-gaussian-core-tail-background-mixture-v4",
                 "topology-variable-signal-models-v5",
+                "topology-variable-signal-models-iterative-v6",
             ):
                 path = Path(tmp) / f"{estimator}.npz"
                 np.savez_compressed(

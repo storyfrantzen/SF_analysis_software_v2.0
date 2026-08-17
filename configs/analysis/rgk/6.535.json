@@ -26,8 +26,8 @@
     "maximum_local_center_shift_sigma": 2.5,
     "continuous_refinement": true,
     "refinement": {
-      "maximum_iterations": 3,
-      "minimum_iterations": 2,
+      "maximum_iterations": 8,
+      "minimum_iterations": 3,
       "boundary_relative_tolerance": 0.02
     },
     "variables": {

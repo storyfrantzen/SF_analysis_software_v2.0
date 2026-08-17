@@ -550,10 +550,13 @@ the two possible orderings of a mixed pair remain one physical category.
 
 Each iteration fits one quantity after applying the other five current cuts;
 all six proposed boundaries are then committed simultaneously. Initial fits
-also use the same uncut population for every variable. This removes the former
-dependence on variable order. The cut table records the iteration count,
-convergence state, maximum relative boundary change, cumulative cut flow, and
-N-1 numerator and denominator for every group and variable.
+use a fixed physics-ordered bootstrap (`m_gg`, `pT_miss`, `m2_epX`, `m_eggX`,
+`E_miss`, then `m2_miss`) so that early clean peaks suppress combinatorial
+background before the missing-quantity fits. This order is based on variable
+identity rather than caller argument order. It only initializes the fit; the
+final boundaries come from the simultaneous N-1 updates. The cut table records
+the iteration count, full boundary-change history, convergence state, cumulative
+cut flow, and N-1 numerator and denominator for every group and variable.
 
 When a local kinematic group has too few N-1-selected events or an unstable core,
 its window falls back to the N-1-selected sample pooled over the same
@@ -596,7 +599,7 @@ python3 analysis/derive_exclusivity.py mc_events.npz \
   --diagnostics results/gemc_exclusivity_diagnostics.pdf
 ```
 
-The PDF can also be regenerated without the event sample because the v6 cut
+The PDF can also be regenerated without the event sample because the v7 cut
 table stores the fit histograms and components:
 
 ```bash
@@ -615,7 +618,7 @@ Pass the GEMC mask to `response --selection-mask` and the data mask to
 `unfold --selection-mask`. Use `--per-bin-cuts` only when one deliberately wants
 local kinematic windows with automatic same-topology fallback instead of the
 default pooled topology windows. Cut tables produced
-before photon-topology grouping or before the v6 iterative/audited fits are
+before photon-topology grouping or before the v7 iterative/audited fits are
 incompatible and must be re-derived rather than passed with `--reuse-cuts`.
 
 For large GEMC production, derive the GEMC exclusivity mask directly from the

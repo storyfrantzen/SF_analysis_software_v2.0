@@ -164,7 +164,18 @@ def estimate_model(
         variable, seed_center, seed_sigma, x, bin_width, fit_lo, fit_hi
     )
     family_best: dict[str, Evaluation] = {}
+    rejected_candidates: list[tuple[Candidate, str]] = []
     for candidate in candidates:
+        sanity_reason = _candidate_sanity_reason(
+            candidate,
+            expected_center,
+            maximum_center_deviation,
+            maximum_sigma,
+            bin_width,
+        )
+        if sanity_reason:
+            rejected_candidates.append((candidate, sanity_reason))
+            continue
         evaluation = _evaluate_candidate(
             candidate,
             counts,
@@ -182,6 +193,20 @@ def estimate_model(
             family_best[candidate.name] = evaluation
 
     if not family_best:
+        if rejected_candidates:
+            rejected, reason = min(
+                rejected_candidates,
+                key=lambda item: (
+                    item[0].scale,
+                    abs(item[0].center - expected_center)
+                    if expected_center is not None
+                    else 0.0,
+                ),
+            )
+            return None, (
+                "all finite model candidates violated sanity constraints; "
+                f"smallest-scale candidate {rejected.name}: {reason}"
+            )
         return None, f"no finite {variable} model candidate"
 
     family_results = []
@@ -199,6 +224,9 @@ def estimate_model(
                 max_iterations,
                 convergence,
                 selected.size,
+                expected_center,
+                maximum_center_deviation,
+                maximum_sigma,
             )
         family_results.append(evaluation)
     family_results.sort(key=lambda item: item.bic)
@@ -724,6 +752,9 @@ def _refine_evaluation(
     max_iterations: int,
     convergence: float,
     fit_entries: int,
+    expected_center: float | None,
+    maximum_center_deviation: float | None,
+    maximum_sigma: float | None,
 ) -> Evaluation:
     candidate = initial.candidate
     parameters = np.asarray(candidate.parameter_values, dtype=float)
@@ -784,7 +815,17 @@ def _refine_evaluation(
         convergence,
         fit_entries,
     )
-    if refined is None or refined.bic >= initial.bic:
+    if (
+        refined is None
+        or _candidate_sanity_reason(
+            refined.candidate,
+            expected_center,
+            maximum_center_deviation,
+            maximum_sigma,
+            bin_width,
+        )
+        or refined.bic >= initial.bic
+    ):
         return initial
     return Evaluation(
         candidate=refined.candidate,
@@ -796,6 +837,26 @@ def _refine_evaluation(
         parameter_count=refined.parameter_count,
         refined=True,
     )
+
+
+def _candidate_sanity_reason(
+    candidate: Candidate,
+    expected_center: float | None,
+    maximum_center_deviation: float | None,
+    maximum_sigma: float | None,
+    bin_width: float,
+) -> str:
+    if maximum_sigma is not None and candidate.scale > maximum_sigma:
+        return (
+            f"characteristic scale {candidate.scale:.6g} exceeds maximum "
+            f"{maximum_sigma:.6g}"
+        )
+    if expected_center is not None and maximum_center_deviation is not None:
+        tolerance = max(maximum_center_deviation, 2.0 * bin_width)
+        shift = abs(candidate.center - expected_center)
+        if shift > tolerance:
+            return f"center shift {shift:.6g} exceeds maximum {tolerance:.6g}"
+    return ""
 
 
 def _parameter_bounds(

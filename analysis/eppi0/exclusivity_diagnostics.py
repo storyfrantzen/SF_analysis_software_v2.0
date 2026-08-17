@@ -65,7 +65,9 @@ def _summary_page(cuts, selected_ids, pdf, plt) -> None:
         f"{cuts.estimator}; groups={cuts.group_ids.size}; plotted={selected_ids.size}; "
         f"N-1 iterations={cuts.refinement_iterations}; "
         f"converged={cuts.refinement_converged}; "
-        f"max boundary change={cuts.maximum_boundary_change:.3g}"
+        f"max boundary change={cuts.maximum_boundary_change:.3g}\n"
+        "boundary-change history="
+        + ", ".join(f"{value:.3g}" for value in cuts.boundary_change_history)
     )
     for index, (axis, name) in enumerate(zip(axes.flat, cuts.variables, strict=True)):
         reduced = cuts.pearson_chi2[:, index] / np.maximum(cuts.fit_ndof[:, index], 1)

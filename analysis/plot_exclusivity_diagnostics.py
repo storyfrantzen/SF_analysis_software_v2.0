@@ -15,7 +15,7 @@ from eppi0.exclusivity_diagnostics import render_diagnostics
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Render fit, model-component, and N-1 diagnostics from a v6 cut table."
+        description="Render fit, model-component, and N-1 diagnostics from a v7 cut table."
     )
     parser.add_argument("cuts", type=Path)
     parser.add_argument("output", type=Path)
