@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -29,7 +30,9 @@ def parse_args() -> argparse.Namespace:
         description="Derive one exclusivity definition and apply it to an event sample."
     )
     parser.add_argument("sample", type=Path, help="Reference sample used to derive cuts")
-    parser.add_argument("--apply-to", type=Path, help="Optional second sample; defaults to reference")
+    parser.add_argument(
+        "--apply-to", type=Path, help="Optional second sample; defaults to reference"
+    )
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--cuts", type=Path, required=True)
     parser.add_argument("--mask", type=Path, required=True)
@@ -39,8 +42,19 @@ def parse_args() -> argparse.Namespace:
         default="npz",
         help="Read either a dense event NPZ or the selected-candidate ROOT tree directly",
     )
-    parser.add_argument("--dictionary", type=Path, help="ROOT dictionary shared library for selected-root input")
-    parser.add_argument("--tree", default="sEvents", help="ROOT tree name for selected-root input")
+    parser.add_argument(
+        "--dictionary",
+        type=Path,
+        help="ROOT dictionary shared library for selected-root input",
+    )
+    parser.add_argument(
+        "--tree", default="sEvents", help="ROOT tree name for selected-root input"
+    )
+    parser.add_argument(
+        "--diagnostics",
+        type=Path,
+        help="Optional multipage PDF containing the stored fits and cut-flow audit",
+    )
     grouping = parser.add_mutually_exclusive_group()
     grouping.add_argument(
         "--global-cuts",
@@ -54,26 +68,34 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Derive local Q2/xB/-t windows with same-topology fallbacks",
     )
-    parser.set_defaults(global_cuts=True)
+    parser.set_defaults(global_cuts=None)
     parser.add_argument(
         "--n-sigma",
         type=float,
-        default=3.0,
+        default=None,
         help=(
             "Gaussian-equivalent signal containment; 3 gives 99.73%% "
             "containment for every fitted signal model"
         ),
     )
-    parser.add_argument("--minimum-events", type=int, default=50)
-    parser.add_argument("--fit-window-sigma", type=float, default=5.0)
-    parser.add_argument("--fit-max-iterations", type=int, default=100)
-    parser.add_argument("--fit-convergence", type=float, default=1.0e-5)
-    parser.add_argument("--fit-histogram-bins", type=int, default=160)
-    parser.add_argument("--minimum-signal-fraction", type=float, default=0.1)
-    parser.add_argument("--minimum-peak-significance", type=float, default=3.0)
-    parser.add_argument("--maximum-local-sigma-ratio", type=float, default=2.0)
+    parser.add_argument("--minimum-events", type=int)
+    parser.add_argument("--fit-window-sigma", type=float)
+    parser.add_argument("--fit-max-iterations", type=int)
+    parser.add_argument("--fit-convergence", type=float)
+    parser.add_argument("--fit-histogram-bins", type=int)
+    parser.add_argument("--minimum-signal-fraction", type=float)
+    parser.add_argument("--minimum-peak-significance", type=float)
+    parser.add_argument("--maximum-local-sigma-ratio", type=float)
+    parser.add_argument("--maximum-local-center-shift-sigma", type=float)
+    parser.add_argument("--refinement-max-iterations", type=int)
+    parser.add_argument("--refinement-min-iterations", type=int)
+    parser.add_argument("--refinement-boundary-tolerance", type=float)
     parser.add_argument(
-        "--maximum-local-center-shift-sigma", type=float, default=2.5
+        "--no-continuous-refinement",
+        dest="continuous_refinement",
+        action="store_false",
+        default=None,
+        help="Disable continuous parameter refinement after the coarse model scan",
     )
     parser.add_argument("--reuse-cuts", action="store_true")
     return parser.parse_args()
@@ -189,9 +211,79 @@ def print_group_diagnostics(cuts: ExclusivityCuts) -> None:
         )
 
 
+def derivation_settings(args: argparse.Namespace) -> dict[str, object]:
+    document = json.loads(args.config.read_text())
+    configured = document.get("exclusivity", {})
+    if not isinstance(configured, dict):
+        raise ValueError("analysis config exclusivity section must be an object")
+
+    defaults = {
+        "n_sigma": 3.0,
+        "minimum_events": 50,
+        "fit_window_sigma": 5.0,
+        "fit_max_iterations": 100,
+        "fit_convergence": 1.0e-5,
+        "fit_histogram_bins": 160,
+        "minimum_signal_fraction": 0.1,
+        "minimum_peak_significance": 3.0,
+        "maximum_local_sigma_ratio": 2.0,
+        "maximum_local_center_shift_sigma": 2.5,
+        "continuous_refinement": True,
+    }
+    settings: dict[str, object] = {}
+    settings["global_mode"] = (
+        args.global_cuts
+        if args.global_cuts is not None
+        else configured.get("global_cuts", True)
+    )
+    for name, default in defaults.items():
+        command_line = getattr(args, name)
+        settings[name] = (
+            command_line
+            if command_line is not None
+            else configured.get(name, default)
+        )
+
+    refinement = configured.get("refinement", {})
+    if not isinstance(refinement, dict):
+        raise ValueError("exclusivity refinement section must be an object")
+    refinement_options = {
+        "refinement_max_iterations": ("maximum_iterations", 3),
+        "refinement_min_iterations": ("minimum_iterations", 2),
+        "refinement_boundary_tolerance": ("boundary_relative_tolerance", 0.02),
+    }
+    for argument, (key, default) in refinement_options.items():
+        command_line = getattr(args, argument)
+        settings[argument] = (
+            command_line
+            if command_line is not None
+            else refinement.get(key, default)
+        )
+
+    policies = configured.get("variables", {})
+    if not isinstance(policies, dict):
+        raise ValueError("exclusivity variables section must be an object")
+    unknown = sorted(set(policies) - set(DEFAULT_VARIABLES))
+    if unknown:
+        raise ValueError(f"unknown exclusivity variables in config: {unknown}")
+    containments: dict[str, float] = {}
+    components: dict[str, str] = {}
+    for name, policy in policies.items():
+        if not isinstance(policy, dict):
+            raise ValueError(f"exclusivity policy for {name} must be an object")
+        if "containment" in policy:
+            containments[name] = float(policy["containment"])
+        if "cut_component" in policy:
+            components[name] = str(policy["cut_component"])
+    settings["cut_containments"] = containments
+    settings["cut_components"] = components
+    return settings
+
+
 def main() -> int:
     args = parse_args()
     binning = from_config(args.config)
+    settings = derivation_settings(args)
     reference_values, (detector, ft_photons, q2, xb, minus_t) = load_arrays(
         args.sample, args.format, args.dictionary, args.tree
     )
@@ -206,20 +298,19 @@ def main() -> int:
             iq2,
             ixb,
             it,
-            n_sigma=args.n_sigma,
-            minimum_events=args.minimum_events,
-            global_mode=args.global_cuts,
-            fit_window_sigma=args.fit_window_sigma,
-            fit_max_iterations=args.fit_max_iterations,
-            fit_convergence=args.fit_convergence,
-            fit_histogram_bins=args.fit_histogram_bins,
-            minimum_signal_fraction=args.minimum_signal_fraction,
-            minimum_peak_significance=args.minimum_peak_significance,
-            maximum_local_sigma_ratio=args.maximum_local_sigma_ratio,
-            maximum_local_center_shift_sigma=args.maximum_local_center_shift_sigma,
+            **settings,
         )
         args.cuts.parent.mkdir(parents=True, exist_ok=True)
         save_cuts(str(args.cuts), cuts)
+    if args.diagnostics:
+        from eppi0.exclusivity_diagnostics import render_diagnostics
+
+        args.diagnostics.parent.mkdir(parents=True, exist_ok=True)
+        rendered = render_diagnostics(cuts, args.diagnostics)
+        print(
+            f"Diagnostic PDF: rendered {len(rendered)} groups to "
+            f"{args.diagnostics}"
+        )
     print_group_diagnostics(cuts)
     if cuts.group_ids.size == 0:
         raise RuntimeError(
@@ -233,13 +324,15 @@ def main() -> int:
     mask = apply_cuts(cuts, target_values, detector, ft_photons, iq2, ixb, it)
     args.mask.parent.mkdir(parents=True, exist_ok=True)
     np.save(args.mask, mask)
+    global_windows = int(np.count_nonzero(cuts.window_source == "global"))
     local = int(np.count_nonzero(cuts.window_source == "local"))
     fallback = int(np.count_nonzero(cuts.window_source == "topology_fallback"))
     consistency = int(
         np.count_nonzero(cuts.window_source == "topology_consistency_fallback")
     )
     print(
-        f"Windows: local={local}, topology fallback={fallback}, "
+        f"Windows: global={global_windows}, local={local}, "
+        f"topology fallback={fallback}, "
         f"topology consistency fallback={consistency}"
     )
     print(
@@ -257,12 +350,24 @@ def main() -> int:
             f"lower median={np.median(cuts.lower[:, index]):.7g}, "
             f"upper median={np.median(cuts.upper[:, index]):.7g}, "
             f"signal fraction median={np.median(cuts.signal_fractions[:, index]):.4g}, "
+            f"cut component={cuts.cut_components[index]}, "
+            f"cut containment={100.0 * cuts.cut_containments[index]:.5g}%, "
             f"significance median={np.median(cuts.peak_significance[:, index]):.4g}, "
+            f"chi2/ndof median="
+            f"{np.median(cuts.pearson_chi2[:, index] / cuts.fit_ndof[:, index]):.4g}, "
             f"models: {model_summary}"
         )
+    print(
+        f"N-1 refinement: iterations={cuts.refinement_iterations}, "
+        f"converged={cuts.refinement_converged}, maximum relative boundary "
+        f"change={cuts.maximum_boundary_change:.5g}"
+    )
     print(f"Passing events: {mask.sum()}/{mask.size}")
     if args.format == "selected-root":
-        print("Mask rows correspond to selected ROOT candidates; pass this mask to response-root.")
+        print(
+            "Mask rows correspond to selected ROOT candidates; pass this mask "
+            "to response-root."
+        )
     print(f"Wrote {args.cuts}")
     print(f"Wrote {args.mask}")
     return 0

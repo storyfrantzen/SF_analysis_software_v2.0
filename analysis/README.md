@@ -46,7 +46,7 @@ mass.
   and reduced cross sections;
 - `eppi0.bin_centering`: physical-bin AAO model averaging and bin-centering
   corrections;
-- `eppi0.exclusivity`: topology-aware sequential data/GEMC windows;
+- `eppi0.exclusivity`: topology-aware iterative N-1 data/GEMC windows;
 - `eppi0.event_sample`: radiative/non-radiative GEN construction and REC joins;
 - `eppi0.data_efficiency`: run-charge joins, current grouping, and zero-current fits;
 - `eppi0.harmonics`: weighted `A + B cos(phi) + C cos(2 phi)` fits.
@@ -511,8 +511,8 @@ generated topology and kinematics. Every output row therefore has
 columns used by the visualizer. This artifact is intended for reconstruction
 diagnostics, not as the generated denominator for response construction.
 
-`derive_exclusivity.py` preserves the sequential variable order and
-global/per-bin modes. Global-by-topology pooling is the default because this
+`derive_exclusivity.py` uses order-independent iterative N-1 fits and preserves
+the global/per-bin modes. Global-by-topology pooling is the default because this
 exclusive channel is generally too sparse for stable fine-bin fits. Pass
 `--per-bin-cuts` to opt into local `(Q2, xB, -t)` groups with same-topology
 fallbacks; the explicit `--global-cuts` spelling remains accepted. The signal
@@ -526,15 +526,21 @@ model follows the geometry of each exclusivity quantity:
   and a nonnegative linear background;
 - `rec_m_eggX`: Gaussian signal, promoted to a split Gaussian only when the
   Bayesian information criterion supports the extra asymmetry parameter;
-- `rec_E_miss`: Gaussian core, with an optional positive ex-Gaussian signal
-  tail selected by the Bayesian information criterion; and
-- `rec_m2_miss`: Laplace cusp, promoted to an asymmetric Laplace only when the
-  Bayesian information criterion supports distinct left and right scales.
+- `rec_E_miss`: Gaussian core plus an optional positive ex-Gaussian tail; the
+  tail is fitted and audited but does not widen the core-resolution cut; and
+- `rec_m2_miss`: Laplace cusp, promoted to an asymmetric Laplace when supported,
+  with an optional broad Laplace nuisance component that does not widen the
+  narrow-cusp cut.
 
-The `--n-sigma` value specifies a Gaussian-equivalent signal probability (for
+The `--n-sigma` value supplies the fallback Gaussian-equivalent signal
+probability (for
 example, `3` means 99.73%). Non-Gaussian windows are obtained from their fitted
-signal CDF at that containment. The broad `rec_m2_epX` nuisance component does
-not enlarge its established narrow-core window. This prevents percentile
+signal CDF at that containment. The analysis config can override the
+containment and choose `core` or `signal` independently for each variable under
+`exclusivity.variables`. The nominal RGA and RGK configs explicitly use the
+core for `m_gg`, `m2_epX`, `E_miss`, and `m2_miss`, and the complete physical
+signal for `pT_miss` and `m_eggX`. Broad nuisance components do
+not enlarge their associated narrow-core windows. This prevents percentile
 tails, background-contaminated sigma clipping, or a broad resolution tail from
 defining the core resolution. Local windows are derived separately for
 `(proton detector, number of FT photons, Q2 bin, xB bin, -t bin)`. Global mode
@@ -542,16 +548,25 @@ retains the first two topology components while pooling kinematic bins. Thus
 FD/FD, mixed FT/FD, and FT/FT photon pairs never share resolution windows, and
 the two possible orderings of a mixed pair remain one physical category.
 
-When a local kinematic group has too few surviving events or an unstable core,
-its window falls back to the sequentially selected sample pooled over the same
+Each iteration fits one quantity after applying the other five current cuts;
+all six proposed boundaries are then committed simultaneously. Initial fits
+also use the same uncut population for every variable. This removes the former
+dependence on variable order. The cut table records the iteration count,
+convergence state, maximum relative boundary change, cumulative cut flow, and
+N-1 numerator and denominator for every group and variable.
+
+When a local kinematic group has too few N-1-selected events or an unstable core,
+its window falls back to the N-1-selected sample pooled over the same
 proton detector and FT-photon multiplicity. A group is retained only if all six
 variables have finite windows; cuts are never silently disabled. The cut NPZ
 records every initially populated group and, for any removed group, the first
 failed variable and exact fit/window rejection reason. It also records fitted
 centers, characteristic scales, fit and fitted-signal entry counts, signal
 fractions, peak significances, selected fit models, named fit parameters,
-signal containment, iteration counts, and whether each window was local or
-topology-pooled. The command also prints the median center, scale, bounds,
+signal containment, fit domain, Pearson chi-square, Poisson deviance, BIC and
+next-model delta-BIC, binned observations and fitted components, iteration
+counts, and whether each window was global, local, or topology-pooled. The
+command also prints the median center, scale, bounds,
 signal fraction, significance, and model counts for every variable. Absolute
 expected-center and maximum-width sanity limits reject
 pathological fits rather than allowing an inflated sigma to validate itself.
@@ -572,18 +587,35 @@ Derive nominal data and GEMC windows independently:
 ```bash
 python3 analysis/derive_exclusivity.py data_events.npz \
   --config configs/analysis/rgk/6.535.json \
-  --cuts results/data_exclusivity.npz --mask results/data_exclusivity.npy
+  --cuts results/data_exclusivity.npz --mask results/data_exclusivity.npy \
+  --diagnostics results/data_exclusivity_diagnostics.pdf
 
 python3 analysis/derive_exclusivity.py mc_events.npz \
   --config configs/analysis/rgk/6.535.json \
-  --cuts results/gemc_exclusivity.npz --mask results/gemc_exclusivity.npy
+  --cuts results/gemc_exclusivity.npz --mask results/gemc_exclusivity.npy \
+  --diagnostics results/gemc_exclusivity_diagnostics.pdf
 ```
+
+The PDF can also be regenerated without the event sample because the v6 cut
+table stores the fit histograms and components:
+
+```bash
+python3 analysis/plot_exclusivity_diagnostics.py \
+  results/data_exclusivity.npz \
+  results/data_exclusivity_diagnostics.pdf
+```
+
+For a large per-bin table, the plotter defaults to the 24 groups with the worst
+reduced chi-square. Repeat `--group-id ID` to inspect chosen groups, or change
+the limit with `--maximum-groups`. A high reduced chi-square is an audit flag,
+not an automatic rejection: a statistically significant but imperfect model
+should be inspected rather than silently discarded.
 
 Pass the GEMC mask to `response --selection-mask` and the data mask to
 `unfold --selection-mask`. Use `--per-bin-cuts` only when one deliberately wants
 local kinematic windows with automatic same-topology fallback instead of the
 default pooled topology windows. Cut tables produced
-before photon-topology grouping or before signal/background fitting are
+before photon-topology grouping or before the v6 iterative/audited fits are
 incompatible and must be re-derived rather than passed with `--reuse-cuts`.
 
 For large GEMC production, derive the GEMC exclusivity mask directly from the

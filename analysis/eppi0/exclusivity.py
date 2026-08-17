@@ -11,7 +11,7 @@ from .exclusivity_models import FitEstimate, estimate_model, maximum_fit_paramet
 Array = np.ndarray
 
 GROUPING = "proton-detector+ft-photon-count-v1"
-ESTIMATOR = "topology-variable-signal-models-v5"
+ESTIMATOR = "topology-variable-signal-models-iterative-v6"
 _TOPOLOGY_RADIX = 4
 _BIN_RADIX = 128
 
@@ -53,6 +53,14 @@ _MAXIMUM_SIGMAS = {
     "rec_E_miss": 1.0,
     "rec_m2_miss": 1.0,
 }
+_DEFAULT_CUT_COMPONENTS = {
+    "rec_m_gg": "core",
+    "rec_pT_miss": "signal",
+    "rec_m2_epX": "core",
+    "rec_m_eggX": "signal",
+    "rec_E_miss": "core",
+    "rec_m2_miss": "core",
+}
 
 
 @dataclass(frozen=True)
@@ -61,17 +69,41 @@ class ExclusivityCuts:
     group_ids: Array
     lower: Array
     upper: Array
+    fit_lower: Array
+    fit_upper: Array
     centers: Array
     sigmas: Array
     fit_entries: Array
+    cut_entries: Array
+    extrapolated_cut_entries: Array
     signal_entries: Array
     signal_fractions: Array
+    cut_component_fractions: Array
+    nuisance_fractions: Array
+    background_fractions: Array
     peak_significance: Array
     iterations: Array
     fit_model: Array
     fit_parameter_names: Array
     fit_parameter_values: Array
+    bic: Array
+    delta_bic: Array
+    pearson_chi2: Array
+    deviance: Array
+    fit_ndof: Array
+    continuously_refined: Array
+    histogram_bin_count: Array
+    histogram_edges: Array
+    observed_counts: Array
+    expected_counts: Array
+    cut_signal_counts: Array
+    noncut_component_counts: Array
+    background_counts: Array
     window_source: Array
+    cumulative_before: Array
+    cumulative_after: Array
+    nminus1_entries: Array
+    nminus1_passing: Array
     populated_group_ids: Array
     dropped_group_ids: Array
     dropped_variables: Array
@@ -79,6 +111,15 @@ class ExclusivityCuts:
     global_mode: bool
     n_sigma: float
     signal_containment: float
+    cut_containments: Array
+    cut_components: Array
+    refinement_iterations: int
+    refinement_converged: bool
+    maximum_boundary_change: float
+    refinement_max_iterations: int
+    refinement_min_iterations: int
+    refinement_boundary_tolerance: float
+    continuous_refinement: bool
     minimum_events: int
     fit_window_sigma: float
     fit_max_iterations: int
@@ -113,15 +154,14 @@ def derive_cuts(
     minimum_peak_significance: float = 3.0,
     maximum_local_sigma_ratio: float = 2.0,
     maximum_local_center_shift_sigma: float = 2.5,
+    cut_containments: dict[str, float] | None = None,
+    cut_components: dict[str, str] | None = None,
+    refinement_max_iterations: int = 3,
+    refinement_min_iterations: int = 2,
+    refinement_boundary_tolerance: float = 0.02,
+    continuous_refinement: bool = True,
 ) -> ExclusivityCuts:
-    """Derive sequential signal-plus-background windows with topology fallbacks.
-
-    A variable-specific signal and smooth background are fitted in each
-    selected group. Global mode pools kinematic bins within detector topology.
-    In per-bin mode, a sparse or insignificant local fit inherits the fit
-    pooled over the same proton detector and FT-photon multiplicity. Every
-    retained group has a finite signal-containment window for every variable.
-    """
+    """Derive topology-aware cuts with order-independent iterative N-1 fits."""
     _validate_settings(
         n_sigma,
         minimum_events,
@@ -134,6 +174,39 @@ def derive_cuts(
         maximum_local_sigma_ratio,
         maximum_local_center_shift_sigma,
     )
+    if refinement_max_iterations < 0:
+        raise ValueError("refinement_max_iterations must be nonnegative")
+    if not 0 <= refinement_min_iterations <= refinement_max_iterations:
+        raise ValueError(
+            "refinement_min_iterations must lie between zero and the maximum"
+        )
+    if not np.isfinite(refinement_boundary_tolerance) or not (
+        0.0 < refinement_boundary_tolerance < 1.0
+    ):
+        raise ValueError(
+            "refinement_boundary_tolerance must lie between zero and one"
+        )
+
+    base_containment = float(erf(n_sigma / sqrt(2.0)))
+    containment_overrides = cut_containments or {}
+    component_overrides = cut_components or {}
+    variable_containments = np.asarray(
+        [containment_overrides.get(name, base_containment) for name in variables],
+        dtype=float,
+    )
+    variable_components = np.asarray(
+        [
+            component_overrides.get(
+                name, _DEFAULT_CUT_COMPONENTS.get(name, "core")
+            )
+            for name in variables
+        ]
+    )
+    if not np.all((variable_containments > 0.0) & (variable_containments < 1.0)):
+        raise ValueError("every cut containment must lie between zero and one")
+    if not np.all(np.isin(variable_components, ("core", "signal"))):
+        raise ValueError("cut components must be either 'core' or 'signal'")
+
     detector = np.asarray(proton_detector, dtype=np.int64)
     ft_photons = np.asarray(ft_photons, dtype=np.int64)
     iq2, ixb, it = [np.asarray(item, dtype=np.int64) for item in (iq2, ixb, it)]
@@ -153,17 +226,37 @@ def derive_cuts(
     shape = (populated.size, len(variables))
     lower = np.full(shape, np.nan)
     upper = np.full(shape, np.nan)
+    fit_lower = np.full(shape, np.nan)
+    fit_upper = np.full(shape, np.nan)
     centers = np.full(shape, np.nan)
     sigmas = np.full(shape, np.nan)
     fit_entries = np.zeros(shape, dtype=np.int64)
+    cut_entries = np.zeros(shape, dtype=np.int64)
+    extrapolated_cut_entries = np.zeros(shape, dtype=np.int64)
     signal_entries = np.zeros(shape, dtype=float)
     signal_fractions = np.zeros(shape, dtype=float)
+    cut_component_fractions = np.zeros(shape, dtype=float)
+    nuisance_fractions = np.zeros(shape, dtype=float)
+    background_fractions = np.zeros(shape, dtype=float)
     peak_significance = np.zeros(shape, dtype=float)
     iterations = np.zeros(shape, dtype=np.int64)
     fit_model = np.full(shape, "", dtype="<U64")
     parameter_shape = (*shape, maximum_fit_parameters())
     fit_parameter_names = np.full(parameter_shape, "", dtype="<U32")
     fit_parameter_values = np.full(parameter_shape, np.nan)
+    bic = np.full(shape, np.nan)
+    delta_bic = np.full(shape, np.nan)
+    pearson_chi2 = np.full(shape, np.nan)
+    deviance = np.full(shape, np.nan)
+    fit_ndof = np.zeros(shape, dtype=np.int64)
+    continuously_refined = np.zeros(shape, dtype=bool)
+    histogram_bin_count = np.zeros(shape, dtype=np.int64)
+    histogram_edges = np.full((*shape, fit_histogram_bins + 1), np.nan)
+    observed_counts = np.full((*shape, fit_histogram_bins), np.nan)
+    expected_counts = np.full((*shape, fit_histogram_bins), np.nan)
+    cut_signal_counts = np.full((*shape, fit_histogram_bins), np.nan)
+    noncut_component_counts = np.full((*shape, fit_histogram_bins), np.nan)
+    background_counts = np.full((*shape, fit_histogram_bins), np.nan)
     window_source = np.full(shape, "", dtype="<U32")
     dropped_variables = np.full(populated.size, "", dtype="<U64")
     dropped_reasons = np.full(populated.size, "", dtype="<U256")
@@ -180,19 +273,25 @@ def derive_cuts(
     group_topologies = np.asarray(
         [event_topologies[rows[0]] for rows in group_rows], dtype=np.int64
     )
-    running = [np.ones(rows.size, dtype=bool) for rows in group_rows]
     active = np.ones(populated.size, dtype=bool)
 
-    for variable_index, name in enumerate(variables):
+    def fit_stage(
+        variable_index: int,
+        selections: list[Array],
+        stage_active: Array,
+    ) -> list[tuple[FitEstimate | None, str, str]]:
+        name = variables[variable_index]
         expected_center = _EXPECTED_CENTERS.get(name)
         physical_lower = _PHYSICAL_LOWER_BOUNDS.get(name)
         maximum_center_deviation = _MAXIMUM_CENTER_DEVIATIONS.get(name)
         maximum_sigma = _MAXIMUM_SIGMAS.get(name)
         pooled: dict[int, tuple[FitEstimate | None, str]] = {}
-        for topology in np.unique(group_topologies[active]):
+        for topology in np.unique(group_topologies[stage_active]):
             pieces = [
-                arrays[name][group_rows[index][running[index]]]
-                for index in np.flatnonzero(active & (group_topologies == topology))
+                arrays[name][group_rows[index][selections[index]]]
+                for index in np.flatnonzero(
+                    stage_active & (group_topologies == topology)
+                )
             ]
             pooled_values = np.concatenate(pieces) if pieces else np.empty(0)
             pooled[int(topology)] = estimate_model(
@@ -210,32 +309,44 @@ def derive_cuts(
                 physical_lower,
                 maximum_center_deviation,
                 maximum_sigma,
+                cut_containment=float(variable_containments[variable_index]),
+                cut_component=str(variable_components[variable_index]),
+                continuous_refinement=continuous_refinement,
             )
 
-        for group_index in np.flatnonzero(active):
+        results: list[tuple[FitEstimate | None, str, str]] = [
+            (None, "inactive group", "") for _ in range(populated.size)
+        ]
+        for group_index in np.flatnonzero(stage_active):
             rows = group_rows[group_index]
-            local, local_reason = estimate_model(
-                arrays[name][rows[running[group_index]]],
-                name,
-                n_sigma,
-                minimum_events,
-                fit_window_sigma,
-                fit_max_iterations,
-                fit_convergence,
-                fit_histogram_bins,
-                minimum_signal_fraction,
-                minimum_peak_significance,
-                expected_center,
-                physical_lower,
-                maximum_center_deviation,
-                maximum_sigma,
-            )
             reference, reference_reason = pooled.get(
                 int(group_topologies[group_index]),
                 (None, "topology reference was not constructed"),
             )
+            if global_mode:
+                local, local_reason = reference, reference_reason
+            else:
+                local, local_reason = estimate_model(
+                    arrays[name][rows[selections[group_index]]],
+                    name,
+                    n_sigma,
+                    minimum_events,
+                    fit_window_sigma,
+                    fit_max_iterations,
+                    fit_convergence,
+                    fit_histogram_bins,
+                    minimum_signal_fraction,
+                    minimum_peak_significance,
+                    expected_center,
+                    physical_lower,
+                    maximum_center_deviation,
+                    maximum_sigma,
+                    cut_containment=float(variable_containments[variable_index]),
+                    cut_component=str(variable_components[variable_index]),
+                    continuous_refinement=continuous_refinement,
+                )
             estimate = local
-            source = "local"
+            source = "global" if global_mode else "local"
             if local is not None and reference is not None and not _locally_consistent(
                 local,
                 reference,
@@ -248,41 +359,175 @@ def derive_cuts(
                 estimate = reference
                 source = "topology_fallback"
             if estimate is None:
-                active[group_index] = False
-                dropped_variables[group_index] = name
-                dropped_reasons[group_index] = (
-                    f"local fit: {local_reason}; topology fit: {reference_reason}"
+                results[group_index] = (
+                    None,
+                    f"local fit: {local_reason}; topology fit: {reference_reason}",
+                    source,
                 )
                 continue
+            results[group_index] = (estimate, "", source)
+        return results
 
-            lo = estimate.lower
-            hi = estimate.upper
-            if not (np.isfinite(lo) and np.isfinite(hi) and lo < hi):
+    def store_estimate(
+        group_index: int,
+        variable_index: int,
+        estimate: FitEstimate,
+        source: str,
+    ) -> None:
+        lower[group_index, variable_index] = estimate.lower
+        upper[group_index, variable_index] = estimate.upper
+        fit_lower[group_index, variable_index] = estimate.fit_lower
+        fit_upper[group_index, variable_index] = estimate.fit_upper
+        centers[group_index, variable_index] = estimate.center
+        sigmas[group_index, variable_index] = estimate.sigma
+        fit_entries[group_index, variable_index] = estimate.fit_entries
+        cut_entries[group_index, variable_index] = estimate.cut_entries
+        extrapolated_cut_entries[
+            group_index, variable_index
+        ] = estimate.extrapolated_cut_entries
+        signal_entries[group_index, variable_index] = estimate.signal_entries
+        signal_fractions[group_index, variable_index] = estimate.signal_fraction
+        cut_component_fractions[
+            group_index, variable_index
+        ] = estimate.cut_component_fraction
+        nuisance_fractions[group_index, variable_index] = estimate.nuisance_fraction
+        background_fractions[
+            group_index, variable_index
+        ] = estimate.background_fraction
+        peak_significance[group_index, variable_index] = estimate.peak_significance
+        iterations[group_index, variable_index] = estimate.iterations
+        fit_model[group_index, variable_index] = estimate.fit_model
+        fit_parameter_names[group_index, variable_index] = ""
+        fit_parameter_values[group_index, variable_index] = np.nan
+        parameter_count = len(estimate.parameter_names)
+        fit_parameter_names[
+            group_index, variable_index, :parameter_count
+        ] = estimate.parameter_names
+        fit_parameter_values[
+            group_index, variable_index, :parameter_count
+        ] = estimate.parameter_values
+        bic[group_index, variable_index] = estimate.bic
+        delta_bic[group_index, variable_index] = estimate.delta_bic
+        pearson_chi2[group_index, variable_index] = estimate.pearson_chi2
+        deviance[group_index, variable_index] = estimate.deviance
+        fit_ndof[group_index, variable_index] = estimate.fit_ndof
+        continuously_refined[
+            group_index, variable_index
+        ] = estimate.continuously_refined
+        count = estimate.observed_counts.size
+        histogram_bin_count[group_index, variable_index] = count
+        histogram_edges[group_index, variable_index] = np.nan
+        observed_counts[group_index, variable_index] = np.nan
+        expected_counts[group_index, variable_index] = np.nan
+        cut_signal_counts[group_index, variable_index] = np.nan
+        noncut_component_counts[group_index, variable_index] = np.nan
+        background_counts[group_index, variable_index] = np.nan
+        histogram_edges[
+            group_index, variable_index, : count + 1
+        ] = estimate.histogram_edges
+        observed_counts[
+            group_index, variable_index, :count
+        ] = estimate.observed_counts
+        expected_counts[
+            group_index, variable_index, :count
+        ] = estimate.expected_counts
+        cut_signal_counts[
+            group_index, variable_index, :count
+        ] = estimate.cut_signal_counts
+        noncut_component_counts[
+            group_index, variable_index, :count
+        ] = estimate.noncut_component_counts
+        background_counts[
+            group_index, variable_index, :count
+        ] = estimate.background_counts
+        window_source[group_index, variable_index] = source
+
+    # Seed every variable from the same uncut population. This makes the
+    # initialization independent of variable order; the Jacobi-style N-1
+    # iterations below then update all boundaries simultaneously.
+    uncut = [np.ones(rows.size, dtype=bool) for rows in group_rows]
+    initial_active = active.copy()
+    initial_results = [
+        fit_stage(variable_index, uncut, initial_active)
+        for variable_index, _ in enumerate(variables)
+    ]
+    for group_index in np.flatnonzero(initial_active):
+        for variable_index, name in enumerate(variables):
+            estimate, reason, _ = initial_results[variable_index][group_index]
+            if estimate is None:
                 active[group_index] = False
                 dropped_variables[group_index] = name
-                dropped_reasons[group_index] = "derived window was non-finite or empty"
-                continue
+                dropped_reasons[group_index] = f"initial fit: {reason}"
+                break
+    for group_index in np.flatnonzero(active):
+        for variable_index, _ in enumerate(variables):
+            estimate, _, source = initial_results[variable_index][group_index]
+            assert estimate is not None
+            store_estimate(group_index, variable_index, estimate, source)
 
-            lower[group_index, variable_index] = lo
-            upper[group_index, variable_index] = hi
-            centers[group_index, variable_index] = estimate.center
-            sigmas[group_index, variable_index] = estimate.sigma
-            fit_entries[group_index, variable_index] = estimate.fit_entries
-            signal_entries[group_index, variable_index] = estimate.signal_entries
-            signal_fractions[group_index, variable_index] = estimate.signal_fraction
-            peak_significance[group_index, variable_index] = estimate.peak_significance
-            iterations[group_index, variable_index] = estimate.iterations
-            fit_model[group_index, variable_index] = estimate.fit_model
-            parameter_count = len(estimate.parameter_names)
-            fit_parameter_names[
-                group_index, variable_index, :parameter_count
-            ] = estimate.parameter_names
-            fit_parameter_values[
-                group_index, variable_index, :parameter_count
-            ] = estimate.parameter_values
-            window_source[group_index, variable_index] = source
-            raw = arrays[name][rows]
-            running[group_index] &= np.isfinite(raw) & (raw >= lo) & (raw <= hi)
+    refinement_iterations = 0
+    refinement_converged = refinement_max_iterations == 0
+    maximum_boundary_change = 0.0
+    for refinement_index in range(refinement_max_iterations):
+        stage_active = active.copy()
+        snapshot_lower = lower.copy()
+        snapshot_upper = upper.copy()
+        pending: list[list[tuple[FitEstimate | None, str, str]]] = []
+        for variable_index, _ in enumerate(variables):
+            selections = []
+            for group_index, rows in enumerate(group_rows):
+                selected_rows = np.ones(rows.size, dtype=bool)
+                if stage_active[group_index]:
+                    for other_index, other_name in enumerate(variables):
+                        if other_index == variable_index:
+                            continue
+                        raw = arrays[other_name][rows]
+                        selected_rows &= (
+                            np.isfinite(raw)
+                            & (raw >= snapshot_lower[group_index, other_index])
+                            & (raw <= snapshot_upper[group_index, other_index])
+                        )
+                selections.append(selected_rows)
+            pending.append(fit_stage(variable_index, selections, stage_active))
+
+        for group_index in np.flatnonzero(stage_active):
+            for variable_index, name in enumerate(variables):
+                estimate, reason, _ = pending[variable_index][group_index]
+                if estimate is None:
+                    active[group_index] = False
+                    dropped_variables[group_index] = name
+                    dropped_reasons[group_index] = (
+                        f"N-1 iteration {refinement_index + 1}: {reason}"
+                    )
+                    break
+
+        changes = []
+        for group_index in np.flatnonzero(active & stage_active):
+            for variable_index, _ in enumerate(variables):
+                estimate, _, source = pending[variable_index][group_index]
+                assert estimate is not None
+                old_width = snapshot_upper[group_index, variable_index] - snapshot_lower[
+                    group_index, variable_index
+                ]
+                new_width = estimate.upper - estimate.lower
+                denominator = max(abs(old_width), abs(new_width), np.finfo(float).eps)
+                changes.extend(
+                    (
+                        abs(estimate.lower - snapshot_lower[group_index, variable_index])
+                        / denominator,
+                        abs(estimate.upper - snapshot_upper[group_index, variable_index])
+                        / denominator,
+                    )
+                )
+                store_estimate(group_index, variable_index, estimate, source)
+        refinement_iterations = refinement_index + 1
+        maximum_boundary_change = max(changes, default=0.0)
+        if (
+            refinement_iterations >= refinement_min_iterations
+            and maximum_boundary_change <= refinement_boundary_tolerance
+        ):
+            refinement_converged = True
+            break
 
     complete = np.all(np.isfinite(lower) & np.isfinite(upper), axis=1)
     retained = active & complete
@@ -295,29 +540,104 @@ def derive_cuts(
             dropped_variables[group_index] = variables[int(missing[0])]
         dropped_reasons[group_index] = "cut table was incomplete"
     dropped = ~retained
+    cumulative_before = np.zeros(shape, dtype=np.int64)
+    cumulative_after = np.zeros(shape, dtype=np.int64)
+    nminus1_entries = np.zeros(shape, dtype=np.int64)
+    nminus1_passing = np.zeros(shape, dtype=np.int64)
+    for group_index in np.flatnonzero(retained):
+        rows = group_rows[group_index]
+        passes = []
+        for variable_index, name in enumerate(variables):
+            raw = arrays[name][rows]
+            passes.append(
+                np.isfinite(raw)
+                & (raw >= lower[group_index, variable_index])
+                & (raw <= upper[group_index, variable_index])
+            )
+        cumulative = np.ones(rows.size, dtype=bool)
+        for variable_index, passed in enumerate(passes):
+            cumulative_before[group_index, variable_index] = np.count_nonzero(
+                cumulative
+            )
+            cumulative &= passed
+            cumulative_after[group_index, variable_index] = np.count_nonzero(
+                cumulative
+            )
+        all_passing = np.logical_and.reduce(passes)
+        for variable_index, _ in enumerate(variables):
+            other_passes = [
+                passed
+                for index, passed in enumerate(passes)
+                if index != variable_index
+            ]
+            other_passing = (
+                np.logical_and.reduce(other_passes)
+                if other_passes
+                else np.ones(rows.size, dtype=bool)
+            )
+            nminus1_entries[group_index, variable_index] = np.count_nonzero(
+                other_passing
+            )
+            nminus1_passing[group_index, variable_index] = np.count_nonzero(
+                all_passing
+            )
+
     return ExclusivityCuts(
         variables=variables,
         group_ids=populated[retained].astype(np.int64, copy=False),
         lower=lower[retained],
         upper=upper[retained],
+        fit_lower=fit_lower[retained],
+        fit_upper=fit_upper[retained],
         centers=centers[retained],
         sigmas=sigmas[retained],
         fit_entries=fit_entries[retained],
+        cut_entries=cut_entries[retained],
+        extrapolated_cut_entries=extrapolated_cut_entries[retained],
         signal_entries=signal_entries[retained],
         signal_fractions=signal_fractions[retained],
+        cut_component_fractions=cut_component_fractions[retained],
+        nuisance_fractions=nuisance_fractions[retained],
+        background_fractions=background_fractions[retained],
         peak_significance=peak_significance[retained],
         iterations=iterations[retained],
         fit_model=fit_model[retained],
         fit_parameter_names=fit_parameter_names[retained],
         fit_parameter_values=fit_parameter_values[retained],
+        bic=bic[retained],
+        delta_bic=delta_bic[retained],
+        pearson_chi2=pearson_chi2[retained],
+        deviance=deviance[retained],
+        fit_ndof=fit_ndof[retained],
+        continuously_refined=continuously_refined[retained],
+        histogram_bin_count=histogram_bin_count[retained],
+        histogram_edges=histogram_edges[retained],
+        observed_counts=observed_counts[retained],
+        expected_counts=expected_counts[retained],
+        cut_signal_counts=cut_signal_counts[retained],
+        noncut_component_counts=noncut_component_counts[retained],
+        background_counts=background_counts[retained],
         window_source=window_source[retained],
+        cumulative_before=cumulative_before[retained],
+        cumulative_after=cumulative_after[retained],
+        nminus1_entries=nminus1_entries[retained],
+        nminus1_passing=nminus1_passing[retained],
         populated_group_ids=populated.astype(np.int64, copy=False),
         dropped_group_ids=populated[dropped].astype(np.int64, copy=False),
         dropped_variables=dropped_variables[dropped],
         dropped_reasons=dropped_reasons[dropped],
         global_mode=global_mode,
         n_sigma=n_sigma,
-        signal_containment=float(erf(n_sigma / sqrt(2.0))),
+        signal_containment=base_containment,
+        cut_containments=variable_containments,
+        cut_components=variable_components,
+        refinement_iterations=refinement_iterations,
+        refinement_converged=refinement_converged,
+        maximum_boundary_change=maximum_boundary_change,
+        refinement_max_iterations=refinement_max_iterations,
+        refinement_min_iterations=refinement_min_iterations,
+        refinement_boundary_tolerance=refinement_boundary_tolerance,
+        continuous_refinement=continuous_refinement,
         minimum_events=minimum_events,
         fit_window_sigma=fit_window_sigma,
         fit_max_iterations=fit_max_iterations,
@@ -426,17 +746,41 @@ def save_cuts(path: str, cuts: ExclusivityCuts) -> None:
         group_ids=cuts.group_ids,
         lower=cuts.lower,
         upper=cuts.upper,
+        fit_lower=cuts.fit_lower,
+        fit_upper=cuts.fit_upper,
         centers=cuts.centers,
         sigmas=cuts.sigmas,
         fit_entries=cuts.fit_entries,
+        cut_entries=cuts.cut_entries,
+        extrapolated_cut_entries=cuts.extrapolated_cut_entries,
         signal_entries=cuts.signal_entries,
         signal_fractions=cuts.signal_fractions,
+        cut_component_fractions=cuts.cut_component_fractions,
+        nuisance_fractions=cuts.nuisance_fractions,
+        background_fractions=cuts.background_fractions,
         peak_significance=cuts.peak_significance,
         iterations=cuts.iterations,
         fit_model=cuts.fit_model,
         fit_parameter_names=cuts.fit_parameter_names,
         fit_parameter_values=cuts.fit_parameter_values,
+        bic=cuts.bic,
+        delta_bic=cuts.delta_bic,
+        pearson_chi2=cuts.pearson_chi2,
+        deviance=cuts.deviance,
+        fit_ndof=cuts.fit_ndof,
+        continuously_refined=cuts.continuously_refined,
+        histogram_bin_count=cuts.histogram_bin_count,
+        histogram_edges=cuts.histogram_edges,
+        observed_counts=cuts.observed_counts,
+        expected_counts=cuts.expected_counts,
+        cut_signal_counts=cuts.cut_signal_counts,
+        noncut_component_counts=cuts.noncut_component_counts,
+        background_counts=cuts.background_counts,
         window_source=cuts.window_source,
+        cumulative_before=cuts.cumulative_before,
+        cumulative_after=cuts.cumulative_after,
+        nminus1_entries=cuts.nminus1_entries,
+        nminus1_passing=cuts.nminus1_passing,
         populated_group_ids=cuts.populated_group_ids,
         dropped_group_ids=cuts.dropped_group_ids,
         dropped_variables=cuts.dropped_variables,
@@ -444,6 +788,15 @@ def save_cuts(path: str, cuts: ExclusivityCuts) -> None:
         global_mode=cuts.global_mode,
         n_sigma=cuts.n_sigma,
         signal_containment=cuts.signal_containment,
+        cut_containments=cuts.cut_containments,
+        cut_components=cuts.cut_components,
+        refinement_iterations=cuts.refinement_iterations,
+        refinement_converged=cuts.refinement_converged,
+        maximum_boundary_change=cuts.maximum_boundary_change,
+        refinement_max_iterations=cuts.refinement_max_iterations,
+        refinement_min_iterations=cuts.refinement_min_iterations,
+        refinement_boundary_tolerance=cuts.refinement_boundary_tolerance,
+        continuous_refinement=cuts.continuous_refinement,
         minimum_events=cuts.minimum_events,
         fit_window_sigma=cuts.fit_window_sigma,
         fit_max_iterations=cuts.fit_max_iterations,
@@ -481,17 +834,41 @@ def load_cuts(path: str) -> ExclusivityCuts:
         group_ids=saved["group_ids"],
         lower=saved["lower"],
         upper=saved["upper"],
+        fit_lower=saved["fit_lower"],
+        fit_upper=saved["fit_upper"],
         centers=saved["centers"],
         sigmas=saved["sigmas"],
         fit_entries=saved["fit_entries"],
+        cut_entries=saved["cut_entries"],
+        extrapolated_cut_entries=saved["extrapolated_cut_entries"],
         signal_entries=saved["signal_entries"],
         signal_fractions=saved["signal_fractions"],
+        cut_component_fractions=saved["cut_component_fractions"],
+        nuisance_fractions=saved["nuisance_fractions"],
+        background_fractions=saved["background_fractions"],
         peak_significance=saved["peak_significance"],
         iterations=saved["iterations"],
         fit_model=saved["fit_model"],
         fit_parameter_names=saved["fit_parameter_names"],
         fit_parameter_values=saved["fit_parameter_values"],
+        bic=saved["bic"],
+        delta_bic=saved["delta_bic"],
+        pearson_chi2=saved["pearson_chi2"],
+        deviance=saved["deviance"],
+        fit_ndof=saved["fit_ndof"],
+        continuously_refined=saved["continuously_refined"],
+        histogram_bin_count=saved["histogram_bin_count"],
+        histogram_edges=saved["histogram_edges"],
+        observed_counts=saved["observed_counts"],
+        expected_counts=saved["expected_counts"],
+        cut_signal_counts=saved["cut_signal_counts"],
+        noncut_component_counts=saved["noncut_component_counts"],
+        background_counts=saved["background_counts"],
         window_source=saved["window_source"],
+        cumulative_before=saved["cumulative_before"],
+        cumulative_after=saved["cumulative_after"],
+        nminus1_entries=saved["nminus1_entries"],
+        nminus1_passing=saved["nminus1_passing"],
         populated_group_ids=(
             saved["populated_group_ids"]
             if "populated_group_ids" in saved.files
@@ -515,6 +892,17 @@ def load_cuts(path: str) -> ExclusivityCuts:
         global_mode=bool(saved["global_mode"]),
         n_sigma=float(saved["n_sigma"]),
         signal_containment=float(saved["signal_containment"]),
+        cut_containments=saved["cut_containments"],
+        cut_components=saved["cut_components"],
+        refinement_iterations=int(saved["refinement_iterations"]),
+        refinement_converged=bool(saved["refinement_converged"]),
+        maximum_boundary_change=float(saved["maximum_boundary_change"]),
+        refinement_max_iterations=int(saved["refinement_max_iterations"]),
+        refinement_min_iterations=int(saved["refinement_min_iterations"]),
+        refinement_boundary_tolerance=float(
+            saved["refinement_boundary_tolerance"]
+        ),
+        continuous_refinement=bool(saved["continuous_refinement"]),
         minimum_events=int(saved["minimum_events"]),
         fit_window_sigma=float(saved["fit_window_sigma"]),
         fit_max_iterations=int(saved["fit_max_iterations"]),
@@ -533,15 +921,33 @@ def load_cuts(path: str) -> ExclusivityCuts:
     diagnostic_arrays = (
         cuts.lower,
         cuts.upper,
+        cuts.fit_lower,
+        cuts.fit_upper,
         cuts.centers,
         cuts.sigmas,
         cuts.fit_entries,
+        cuts.cut_entries,
+        cuts.extrapolated_cut_entries,
         cuts.signal_entries,
         cuts.signal_fractions,
+        cuts.cut_component_fractions,
+        cuts.nuisance_fractions,
+        cuts.background_fractions,
         cuts.peak_significance,
         cuts.iterations,
         cuts.fit_model,
+        cuts.bic,
+        cuts.delta_bic,
+        cuts.pearson_chi2,
+        cuts.deviance,
+        cuts.fit_ndof,
+        cuts.continuously_refined,
+        cuts.histogram_bin_count,
         cuts.window_source,
+        cuts.cumulative_before,
+        cuts.cumulative_after,
+        cuts.nminus1_entries,
+        cuts.nminus1_passing,
     )
     if any(array.shape != expected_shape for array in diagnostic_arrays):
         raise ValueError("exclusivity cut table has inconsistent array shapes")
@@ -552,10 +958,30 @@ def load_cuts(path: str) -> ExclusivityCuts:
         raise ValueError("exclusivity cut table has inconsistent fit parameters")
     if cuts.fit_parameter_values.shape != parameter_shape:
         raise ValueError("exclusivity cut table has inconsistent fit parameters")
+    histogram_shape = (*expected_shape, cuts.fit_histogram_bins)
+    edge_shape = (*expected_shape, cuts.fit_histogram_bins + 1)
+    if cuts.histogram_edges.shape != edge_shape:
+        raise ValueError("exclusivity cut table has inconsistent histogram edges")
+    for histogram in (
+        cuts.observed_counts,
+        cuts.expected_counts,
+        cuts.cut_signal_counts,
+        cuts.noncut_component_counts,
+        cuts.background_counts,
+    ):
+        if histogram.shape != histogram_shape:
+            raise ValueError("exclusivity cut table has inconsistent fit histograms")
+    variable_shape = (len(cuts.variables),)
+    if cuts.cut_containments.shape != variable_shape:
+        raise ValueError("exclusivity cut table has inconsistent cut containments")
+    if cuts.cut_components.shape != variable_shape:
+        raise ValueError("exclusivity cut table has inconsistent cut components")
     if cuts.dropped_group_ids.shape != cuts.dropped_variables.shape:
         raise ValueError("exclusivity cut table has inconsistent dropped-group diagnostics")
     if cuts.dropped_group_ids.shape != cuts.dropped_reasons.shape:
         raise ValueError("exclusivity cut table has inconsistent dropped-group diagnostics")
+    if np.any(cuts.extrapolated_cut_entries != 0):
+        raise ValueError("exclusivity cut table accepts events beyond a fitted domain")
     return cuts
 
 

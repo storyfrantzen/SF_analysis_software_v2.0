@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from math import erf, sqrt
 
 import numpy as np
-from scipy.optimize import brentq, nnls
+from scipy.optimize import brentq, minimize, nnls
 from scipy.special import i0e, ndtr
 from scipy.stats import exponnorm, rice
 
@@ -15,7 +15,7 @@ _SQRT_TWO_PI = sqrt(2.0 * np.pi)
 _SIGMA_SCALES = np.asarray((0.40, 0.55, 0.70, 0.85, 1.0, 1.2, 1.45))
 _CENTER_OFFSETS = np.asarray((-1.0, -0.67, -0.33, 0.0, 0.33, 0.67, 1.0))
 _ASYMMETRY_RATIOS = np.asarray((0.50, 0.70, 1.0, 1.4, 2.0))
-_MAX_FIT_PARAMETERS = 8
+_MAX_FIT_PARAMETERS = 16
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,20 @@ class Candidate:
     free_shape_parameters: int
     one_sided: bool = False
     sideband_linear: bool = False
-    primary_components: int = 1
+    signal_components: int = 1
+    nuisance_components: int = 0
+
+
+@dataclass(frozen=True)
+class Evaluation:
+    candidate: Candidate
+    weights: Array
+    components: Array
+    iterations: int
+    nll: float
+    bic: float
+    parameter_count: int
+    refined: bool = False
 
 
 @dataclass(frozen=True)
@@ -45,15 +58,34 @@ class FitEstimate:
     sigma: float
     lower: float
     upper: float
+    fit_lower: float
+    fit_upper: float
     entries: int
     fit_entries: int
+    cut_entries: int
+    extrapolated_cut_entries: int
     signal_entries: float
     signal_fraction: float
+    cut_component_fraction: float
+    nuisance_fraction: float
+    background_fraction: float
     peak_significance: float
     iterations: int
     fit_model: str
     parameter_names: tuple[str, ...]
     parameter_values: tuple[float, ...]
+    bic: float
+    delta_bic: float
+    pearson_chi2: float
+    deviance: float
+    fit_ndof: int
+    continuously_refined: bool
+    histogram_edges: Array
+    observed_counts: Array
+    expected_counts: Array
+    cut_signal_counts: Array
+    noncut_component_counts: Array
+    background_counts: Array
 
 
 def estimate_model(
@@ -71,7 +103,21 @@ def estimate_model(
     physical_lower: float | None,
     maximum_center_deviation: float | None,
     maximum_sigma: float | None,
+    cut_containment: float | None = None,
+    cut_component: str = "core",
+    require_cut_within_fit: bool = True,
+    continuous_refinement: bool = True,
 ) -> tuple[FitEstimate | None, str]:
+    containment = (
+        float(cut_containment)
+        if cut_containment is not None
+        else erf(n_sigma / sqrt(2.0))
+    )
+    if not 0.0 < containment < 1.0:
+        return None, f"cut containment must be between zero and one ({containment})"
+    if cut_component not in {"core", "signal"}:
+        return None, f"unsupported cut component policy: {cut_component}"
+
     finite = np.asarray(values, dtype=float)
     finite = finite[np.isfinite(finite)]
     entries = int(finite.size)
@@ -82,9 +128,13 @@ def estimate_model(
     if seed is None:
         return None, "could not determine a finite mode and seed width"
     seed_center, seed_sigma = seed
-    qlo, qhi = np.quantile(finite, [0.005, 0.995])
-    fit_lo = max(float(qlo), seed_center - fit_window_sigma * seed_sigma)
-    fit_hi = min(float(qhi), seed_center + fit_window_sigma * seed_sigma)
+    fit_extent = max(fit_window_sigma, 10.0)
+    if variable == "rec_m_eggX":
+        fit_extent = max(fit_extent, 12.0)
+    elif variable == "rec_m2_miss":
+        fit_extent = max(fit_extent, 20.0)
+    fit_lo = seed_center - fit_extent * seed_sigma
+    fit_hi = seed_center + fit_extent * seed_sigma
     if variable == "rec_pT_miss":
         fit_lo = 0.0
     elif physical_lower is not None:
@@ -113,73 +163,81 @@ def estimate_model(
     candidates = _model_candidates(
         variable, seed_center, seed_sigma, x, bin_width, fit_lo, fit_hi
     )
-    best: tuple[float, Candidate, Array, Array, int] | None = None
+    family_best: dict[str, Evaluation] = {}
     for candidate in candidates:
-        signal_shapes = []
-        valid = True
-        for component in candidate.components:
-            shape = _normalised_shape(_component_pdf(component, x))
-            if shape is None:
-                valid = False
-                break
-            signal_shapes.append(shape)
-        if not valid:
+        evaluation = _evaluate_candidate(
+            candidate,
+            counts,
+            x,
+            background_left,
+            background_right,
+            max_iterations,
+            convergence,
+            selected.size,
+        )
+        if evaluation is None:
             continue
+        previous = family_best.get(candidate.name)
+        if previous is None or evaluation.bic < previous.bic:
+            family_best[candidate.name] = evaluation
 
-        if candidate.sideband_linear:
-            background = _sideband_linear_shape(
-                counts,
-                x,
-                candidate.center,
-                candidate.scale,
-                background_left,
-                background_right,
-            )
-            if background is None:
-                continue
-            background_shapes = [background]
-            background_shape_parameters = 2
-        else:
-            background_shapes = [background_left, background_right]
-            background_shape_parameters = 0
-
-        components = np.vstack((*signal_shapes, *background_shapes))
-        weights, iterations = _mixture_weights(
-            counts, components, max_iterations, convergence
-        )
-        density = np.maximum(weights @ components, np.finfo(float).tiny)
-        nll = float(-np.sum(counts * np.log(density)))
-        free_weights = components.shape[0] - 1
-        parameters = (
-            candidate.free_shape_parameters
-            + free_weights
-            + background_shape_parameters
-        )
-        bic = 2.0 * nll + parameters * np.log(selected.size)
-        if best is None or bic < best[0]:
-            best = (bic, candidate, weights, components, iterations)
-
-    if best is None:
+    if not family_best:
         return None, f"no finite {variable} model candidate"
 
-    _, candidate, weights, components, iterations = best
+    family_results = []
+    for evaluation in family_best.values():
+        if continuous_refinement:
+            evaluation = _refine_evaluation(
+                evaluation,
+                counts,
+                x,
+                background_left,
+                background_right,
+                fit_lo,
+                fit_hi,
+                bin_width,
+                max_iterations,
+                convergence,
+                selected.size,
+            )
+        family_results.append(evaluation)
+    family_results.sort(key=lambda item: item.bic)
+    best = family_results[0]
+    delta_bic = (
+        float(family_results[1].bic - best.bic)
+        if len(family_results) > 1
+        else float("inf")
+    )
+
+    candidate = best.candidate
+    weights = best.weights
+    components = best.components
+    iterations = best.iterations
     fit_component_count = len(candidate.components)
-    primary_count = candidate.primary_components
-    fitted_signal_weights = weights[:primary_count]
+    signal_count = candidate.signal_components
+    nuisance_count = candidate.nuisance_components
+    cut_count = 1 if cut_component == "core" else signal_count
+    fitted_signal_weights = weights[:signal_count]
     signal_fraction = float(np.sum(fitted_signal_weights))
     signal_entries = signal_fraction * selected.size
     if signal_fraction <= 0.0:
         return None, "fitted signal fraction was zero"
+    cut_component_fraction = float(np.sum(weights[:cut_count]))
+    nuisance_fraction = float(
+        np.sum(weights[signal_count : signal_count + nuisance_count])
+    )
+    background_fraction = float(
+        np.sum(weights[signal_count + nuisance_count :])
+    )
 
     global_signal_weights = _untruncate_signal_weights(
-        candidate.components[:primary_count],
-        fitted_signal_weights,
+        candidate.components[:cut_count],
+        weights[:cut_count],
         fit_lo,
         fit_hi,
     )
-    containment = erf(n_sigma / sqrt(2.0))
     lower, upper = _signal_window(
-        candidate.components[:primary_count],
+        candidate.components[:cut_count],
         global_signal_weights,
         containment,
         candidate.one_sided,
@@ -188,13 +246,21 @@ def estimate_model(
         lower = max(lower, physical_lower)
     if not (np.isfinite(lower) and np.isfinite(upper) and lower < upper):
         return None, "derived signal-containment window was non-finite or empty"
+    cut_tolerance = 0.5 * bin_width
+    if require_cut_within_fit and (
+        lower < fit_lo - cut_tolerance or upper > fit_hi + cut_tolerance
+    ):
+        return None, (
+            f"derived cut [{lower:.6g}, {upper:.6g}] extrapolates beyond fitted "
+            f"domain [{fit_lo:.6g}, {fit_hi:.6g}]"
+        )
 
     in_window = (x >= lower) & (x <= upper)
     signal_in_window = selected.size * float(
         np.sum(
             [
                 weights[index] * np.sum(components[index, in_window])
-                for index in range(primary_count)
+                for index in range(cut_count)
             ]
         )
     )
@@ -202,7 +268,7 @@ def estimate_model(
         np.sum(
             [
                 weights[index] * np.sum(components[index, in_window])
-                for index in range(primary_count, components.shape[0])
+                for index in range(cut_count, components.shape[0])
             ]
         )
     )
@@ -236,34 +302,78 @@ def estimate_model(
     parameter_names = list(candidate.parameter_names)
     parameter_values = list(candidate.parameter_values)
     if fit_component_count > 1:
-        component_weights = _untruncate_signal_weights(
-            candidate.components,
-            weights[:fit_component_count],
-            fit_lo,
-            fit_hi,
-        )
         for component, fraction in zip(
-            candidate.components, component_weights, strict=True
+            candidate.components, weights[:fit_component_count], strict=True
         ):
-            parameter_names.append(f"{component.name}_fraction")
+            parameter_names.append(f"{component.name}_fit_fraction")
             parameter_values.append(float(fraction))
     if len(parameter_names) > _MAX_FIT_PARAMETERS:
         raise RuntimeError("exclusivity model exceeds fit-parameter storage")
+
+    expected_counts = selected.size * (weights @ components)
+    cut_signal_counts = selected.size * np.sum(
+        components[:cut_count] * weights[:cut_count, None], axis=0
+    )
+    noncut_component_counts = selected.size * np.sum(
+        components[cut_count:fit_component_count]
+        * weights[cut_count:fit_component_count, None],
+        axis=0,
+    ) if fit_component_count > cut_count else np.zeros_like(expected_counts)
+    background_counts = selected.size * np.sum(
+        components[fit_component_count:]
+        * weights[fit_component_count:, None],
+        axis=0,
+    )
+    pearson_chi2 = float(
+        np.sum((counts - expected_counts) ** 2 / np.maximum(expected_counts, 1.0))
+    )
+    positive = counts > 0
+    deviance = float(
+        2.0
+        * (
+            np.sum(counts[positive] * np.log(counts[positive] / expected_counts[positive]))
+            - np.sum(counts - expected_counts)
+        )
+    )
+    fit_ndof = max(1, counts.size - 1 - best.parameter_count)
+    in_cut = (finite >= lower) & (finite <= upper)
+    in_fit = (finite >= fit_lo) & (finite <= fit_hi)
+    cut_entries = int(np.count_nonzero(in_cut))
+    extrapolated_cut_entries = int(np.count_nonzero(in_cut & ~in_fit))
 
     return FitEstimate(
         center=candidate.center,
         sigma=candidate.scale,
         lower=float(lower),
         upper=float(upper),
+        fit_lower=float(fit_lo),
+        fit_upper=float(fit_hi),
         entries=entries,
         fit_entries=int(selected.size),
+        cut_entries=cut_entries,
+        extrapolated_cut_entries=extrapolated_cut_entries,
         signal_entries=float(signal_entries),
         signal_fraction=signal_fraction,
+        cut_component_fraction=cut_component_fraction,
+        nuisance_fraction=nuisance_fraction,
+        background_fraction=background_fraction,
         peak_significance=float(significance),
         iterations=iterations,
         fit_model=candidate.name,
         parameter_names=tuple(parameter_names),
         parameter_values=tuple(parameter_values),
+        bic=float(best.bic),
+        delta_bic=delta_bic,
+        pearson_chi2=pearson_chi2,
+        deviance=deviance,
+        fit_ndof=fit_ndof,
+        continuously_refined=best.refined,
+        histogram_edges=edges,
+        observed_counts=counts.astype(float),
+        expected_counts=expected_counts,
+        cut_signal_counts=cut_signal_counts,
+        noncut_component_counts=noncut_component_counts,
+        background_counts=background_counts,
     ), ""
 
 
@@ -355,6 +465,8 @@ def _gaussian_tail_candidates(
                     parameter_names=("mu", "sigma", "tail_sigma"),
                     parameter_values=(mu, width, tail_width),
                     free_shape_parameters=3,
+                    signal_components=1,
+                    nuisance_components=1,
                 )
             )
     return candidates
@@ -457,7 +569,7 @@ def _positive_tail_candidates(
                         parameter_names=("mu", "sigma", "tail_tau"),
                         parameter_values=(mu, width, tau),
                         free_shape_parameters=3,
-                        primary_components=2,
+                        signal_components=2,
                     )
                 )
     return candidates
@@ -482,32 +594,319 @@ def _asymmetric_laplace_candidates(
                 if not fit_lo < mu < fit_hi:
                     continue
                 symmetric = ratio == 1.0
+                base_name = (
+                    "laplace+linear"
+                    if symmetric
+                    else "asymmetric-laplace+linear"
+                )
+                parameter_names = (
+                    ("mu", "b")
+                    if symmetric
+                    else ("mu", "b_left", "b_right")
+                )
+                parameter_values = (
+                    (mu, left_scale)
+                    if symmetric
+                    else (mu, left_scale, right_scale)
+                )
+                core = Component(
+                    "asymmetric_laplace",
+                    (mu, left_scale, right_scale),
+                    "cusp_core",
+                )
                 candidates.append(
                     Candidate(
-                        name=("laplace+linear" if symmetric else "asymmetric-laplace+linear"),
-                        components=(
-                            Component(
-                                "asymmetric_laplace",
-                                (mu, left_scale, right_scale),
-                                "cusp",
-                            ),
-                        ),
+                        name=base_name,
+                        components=(core,),
                         center=mu,
                         scale=max(left_scale, right_scale),
-                        parameter_names=(
-                            ("mu", "b")
-                            if symmetric
-                            else ("mu", "b_left", "b_right")
-                        ),
-                        parameter_values=(
-                            (mu, left_scale)
-                            if symmetric
-                            else (mu, left_scale, right_scale)
-                        ),
+                        parameter_names=parameter_names,
+                        parameter_values=parameter_values,
                         free_shape_parameters=(2 if symmetric else 3),
                     )
                 )
+                for broad_ratio in (2.5, 4.0):
+                    broad_scale = broad_ratio * max(left_scale, right_scale)
+                    candidates.append(
+                        Candidate(
+                            name=(
+                                "laplace+broad-laplace+linear"
+                                if symmetric
+                                else "asymmetric-laplace+broad-laplace+linear"
+                            ),
+                            components=(
+                                core,
+                                Component(
+                                    "asymmetric_laplace",
+                                    (mu, broad_scale, broad_scale),
+                                    "broad_cusp_nuisance",
+                                ),
+                            ),
+                            center=mu,
+                            scale=max(left_scale, right_scale),
+                            parameter_names=(*parameter_names, "nuisance_b"),
+                            parameter_values=(*parameter_values, broad_scale),
+                            free_shape_parameters=(3 if symmetric else 4),
+                            signal_components=1,
+                            nuisance_components=1,
+                        )
+                    )
     return candidates
+
+
+def _evaluate_candidate(
+    candidate: Candidate,
+    counts: Array,
+    x: Array,
+    background_left: Array,
+    background_right: Array,
+    max_iterations: int,
+    convergence: float,
+    fit_entries: int,
+) -> Evaluation | None:
+    component_shapes = []
+    for component in candidate.components:
+        shape = _normalised_shape(_component_pdf(component, x))
+        if shape is None:
+            return None
+        component_shapes.append(shape)
+
+    if candidate.sideband_linear:
+        background = _sideband_linear_shape(
+            counts,
+            x,
+            candidate.center,
+            candidate.scale,
+            background_left,
+            background_right,
+        )
+        if background is None:
+            return None
+        background_shapes = [background]
+        background_shape_parameters = 2
+    else:
+        background_shapes = [background_left, background_right]
+        background_shape_parameters = 0
+
+    components = np.vstack((*component_shapes, *background_shapes))
+    weights, iterations = _mixture_weights(
+        counts, components, max_iterations, convergence
+    )
+    density = np.maximum(weights @ components, np.finfo(float).tiny)
+    nll = float(-np.sum(counts * np.log(density)))
+    free_weights = components.shape[0] - 1
+    parameter_count = (
+        candidate.free_shape_parameters
+        + free_weights
+        + background_shape_parameters
+    )
+    bic = 2.0 * nll + parameter_count * np.log(fit_entries)
+    return Evaluation(
+        candidate=candidate,
+        weights=weights,
+        components=components,
+        iterations=iterations,
+        nll=nll,
+        bic=float(bic),
+        parameter_count=parameter_count,
+    )
+
+
+def _refine_evaluation(
+    initial: Evaluation,
+    counts: Array,
+    x: Array,
+    background_left: Array,
+    background_right: Array,
+    fit_lo: float,
+    fit_hi: float,
+    bin_width: float,
+    max_iterations: int,
+    convergence: float,
+    fit_entries: int,
+) -> Evaluation:
+    candidate = initial.candidate
+    parameters = np.asarray(candidate.parameter_values, dtype=float)
+    bounds = _parameter_bounds(
+        candidate.parameter_names, fit_lo, fit_hi, bin_width
+    )
+    if len(bounds) != parameters.size:
+        return initial
+    parameters = np.asarray(
+        [
+            np.clip(value, lower_bound, upper_bound)
+            for value, (lower_bound, upper_bound) in zip(
+                parameters, bounds, strict=True
+            )
+        ],
+        dtype=float,
+    )
+
+    def objective(raw: Array) -> float:
+        refined_candidate = _candidate_with_parameters(candidate, raw)
+        if refined_candidate is None:
+            return 1.0e100
+        evaluation = _evaluate_candidate(
+            refined_candidate,
+            counts,
+            x,
+            background_left,
+            background_right,
+            min(max_iterations, 60),
+            convergence,
+            fit_entries,
+        )
+        return evaluation.nll if evaluation is not None else 1.0e100
+
+    result = minimize(
+        objective,
+        parameters,
+        method="Powell",
+        bounds=bounds,
+        options={
+            "maxiter": min(max_iterations, 60),
+            "xtol": max(1.0e-8, 1.0e-5 * (fit_hi - fit_lo)),
+            "ftol": 1.0e-7,
+        },
+    )
+    if not np.all(np.isfinite(result.x)):
+        return initial
+    refined_candidate = _candidate_with_parameters(candidate, result.x)
+    if refined_candidate is None:
+        return initial
+    refined = _evaluate_candidate(
+        refined_candidate,
+        counts,
+        x,
+        background_left,
+        background_right,
+        max_iterations,
+        convergence,
+        fit_entries,
+    )
+    if refined is None or refined.bic >= initial.bic:
+        return initial
+    return Evaluation(
+        candidate=refined.candidate,
+        weights=refined.weights,
+        components=refined.components,
+        iterations=int(getattr(result, "nit", refined.iterations)),
+        nll=refined.nll,
+        bic=refined.bic,
+        parameter_count=refined.parameter_count,
+        refined=True,
+    )
+
+
+def _parameter_bounds(
+    names: tuple[str, ...], fit_lo: float, fit_hi: float, bin_width: float
+) -> list[tuple[float, float]]:
+    span = fit_hi - fit_lo
+    minimum_width = max(0.25 * bin_width, span / 10000.0)
+    bounds = []
+    for name in names:
+        if name == "mu":
+            bounds.append((fit_lo + 0.25 * bin_width, fit_hi - 0.25 * bin_width))
+        elif name == "nu":
+            bounds.append((0.0, max(fit_hi, span)))
+        elif name in {"tail_sigma", "tail_tau", "nuisance_b"}:
+            bounds.append((minimum_width, span))
+        else:
+            bounds.append((minimum_width, 0.49 * span))
+    return bounds
+
+
+def _candidate_with_parameters(
+    template: Candidate, raw: Array
+) -> Candidate | None:
+    values = tuple(float(item) for item in raw)
+    name = template.name
+    if name in {"gaussian+linear", "gaussian+sideband-linear"}:
+        mu, sigma = values
+        components = (Component("gaussian", (mu, sigma), "core"),)
+        center, scale = mu, sigma
+    elif name == "gaussian+broad-gaussian+linear":
+        mu, sigma, tail_sigma = values
+        if tail_sigma < 2.0 * sigma:
+            return None
+        components = (
+            Component("gaussian", (mu, sigma), "core"),
+            Component("gaussian", (mu, tail_sigma), "broad_tail"),
+        )
+        center, scale = mu, sigma
+    elif name == "rayleigh+linear":
+        (sigma,) = values
+        components = (Component("rice", (0.0, sigma), "rice"),)
+        center, scale = sigma, sigma
+    elif name == "rice+linear":
+        nu, sigma = values
+        components = (Component("rice", (nu, sigma), "rice"),)
+        center = 0.5 * (nu + np.sqrt(nu * nu + 4.0 * sigma * sigma))
+        scale = sigma
+    elif name == "split-gaussian+linear":
+        mu, left, right = values
+        components = (Component("split_gaussian", values, "split_core"),)
+        center, scale = mu, max(left, right)
+    elif name == "gaussian+positive-exgaussian+linear":
+        mu, sigma, tau = values
+        components = (
+            Component("gaussian", (mu, sigma), "core"),
+            Component("exgaussian", (mu, sigma, tau), "positive_tail"),
+        )
+        center, scale = mu, sigma
+    elif name == "laplace+linear":
+        mu, width = values
+        components = (
+            Component("asymmetric_laplace", (mu, width, width), "cusp_core"),
+        )
+        center, scale = mu, width
+    elif name == "asymmetric-laplace+linear":
+        mu, left, right = values
+        components = (
+            Component("asymmetric_laplace", values, "cusp_core"),
+        )
+        center, scale = mu, max(left, right)
+    elif name == "laplace+broad-laplace+linear":
+        mu, width, nuisance = values
+        if nuisance < 2.0 * width:
+            return None
+        components = (
+            Component("asymmetric_laplace", (mu, width, width), "cusp_core"),
+            Component(
+                "asymmetric_laplace",
+                (mu, nuisance, nuisance),
+                "broad_cusp_nuisance",
+            ),
+        )
+        center, scale = mu, width
+    elif name == "asymmetric-laplace+broad-laplace+linear":
+        mu, left, right, nuisance = values
+        if nuisance < 2.0 * max(left, right):
+            return None
+        components = (
+            Component("asymmetric_laplace", (mu, left, right), "cusp_core"),
+            Component(
+                "asymmetric_laplace",
+                (mu, nuisance, nuisance),
+                "broad_cusp_nuisance",
+            ),
+        )
+        center, scale = mu, max(left, right)
+    else:
+        return None
+    return Candidate(
+        name=template.name,
+        components=components,
+        center=float(center),
+        scale=float(scale),
+        parameter_names=template.parameter_names,
+        parameter_values=values,
+        free_shape_parameters=template.free_shape_parameters,
+        one_sided=template.one_sided,
+        sideband_linear=template.sideband_linear,
+        signal_components=template.signal_components,
+        nuisance_components=template.nuisance_components,
+    )
 
 
 def _component_pdf(component: Component, x: Array) -> Array:

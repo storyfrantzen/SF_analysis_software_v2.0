@@ -40,7 +40,8 @@ from eppi0.exclusivity import (
     load_cuts,
     save_cuts,
 )
-from eppi0.exclusivity_models import estimate_model
+from eppi0.exclusivity_diagnostics import render_diagnostics
+from eppi0.exclusivity_models import estimate_model, maximum_fit_parameters
 from eppi0.harmonics import fit_phi
 from eppi0.response import build_response, build_response_from_counts
 from eppi0.radiative_correction import (
@@ -64,6 +65,7 @@ from run_analysis import (
     _read_generator_integrated_cross_section,
     _read_generator_normalization_summary,
 )
+from derive_exclusivity import derivation_settings
 from build_event_sample import (
     reconstructed_columns,
     reverse_join_selected_events,
@@ -481,6 +483,35 @@ class ExclusivityTests(unittest.TestCase):
         )
         np.testing.assert_array_equal(counts, [0, 1, 1, 2, INVALID_TOPOLOGY])
 
+    def test_analysis_config_records_exclusivity_policy(self) -> None:
+        optional_arguments = (
+            "global_cuts",
+            "n_sigma",
+            "minimum_events",
+            "fit_window_sigma",
+            "fit_max_iterations",
+            "fit_convergence",
+            "fit_histogram_bins",
+            "minimum_signal_fraction",
+            "minimum_peak_significance",
+            "maximum_local_sigma_ratio",
+            "maximum_local_center_shift_sigma",
+            "continuous_refinement",
+            "refinement_max_iterations",
+            "refinement_min_iterations",
+            "refinement_boundary_tolerance",
+        )
+        arguments = SimpleNamespace(
+            config=Path("configs/analysis/rga/10.604.json"),
+            **{name: None for name in optional_arguments},
+        )
+        settings = derivation_settings(arguments)
+        self.assertTrue(settings["global_mode"])
+        self.assertNotIn("global_cuts", settings)
+        self.assertEqual(settings["cut_components"]["rec_E_miss"], "core")
+        self.assertEqual(settings["cut_components"]["rec_pT_miss"], "signal")
+        self.assertEqual(settings["refinement_max_iterations"], 3)
+
     def test_global_cut_table_can_be_reused(self) -> None:
         rng = np.random.default_rng(4)
         count = 200
@@ -508,8 +539,20 @@ class ExclusivityTests(unittest.TestCase):
         self.assertEqual(cuts.populated_group_ids.tolist(), [4])
         self.assertEqual(cuts.dropped_group_ids.size, 0)
         self.assertAlmostEqual(cuts.signal_containment, 0.9973002039)
-        self.assertEqual(cuts.fit_parameter_names.shape, (1, 6, 8))
+        self.assertEqual(
+            cuts.fit_parameter_names.shape,
+            (1, 6, maximum_fit_parameters()),
+        )
         self.assertTrue(np.any(cuts.fit_parameter_names != ""))
+        self.assertEqual(cuts.window_source.tolist(), [["global"] * 6])
+        self.assertTrue(np.all(cuts.extrapolated_cut_entries == 0))
+        self.assertTrue(np.all(cuts.lower >= cuts.fit_lower))
+        self.assertTrue(np.all(cuts.upper <= cuts.fit_upper))
+        self.assertGreaterEqual(cuts.refinement_iterations, 2)
+        self.assertEqual(cuts.refinement_max_iterations, 3)
+        self.assertEqual(cuts.refinement_min_iterations, 2)
+        self.assertAlmostEqual(cuts.refinement_boundary_tolerance, 0.02)
+        self.assertTrue(cuts.continuous_refinement)
         self.assertGreater(mask.sum(), count // 2)
 
     def test_mass_and_transverse_momentum_use_physical_signal_models(self) -> None:
@@ -570,10 +613,12 @@ class ExclusivityTests(unittest.TestCase):
         self.assertEqual(
             energy_fit.fit_model, "gaussian+positive-exgaussian+linear"
         )
-        self.assertGreater(
+        self.assertAlmostEqual(
             energy_fit.upper - energy_fit.center,
             energy_fit.center - energy_fit.lower,
+            delta=1.0e-9,
         )
+        self.assertGreater(energy_fit.signal_fraction, energy_fit.cut_component_fraction)
 
         left, right = 0.008, 0.025
         count = 12000
@@ -708,8 +753,108 @@ class ExclusivityTests(unittest.TestCase):
             n_sigma=3.0,
             minimum_events=50,
             expected_center=0.02,
+            maximum_center_deviation=0.20,
+            maximum_sigma=0.20,
         )
         self.assertIsNone(window)
+
+    def test_missing_mass_squared_broad_component_is_nuisance(self) -> None:
+        rng = np.random.default_rng(71)
+        values = np.concatenate(
+            (
+                rng.laplace(0.0, 0.008, 8000),
+                rng.laplace(0.0, 0.05, 5000),
+                rng.uniform(-0.3, 0.3, 1000),
+            )
+        )
+        estimate = self._fit_model("rec_m2_miss", values, 0.0, None)
+        self.assertIn("broad-laplace", estimate.fit_model)
+        self.assertGreater(estimate.nuisance_fraction, 0.1)
+        self.assertLess(estimate.upper - estimate.lower, 0.15)
+        self.assertGreater(estimate.fit_upper - estimate.fit_lower, 0.3)
+
+    def test_iterative_nminus1_result_is_variable_order_independent(self) -> None:
+        rng = np.random.default_rng(73)
+        count = 5000
+        common_tail = rng.random(count) < 0.15
+        m2_epx = rng.normal(0.018, 0.055, count)
+        m_eggx = rng.normal(0.938, 0.045, count)
+        m2_epx[common_tail] += rng.normal(0.5, 0.15, common_tail.sum())
+        m_eggx[common_tail] += rng.normal(-0.35, 0.12, common_tail.sum())
+        values = {"rec_m2_epX": m2_epx, "rec_m_eggX": m_eggx}
+        detector = np.ones(count, dtype=int)
+        zeros = np.zeros(count, dtype=int)
+
+        forward = derive_cuts(
+            values,
+            detector,
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            variables=("rec_m2_epX", "rec_m_eggX"),
+            topologies=(1,),
+            global_mode=True,
+            continuous_refinement=False,
+        )
+        reverse = derive_cuts(
+            values,
+            detector,
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            variables=("rec_m_eggX", "rec_m2_epX"),
+            topologies=(1,),
+            global_mode=True,
+            continuous_refinement=False,
+        )
+        self.assertEqual(forward.group_ids.tolist(), reverse.group_ids.tolist())
+        reverse_positions = [reverse.variables.index(name) for name in forward.variables]
+        np.testing.assert_allclose(
+            forward.lower,
+            reverse.lower[:, reverse_positions],
+            rtol=0.0,
+            atol=1.0e-12,
+        )
+        np.testing.assert_allclose(
+            forward.upper,
+            reverse.upper[:, reverse_positions],
+            rtol=0.0,
+            atol=1.0e-12,
+        )
+
+    def test_exclusivity_diagnostic_pdf_uses_stored_histograms(self) -> None:
+        rng = np.random.default_rng(79)
+        count = 400
+        values = {
+            "rec_m_gg": rng.normal(0.135, 0.01, count),
+            "rec_pT_miss": np.hypot(
+                rng.normal(0.0, 0.02, count), rng.normal(0.0, 0.02, count)
+            ),
+            "rec_m2_epX": rng.normal(0.018, 0.05, count),
+            "rec_m_eggX": rng.normal(0.938, 0.05, count),
+            "rec_E_miss": rng.normal(0.0, 0.1, count),
+            "rec_m2_miss": rng.laplace(0.0, 0.02, count),
+        }
+        detector = np.ones(count, dtype=int)
+        zeros = np.zeros(count, dtype=int)
+        cuts = derive_cuts(
+            values,
+            detector,
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            topologies=(1,),
+            minimum_events=20,
+            global_mode=True,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "diagnostics.pdf"
+            rendered = render_diagnostics(cuts, output)
+            self.assertEqual(rendered, (4,))
+            self.assertGreater(output.stat().st_size, 1000)
 
     def test_core_plus_broad_tail_recovers_narrow_resolution(self) -> None:
         rng = np.random.default_rng(41)
@@ -822,6 +967,7 @@ class ExclusivityTests(unittest.TestCase):
                 "binned-gaussian-linear-background-mixture-v2",
                 "binned-gaussian-core-tail-background-mixture-v3",
                 "binned-gaussian-core-tail-background-mixture-v4",
+                "topology-variable-signal-models-v5",
             ):
                 path = Path(tmp) / f"{estimator}.npz"
                 np.savez_compressed(

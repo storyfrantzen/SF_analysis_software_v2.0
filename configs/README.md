@@ -17,7 +17,13 @@ Processing configurations control HIPO input reduction, QADB, reconstructed
 skims, MC matching, generated-event storage, row-level PID storage filters, and
 kinematic corrections. Post configurations define candidate construction and
 tuneable detector/physics cuts. Analysis configurations contain binning,
-target, and normalization settings.
+target, normalization, and exclusivity-derivation settings. The
+`exclusivity.variables` object records each variable's containment probability
+and whether the final boundary is defined by the fitted narrow `core` or the
+complete physical `signal`. The `exclusivity.refinement` object controls the
+simultaneous iterative N-1 boundary updates. Command-line options to
+`analysis/derive_exclusivity.py` override these recorded defaults for deliberate
+systematic variations.
 
 The RGA 10.604 GeV Fall 2018 EPPI0 configs are explicit about polarity. Each
 of the following has both a `_torus+1.json` and `_torus-1.json` variant:
