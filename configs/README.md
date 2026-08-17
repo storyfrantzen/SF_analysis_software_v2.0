@@ -20,8 +20,9 @@ tuneable detector/physics cuts. Analysis configurations contain binning,
 target, normalization, and exclusivity-derivation settings. The
 `exclusivity.variables` object records each variable's containment probability
 and whether the final boundary is defined by the fitted narrow `core` or the
-complete physical `signal`. The `exclusivity.refinement` object controls the
-simultaneous iterative N-1 boundary updates. Command-line options to
+complete physical `signal`. The `exclusivity.nminus1_audit` object controls the
+relative-boundary-shift threshold used to flag the non-mutating fixed-window
+N-1 stability audit. Command-line options to
 `analysis/derive_exclusivity.py` override these recorded defaults for deliberate
 systematic variations.
 

@@ -497,9 +497,7 @@ class ExclusivityTests(unittest.TestCase):
             "maximum_local_sigma_ratio",
             "maximum_local_center_shift_sigma",
             "continuous_refinement",
-            "refinement_max_iterations",
-            "refinement_min_iterations",
-            "refinement_boundary_tolerance",
+            "nminus1_audit_boundary_tolerance",
         )
         arguments = SimpleNamespace(
             config=Path("configs/analysis/rga/10.604.json"),
@@ -510,7 +508,7 @@ class ExclusivityTests(unittest.TestCase):
         self.assertNotIn("global_cuts", settings)
         self.assertEqual(settings["cut_components"]["rec_E_miss"], "core")
         self.assertEqual(settings["cut_components"]["rec_pT_miss"], "signal")
-        self.assertEqual(settings["refinement_max_iterations"], 8)
+        self.assertEqual(settings["nminus1_audit_boundary_tolerance"], 0.02)
 
     def test_global_cut_table_can_be_reused(self) -> None:
         rng = np.random.default_rng(4)
@@ -548,14 +546,13 @@ class ExclusivityTests(unittest.TestCase):
         self.assertTrue(np.all(cuts.extrapolated_cut_entries == 0))
         self.assertTrue(np.all(cuts.lower >= cuts.fit_lower))
         self.assertTrue(np.all(cuts.upper <= cuts.fit_upper))
-        self.assertGreaterEqual(cuts.refinement_iterations, 3)
-        self.assertEqual(cuts.refinement_max_iterations, 8)
-        self.assertEqual(cuts.refinement_min_iterations, 3)
-        self.assertEqual(
-            cuts.boundary_change_history.shape,
-            (cuts.refinement_iterations,),
-        )
-        self.assertAlmostEqual(cuts.refinement_boundary_tolerance, 0.02)
+        self.assertEqual(cuts.nminus1_audit_success.shape, (1, 6))
+        self.assertTrue(cuts.nminus1_audit_complete)
+        self.assertTrue(np.all(cuts.nminus1_audit_success))
+        self.assertTrue(np.all(np.isfinite(cuts.nminus1_audit_lower)))
+        self.assertTrue(np.all(np.isfinite(cuts.nminus1_audit_upper)))
+        self.assertGreaterEqual(cuts.nminus1_audit_maximum_boundary_change, 0.0)
+        self.assertAlmostEqual(cuts.nminus1_audit_boundary_tolerance, 0.02)
         self.assertTrue(cuts.continuous_refinement)
         self.assertGreater(mask.sum(), count // 2)
 
@@ -777,7 +774,7 @@ class ExclusivityTests(unittest.TestCase):
         self.assertLess(estimate.upper - estimate.lower, 0.15)
         self.assertGreater(estimate.fit_upper - estimate.fit_lower, 0.3)
 
-    def test_iterative_nminus1_result_is_variable_order_independent(self) -> None:
+    def test_bootstrap_and_nminus1_audit_are_variable_order_independent(self) -> None:
         rng = np.random.default_rng(73)
         count = 5000
         common_tail = rng.random(count) < 0.15
@@ -827,6 +824,75 @@ class ExclusivityTests(unittest.TestCase):
             rtol=0.0,
             atol=1.0e-12,
         )
+        np.testing.assert_allclose(
+            forward.nminus1_audit_lower,
+            reverse.nminus1_audit_lower[:, reverse_positions],
+            rtol=0.0,
+            atol=1.0e-12,
+        )
+        np.testing.assert_allclose(
+            forward.nminus1_audit_upper,
+            reverse.nminus1_audit_upper[:, reverse_positions],
+            rtol=0.0,
+            atol=1.0e-12,
+        )
+
+    def test_nminus1_audit_tolerance_does_not_change_nominal_windows(self) -> None:
+        rng = np.random.default_rng(83)
+        count = 5000
+        common_tail = rng.random(count) < 0.20
+        m2_epx = rng.normal(0.018, 0.055, count)
+        m_eggx = rng.normal(0.938, 0.045, count)
+        m2_epx[common_tail] += rng.normal(0.45, 0.12, common_tail.sum())
+        m_eggx[common_tail] += rng.normal(-0.30, 0.10, common_tail.sum())
+        values = {"rec_m2_epX": m2_epx, "rec_m_eggX": m_eggx}
+        detector = np.ones(count, dtype=int)
+        zeros = np.zeros(count, dtype=int)
+
+        strict = derive_cuts(
+            values,
+            detector,
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            variables=("rec_m2_epX", "rec_m_eggX"),
+            topologies=(1,),
+            global_mode=True,
+            nminus1_audit_boundary_tolerance=1.0e-4,
+            continuous_refinement=False,
+        )
+        loose = derive_cuts(
+            values,
+            detector,
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            variables=("rec_m2_epX", "rec_m_eggX"),
+            topologies=(1,),
+            global_mode=True,
+            nminus1_audit_boundary_tolerance=0.9,
+            continuous_refinement=False,
+        )
+        np.testing.assert_array_equal(strict.group_ids, loose.group_ids)
+        np.testing.assert_allclose(strict.lower, loose.lower, rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(strict.upper, loose.upper, rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(
+            strict.nminus1_audit_lower,
+            loose.nminus1_audit_lower,
+            rtol=0.0,
+            atol=0.0,
+        )
+        np.testing.assert_allclose(
+            strict.nminus1_audit_upper,
+            loose.nminus1_audit_upper,
+            rtol=0.0,
+            atol=0.0,
+        )
+        self.assertTrue(strict.nminus1_audit_complete)
+        self.assertFalse(strict.nminus1_audit_within_tolerance)
+        self.assertTrue(loose.nminus1_audit_within_tolerance)
 
     def test_exclusivity_diagnostic_pdf_uses_stored_histograms(self) -> None:
         rng = np.random.default_rng(79)
@@ -986,6 +1052,7 @@ class ExclusivityTests(unittest.TestCase):
                 "binned-gaussian-core-tail-background-mixture-v4",
                 "topology-variable-signal-models-v5",
                 "topology-variable-signal-models-iterative-v6",
+                "topology-variable-signal-models-iterative-v7",
             ):
                 path = Path(tmp) / f"{estimator}.npz"
                 np.savez_compressed(

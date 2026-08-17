@@ -11,7 +11,7 @@ from .exclusivity_models import FitEstimate, estimate_model, maximum_fit_paramet
 Array = np.ndarray
 
 GROUPING = "proton-detector+ft-photon-count-v1"
-ESTIMATOR = "topology-variable-signal-models-iterative-v7"
+ESTIMATOR = "topology-variable-signal-models-bootstrap-audit-v8"
 _TOPOLOGY_RADIX = 4
 _BIN_RADIX = 128
 
@@ -113,13 +113,18 @@ class ExclusivityCuts:
     signal_containment: float
     cut_containments: Array
     cut_components: Array
-    refinement_iterations: int
-    refinement_converged: bool
-    maximum_boundary_change: float
-    boundary_change_history: Array
-    refinement_max_iterations: int
-    refinement_min_iterations: int
-    refinement_boundary_tolerance: float
+    nminus1_audit_lower: Array
+    nminus1_audit_upper: Array
+    nminus1_audit_centers: Array
+    nminus1_audit_sigmas: Array
+    nminus1_audit_fit_entries: Array
+    nminus1_audit_source: Array
+    nminus1_audit_reasons: Array
+    nminus1_audit_success: Array
+    nminus1_audit_complete: bool
+    nminus1_audit_within_tolerance: bool
+    nminus1_audit_maximum_boundary_change: float
+    nminus1_audit_boundary_tolerance: float
     continuous_refinement: bool
     minimum_events: int
     fit_window_sigma: float
@@ -157,12 +162,10 @@ def derive_cuts(
     maximum_local_center_shift_sigma: float = 2.5,
     cut_containments: dict[str, float] | None = None,
     cut_components: dict[str, str] | None = None,
-    refinement_max_iterations: int = 8,
-    refinement_min_iterations: int = 3,
-    refinement_boundary_tolerance: float = 0.02,
+    nminus1_audit_boundary_tolerance: float = 0.02,
     continuous_refinement: bool = True,
 ) -> ExclusivityCuts:
-    """Derive topology-aware cuts with order-independent iterative N-1 fits."""
+    """Derive deterministic topology cuts and audit them with fixed N-1 fits."""
     _validate_settings(
         n_sigma,
         minimum_events,
@@ -175,17 +178,11 @@ def derive_cuts(
         maximum_local_sigma_ratio,
         maximum_local_center_shift_sigma,
     )
-    if refinement_max_iterations < 0:
-        raise ValueError("refinement_max_iterations must be nonnegative")
-    if not 0 <= refinement_min_iterations <= refinement_max_iterations:
-        raise ValueError(
-            "refinement_min_iterations must lie between zero and the maximum"
-        )
-    if not np.isfinite(refinement_boundary_tolerance) or not (
-        0.0 < refinement_boundary_tolerance < 1.0
+    if not np.isfinite(nminus1_audit_boundary_tolerance) or not (
+        0.0 < nminus1_audit_boundary_tolerance < 1.0
     ):
         raise ValueError(
-            "refinement_boundary_tolerance must lie between zero and one"
+            "nminus1_audit_boundary_tolerance must lie between zero and one"
         )
 
     base_containment = float(erf(n_sigma / sqrt(2.0)))
@@ -474,72 +471,6 @@ def derive_cuts(
                 & (raw <= estimate.upper)
             )
 
-    refinement_iterations = 0
-    refinement_converged = refinement_max_iterations == 0
-    maximum_boundary_change = 0.0
-    boundary_change_history = []
-    for refinement_index in range(refinement_max_iterations):
-        stage_active = active.copy()
-        snapshot_lower = lower.copy()
-        snapshot_upper = upper.copy()
-        pending: list[list[tuple[FitEstimate | None, str, str]]] = []
-        for variable_index, _ in enumerate(variables):
-            selections = []
-            for group_index, rows in enumerate(group_rows):
-                selected_rows = np.ones(rows.size, dtype=bool)
-                if stage_active[group_index]:
-                    for other_index, other_name in enumerate(variables):
-                        if other_index == variable_index:
-                            continue
-                        raw = arrays[other_name][rows]
-                        selected_rows &= (
-                            np.isfinite(raw)
-                            & (raw >= snapshot_lower[group_index, other_index])
-                            & (raw <= snapshot_upper[group_index, other_index])
-                        )
-                selections.append(selected_rows)
-            pending.append(fit_stage(variable_index, selections, stage_active))
-
-        for group_index in np.flatnonzero(stage_active):
-            for variable_index, name in enumerate(variables):
-                estimate, reason, _ = pending[variable_index][group_index]
-                if estimate is None:
-                    active[group_index] = False
-                    dropped_variables[group_index] = name
-                    dropped_reasons[group_index] = (
-                        f"N-1 iteration {refinement_index + 1}: {reason}"
-                    )
-                    break
-
-        changes = []
-        for group_index in np.flatnonzero(active & stage_active):
-            for variable_index, _ in enumerate(variables):
-                estimate, _, source = pending[variable_index][group_index]
-                assert estimate is not None
-                old_width = snapshot_upper[group_index, variable_index] - snapshot_lower[
-                    group_index, variable_index
-                ]
-                new_width = estimate.upper - estimate.lower
-                denominator = max(abs(old_width), abs(new_width), np.finfo(float).eps)
-                changes.extend(
-                    (
-                        abs(estimate.lower - snapshot_lower[group_index, variable_index])
-                        / denominator,
-                        abs(estimate.upper - snapshot_upper[group_index, variable_index])
-                        / denominator,
-                    )
-                )
-                store_estimate(group_index, variable_index, estimate, source)
-        refinement_iterations = refinement_index + 1
-        maximum_boundary_change = max(changes, default=0.0)
-        boundary_change_history.append(maximum_boundary_change)
-        if (
-            refinement_iterations >= refinement_min_iterations
-            and maximum_boundary_change <= refinement_boundary_tolerance
-        ):
-            refinement_converged = True
-            break
-
     complete = np.all(np.isfinite(lower) & np.isfinite(upper), axis=1)
     retained = active & complete
     unexplained = ~retained & (dropped_reasons == "")
@@ -551,6 +482,80 @@ def derive_cuts(
             dropped_variables[group_index] = variables[int(missing[0])]
         dropped_reasons[group_index] = "cut table was incomplete"
     dropped = ~retained
+
+    # Audit every immutable bootstrap window once on the sample passing the
+    # other five immutable windows. These fits intentionally do not update the
+    # cut table and cannot drop a group: they measure sensitivity to the N-1
+    # conditioning without creating a feedback loop between correlated tails.
+    nminus1_audit_lower = np.full(shape, np.nan)
+    nminus1_audit_upper = np.full(shape, np.nan)
+    nminus1_audit_centers = np.full(shape, np.nan)
+    nminus1_audit_sigmas = np.full(shape, np.nan)
+    nminus1_audit_fit_entries = np.zeros(shape, dtype=np.int64)
+    nminus1_audit_source = np.full(shape, "", dtype="<U32")
+    nminus1_audit_reasons = np.full(shape, "", dtype="<U256")
+    nminus1_audit_success = np.zeros(shape, dtype=bool)
+    audit_pending: list[list[tuple[FitEstimate | None, str, str]]] = []
+    for variable_index, _ in enumerate(variables):
+        selections = []
+        for group_index, rows in enumerate(group_rows):
+            selected_rows = np.ones(rows.size, dtype=bool)
+            if retained[group_index]:
+                for other_index, other_name in enumerate(variables):
+                    if other_index == variable_index:
+                        continue
+                    raw = arrays[other_name][rows]
+                    selected_rows &= (
+                        np.isfinite(raw)
+                        & (raw >= lower[group_index, other_index])
+                        & (raw <= upper[group_index, other_index])
+                    )
+            selections.append(selected_rows)
+        audit_pending.append(fit_stage(variable_index, selections, retained))
+
+    audit_changes = []
+    for group_index in np.flatnonzero(retained):
+        for variable_index, _ in enumerate(variables):
+            estimate, reason, source = audit_pending[variable_index][group_index]
+            nminus1_audit_source[group_index, variable_index] = source
+            if estimate is None:
+                nminus1_audit_reasons[group_index, variable_index] = reason
+                continue
+            nminus1_audit_success[group_index, variable_index] = True
+            nminus1_audit_lower[group_index, variable_index] = estimate.lower
+            nminus1_audit_upper[group_index, variable_index] = estimate.upper
+            nminus1_audit_centers[group_index, variable_index] = estimate.center
+            nminus1_audit_sigmas[group_index, variable_index] = estimate.sigma
+            nminus1_audit_fit_entries[
+                group_index, variable_index
+            ] = estimate.fit_entries
+            nominal_width = (
+                upper[group_index, variable_index]
+                - lower[group_index, variable_index]
+            )
+            audit_width = estimate.upper - estimate.lower
+            denominator = max(
+                abs(nominal_width), abs(audit_width), np.finfo(float).eps
+            )
+            audit_changes.extend(
+                (
+                    abs(estimate.lower - lower[group_index, variable_index])
+                    / denominator,
+                    abs(estimate.upper - upper[group_index, variable_index])
+                    / denominator,
+                )
+            )
+    retained_audit_success = nminus1_audit_success[retained]
+    nminus1_audit_complete = bool(
+        retained_audit_success.size and np.all(retained_audit_success)
+    )
+    nminus1_audit_maximum_boundary_change = max(audit_changes, default=0.0)
+    nminus1_audit_within_tolerance = bool(
+        nminus1_audit_complete
+        and nminus1_audit_maximum_boundary_change
+        <= nminus1_audit_boundary_tolerance
+    )
+
     cumulative_before = np.zeros(shape, dtype=np.int64)
     cumulative_after = np.zeros(shape, dtype=np.int64)
     nminus1_entries = np.zeros(shape, dtype=np.int64)
@@ -642,13 +647,20 @@ def derive_cuts(
         signal_containment=base_containment,
         cut_containments=variable_containments,
         cut_components=variable_components,
-        refinement_iterations=refinement_iterations,
-        refinement_converged=refinement_converged,
-        maximum_boundary_change=maximum_boundary_change,
-        boundary_change_history=np.asarray(boundary_change_history, dtype=float),
-        refinement_max_iterations=refinement_max_iterations,
-        refinement_min_iterations=refinement_min_iterations,
-        refinement_boundary_tolerance=refinement_boundary_tolerance,
+        nminus1_audit_lower=nminus1_audit_lower[retained],
+        nminus1_audit_upper=nminus1_audit_upper[retained],
+        nminus1_audit_centers=nminus1_audit_centers[retained],
+        nminus1_audit_sigmas=nminus1_audit_sigmas[retained],
+        nminus1_audit_fit_entries=nminus1_audit_fit_entries[retained],
+        nminus1_audit_source=nminus1_audit_source[retained],
+        nminus1_audit_reasons=nminus1_audit_reasons[retained],
+        nminus1_audit_success=nminus1_audit_success[retained],
+        nminus1_audit_complete=nminus1_audit_complete,
+        nminus1_audit_within_tolerance=nminus1_audit_within_tolerance,
+        nminus1_audit_maximum_boundary_change=(
+            nminus1_audit_maximum_boundary_change
+        ),
+        nminus1_audit_boundary_tolerance=nminus1_audit_boundary_tolerance,
         continuous_refinement=continuous_refinement,
         minimum_events=minimum_events,
         fit_window_sigma=fit_window_sigma,
@@ -802,13 +814,20 @@ def save_cuts(path: str, cuts: ExclusivityCuts) -> None:
         signal_containment=cuts.signal_containment,
         cut_containments=cuts.cut_containments,
         cut_components=cuts.cut_components,
-        refinement_iterations=cuts.refinement_iterations,
-        refinement_converged=cuts.refinement_converged,
-        maximum_boundary_change=cuts.maximum_boundary_change,
-        boundary_change_history=cuts.boundary_change_history,
-        refinement_max_iterations=cuts.refinement_max_iterations,
-        refinement_min_iterations=cuts.refinement_min_iterations,
-        refinement_boundary_tolerance=cuts.refinement_boundary_tolerance,
+        nminus1_audit_lower=cuts.nminus1_audit_lower,
+        nminus1_audit_upper=cuts.nminus1_audit_upper,
+        nminus1_audit_centers=cuts.nminus1_audit_centers,
+        nminus1_audit_sigmas=cuts.nminus1_audit_sigmas,
+        nminus1_audit_fit_entries=cuts.nminus1_audit_fit_entries,
+        nminus1_audit_source=cuts.nminus1_audit_source,
+        nminus1_audit_reasons=cuts.nminus1_audit_reasons,
+        nminus1_audit_success=cuts.nminus1_audit_success,
+        nminus1_audit_complete=cuts.nminus1_audit_complete,
+        nminus1_audit_within_tolerance=cuts.nminus1_audit_within_tolerance,
+        nminus1_audit_maximum_boundary_change=(
+            cuts.nminus1_audit_maximum_boundary_change
+        ),
+        nminus1_audit_boundary_tolerance=cuts.nminus1_audit_boundary_tolerance,
         continuous_refinement=cuts.continuous_refinement,
         minimum_events=cuts.minimum_events,
         fit_window_sigma=cuts.fit_window_sigma,
@@ -907,14 +926,23 @@ def load_cuts(path: str) -> ExclusivityCuts:
         signal_containment=float(saved["signal_containment"]),
         cut_containments=saved["cut_containments"],
         cut_components=saved["cut_components"],
-        refinement_iterations=int(saved["refinement_iterations"]),
-        refinement_converged=bool(saved["refinement_converged"]),
-        maximum_boundary_change=float(saved["maximum_boundary_change"]),
-        boundary_change_history=saved["boundary_change_history"],
-        refinement_max_iterations=int(saved["refinement_max_iterations"]),
-        refinement_min_iterations=int(saved["refinement_min_iterations"]),
-        refinement_boundary_tolerance=float(
-            saved["refinement_boundary_tolerance"]
+        nminus1_audit_lower=saved["nminus1_audit_lower"],
+        nminus1_audit_upper=saved["nminus1_audit_upper"],
+        nminus1_audit_centers=saved["nminus1_audit_centers"],
+        nminus1_audit_sigmas=saved["nminus1_audit_sigmas"],
+        nminus1_audit_fit_entries=saved["nminus1_audit_fit_entries"],
+        nminus1_audit_source=saved["nminus1_audit_source"],
+        nminus1_audit_reasons=saved["nminus1_audit_reasons"],
+        nminus1_audit_success=saved["nminus1_audit_success"],
+        nminus1_audit_complete=bool(saved["nminus1_audit_complete"]),
+        nminus1_audit_within_tolerance=bool(
+            saved["nminus1_audit_within_tolerance"]
+        ),
+        nminus1_audit_maximum_boundary_change=float(
+            saved["nminus1_audit_maximum_boundary_change"]
+        ),
+        nminus1_audit_boundary_tolerance=float(
+            saved["nminus1_audit_boundary_tolerance"]
         ),
         continuous_refinement=bool(saved["continuous_refinement"]),
         minimum_events=int(saved["minimum_events"]),
@@ -962,6 +990,14 @@ def load_cuts(path: str) -> ExclusivityCuts:
         cuts.cumulative_after,
         cuts.nminus1_entries,
         cuts.nminus1_passing,
+        cuts.nminus1_audit_lower,
+        cuts.nminus1_audit_upper,
+        cuts.nminus1_audit_centers,
+        cuts.nminus1_audit_sigmas,
+        cuts.nminus1_audit_fit_entries,
+        cuts.nminus1_audit_source,
+        cuts.nminus1_audit_reasons,
+        cuts.nminus1_audit_success,
     )
     if any(array.shape != expected_shape for array in diagnostic_arrays):
         raise ValueError("exclusivity cut table has inconsistent array shapes")
@@ -990,8 +1026,34 @@ def load_cuts(path: str) -> ExclusivityCuts:
         raise ValueError("exclusivity cut table has inconsistent cut containments")
     if cuts.cut_components.shape != variable_shape:
         raise ValueError("exclusivity cut table has inconsistent cut components")
-    if cuts.boundary_change_history.shape != (cuts.refinement_iterations,):
-        raise ValueError("exclusivity cut table has inconsistent convergence history")
+    successful_audits = cuts.nminus1_audit_success
+    successful_values = (
+        cuts.nminus1_audit_lower[successful_audits],
+        cuts.nminus1_audit_upper[successful_audits],
+        cuts.nminus1_audit_centers[successful_audits],
+        cuts.nminus1_audit_sigmas[successful_audits],
+    )
+    if any(not np.all(np.isfinite(array)) for array in successful_values):
+        raise ValueError("exclusivity cut table has invalid N-1 audit estimates")
+    if cuts.nminus1_audit_complete != bool(
+        successful_audits.size and np.all(successful_audits)
+    ):
+        raise ValueError("exclusivity cut table has inconsistent N-1 audit status")
+    if not np.isfinite(cuts.nminus1_audit_maximum_boundary_change) or (
+        cuts.nminus1_audit_maximum_boundary_change < 0.0
+    ):
+        raise ValueError("exclusivity cut table has invalid N-1 audit change")
+    if not 0.0 < cuts.nminus1_audit_boundary_tolerance < 1.0:
+        raise ValueError("exclusivity cut table has invalid N-1 audit tolerance")
+    expected_audit_stability = bool(
+        cuts.nminus1_audit_complete
+        and cuts.nminus1_audit_maximum_boundary_change
+        <= cuts.nminus1_audit_boundary_tolerance
+    )
+    if cuts.nminus1_audit_within_tolerance != expected_audit_stability:
+        raise ValueError("exclusivity cut table has inconsistent N-1 audit stability")
+    if np.any((~successful_audits) & (cuts.nminus1_audit_reasons == "")):
+        raise ValueError("exclusivity cut table omits an N-1 audit failure reason")
     if cuts.dropped_group_ids.shape != cuts.dropped_variables.shape:
         raise ValueError("exclusivity cut table has inconsistent dropped-group diagnostics")
     if cuts.dropped_group_ids.shape != cuts.dropped_reasons.shape:

@@ -87,9 +87,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--minimum-peak-significance", type=float)
     parser.add_argument("--maximum-local-sigma-ratio", type=float)
     parser.add_argument("--maximum-local-center-shift-sigma", type=float)
-    parser.add_argument("--refinement-max-iterations", type=int)
-    parser.add_argument("--refinement-min-iterations", type=int)
-    parser.add_argument("--refinement-boundary-tolerance", type=float)
+    parser.add_argument(
+        "--nminus1-audit-boundary-tolerance",
+        type=float,
+        help=(
+            "Relative boundary-shift threshold used to flag the fixed-window "
+            "N-1 stability audit"
+        ),
+    )
     parser.add_argument(
         "--no-continuous-refinement",
         dest="continuous_refinement",
@@ -244,21 +249,20 @@ def derivation_settings(args: argparse.Namespace) -> dict[str, object]:
             else configured.get(name, default)
         )
 
-    refinement = configured.get("refinement", {})
-    if not isinstance(refinement, dict):
-        raise ValueError("exclusivity refinement section must be an object")
-    refinement_options = {
-        "refinement_max_iterations": ("maximum_iterations", 8),
-        "refinement_min_iterations": ("minimum_iterations", 3),
-        "refinement_boundary_tolerance": ("boundary_relative_tolerance", 0.02),
-    }
-    for argument, (key, default) in refinement_options.items():
-        command_line = getattr(args, argument)
-        settings[argument] = (
-            command_line
-            if command_line is not None
-            else refinement.get(key, default)
+    if "refinement" in configured:
+        raise ValueError(
+            "exclusivity.refinement is obsolete; use the non-mutating "
+            "exclusivity.nminus1_audit policy"
         )
+    audit = configured.get("nminus1_audit", {})
+    if not isinstance(audit, dict):
+        raise ValueError("exclusivity nminus1_audit section must be an object")
+    command_line = args.nminus1_audit_boundary_tolerance
+    settings["nminus1_audit_boundary_tolerance"] = (
+        command_line
+        if command_line is not None
+        else audit.get("boundary_relative_tolerance", 0.02)
+    )
 
     policies = configured.get("variables", {})
     if not isinstance(policies, dict):
@@ -357,14 +361,14 @@ def main() -> int:
             f"{np.median(cuts.pearson_chi2[:, index] / cuts.fit_ndof[:, index]):.4g}, "
             f"models: {model_summary}"
         )
+    audit_successes = int(np.count_nonzero(cuts.nminus1_audit_success))
     print(
-        f"N-1 refinement: iterations={cuts.refinement_iterations}, "
-        f"converged={cuts.refinement_converged}, maximum relative boundary "
-        f"change={cuts.maximum_boundary_change:.5g}"
-    )
-    print(
-        "Boundary-change history: "
-        + ", ".join(f"{value:.5g}" for value in cuts.boundary_change_history)
+        f"Fixed-window N-1 audit: successful={audit_successes}/"
+        f"{cuts.nminus1_audit_success.size}, complete={cuts.nminus1_audit_complete}, "
+        f"within tolerance={cuts.nminus1_audit_within_tolerance}, maximum "
+        f"relative boundary change="
+        f"{cuts.nminus1_audit_maximum_boundary_change:.5g}, tolerance="
+        f"{cuts.nminus1_audit_boundary_tolerance:.5g}"
     )
     print(f"Passing events: {mask.sum()}/{mask.size}")
     if args.format == "selected-root":

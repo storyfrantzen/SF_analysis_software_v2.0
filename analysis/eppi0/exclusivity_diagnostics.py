@@ -40,6 +40,7 @@ _CUT_COMPONENT_COLOR = "#0072B2"
 _NUISANCE_COLOR = "#D55E00"
 _BACKGROUND_COLOR = "#CC3311"
 _BOUNDARY_COLOR = "#009E73"
+_AUDIT_BOUNDARY_COLOR = "#CC79A7"
 
 
 def diagnostic_group_ids(
@@ -109,11 +110,10 @@ def _summary_page(cuts, selected_ids, pdf, plt) -> None:
     figure.suptitle(
         "Exclusivity fit audit\n"
         f"{cuts.estimator}; groups={cuts.group_ids.size}; plotted={selected_ids.size}; "
-        f"N-1 iterations={cuts.refinement_iterations}; "
-        f"converged={cuts.refinement_converged}; "
-        f"max boundary change={cuts.maximum_boundary_change:.3g}\n"
-        "boundary-change history="
-        + ", ".join(f"{value:.3g}" for value in cuts.boundary_change_history),
+        f"fixed N-1 audit complete={cuts.nminus1_audit_complete}; "
+        f"within {cuts.nminus1_audit_boundary_tolerance:.3g} tolerance="
+        f"{cuts.nminus1_audit_within_tolerance}; maximum boundary change="
+        f"{cuts.nminus1_audit_maximum_boundary_change:.3g}",
         color="black",
         fontsize=12,
     )
@@ -248,6 +248,20 @@ def _group_page(cuts, group_id, position, pdf, plt) -> None:
             linewidth=1.4,
             linestyle="--",
         )
+        if cuts.nminus1_audit_success[position, variable_index]:
+            axis.axvline(
+                cuts.nminus1_audit_lower[position, variable_index],
+                color=_AUDIT_BOUNDARY_COLOR,
+                linewidth=1.4,
+                linestyle=":",
+                label="fixed N-1 audit proposal",
+            )
+            axis.axvline(
+                cuts.nminus1_audit_upper[position, variable_index],
+                color=_AUDIT_BOUNDARY_COLOR,
+                linewidth=1.4,
+                linestyle=":",
+            )
         reduced = cuts.pearson_chi2[position, variable_index] / max(
             cuts.fit_ndof[position, variable_index], 1
         )
@@ -257,6 +271,42 @@ def _group_page(cuts, group_id, position, pdf, plt) -> None:
             if cuts.nminus1_entries[position, variable_index]
             else float("nan")
         )
+        if cuts.nminus1_audit_success[position, variable_index]:
+            nominal_width = (
+                cuts.upper[position, variable_index]
+                - cuts.lower[position, variable_index]
+            )
+            audit_width = (
+                cuts.nminus1_audit_upper[position, variable_index]
+                - cuts.nminus1_audit_lower[position, variable_index]
+            )
+            denominator = max(
+                abs(nominal_width), abs(audit_width), np.finfo(float).eps
+            )
+            audit_change = max(
+                abs(
+                    cuts.nminus1_audit_lower[position, variable_index]
+                    - cuts.lower[position, variable_index]
+                )
+                / denominator,
+                abs(
+                    cuts.nminus1_audit_upper[position, variable_index]
+                    - cuts.upper[position, variable_index]
+                )
+                / denominator,
+            )
+            audit_text = (
+                f"N-1 audit change: {audit_change:.3g}; "
+                f"{cuts.nminus1_audit_source[position, variable_index]}"
+            )
+        else:
+            audit_reason = str(
+                cuts.nminus1_audit_reasons[position, variable_index]
+            )
+            audit_text = (
+                "N-1 audit failed: "
+                f"{audit_reason[:72]}"
+            )
         axis.set_title(
             f"{name}\n{cuts.fit_model[position, variable_index]}",
             color="black",
@@ -280,7 +330,8 @@ def _group_page(cuts, group_id, position, pdf, plt) -> None:
             f"{cuts.cut_component_fractions[position, variable_index]:.3f}/"
             f"{cuts.nuisance_fractions[position, variable_index]:.3f}/"
             f"{cuts.background_fractions[position, variable_index]:.3f}\n"
-            f"N-1 efficiency: {nminus1_efficiency:.4f}",
+            f"N-1 efficiency: {nminus1_efficiency:.4f}\n"
+            f"{audit_text}",
             transform=axis.transAxes,
             va="top",
             color="black",

@@ -25,9 +25,7 @@
     "maximum_local_sigma_ratio": 2.0,
     "maximum_local_center_shift_sigma": 2.5,
     "continuous_refinement": true,
-    "refinement": {
-      "maximum_iterations": 8,
-      "minimum_iterations": 3,
+    "nminus1_audit": {
       "boundary_relative_tolerance": 0.02
     },
     "variables": {

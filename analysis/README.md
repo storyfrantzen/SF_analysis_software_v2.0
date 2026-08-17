@@ -46,7 +46,8 @@ mass.
   and reduced cross sections;
 - `eppi0.bin_centering`: physical-bin AAO model averaging and bin-centering
   corrections;
-- `eppi0.exclusivity`: topology-aware iterative N-1 data/GEMC windows;
+- `eppi0.exclusivity`: deterministic topology-aware data/GEMC windows with a
+  non-mutating N-1 stability audit;
 - `eppi0.event_sample`: radiative/non-radiative GEN construction and REC joins;
 - `eppi0.data_efficiency`: run-charge joins, current grouping, and zero-current fits;
 - `eppi0.harmonics`: weighted `A + B cos(phi) + C cos(2 phi)` fits.
@@ -511,9 +512,10 @@ generated topology and kinematics. Every output row therefore has
 columns used by the visualizer. This artifact is intended for reconstruction
 diagnostics, not as the generated denominator for response construction.
 
-`derive_exclusivity.py` uses order-independent iterative N-1 fits and preserves
-the global/per-bin modes. Global-by-topology pooling is the default because this
-exclusive channel is generally too sparse for stable fine-bin fits. Pass
+`derive_exclusivity.py` uses a deterministic physics-ordered bootstrap followed
+by a fixed-window N-1 stability audit and preserves the global/per-bin modes.
+Global-by-topology pooling is the default because this exclusive channel is
+generally too sparse for stable fine-bin fits. Pass
 `--per-bin-cuts` to opt into local `(Q2, xB, -t)` groups with same-topology
 fallbacks; the explicit `--global-cuts` spelling remains accepted. The signal
 model follows the geometry of each exclusivity quantity:
@@ -548,20 +550,26 @@ retains the first two topology components while pooling kinematic bins. Thus
 FD/FD, mixed FT/FD, and FT/FT photon pairs never share resolution windows, and
 the two possible orderings of a mixed pair remain one physical category.
 
-Each iteration fits one quantity after applying the other five current cuts;
-all six proposed boundaries are then committed simultaneously. Initial fits
-use a fixed physics-ordered bootstrap (`m_gg`, `pT_miss`, `m2_epX`, `m_eggX`,
-`E_miss`, then `m2_miss`) so that early clean peaks suppress combinatorial
-background before the missing-quantity fits. This order is based on variable
-identity rather than caller argument order. It only initializes the fit; the
-final boundaries come from the simultaneous N-1 updates. The cut table records
-the iteration count, full boundary-change history, convergence state, cumulative
-cut flow, and N-1 numerator and denominator for every group and variable.
+Nominal windows come from one fixed physics-ordered bootstrap (`m_gg`,
+`pT_miss`, `m2_epX`, `m_eggX`, `E_miss`, then `m2_miss`) so that early clean
+peaks suppress combinatorial background before the missing-quantity fits. The
+order is based on variable identity rather than the caller's tuple order. Once
+derived, these six windows are immutable. A single simultaneous N-1 audit then
+refits each quantity after applying the other five nominal cuts and records the
+alternative boundaries, fit population, source, any failure reason, and maximum
+relative boundary displacement. Audit fits never update a cut or remove a
+group. This avoids the two-cycle and multi-cycle oscillations that can occur
+when correlated tails repeatedly change one another's fitting populations. The
+configured audit tolerance is therefore a stability flag, not a convergence or
+acceptance requirement. The cut table also records cumulative cut flow and the
+fixed-window N-1 numerator and denominator for every group and variable.
 
-When a local kinematic group has too few N-1-selected events or an unstable core,
-its window falls back to the N-1-selected sample pooled over the same
-proton detector and FT-photon multiplicity. A group is retained only if all six
-variables have finite windows; cuts are never silently disabled. The cut NPZ
+When a local kinematic group has too few bootstrap-selected events or an
+unstable core, its nominal window falls back to the corresponding bootstrap
+sample pooled over the same proton detector and FT-photon multiplicity. The
+same hierarchy is recorded separately for an N-1 audit proposal. A group is
+retained only if all six nominal variables have finite windows; cuts are never
+silently disabled. The cut NPZ
 records every initially populated group and, for any removed group, the first
 failed variable and exact fit/window rejection reason. It also records fitted
 centers, characteristic scales, fit and fitted-signal entry counts, signal
@@ -599,7 +607,7 @@ python3 analysis/derive_exclusivity.py mc_events.npz \
   --diagnostics results/gemc_exclusivity_diagnostics.pdf
 ```
 
-The PDF can also be regenerated without the event sample because the v7 cut
+The PDF can also be regenerated without the event sample because the v8 cut
 table stores the fit histograms and components:
 
 ```bash
@@ -618,7 +626,7 @@ Pass the GEMC mask to `response --selection-mask` and the data mask to
 `unfold --selection-mask`. Use `--per-bin-cuts` only when one deliberately wants
 local kinematic windows with automatic same-topology fallback instead of the
 default pooled topology windows. Cut tables produced
-before photon-topology grouping or before the v7 iterative/audited fits are
+before photon-topology grouping or before the v8 bootstrap/audited fits are
 incompatible and must be re-derived rather than passed with `--reuse-cuts`.
 
 For large GEMC production, derive the GEMC exclusivity mask directly from the
