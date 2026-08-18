@@ -155,6 +155,9 @@ From the repository root:
 ./build/post_process configs/post/rga/10.604/eppi0_cut_diagnostics_torus+1.json \
   10.604_rga_fa18_torus+1_eppi0_data.root
 
+./build/post_process configs/post/rga/10.604/eppi0_cut_diagnostics_GEMC_torus+1.json \
+  10.604_rga_fa18_torus+1_eppi0_GEMC.root
+
 python3 -m visualizer 10.604_rga_fa18_torus+1_eppi0_cut_diagnostics.root \
   --tree sEvents --output 10.604_rga_fa18_torus+1_eppi0_cut_diagnostics.html
 ```
@@ -165,9 +168,11 @@ branches. The post-processing stage accepts proton detector IDs 1 (FD) and 2
 (CD), applies PID-appropriate RGA fiducials, and applies the three electron
 sampling-fraction components to FD electrons. Nominal RGA configurations accept
 only detector 1 electrons, consistent with the observed first-electron topology
-in data and GEMC. The photon calorimeter-energy cut uses the FTCAL deposit for
-FT photons and the summed PCAL, ECIN, and ECOUT deposits for FD photons, with
-the same configured minimum for both detectors. The electron-sector veto is
+in data and GEMC. Photons receive a loose universal reconstructed-momentum cut
+of 0.4 GeV; nominal selection does not add a deposited-calorimeter-energy cut.
+The diagnostic configurations retain the former 0.15 GeV requirement as a
+non-rejecting tag: it evaluates the FTCAL energy for FT photons and the summed
+PCAL, ECIN, and ECOUT energies for FD photons. The electron-sector veto is
 applied only to FD photon/FD electron pairs. Downstream exclusivity derivation
 separates FD/FD, mixed FT/FD, and FT/FT photon pairs within each
 proton-detector category.
