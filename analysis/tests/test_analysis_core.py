@@ -40,7 +40,10 @@ from eppi0.exclusivity import (
     load_cuts,
     save_cuts,
 )
-from eppi0.exclusivity_diagnostics import render_diagnostics
+from eppi0.exclusivity_diagnostics import (
+    render_comparison_diagnostics,
+    render_diagnostics,
+)
 from eppi0.exclusivity_models import estimate_model, maximum_fit_parameters
 from eppi0.harmonics import fit_phi
 from eppi0.response import build_response, build_response_from_counts
@@ -982,6 +985,62 @@ class ExclusivityTests(unittest.TestCase):
             save_cuts(str(cut_path), cuts)
             render_diagnostics_isolated(cut_path, output)
             self.assertGreater(output.stat().st_size, 1000)
+
+    def test_paired_exclusivity_diagnostics_use_variable_pages(self) -> None:
+        rng = np.random.default_rng(101)
+        count = 800
+        detector = np.concatenate(
+            (np.ones(count // 2, dtype=int), np.full(count // 2, 2, dtype=int))
+        )
+        ft_photons = np.concatenate(
+            (np.zeros(count // 2, dtype=int), np.ones(count // 2, dtype=int))
+        )
+        zeros = np.zeros(count, dtype=int)
+
+        def sample(scale: float) -> dict[str, np.ndarray]:
+            return {
+                "rec_m_gg": rng.normal(0.135, 0.010 * scale, count),
+                "rec_pT_miss": np.hypot(
+                    rng.normal(0.0, 0.020 * scale, count),
+                    rng.normal(0.0, 0.020 * scale, count),
+                ),
+                "rec_m2_epX": rng.normal(0.018, 0.050 * scale, count),
+                "rec_m_eggX": rng.normal(0.938, 0.050 * scale, count),
+                "rec_E_miss": rng.normal(0.0, 0.100 * scale, count),
+                "rec_m2_miss": rng.laplace(0.0, 0.020 * scale, count),
+            }
+
+        data_cuts = derive_cuts(
+            sample(1.0),
+            detector,
+            ft_photons,
+            zeros,
+            zeros,
+            zeros,
+            minimum_events=20,
+            global_mode=True,
+        )
+        gemc_cuts = derive_cuts(
+            sample(0.8),
+            detector,
+            ft_photons,
+            zeros,
+            zeros,
+            zeros,
+            minimum_events=20,
+            global_mode=True,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "comparison.pdf"
+            variables = render_comparison_diagnostics(
+                data_cuts, gemc_cuts, output
+            )
+            self.assertEqual(variables, tuple(data_cuts.variables))
+            self.assertGreater(output.stat().st_size, 1000)
+            import re
+
+            media_boxes = re.findall(rb"/MediaBox\s*\[", output.read_bytes())
+            self.assertEqual(len(media_boxes), len(data_cuts.variables))
 
     def test_core_plus_broad_tail_recovers_narrow_resolution(self) -> None:
         rng = np.random.default_rng(41)

@@ -616,6 +616,22 @@ python3 analysis/plot_exclusivity_diagnostics.py \
   results/data_exclusivity_diagnostics.pdf
 ```
 
+Compare the stored data and GEMC fits in one PDF with one page per exclusivity
+quantity, topology rows, and data/GEMC columns:
+
+```bash
+python3 analysis/plot_exclusivity_diagnostics.py \
+  results/data_exclusivity.npz \
+  results/data_gemc_exclusivity_comparison.pdf \
+  --gemc-cuts results/gemc_exclusivity.npz
+```
+
+Each comparison panel places fit metadata and quality metrics beside the plot
+rather than over the histogram. The nominal green boundaries and their numeric
+values are shown together in a dedicated selection box. Paired mode requires
+the nominal global-by-topology cut tables because a local table can contain
+many kinematic groups for one detector topology.
+
 For a large per-bin table, the plotter defaults to the 24 groups with the worst
 reduced chi-square. Repeat `--group-id ID` to inspect chosen groups, or change
 the limit with `--maximum-groups`. A high reduced chi-square is an audit flag,

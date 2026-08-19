@@ -10,7 +10,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from eppi0.exclusivity import load_cuts
-from eppi0.exclusivity_diagnostics import render_diagnostics
+from eppi0.exclusivity_diagnostics import (
+    render_comparison_diagnostics,
+    render_diagnostics,
+)
 
 
 def main() -> int:
@@ -22,6 +25,16 @@ def main() -> int:
     )
     parser.add_argument("cuts", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument(
+        "--gemc-cuts",
+        type=Path,
+        help=(
+            "Render a paired topology comparison; the positional cut table is "
+            "treated as data and this cut table as GEMC"
+        ),
+    )
+    parser.add_argument("--data-label", default="data")
+    parser.add_argument("--gemc-label", default="GEMC")
     parser.add_argument(
         "--group-id",
         type=int,
@@ -36,6 +49,20 @@ def main() -> int:
     )
     args = parser.parse_args()
     cuts = load_cuts(str(args.cuts))
+    if args.gemc_cuts:
+        if args.group_id:
+            parser.error("--group-id is not available with --gemc-cuts")
+        gemc_cuts = load_cuts(str(args.gemc_cuts))
+        variables = render_comparison_diagnostics(
+            cuts,
+            gemc_cuts,
+            args.output,
+            data_label=args.data_label,
+            gemc_label=args.gemc_label,
+        )
+        print(f"Rendered {len(variables)} variable pages to {args.output}")
+        print("Variables:", " ".join(variables))
+        return 0
     rendered = render_diagnostics(
         cuts,
         args.output,
