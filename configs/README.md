@@ -346,7 +346,11 @@ production configs become directly usable without further path edits.
 
 The RGK EPPI0 base config mirrors the RGA EPPI0 topology with RGK-specific
 detector acceptance: no detector 0 FT candidates, RGK ECAL fiducials, RGK ECAL
-edge cuts, and the same FD/CD proton treatment.
+edge cuts, and the same FD/CD proton treatment. Nominal RGK data and GEMC use
+the same universal reconstructed-photon momentum requirement as RGA,
+`p_gamma >= 0.4 GeV`, without an additional deposited-calorimeter-energy cut.
+Threshold alternatives are treated as downstream systematic variations rather
+than simultaneous nominal requirements.
 
 The unified `eppi0_GEMC.json` processing config is used for both radiative and
 non-radiative GEMC. It preserves every generated event in `gEvents` before the

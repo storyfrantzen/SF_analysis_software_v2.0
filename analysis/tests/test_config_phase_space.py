@@ -27,6 +27,17 @@ def electron_roles(value):
             yield from electron_roles(child)
 
 
+def particle_roles(value, requested_role):
+    if isinstance(value, dict):
+        if value.get("role") == requested_role:
+            yield value
+        for child in value.values():
+            yield from particle_roles(child, requested_role)
+    elif isinstance(value, list):
+        for child in value:
+            yield from particle_roles(child, requested_role)
+
+
 class ConfigPhaseSpaceConsistencyTests(unittest.TestCase):
     CASES = {
         "rga": {
@@ -98,6 +109,25 @@ class ConfigPhaseSpaceConsistencyTests(unittest.TestCase):
                 with self.subTest(path=path):
                     self.assertEqual(role.get("detectors"), [1])
         self.assertGreater(role_count, 0)
+
+    def test_nominal_photon_selection_uses_only_universal_momentum_floor(self) -> None:
+        nominal_bases = (
+            self.CASES["rga"]["post"] / "eppi0_base_torus+1.json",
+            self.CASES["rga"]["post"] / "eppi0_base_torus-1.json",
+            self.CASES["rgk"]["post"] / "eppi0_base.json",
+        )
+        for path in nominal_bases:
+            config = json.loads(path.read_text(encoding="utf-8"))
+            roles = list(particle_roles(config, "gamma"))
+            with self.subTest(path=path):
+                self.assertEqual(len(roles), 1)
+                cuts = roles[0].get("cuts", [])
+                min_p = [cut for cut in cuts if cut.get("op") == "minP"]
+                self.assertEqual(len(min_p), 1)
+                self.assertEqual(float(min_p[0]["min"]), 0.4)
+                self.assertFalse(
+                    any(cut.get("op") == "minCalEnergy" for cut in cuts)
+                )
 
     def test_generated_phase_space_uses_scattered_electron_momentum(self) -> None:
         q2 = np.array([1.2, 1.2])

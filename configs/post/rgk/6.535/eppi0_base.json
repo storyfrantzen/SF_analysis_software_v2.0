@@ -62,7 +62,6 @@
                 "cuts": [
                     { "name": "gamma.min_p", "op": "minP", "min": 0.4 },
                     { "name": "gamma.beta", "op": "betaRange", "min": 0.9, "max": 1.1 },
-                    { "name": "gamma.cal_energy", "op": "minCalEnergy", "min": 0.15 },
                     { "name": "gamma.not_electron_sector", "op": "rejectSameSectorAsRole", "refRole": "electron" },
                     { "name": "gamma.fiducial", "op": "fiducial" }
                 ]
