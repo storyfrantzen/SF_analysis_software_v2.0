@@ -65,7 +65,7 @@ from run_analysis import (
     _read_generator_integrated_cross_section,
     _read_generator_normalization_summary,
 )
-from derive_exclusivity import derivation_settings
+from derive_exclusivity import derivation_settings, render_diagnostics_isolated
 from build_event_sample import (
     reconstructed_columns,
     reverse_join_selected_events,
@@ -949,6 +949,39 @@ class ExclusivityTests(unittest.TestCase):
             for width, height in media_boxes:
                 self.assertLess(float(width), 1200.0)
                 self.assertLess(float(height), 700.0)
+
+    def test_exclusivity_diagnostic_subprocess_uses_saved_cut_table(self) -> None:
+        rng = np.random.default_rng(97)
+        count = 400
+        values = {
+            "rec_m_gg": rng.normal(0.135, 0.01, count),
+            "rec_pT_miss": np.hypot(
+                rng.normal(0.0, 0.02, count), rng.normal(0.0, 0.02, count)
+            ),
+            "rec_m2_epX": rng.normal(0.018, 0.05, count),
+            "rec_m_eggX": rng.normal(0.938, 0.05, count),
+            "rec_E_miss": rng.normal(0.0, 0.1, count),
+            "rec_m2_miss": rng.laplace(0.0, 0.02, count),
+        }
+        detector = np.ones(count, dtype=int)
+        zeros = np.zeros(count, dtype=int)
+        cuts = derive_cuts(
+            values,
+            detector,
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            topologies=(1,),
+            minimum_events=20,
+            global_mode=True,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            cut_path = Path(tmp) / "cuts.npz"
+            output = Path(tmp) / "diagnostics.pdf"
+            save_cuts(str(cut_path), cuts)
+            render_diagnostics_isolated(cut_path, output)
+            self.assertGreater(output.stat().st_size, 1000)
 
     def test_core_plus_broad_tail_recovers_narrow_resolution(self) -> None:
         rng = np.random.default_rng(41)

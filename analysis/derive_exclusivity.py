@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 import numpy as np
@@ -192,6 +193,16 @@ def load_arrays(path: Path, input_format: str, dictionary: Path | None, tree_nam
     return arrays(sample)
 
 
+def render_diagnostics_isolated(cuts: Path, output: Path) -> None:
+    """Render after ROOT input handling without sharing its process state."""
+    plotter = Path(__file__).with_name("plot_exclusivity_diagnostics.py")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [sys.executable, str(plotter), str(cuts), str(output)],
+        check=True,
+    )
+
+
 def print_group_diagnostics(cuts: ExclusivityCuts) -> None:
     print(
         f"Cut groups: populated={cuts.populated_group_ids.size}, "
@@ -307,14 +318,7 @@ def main() -> int:
         args.cuts.parent.mkdir(parents=True, exist_ok=True)
         save_cuts(str(args.cuts), cuts)
     if args.diagnostics:
-        from eppi0.exclusivity_diagnostics import render_diagnostics
-
-        args.diagnostics.parent.mkdir(parents=True, exist_ok=True)
-        rendered = render_diagnostics(cuts, args.diagnostics)
-        print(
-            f"Diagnostic PDF: rendered {len(rendered)} groups to "
-            f"{args.diagnostics}"
-        )
+        render_diagnostics_isolated(args.cuts, args.diagnostics)
     print_group_diagnostics(cuts)
     if cuts.group_ids.size == 0:
         raise RuntimeError(
