@@ -183,48 +183,69 @@ def _comparison_variable_page(
     plt,
 ) -> None:
     number_of_rows = len(topologies)
-    figure_height = max(6.2, 2.5 * number_of_rows + 1.6)
+    figure_height = max(5.4, 2.7 * number_of_rows + 2.0)
     figure = plt.figure(figsize=(16, figure_height), facecolor="white")
     figure.patch.set_alpha(1.0)
+    title_y = 1.0 - 0.18 / figure_height
+    subtitle_y = 1.0 - 0.48 / figure_height
+    column_header_y = 1.0 - 0.80 / figure_height
+    legend_y = 1.0 - 1.05 / figure_height
     outer = figure.add_gridspec(
         number_of_rows,
         2,
         left=0.035,
         right=0.985,
-        bottom=0.045,
-        top=0.855,
-        hspace=0.42,
+        bottom=0.55 / figure_height,
+        top=1.0 - 1.55 / figure_height,
+        hspace=0.46,
         wspace=0.105,
     )
     figure.suptitle(
         f"{variable}: data and GEMC exclusivity fit comparison",
-        y=0.985,
+        y=title_y,
         color="black",
         fontsize=14,
     )
-    figure.text(0.255, 0.94, data_label, ha="center", va="center", fontsize=12)
-    figure.text(0.745, 0.94, gemc_label, ha="center", va="center", fontsize=12)
+    figure.text(
+        0.5,
+        subtitle_y,
+        "Common x range across all topologies and both samples; y scales are independent",
+        ha="center",
+        va="center",
+        color="#404040",
+        fontsize=8,
+    )
+    figure.text(
+        0.255, column_header_y, data_label, ha="center", va="center", fontsize=12
+    )
+    figure.text(
+        0.745, column_header_y, gemc_label, ha="center", va="center", fontsize=12
+    )
 
     samples = ((data_cuts, data_label), (gemc_cuts, gemc_label))
     positions = tuple(_retained_topology_positions(cuts) for cuts, _ in samples)
+    page_domain = _shared_variable_domain(
+        data_cuts,
+        positions[0],
+        gemc_cuts,
+        positions[1],
+        topologies,
+        variable_index,
+    )
     legend_entries = {}
+    shared_x_axis = None
     for row, topology in enumerate(topologies):
-        row_domain = _shared_fit_domain(
-            data_cuts,
-            positions[0].get(topology),
-            gemc_cuts,
-            positions[1].get(topology),
-            variable_index,
-        )
         for column, ((cuts, sample_label), position_map) in enumerate(
             zip(samples, positions)
         ):
             inner = outer[row, column].subgridspec(
-                1, 2, width_ratios=(3.7, 1.65), wspace=0.035
+                1, 2, width_ratios=(3.75, 1.55), wspace=0.045
             )
-            plot_axis = figure.add_subplot(inner[0, 0])
+            plot_axis = figure.add_subplot(inner[0, 0], sharex=shared_x_axis)
+            if shared_x_axis is None:
+                shared_x_axis = plot_axis
             information_grid = inner[0, 1].subgridspec(
-                3, 1, height_ratios=(1.0, 1.55, 1.25), hspace=0.09
+                3, 1, height_ratios=(1.05, 1.55, 0.9), hspace=0.11
             )
             text_axes = tuple(
                 figure.add_subplot(information_grid[index, 0])
@@ -240,7 +261,7 @@ def _comparison_variable_page(
                     topology,
                     variable,
                     sample_label,
-                    row_domain,
+                    page_domain,
                 )
                 continue
             handles = _draw_comparison_fit_panel(
@@ -250,7 +271,7 @@ def _comparison_variable_page(
                 variable_index,
                 variable,
                 topology_label,
-                row_domain,
+                page_domain,
             )
             _draw_comparison_metadata(
                 text_axes, cuts, position, variable_index, variable
@@ -263,7 +284,7 @@ def _comparison_variable_page(
             legend_entries.values(),
             legend_entries.keys(),
             loc="upper center",
-            bbox_to_anchor=(0.5, 0.91),
+            bbox_to_anchor=(0.5, legend_y),
             ncol=min(len(legend_entries), 7),
             frameon=True,
             facecolor="white",
@@ -271,8 +292,8 @@ def _comparison_variable_page(
         )
     figure.text(
         0.5,
-        0.012,
-        "Horizontal ranges are shared within each topology row; vertical scales are independent.",
+        0.16 / figure_height,
+        f"Shared {variable} range: [{page_domain[0]:.6g}, {page_domain[1]:.6g}]",
         ha="center",
         va="bottom",
         color="#404040",
@@ -291,19 +312,23 @@ def _retained_topology_positions(cuts: ExclusivityCuts) -> dict[int, int]:
     return {int(topology): index for index, topology in enumerate(topologies)}
 
 
-def _shared_fit_domain(
+def _shared_variable_domain(
     data_cuts,
-    data_position,
+    data_positions,
     gemc_cuts,
-    gemc_position,
+    gemc_positions,
+    topologies,
     variable_index,
-) -> tuple[float, float] | None:
+) -> tuple[float, float]:
     bounds = []
-    for cuts, position in (
-        (data_cuts, data_position),
-        (gemc_cuts, gemc_position),
+    for cuts, positions in (
+        (data_cuts, data_positions),
+        (gemc_cuts, gemc_positions),
     ):
-        if position is not None:
+        for topology in topologies:
+            position = positions.get(topology)
+            if position is None:
+                continue
             bounds.append(
                 (
                     float(cuts.fit_lower[position, variable_index]),
@@ -311,7 +336,7 @@ def _shared_fit_domain(
                 )
             )
     if not bounds:
-        return None
+        raise ValueError("no retained fits are available for the shared x range")
     return min(item[0] for item in bounds), max(item[1] for item in bounds)
 
 
@@ -421,9 +446,10 @@ def _draw_comparison_fit_panel(
 def _draw_comparison_metadata(axes, cuts, position, variable_index, variable) -> None:
     import textwrap
 
-    for axis in axes:
-        axis.set_axis_off()
     metadata_axis, quality_axis, cut_axis = axes
+    _style_information_axis(metadata_axis, "#F2F2F2", "#707070")
+    _style_information_axis(quality_axis, "#EDF4FA", "#557A95")
+    _style_information_axis(cut_axis, "#E9F6F1", _BOUNDARY_COLOR)
     reduced = cuts.pearson_chi2[position, variable_index] / max(
         cuts.fit_ndof[position, variable_index], 1
     )
@@ -435,70 +461,102 @@ def _draw_comparison_metadata(axes, cuts, position, variable_index, variable) ->
     )
     model = textwrap.fill(
         str(cuts.fit_model[position, variable_index]),
-        width=28,
+        width=25,
         subsequent_indent="  ",
     )
     metadata_axis.text(
-        0.02,
-        0.98,
-        "FIT METADATA\n"
+        0.04,
+        0.9,
+        "FIT METADATA",
+        transform=metadata_axis.transAxes,
+        va="top",
+        ha="left",
+        fontsize=6.6,
+        fontweight="bold",
+        color="#303030",
+    )
+    metadata_axis.text(
+        0.04,
+        0.67,
         f"source: {cuts.window_source[position, variable_index]}\n"
         f"model: {model}\n"
-        f"domain: [{cuts.fit_lower[position, variable_index]:.5g}, "
+        f"domain [{cuts.fit_lower[position, variable_index]:.5g}, "
         f"{cuts.fit_upper[position, variable_index]:.5g}]",
         transform=metadata_axis.transAxes,
         va="top",
         ha="left",
-        fontsize=6.8,
+        fontsize=6.1,
+        linespacing=1.08,
         color="black",
-        bbox=_information_box("#F2F2F2", "#707070"),
     )
     audit_text = _audit_summary(cuts, position, variable_index)
     quality_axis.text(
-        0.02,
-        0.98,
-        "FIT QUALITY\n"
+        0.04,
+        0.92,
+        "FIT QUALITY",
+        transform=quality_axis.transAxes,
+        va="top",
+        ha="left",
+        fontsize=6.6,
+        fontweight="bold",
+        color="#294C65",
+    )
+    quality_axis.text(
+        0.04,
+        0.76,
         f"chi2/ndof: {reduced:.4g}\n"
         f"deviance: {cuts.deviance[position, variable_index]:.4g}\n"
         f"delta BIC: {cuts.delta_bic[position, variable_index]:.4g}\n"
-        "fractions cut/nuis./bkg: "
-        f"{cuts.cut_component_fractions[position, variable_index]:.3f}/"
-        f"{cuts.nuisance_fractions[position, variable_index]:.3f}/"
+        "f(cut,nuis,bkg): "
+        f"{cuts.cut_component_fractions[position, variable_index]:.3f}, "
+        f"{cuts.nuisance_fractions[position, variable_index]:.3f}, "
         f"{cuts.background_fractions[position, variable_index]:.3f}\n"
-        f"N-1 efficiency: {nminus1_efficiency:.4f}\n"
+        f"N-1 eff: {nminus1_efficiency:.4f}\n"
         f"{audit_text}",
         transform=quality_axis.transAxes,
         va="top",
         ha="left",
-        fontsize=6.2,
+        fontsize=5.9,
+        linespacing=1.05,
         color="black",
-        bbox=_information_box("#EDF4FA", "#557A95"),
     )
     cut_axis.text(
-        0.02,
-        0.98,
-        "NOMINAL CUT\n"
-        f"{cuts.lower[position, variable_index]:.6g} <= {variable}\n"
-        f"{variable} <= {cuts.upper[position, variable_index]:.6g}\n"
-        f"component: {cuts.cut_components[variable_index]}\n"
-        f"containment: {cuts.cut_containments[variable_index]:.5f}",
+        0.04,
+        0.88,
+        "NOMINAL CUT",
         transform=cut_axis.transAxes,
         va="top",
         ha="left",
-        fontsize=6.9,
+        fontsize=6.6,
+        fontweight="bold",
         color="#006B4F",
-        bbox=_information_box("#E9F6F1", _BOUNDARY_COLOR),
+    )
+    cut_axis.text(
+        0.04,
+        0.59,
+        f"[{cuts.lower[position, variable_index]:.6g}, "
+        f"{cuts.upper[position, variable_index]:.6g}]",
+        transform=cut_axis.transAxes,
+        va="top",
+        ha="left",
+        fontsize=6.3,
+        linespacing=1.08,
+        color="#006B4F",
     )
 
 
-def _information_box(facecolor: str, edgecolor: str) -> dict[str, object]:
-    return {
-        "facecolor": facecolor,
-        "alpha": 1.0,
-        "edgecolor": edgecolor,
-        "linewidth": 0.65,
-        "boxstyle": "round,pad=0.3",
-    }
+def _style_information_axis(axis, facecolor: str, edgecolor: str) -> None:
+    axis.set_facecolor(facecolor)
+    axis.patch.set_alpha(1.0)
+    axis.set_xlim(0.0, 1.0)
+    axis.set_ylim(0.0, 1.0)
+    axis.set_xticks([])
+    axis.set_yticks([])
+    axis.tick_params(length=0)
+    for spine in axis.spines.values():
+        spine.set_visible(True)
+        spine.set_color(edgecolor)
+        spine.set_linewidth(0.65)
 
 
 def _audit_summary(cuts, position, variable_index) -> str:
@@ -506,7 +564,7 @@ def _audit_summary(cuts, position, variable_index) -> str:
         reason = str(cuts.nminus1_audit_reasons[position, variable_index])
         return f"audit failed: {reason[:42]}"
     return (
-        "audit: "
+        "audit "
         f"[{cuts.nminus1_audit_lower[position, variable_index]:.4g}, "
         f"{cuts.nminus1_audit_upper[position, variable_index]:.4g}]"
     )
@@ -538,19 +596,25 @@ def _draw_missing_comparison_panel(
         fontsize=9,
     )
     _style_axis(plot_axis)
-    for text_axis in text_axes:
-        text_axis.set_axis_off()
+    _style_information_axis(text_axes[0], "#FBEDED", "#B35C5C")
+    for text_axis in text_axes[1:]:
+        text_axis.set_visible(False)
+    positions = [axis.get_position() for axis in text_axes]
+    left = min(position.x0 for position in positions)
+    bottom = min(position.y0 for position in positions)
+    right = max(position.x1 for position in positions)
+    top = max(position.y1 for position in positions)
+    text_axes[0].set_position((left, bottom, right - left, top - bottom))
     reason = _dropped_topology_reason(cuts, topology)
     text_axes[0].text(
-        0.02,
-        0.98,
+        0.04,
+        0.9,
         "TOPOLOGY NOT RETAINED\n" + reason,
         transform=text_axes[0].transAxes,
         va="top",
         ha="left",
         fontsize=7,
         color="#8B1A1A",
-        bbox=_information_box("#FBEDED", "#B35C5C"),
     )
 
 

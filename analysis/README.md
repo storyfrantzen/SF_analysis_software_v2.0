@@ -626,11 +626,12 @@ python3 analysis/plot_exclusivity_diagnostics.py \
   --gemc-cuts results/gemc_exclusivity.npz
 ```
 
-Each comparison panel places fit metadata and quality metrics beside the plot
-rather than over the histogram. The nominal green boundaries and their numeric
-values are shown together in a dedicated selection box. Paired mode requires
-the nominal global-by-topology cut tables because a local table can contain
-many kinematic groups for one detector topology.
+Each comparison panel places fit metadata and quality metrics in separate,
+opaque side panels rather than over the histogram. Every panel on a quantity
+page uses the same horizontal range, and the nominal green window is listed as
+`[lower, upper]`. Paired mode requires the nominal global-by-topology cut tables
+because a local table can contain many kinematic groups for one detector
+topology.
 
 For a large per-bin table, the plotter defaults to the 24 groups with the worst
 reduced chi-square. Repeat `--group-id ID` to inspect chosen groups, or change
