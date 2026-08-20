@@ -253,7 +253,7 @@ def _comparison_variable_page(
     legend_y = 1.0 - 0.50 / figure_height
     column_header_y = 1.0 - 1.18 / figure_height
     grid_left = 0.95 / figure_width
-    grid_right = 1.0 - 0.22 / figure_width
+    grid_right = 1.0 - grid_left
     grid_bottom = 0.48 / figure_height
     grid_top = 1.0 - 1.52 / figure_height
     outer = figure.add_gridspec(
@@ -337,7 +337,7 @@ def _comparison_variable_page(
         row_plot_axes.append(sample_axes)
 
     for column, topology in enumerate(topologies):
-        position = outer[0, column].get_position(figure)
+        position = row_plot_axes[0][column].get_position()
         figure.text(
             0.5 * (position.x0 + position.x1),
             column_header_y,
@@ -449,10 +449,7 @@ def _topology_label(topology: int) -> str:
     photon_name = {0: "FD/FD", 1: "FD/FT", 2: "FT/FT"}.get(
         ft_photons, f"FT count {ft_photons}"
     )
-    return (
-        f"PROTON {proton_name}  |  PHOTONS {photon_name}\n"
-        f"pDet = {proton_detector}"
-    )
+    return f"PROTON {proton_name}  |  PHOTONS {photon_name}"
 
 
 def _variable_label(variable: str) -> str:
