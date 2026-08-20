@@ -617,7 +617,7 @@ python3 analysis/plot_exclusivity_diagnostics.py \
 ```
 
 Compare the stored data and GEMC fits in one PDF with one page per exclusivity
-quantity, topology rows, and data/GEMC columns:
+quantity, topology columns, and data/GEMC rows:
 
 ```bash
 python3 analysis/plot_exclusivity_diagnostics.py \
@@ -628,10 +628,10 @@ python3 analysis/plot_exclusivity_diagnostics.py \
 
 Each comparison panel places fit metadata and quality metrics in separate,
 opaque side panels rather than over the histogram. Every panel on a quantity
-page uses the same horizontal range, and the nominal green window is listed as
-`[lower, upper]`. Paired mode requires the nominal global-by-topology cut tables
-because a local table can contain many kinematic groups for one detector
-topology.
+page uses the same horizontal range, data and GEMC use distinct color palettes,
+and the nominal window is listed as `[lower, upper]`. Paired mode requires the
+nominal global-by-topology cut tables because a local table can contain many
+kinematic groups for one detector topology.
 
 For a large per-bin table, the plotter defaults to the 24 groups with the worst
 reduced chi-square. Repeat `--group-id ID` to inspect chosen groups, or change

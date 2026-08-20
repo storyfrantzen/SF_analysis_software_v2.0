@@ -46,6 +46,48 @@ _BACKGROUND_COLOR = "#CC3311"
 _BOUNDARY_COLOR = "#009E73"
 _AUDIT_BOUNDARY_COLOR = "#CC79A7"
 
+_DATA_COMPARISON_PALETTE = {
+    "observed": "#202020",
+    "error": "#606060",
+    "marker": ".",
+    "total": "#000000",
+    "cut": "#0072B2",
+    "nuisance": "#D55E00",
+    "background": "#CC3311",
+    "boundary": "#009E73",
+    "audit": "#CC79A7",
+    "metadata_face": "#F2F2F2",
+    "metadata_edge": "#707070",
+    "metadata_text": "#303030",
+    "quality_face": "#FFF4E5",
+    "quality_edge": "#B56A00",
+    "quality_text": "#7A4500",
+    "cut_face": "#E9F6F1",
+    "row_face": "#F2F2F2",
+    "row_text": "#202020",
+}
+
+_GEMC_COMPARISON_PALETTE = {
+    "observed": "#3C1361",
+    "error": "#8E7CC3",
+    "marker": "x",
+    "total": "#54278F",
+    "cut": "#2C7FB8",
+    "nuisance": "#41B6C4",
+    "background": "#DD3497",
+    "boundary": "#00796B",
+    "audit": "#756BB1",
+    "metadata_face": "#F3EFFA",
+    "metadata_edge": "#7B6D9C",
+    "metadata_text": "#4A3567",
+    "quality_face": "#EAF3FA",
+    "quality_edge": "#4575B4",
+    "quality_text": "#285078",
+    "cut_face": "#E4F4F1",
+    "row_face": "#F3EFFA",
+    "row_text": "#54278F",
+}
+
 
 def diagnostic_group_ids(
     cuts: ExclusivityCuts,
@@ -110,7 +152,7 @@ def render_comparison_diagnostics(
     data_label: str = "data",
     gemc_label: str = "GEMC",
 ) -> tuple[str, ...]:
-    """Render one variable page with topology rows and data/GEMC columns."""
+    """Render one variable page with sample rows and detector-topology columns."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -182,23 +224,29 @@ def _comparison_variable_page(
     pdf,
     plt,
 ) -> None:
-    number_of_rows = len(topologies)
-    figure_height = max(5.4, 2.7 * number_of_rows + 2.0)
-    figure = plt.figure(figsize=(16, figure_height), facecolor="white")
+    number_of_columns = len(topologies)
+    figure_width = max(8.5, 7.8 * number_of_columns)
+    figure_height = 7.6
+    figure = plt.figure(
+        figsize=(figure_width, figure_height), facecolor="white"
+    )
     figure.patch.set_alpha(1.0)
     title_y = 1.0 - 0.18 / figure_height
-    subtitle_y = 1.0 - 0.48 / figure_height
-    column_header_y = 1.0 - 0.80 / figure_height
-    legend_y = 1.0 - 1.05 / figure_height
+    legend_y = 1.0 - 0.50 / figure_height
+    column_header_y = 1.0 - 1.18 / figure_height
+    grid_left = 0.95 / figure_width
+    grid_right = 1.0 - 0.22 / figure_width
+    grid_bottom = 0.48 / figure_height
+    grid_top = 1.0 - 1.52 / figure_height
     outer = figure.add_gridspec(
-        number_of_rows,
         2,
-        left=0.035,
-        right=0.985,
-        bottom=0.55 / figure_height,
-        top=1.0 - 1.55 / figure_height,
-        hspace=0.46,
-        wspace=0.105,
+        number_of_columns,
+        left=grid_left,
+        right=grid_right,
+        bottom=grid_bottom,
+        top=grid_top,
+        hspace=0.42,
+        wspace=0.12,
     )
     figure.suptitle(
         f"{variable}: data and GEMC exclusivity fit comparison",
@@ -206,24 +254,14 @@ def _comparison_variable_page(
         color="black",
         fontsize=14,
     )
-    figure.text(
-        0.5,
-        subtitle_y,
-        "Common x range across all topologies and both samples; y scales are independent",
-        ha="center",
-        va="center",
-        color="#404040",
-        fontsize=8,
-    )
-    figure.text(
-        0.255, column_header_y, data_label, ha="center", va="center", fontsize=12
-    )
-    figure.text(
-        0.745, column_header_y, gemc_label, ha="center", va="center", fontsize=12
-    )
 
-    samples = ((data_cuts, data_label), (gemc_cuts, gemc_label))
-    positions = tuple(_retained_topology_positions(cuts) for cuts, _ in samples)
+    samples = (
+        (data_cuts, data_label, _DATA_COMPARISON_PALETTE),
+        (gemc_cuts, gemc_label, _GEMC_COMPARISON_PALETTE),
+    )
+    positions = tuple(
+        _retained_topology_positions(cuts) for cuts, _, _ in samples
+    )
     page_domain = _shared_variable_domain(
         data_cuts,
         positions[0],
@@ -234,14 +272,17 @@ def _comparison_variable_page(
     )
     legend_entries = {}
     shared_x_axis = None
-    for row, topology in enumerate(topologies):
-        for column, ((cuts, sample_label), position_map) in enumerate(
-            zip(samples, positions)
-        ):
+    row_plot_axes = []
+    for row, ((cuts, sample_label, palette), position_map) in enumerate(
+        zip(samples, positions)
+    ):
+        sample_axes = []
+        for column, topology in enumerate(topologies):
             inner = outer[row, column].subgridspec(
                 1, 2, width_ratios=(3.75, 1.55), wspace=0.045
             )
             plot_axis = figure.add_subplot(inner[0, 0], sharex=shared_x_axis)
+            sample_axes.append(plot_axis)
             if shared_x_axis is None:
                 shared_x_axis = plot_axis
             information_grid = inner[0, 1].subgridspec(
@@ -252,7 +293,6 @@ def _comparison_variable_page(
                 for index in range(3)
             )
             position = position_map.get(topology)
-            topology_label = _topology_label(topology)
             if position is None:
                 _draw_missing_comparison_panel(
                     plot_axis,
@@ -262,6 +302,7 @@ def _comparison_variable_page(
                     variable,
                     sample_label,
                     page_domain,
+                    palette,
                 )
                 continue
             handles = _draw_comparison_fit_panel(
@@ -270,14 +311,51 @@ def _comparison_variable_page(
                 position,
                 variable_index,
                 variable,
-                topology_label,
                 page_domain,
+                sample_label,
+                palette,
             )
             _draw_comparison_metadata(
-                text_axes, cuts, position, variable_index, variable
+                text_axes, cuts, position, variable_index, variable, palette
             )
             for handle, label in handles:
                 legend_entries.setdefault(label, handle)
+        row_plot_axes.append(sample_axes)
+
+    for column, topology in enumerate(topologies):
+        position = outer[0, column].get_position(figure)
+        figure.text(
+            0.5 * (position.x0 + position.x1),
+            column_header_y,
+            _topology_label(topology),
+            ha="center",
+            va="center",
+            fontsize=10,
+            color="black",
+        )
+    for (_, sample_label, palette), sample_axes in zip(samples, row_plot_axes):
+        positions_for_row = [axis.get_position() for axis in sample_axes]
+        row_center = 0.5 * (
+            min(position.y0 for position in positions_for_row)
+            + max(position.y1 for position in positions_for_row)
+        )
+        figure.text(
+            0.24 / figure_width,
+            row_center,
+            sample_label,
+            ha="center",
+            va="center",
+            rotation=90,
+            fontsize=11,
+            fontweight="bold",
+            color=palette["row_text"],
+            bbox={
+                "facecolor": palette["row_face"],
+                "edgecolor": palette["metadata_edge"],
+                "linewidth": 0.7,
+                "boxstyle": "round,pad=0.3",
+            },
+        )
 
     if legend_entries:
         figure.legend(
@@ -285,20 +363,14 @@ def _comparison_variable_page(
             legend_entries.keys(),
             loc="upper center",
             bbox_to_anchor=(0.5, legend_y),
-            ncol=min(len(legend_entries), 7),
+            ncol=min(len(legend_entries), 6),
             frameon=True,
             facecolor="white",
             edgecolor="#606060",
+            borderaxespad=0.0,
+            columnspacing=1.1,
+            handlelength=2.2,
         )
-    figure.text(
-        0.5,
-        0.16 / figure_height,
-        f"Shared {variable} range: [{page_domain[0]:.6g}, {page_domain[1]:.6g}]",
-        ha="center",
-        va="bottom",
-        color="#404040",
-        fontsize=8,
-    )
     pdf.savefig(figure, facecolor="white", edgecolor="white", transparent=False)
     plt.close(figure)
 
@@ -359,8 +431,9 @@ def _draw_comparison_fit_panel(
     position,
     variable_index,
     variable,
-    topology_label,
     domain,
+    sample_label,
+    palette,
 ):
     count = int(cuts.histogram_bin_count[position, variable_index])
     edges = cuts.histogram_edges[position, variable_index, : count + 1]
@@ -374,68 +447,73 @@ def _draw_comparison_fit_panel(
         centers,
         observed,
         yerr=np.sqrt(np.maximum(observed, 1.0)),
-        fmt=".",
-        color=_OBSERVED_COLOR,
-        ecolor="#606060",
+        fmt=palette["marker"],
+        color=palette["observed"],
+        ecolor=palette["error"],
         markersize=2.8,
         linewidth=0.65,
         alpha=0.9,
-        label="observed",
+        label=f"{sample_label} observed",
     )
-    axis.plot(centers, expected, color=_TOTAL_COLOR, linewidth=1.7, label="total fit")
+    axis.plot(
+        centers,
+        expected,
+        color=palette["total"],
+        linewidth=1.7,
+        label=f"{sample_label} total",
+    )
     axis.plot(
         centers,
         cut_signal,
-        color=_CUT_COMPONENT_COLOR,
+        color=palette["cut"],
         linewidth=1.5,
-        label="cut component",
+        label=f"{sample_label} cut",
     )
     if np.any(noncut > 0.0):
         axis.plot(
             centers,
             noncut,
-            color=_NUISANCE_COLOR,
+            color=palette["nuisance"],
             linewidth=1.4,
-            label="fitted nuisance/tail",
+            label=f"{sample_label} nuisance",
         )
     axis.plot(
         centers,
         background,
-        color=_BACKGROUND_COLOR,
+        color=palette["background"],
         linewidth=1.3,
-        label="background",
+        label=f"{sample_label} background",
     )
     axis.axvline(
         cuts.lower[position, variable_index],
-        color=_BOUNDARY_COLOR,
+        color=palette["boundary"],
         linewidth=1.4,
         linestyle="--",
-        label="nominal cut",
+        label=f"{sample_label} nominal cut",
     )
     axis.axvline(
         cuts.upper[position, variable_index],
-        color=_BOUNDARY_COLOR,
+        color=palette["boundary"],
         linewidth=1.4,
         linestyle="--",
     )
     if cuts.nminus1_audit_success[position, variable_index]:
         axis.axvline(
             cuts.nminus1_audit_lower[position, variable_index],
-            color=_AUDIT_BOUNDARY_COLOR,
+            color=palette["audit"],
             linewidth=1.3,
             linestyle=":",
-            label="fixed N-1 audit proposal",
+            label=f"{sample_label} N-1 audit",
         )
         axis.axvline(
             cuts.nminus1_audit_upper[position, variable_index],
-            color=_AUDIT_BOUNDARY_COLOR,
+            color=palette["audit"],
             linewidth=1.3,
             linestyle=":",
         )
     if domain is not None:
         axis.set_xlim(*domain)
     axis.set_ylim(bottom=0.0)
-    axis.set_title(topology_label, fontsize=9, color="black")
     axis.set_xlabel(variable, color="black")
     axis.set_ylabel("entries / bin", color="black")
     axis.ticklabel_format(axis="y", style="sci", scilimits=(0, 0), useMathText=True)
@@ -443,13 +521,22 @@ def _draw_comparison_fit_panel(
     return tuple(zip(*axis.get_legend_handles_labels()))
 
 
-def _draw_comparison_metadata(axes, cuts, position, variable_index, variable) -> None:
+def _draw_comparison_metadata(
+    axes, cuts, position, variable_index, variable, palette
+) -> None:
     import textwrap
 
+    del variable
     metadata_axis, quality_axis, cut_axis = axes
-    _style_information_axis(metadata_axis, "#F2F2F2", "#707070")
-    _style_information_axis(quality_axis, "#EDF4FA", "#557A95")
-    _style_information_axis(cut_axis, "#E9F6F1", _BOUNDARY_COLOR)
+    _style_information_axis(
+        metadata_axis, palette["metadata_face"], palette["metadata_edge"]
+    )
+    _style_information_axis(
+        quality_axis, palette["quality_face"], palette["quality_edge"]
+    )
+    _style_information_axis(
+        cut_axis, palette["cut_face"], palette["boundary"]
+    )
     reduced = cuts.pearson_chi2[position, variable_index] / max(
         cuts.fit_ndof[position, variable_index], 1
     )
@@ -473,7 +560,7 @@ def _draw_comparison_metadata(axes, cuts, position, variable_index, variable) ->
         ha="left",
         fontsize=6.6,
         fontweight="bold",
-        color="#303030",
+        color=palette["metadata_text"],
     )
     metadata_axis.text(
         0.04,
@@ -499,7 +586,7 @@ def _draw_comparison_metadata(axes, cuts, position, variable_index, variable) ->
         ha="left",
         fontsize=6.6,
         fontweight="bold",
-        color="#294C65",
+        color=palette["quality_text"],
     )
     quality_axis.text(
         0.04,
@@ -529,7 +616,7 @@ def _draw_comparison_metadata(axes, cuts, position, variable_index, variable) ->
         ha="left",
         fontsize=6.6,
         fontweight="bold",
-        color="#006B4F",
+        color=palette["boundary"],
     )
     cut_axis.text(
         0.04,
@@ -541,7 +628,7 @@ def _draw_comparison_metadata(axes, cuts, position, variable_index, variable) ->
         ha="left",
         fontsize=6.3,
         linespacing=1.08,
-        color="#006B4F",
+        color=palette["boundary"],
     )
 
 
@@ -578,11 +665,11 @@ def _draw_missing_comparison_panel(
     variable,
     sample_label,
     domain,
+    palette,
 ) -> None:
     if domain is not None:
         plot_axis.set_xlim(*domain)
     plot_axis.set_ylim(0.0, 1.0)
-    plot_axis.set_title(_topology_label(topology), fontsize=9, color="black")
     plot_axis.set_xlabel(variable, color="black")
     plot_axis.set_ylabel("entries / bin", color="black")
     plot_axis.text(
@@ -592,7 +679,7 @@ def _draw_missing_comparison_panel(
         transform=plot_axis.transAxes,
         ha="center",
         va="center",
-        color="#606060",
+        color=palette["row_text"],
         fontsize=9,
     )
     _style_axis(plot_axis)
