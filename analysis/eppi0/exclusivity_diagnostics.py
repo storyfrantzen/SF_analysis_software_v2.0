@@ -55,6 +55,15 @@ _VARIABLE_LABELS = {
     "rec_m2_miss": r"$M^{2}_{\mathrm{miss}}\;[\mathrm{GeV}^{2}]$",
 }
 
+_VARIABLE_TITLE_LABELS = {
+    "rec_m_gg": r"$\mathbf{m}_{\gamma\gamma}\;[\mathrm{GeV}]$",
+    "rec_pT_miss": r"$\mathbf{p}_{T}^{\mathrm{miss}}\;[\mathrm{GeV}]$",
+    "rec_m2_epX": r"$\mathbf{M}^{2}_{epX}\;[\mathrm{GeV}^{2}]$",
+    "rec_m_eggX": r"$\mathbf{M}_{e\gamma\gamma X}\;[\mathrm{GeV}]$",
+    "rec_E_miss": r"$\mathbf{E}_{\mathrm{miss}}\;[\mathrm{GeV}]$",
+    "rec_m2_miss": r"$\mathbf{M}^{2}_{\mathrm{miss}}\;[\mathrm{GeV}^{2}]$",
+}
+
 _DATA_COMPARISON_PALETTE = {
     "observed": "#202020",
     "error": "#606060",
@@ -263,14 +272,15 @@ def _comparison_variable_page(
         right=grid_right,
         bottom=grid_bottom,
         top=grid_top,
-        hspace=0.42,
+        hspace=0.26,
         wspace=0.12,
     )
     figure.suptitle(
-        f"{_variable_label(variable)}: data and GEMC exclusivity fit comparison",
+        f"{_variable_title_label(variable)}: Data and GEMC exclusivity fit comparison",
         y=title_y,
         color="black",
-        fontsize=14,
+        fontsize=15,
+        fontweight="semibold",
     )
 
     samples = (
@@ -290,10 +300,12 @@ def _comparison_variable_page(
     )
     shared_x_axis = None
     row_plot_axes = []
+    column_axes = [[] for _ in topologies]
     for row, ((cuts, sample_label, palette), position_map) in enumerate(
         zip(samples, positions)
     ):
         sample_axes = []
+        show_xlabel = row == len(samples) - 1
         for column, topology in enumerate(topologies):
             inner = outer[row, column].subgridspec(
                 1, 2, width_ratios=(3.75, 1.55), wspace=0.045
@@ -309,6 +321,7 @@ def _comparison_variable_page(
                 figure.add_subplot(information_grid[index, 0])
                 for index in range(3)
             )
+            column_axes[column].extend((plot_axis, *text_axes))
             position = position_map.get(topology)
             if position is None:
                 _draw_missing_comparison_panel(
@@ -320,6 +333,7 @@ def _comparison_variable_page(
                     sample_label,
                     page_domain,
                     palette,
+                    show_xlabel,
                 )
                 continue
             _draw_comparison_fit_panel(
@@ -330,6 +344,7 @@ def _comparison_variable_page(
                 variable,
                 page_domain,
                 palette,
+                show_xlabel,
             )
             _draw_comparison_metadata(
                 text_axes, cuts, position, variable_index, variable, palette
@@ -356,8 +371,7 @@ def _comparison_variable_page(
         )
     _draw_topology_separators(
         figure,
-        outer,
-        number_of_columns,
+        column_axes,
         grid_bottom,
         column_header_y + 0.035,
     )
@@ -456,19 +470,33 @@ def _variable_label(variable: str) -> str:
     return _VARIABLE_LABELS.get(str(variable), str(variable).replace("_", r"\_"))
 
 
+def _variable_title_label(variable: str) -> str:
+    return _VARIABLE_TITLE_LABELS.get(variable, _variable_label(variable))
+
+
 def _draw_topology_separators(
     figure,
-    outer,
-    number_of_columns: int,
+    column_axes,
     bottom: float,
     top: float,
 ) -> None:
     from matplotlib.lines import Line2D
 
-    for column in range(number_of_columns - 1):
-        left = outer[0, column].get_position(figure)
-        right = outer[0, column + 1].get_position(figure)
-        separator_x = 0.5 * (left.x1 + right.x0)
+    figure.canvas.draw()
+    renderer = figure.canvas.get_renderer()
+    inverse = figure.transFigure.inverted()
+    column_bounds = []
+    for axes in column_axes:
+        boxes = [
+            axis.get_tightbbox(renderer).transformed(inverse)
+            for axis in axes
+            if axis.get_visible()
+        ]
+        column_bounds.append(
+            (min(box.x0 for box in boxes), max(box.x1 for box in boxes))
+        )
+    for left, right in zip(column_bounds[:-1], column_bounds[1:]):
+        separator_x = 0.5 * (left[1] + right[0])
         figure.add_artist(
             Line2D(
                 (separator_x, separator_x),
@@ -544,6 +572,7 @@ def _draw_comparison_fit_panel(
     variable,
     domain,
     palette,
+    show_xlabel,
 ):
     count = int(cuts.histogram_bin_count[position, variable_index])
     edges = cuts.histogram_edges[position, variable_index, : count + 1]
@@ -621,7 +650,10 @@ def _draw_comparison_fit_panel(
     if domain is not None:
         axis.set_xlim(*domain)
     axis.set_ylim(bottom=0.0)
-    axis.set_xlabel(_variable_label(variable), color="black")
+    axis.set_xlabel(
+        _variable_label(variable) if show_xlabel else "",
+        color="black",
+    )
     axis.set_ylabel("entries / bin", color="black")
     axis.ticklabel_format(axis="y", style="sci", scilimits=(0, 0), useMathText=True)
     _style_axis(axis)
@@ -772,11 +804,15 @@ def _draw_missing_comparison_panel(
     sample_label,
     domain,
     palette,
+    show_xlabel,
 ) -> None:
     if domain is not None:
         plot_axis.set_xlim(*domain)
     plot_axis.set_ylim(0.0, 1.0)
-    plot_axis.set_xlabel(_variable_label(variable), color="black")
+    plot_axis.set_xlabel(
+        _variable_label(variable) if show_xlabel else "",
+        color="black",
+    )
     plot_axis.set_ylabel("entries / bin", color="black")
     plot_axis.text(
         0.5,
