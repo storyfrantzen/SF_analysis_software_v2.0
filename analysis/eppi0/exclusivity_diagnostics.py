@@ -46,6 +46,15 @@ _BACKGROUND_COLOR = "#CC3311"
 _BOUNDARY_COLOR = "#009E73"
 _AUDIT_BOUNDARY_COLOR = "#CC79A7"
 
+_VARIABLE_LABELS = {
+    "rec_m_gg": r"$m_{\gamma\gamma}\;[\mathrm{GeV}]$",
+    "rec_pT_miss": r"$p_{T}^{\mathrm{miss}}\;[\mathrm{GeV}]$",
+    "rec_m2_epX": r"$M^{2}_{epX}\;[\mathrm{GeV}^{2}]$",
+    "rec_m_eggX": r"$M_{e\gamma\gamma X}\;[\mathrm{GeV}]$",
+    "rec_E_miss": r"$E_{\mathrm{miss}}\;[\mathrm{GeV}]$",
+    "rec_m2_miss": r"$M^{2}_{\mathrm{miss}}\;[\mathrm{GeV}^{2}]$",
+}
+
 _DATA_COMPARISON_PALETTE = {
     "observed": "#202020",
     "error": "#606060",
@@ -75,8 +84,8 @@ _GEMC_COMPARISON_PALETTE = {
     "cut": "#2C7FB8",
     "nuisance": "#41B6C4",
     "background": "#DD3497",
-    "boundary": "#00796B",
-    "audit": "#756BB1",
+    "boundary": _BOUNDARY_COLOR,
+    "audit": _AUDIT_BOUNDARY_COLOR,
     "metadata_face": "#F3EFFA",
     "metadata_edge": "#7B6D9C",
     "metadata_text": "#4A3567",
@@ -86,6 +95,15 @@ _GEMC_COMPARISON_PALETTE = {
     "cut_face": "#E4F4F1",
     "row_face": "#F3EFFA",
     "row_text": "#54278F",
+}
+
+_COMPARISON_LINESTYLES = {
+    "total": "-",
+    "cut": "--",
+    "nuisance": "-.",
+    "background": ":",
+    "boundary": (0, (5, 2)),
+    "audit": (0, (1, 2)),
 }
 
 
@@ -149,7 +167,7 @@ def render_comparison_diagnostics(
     gemc_cuts: ExclusivityCuts,
     output: str | Path,
     *,
-    data_label: str = "data",
+    data_label: str = "Data",
     gemc_label: str = "GEMC",
 ) -> tuple[str, ...]:
     """Render one variable page with sample rows and detector-topology columns."""
@@ -249,7 +267,7 @@ def _comparison_variable_page(
         wspace=0.12,
     )
     figure.suptitle(
-        f"{variable}: data and GEMC exclusivity fit comparison",
+        f"{_variable_label(variable)}: data and GEMC exclusivity fit comparison",
         y=title_y,
         color="black",
         fontsize=14,
@@ -270,7 +288,6 @@ def _comparison_variable_page(
         topologies,
         variable_index,
     )
-    legend_entries = {}
     shared_x_axis = None
     row_plot_axes = []
     for row, ((cuts, sample_label, palette), position_map) in enumerate(
@@ -305,21 +322,18 @@ def _comparison_variable_page(
                     palette,
                 )
                 continue
-            handles = _draw_comparison_fit_panel(
+            _draw_comparison_fit_panel(
                 plot_axis,
                 cuts,
                 position,
                 variable_index,
                 variable,
                 page_domain,
-                sample_label,
                 palette,
             )
             _draw_comparison_metadata(
                 text_axes, cuts, position, variable_index, variable, palette
             )
-            for handle, label in handles:
-                legend_entries.setdefault(label, handle)
         row_plot_axes.append(sample_axes)
 
     for column, topology in enumerate(topologies):
@@ -330,9 +344,23 @@ def _comparison_variable_page(
             _topology_label(topology),
             ha="center",
             va="center",
-            fontsize=10,
-            color="black",
+            fontsize=11.5,
+            fontweight="bold",
+            color="#172033",
+            bbox={
+                "facecolor": "#E8EEF5",
+                "edgecolor": "#718096",
+                "linewidth": 0.8,
+                "boxstyle": "round,pad=0.38",
+            },
         )
+    _draw_topology_separators(
+        figure,
+        outer,
+        number_of_columns,
+        grid_bottom,
+        column_header_y + 0.035,
+    )
     for (_, sample_label, palette), sample_axes in zip(samples, row_plot_axes):
         positions_for_row = [axis.get_position() for axis in sample_axes]
         row_center = 0.5 * (
@@ -357,20 +385,22 @@ def _comparison_variable_page(
             },
         )
 
-    if legend_entries:
-        figure.legend(
-            legend_entries.values(),
-            legend_entries.keys(),
-            loc="upper center",
-            bbox_to_anchor=(0.5, legend_y),
-            ncol=min(len(legend_entries), 6),
-            frameon=True,
-            facecolor="white",
-            edgecolor="#606060",
-            borderaxespad=0.0,
-            columnspacing=1.1,
-            handlelength=2.2,
-        )
+    legend_handles, legend_labels = _comparison_legend_handles(
+        data_label, gemc_label
+    )
+    figure.legend(
+        legend_handles,
+        legend_labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, legend_y),
+        ncol=len(legend_handles),
+        frameon=True,
+        facecolor="white",
+        edgecolor="#606060",
+        borderaxespad=0.0,
+        columnspacing=1.05,
+        handlelength=2.2,
+    )
     pdf.savefig(figure, facecolor="white", edgecolor="white", transparent=False)
     plt.close(figure)
 
@@ -420,9 +450,93 @@ def _topology_label(topology: int) -> str:
         ft_photons, f"FT count {ft_photons}"
     )
     return (
-        f"proton {proton_name} (pDet={proton_detector}); "
-        f"photons {photon_name}"
+        f"PROTON {proton_name}  |  PHOTONS {photon_name}\n"
+        f"pDet = {proton_detector}"
     )
+
+
+def _variable_label(variable: str) -> str:
+    return _VARIABLE_LABELS.get(str(variable), str(variable).replace("_", r"\_"))
+
+
+def _draw_topology_separators(
+    figure,
+    outer,
+    number_of_columns: int,
+    bottom: float,
+    top: float,
+) -> None:
+    from matplotlib.lines import Line2D
+
+    for column in range(number_of_columns - 1):
+        left = outer[0, column].get_position(figure)
+        right = outer[0, column + 1].get_position(figure)
+        separator_x = 0.5 * (left.x1 + right.x0)
+        figure.add_artist(
+            Line2D(
+                (separator_x, separator_x),
+                (bottom, top),
+                transform=figure.transFigure,
+                color="#52606D",
+                linewidth=1.25,
+                alpha=0.28,
+                solid_capstyle="round",
+                zorder=0.5,
+            )
+        )
+
+
+def _comparison_legend_handles(data_label: str, gemc_label: str):
+    from matplotlib.lines import Line2D
+
+    neutral = "#4B5563"
+    handles = (
+        Line2D(
+            [],
+            [],
+            color=_DATA_COMPARISON_PALETTE["observed"],
+            marker=_DATA_COMPARISON_PALETTE["marker"],
+            linestyle="none",
+            markersize=6,
+        ),
+        Line2D(
+            [],
+            [],
+            color=_GEMC_COMPARISON_PALETTE["observed"],
+            marker=_GEMC_COMPARISON_PALETTE["marker"],
+            linestyle="none",
+            markersize=5,
+        ),
+        Line2D([], [], color=neutral, linewidth=1.8, linestyle="-"),
+        Line2D([], [], color=neutral, linewidth=1.6, linestyle="--"),
+        Line2D([], [], color=neutral, linewidth=1.5, linestyle="-."),
+        Line2D([], [], color=neutral, linewidth=1.5, linestyle=":"),
+        Line2D(
+            [],
+            [],
+            color=_BOUNDARY_COLOR,
+            linewidth=1.5,
+            linestyle=_COMPARISON_LINESTYLES["boundary"],
+        ),
+        Line2D(
+            [],
+            [],
+            color=_AUDIT_BOUNDARY_COLOR,
+            linewidth=1.4,
+            linestyle=_COMPARISON_LINESTYLES["audit"],
+        ),
+    )
+    labels = (
+        data_label,
+        gemc_label,
+        "total",
+        "cut component",
+        "nuisance/tail",
+        "background",
+        "nominal cut",
+        "N-1 audit",
+    )
+    return handles, labels
 
 
 def _draw_comparison_fit_panel(
@@ -432,7 +546,6 @@ def _draw_comparison_fit_panel(
     variable_index,
     variable,
     domain,
-    sample_label,
     palette,
 ):
     count = int(cuts.histogram_bin_count[position, variable_index])
@@ -453,21 +566,20 @@ def _draw_comparison_fit_panel(
         markersize=2.8,
         linewidth=0.65,
         alpha=0.9,
-        label=f"{sample_label} observed",
     )
     axis.plot(
         centers,
         expected,
         color=palette["total"],
         linewidth=1.7,
-        label=f"{sample_label} total",
+        linestyle=_COMPARISON_LINESTYLES["total"],
     )
     axis.plot(
         centers,
         cut_signal,
         color=palette["cut"],
         linewidth=1.5,
-        label=f"{sample_label} cut",
+        linestyle=_COMPARISON_LINESTYLES["cut"],
     )
     if np.any(noncut > 0.0):
         axis.plot(
@@ -475,50 +587,47 @@ def _draw_comparison_fit_panel(
             noncut,
             color=palette["nuisance"],
             linewidth=1.4,
-            label=f"{sample_label} nuisance",
+            linestyle=_COMPARISON_LINESTYLES["nuisance"],
         )
     axis.plot(
         centers,
         background,
         color=palette["background"],
         linewidth=1.3,
-        label=f"{sample_label} background",
+        linestyle=_COMPARISON_LINESTYLES["background"],
     )
     axis.axvline(
         cuts.lower[position, variable_index],
         color=palette["boundary"],
         linewidth=1.4,
-        linestyle="--",
-        label=f"{sample_label} nominal cut",
+        linestyle=_COMPARISON_LINESTYLES["boundary"],
     )
     axis.axvline(
         cuts.upper[position, variable_index],
         color=palette["boundary"],
         linewidth=1.4,
-        linestyle="--",
+        linestyle=_COMPARISON_LINESTYLES["boundary"],
     )
     if cuts.nminus1_audit_success[position, variable_index]:
         axis.axvline(
             cuts.nminus1_audit_lower[position, variable_index],
             color=palette["audit"],
             linewidth=1.3,
-            linestyle=":",
-            label=f"{sample_label} N-1 audit",
+            linestyle=_COMPARISON_LINESTYLES["audit"],
         )
         axis.axvline(
             cuts.nminus1_audit_upper[position, variable_index],
             color=palette["audit"],
             linewidth=1.3,
-            linestyle=":",
+            linestyle=_COMPARISON_LINESTYLES["audit"],
         )
     if domain is not None:
         axis.set_xlim(*domain)
     axis.set_ylim(bottom=0.0)
-    axis.set_xlabel(variable, color="black")
+    axis.set_xlabel(_variable_label(variable), color="black")
     axis.set_ylabel("entries / bin", color="black")
     axis.ticklabel_format(axis="y", style="sci", scilimits=(0, 0), useMathText=True)
     _style_axis(axis)
-    return tuple(zip(*axis.get_legend_handles_labels()))
 
 
 def _draw_comparison_metadata(
@@ -670,7 +779,7 @@ def _draw_missing_comparison_panel(
     if domain is not None:
         plot_axis.set_xlim(*domain)
     plot_axis.set_ylim(0.0, 1.0)
-    plot_axis.set_xlabel(variable, color="black")
+    plot_axis.set_xlabel(_variable_label(variable), color="black")
     plot_axis.set_ylabel("entries / bin", color="black")
     plot_axis.text(
         0.5,
@@ -769,7 +878,7 @@ def _summary_page(cuts, selected_ids, pdf, plt) -> None:
                     color="black",
                     fontsize=7,
                 )
-        axis.set_title(name, color="black")
+        axis.set_title(_variable_label(str(name)), color="black")
         axis.set_xlabel("Pearson chi-square / ndof", color="black")
         axis.set_ylabel("N-1 cut efficiency", color="black")
         axis.set_ylim(-0.03, 1.03)
@@ -928,7 +1037,8 @@ def _group_page(cuts, group_id, position, pdf, plt) -> None:
                 f"{audit_reason[:72]}"
             )
         axis.set_title(
-            f"{name}\n{cuts.fit_model[position, variable_index]}",
+            f"{_variable_label(str(name))}\n"
+            f"{cuts.fit_model[position, variable_index]}",
             color="black",
         )
         axis.set_xlabel(

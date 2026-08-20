@@ -33,7 +33,7 @@ def main() -> int:
             "treated as data and this cut table as GEMC"
         ),
     )
-    parser.add_argument("--data-label", default="data")
+    parser.add_argument("--data-label", default="Data")
     parser.add_argument("--gemc-label", default="GEMC")
     parser.add_argument(
         "--group-id",
