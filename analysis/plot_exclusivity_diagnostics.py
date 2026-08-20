@@ -36,6 +36,14 @@ def main() -> int:
     parser.add_argument("--data-label", default="Data")
     parser.add_argument("--gemc-label", default="GEMC")
     parser.add_argument(
+        "--omit-dropped-topologies",
+        action="store_true",
+        help=(
+            "In paired mode, omit the dedicated failed-topology appendix; by "
+            "default it is placed after all retained-topology variable pages"
+        ),
+    )
+    parser.add_argument(
         "--group-id",
         type=int,
         action="append",
@@ -49,6 +57,8 @@ def main() -> int:
     )
     args = parser.parse_args()
     cuts = load_cuts(str(args.cuts))
+    if args.omit_dropped_topologies and not args.gemc_cuts:
+        parser.error("--omit-dropped-topologies requires --gemc-cuts")
     if args.gemc_cuts:
         if args.group_id:
             parser.error("--group-id is not available with --gemc-cuts")
@@ -59,8 +69,12 @@ def main() -> int:
             args.output,
             data_label=args.data_label,
             gemc_label=args.gemc_label,
+            append_dropped_topologies=not args.omit_dropped_topologies,
         )
-        print(f"Rendered {len(variables)} variable pages to {args.output}")
+        print(
+            f"Rendered paired diagnostics for {len(variables)} variables "
+            f"to {args.output}"
+        )
         print("Variables:", " ".join(variables))
         return 0
     rendered = render_diagnostics(

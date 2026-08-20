@@ -178,15 +178,22 @@ def render_comparison_diagnostics(
     *,
     data_label: str = "Data",
     gemc_label: str = "GEMC",
+    append_dropped_topologies: bool = True,
 ) -> tuple[str, ...]:
-    """Render one variable page with sample rows and detector-topology columns."""
+    """Render retained comparisons followed by dedicated failed-topology pages."""
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
 
-    variables, topologies = _comparison_layout(data_cuts, gemc_cuts)
+    variables, retained_topologies, dropped_topologies = _comparison_layout(
+        data_cuts, gemc_cuts
+    )
+    if not retained_topologies and not append_dropped_topologies:
+        raise ValueError(
+            "data and GEMC cut tables have no topology retained in both samples"
+        )
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with matplotlib.rc_context(rc=_PDF_STYLE):
@@ -197,25 +204,41 @@ def render_comparison_diagnostics(
                 "Subject": f"{data_cuts.estimator}; {gemc_cuts.estimator}",
             },
         ) as pdf:
-            for variable_index, variable in enumerate(variables):
-                _comparison_variable_page(
-                    data_cuts,
-                    gemc_cuts,
-                    variable_index,
-                    variable,
-                    topologies,
-                    data_label,
-                    gemc_label,
-                    pdf,
-                    plt,
-                )
+            if retained_topologies:
+                for variable_index, variable in enumerate(variables):
+                    _comparison_variable_page(
+                        data_cuts,
+                        gemc_cuts,
+                        variable_index,
+                        variable,
+                        retained_topologies,
+                        data_label,
+                        gemc_label,
+                        pdf,
+                        plt,
+                    )
+            if append_dropped_topologies:
+                for topology in dropped_topologies:
+                    for variable_index, variable in enumerate(variables):
+                        _comparison_variable_page(
+                            data_cuts,
+                            gemc_cuts,
+                            variable_index,
+                            variable,
+                            (topology,),
+                            data_label,
+                            gemc_label,
+                            pdf,
+                            plt,
+                            retention_audit=True,
+                        )
     return variables
 
 
 def _comparison_layout(
     data_cuts: ExclusivityCuts,
     gemc_cuts: ExclusivityCuts,
-) -> tuple[tuple[str, ...], tuple[int, ...]]:
+) -> tuple[tuple[str, ...], tuple[int, ...], tuple[int, ...]]:
     if not data_cuts.global_mode or not gemc_cuts.global_mode:
         raise ValueError(
             "paired topology diagnostics require global-by-topology cut tables"
@@ -226,18 +249,27 @@ def _comparison_layout(
         raise ValueError(
             "data and GEMC cut tables must contain the same variables in the same order"
         )
-    populated = []
+    populated = set()
     for cuts in (data_cuts, gemc_cuts):
-        populated.extend(
+        populated.update(
             int(item)
             for item in topology_ids_from_groups(
                 cuts.populated_group_ids, cuts.global_mode
             )
         )
-    topologies = tuple(sorted(set(populated)))
-    if not topologies:
+    if not populated:
         raise ValueError("data and GEMC cut tables contain no populated topologies")
-    return data_variables, topologies
+    retained_by_sample = tuple(
+        set(
+            topology_ids_from_groups(cuts.group_ids, cuts.global_mode).tolist()
+        )
+        for cuts in (data_cuts, gemc_cuts)
+    )
+    retained = tuple(
+        sorted(retained_by_sample[0].intersection(retained_by_sample[1]))
+    )
+    dropped = tuple(sorted(populated.difference(retained)))
+    return data_variables, retained, dropped
 
 
 def _comparison_variable_page(
@@ -250,6 +282,8 @@ def _comparison_variable_page(
     gemc_label,
     pdf,
     plt,
+    *,
+    retention_audit=False,
 ) -> None:
     number_of_columns = len(topologies)
     figure_width = max(8.5, 7.8 * number_of_columns)
@@ -275,8 +309,13 @@ def _comparison_variable_page(
         hspace=0.26,
         wspace=0.12,
     )
+    page_description = (
+        "Retention-failed topology audit"
+        if retention_audit
+        else "Data and GEMC exclusivity fit comparison"
+    )
     figure.suptitle(
-        f"{_variable_title_label(variable)}: Data and GEMC exclusivity fit comparison",
+        f"{_variable_title_label(variable)}: {page_description}",
         y=title_y,
         color="black",
         fontsize=15,
@@ -363,8 +402,8 @@ def _comparison_variable_page(
             fontweight="bold",
             color="#172033",
             bbox={
-                "facecolor": "#E8EEF5",
-                "edgecolor": "#718096",
+                "facecolor": "#FBEDED" if retention_audit else "#E8EEF5",
+                "edgecolor": "#B35C5C" if retention_audit else "#718096",
                 "linewidth": 0.8,
                 "boxstyle": "round,pad=0.38",
             },
@@ -435,7 +474,7 @@ def _shared_variable_domain(
     gemc_positions,
     topologies,
     variable_index,
-) -> tuple[float, float]:
+) -> tuple[float, float] | None:
     bounds = []
     for cuts, positions in (
         (data_cuts, data_positions),
@@ -452,7 +491,7 @@ def _shared_variable_domain(
                 )
             )
     if not bounds:
-        raise ValueError("no retained fits are available for the shared x range")
+        return None
     return min(item[0] for item in bounds), max(item[1] for item in bounds)
 
 

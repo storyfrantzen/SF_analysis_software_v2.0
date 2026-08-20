@@ -635,7 +635,10 @@ shows the data/GEMC sample encoding once and the line-style meaning of each fit
 component once, rather than duplicating every component for both samples.
 Quantity names use physics-formatted labels. Paired mode requires the nominal
 global-by-topology cut tables because a local table can contain many kinematic
-groups for one detector topology.
+groups for one detector topology. The main paired pages contain only topologies
+retained by both data and GEMC. By default, each topology that failed retention
+in either sample is then rendered on dedicated per-quantity audit pages at the
+end of the PDF. Add `--omit-dropped-topologies` to suppress that appendix.
 
 For a large per-bin table, the plotter defaults to the 24 groups with the worst
 reduced chi-square. Repeat `--group-id ID` to inspect chosen groups, or change

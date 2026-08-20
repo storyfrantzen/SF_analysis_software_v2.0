@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+from dataclasses import replace
 import io
 import json
 import sys
@@ -41,6 +42,7 @@ from eppi0.exclusivity import (
     save_cuts,
 )
 from eppi0.exclusivity_diagnostics import (
+    _comparison_layout,
     render_comparison_diagnostics,
     render_diagnostics,
 )
@@ -1041,6 +1043,44 @@ class ExclusivityTests(unittest.TestCase):
 
             media_boxes = re.findall(rb"/MediaBox\s*\[", output.read_bytes())
             self.assertEqual(len(media_boxes), len(data_cuts.variables))
+
+            self.assertGreaterEqual(data_cuts.group_ids.size, 2)
+            dropped_data_cuts = replace(
+                data_cuts,
+                group_ids=data_cuts.group_ids[:1],
+                dropped_group_ids=data_cuts.group_ids[1:2],
+                dropped_variables=np.array(["rec_pT_miss"]),
+                dropped_reasons=np.array(["test retention-threshold failure"]),
+            )
+            appendix_output = Path(tmp) / "comparison_with_appendix.pdf"
+            render_comparison_diagnostics(
+                dropped_data_cuts, gemc_cuts, appendix_output
+            )
+            appendix_media_boxes = re.findall(
+                rb"/MediaBox\s*\[", appendix_output.read_bytes()
+            )
+            self.assertEqual(
+                len(appendix_media_boxes), 2 * len(data_cuts.variables)
+            )
+
+    def test_paired_diagnostics_separate_retained_and_failed_topologies(self) -> None:
+        data_cuts = SimpleNamespace(
+            global_mode=True,
+            variables=("rec_m_gg",),
+            group_ids=np.array([4]),
+            populated_group_ids=np.array([4, 8]),
+        )
+        gemc_cuts = SimpleNamespace(
+            global_mode=True,
+            variables=("rec_m_gg",),
+            group_ids=np.array([4, 8]),
+            populated_group_ids=np.array([4, 8]),
+        )
+
+        variables, retained, dropped = _comparison_layout(data_cuts, gemc_cuts)
+        self.assertEqual(variables, ("rec_m_gg",))
+        self.assertEqual(retained, (4,))
+        self.assertEqual(dropped, (8,))
 
     def test_core_plus_broad_tail_recovers_narrow_resolution(self) -> None:
         rng = np.random.default_rng(41)
