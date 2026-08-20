@@ -43,6 +43,7 @@ from eppi0.exclusivity import (
 )
 from eppi0.exclusivity_diagnostics import (
     _comparison_layout,
+    comparison_page_counts,
     render_comparison_diagnostics,
     render_diagnostics,
 )
@@ -1061,6 +1062,10 @@ class ExclusivityTests(unittest.TestCase):
             )
             self.assertEqual(
                 len(appendix_media_boxes), 2 * len(data_cuts.variables)
+            )
+            self.assertEqual(
+                comparison_page_counts(dropped_data_cuts, gemc_cuts),
+                (len(data_cuts.variables), len(data_cuts.variables)),
             )
 
     def test_paired_diagnostics_separate_retained_and_failed_topologies(self) -> None:

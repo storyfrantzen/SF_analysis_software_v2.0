@@ -627,12 +627,14 @@ python3 analysis/plot_exclusivity_diagnostics.py \
 ```
 
 Each comparison panel places fit metadata and quality metrics in separate,
-opaque side panels rather than over the histogram. Every panel on a quantity
-page uses the same horizontal range, data and GEMC use distinct color palettes,
-and the nominal window is listed as `[lower, upper]`. Bold topology headers and
-semi-transparent vertical separators organize the columns. The compact legend
-shows the data/GEMC sample encoding once and the line-style meaning of each fit
-component once, rather than duplicating every component for both samples.
+opaque side panels rather than over the histogram. Each topology column has its
+own horizontal range, shared only by its data and GEMC rows, so a broad topology
+cannot visually compress a narrower one. Data and GEMC use distinct color
+palettes, and the nominal window is listed as `[lower, upper]`. Bold topology
+headers and semi-transparent vertical separators organize the columns. The
+compact legend shows the data/GEMC sample encoding once and the line-style
+meaning of each fit component once, rather than duplicating every component for
+both samples.
 Quantity names use physics-formatted labels. Paired mode requires the nominal
 global-by-topology cut tables because a local table can contain many kinematic
 groups for one detector topology. The main paired pages contain only topologies

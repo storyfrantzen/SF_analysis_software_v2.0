@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from eppi0.exclusivity import load_cuts
 from eppi0.exclusivity_diagnostics import (
+    comparison_page_counts,
     render_comparison_diagnostics,
     render_diagnostics,
 )
@@ -63,13 +64,23 @@ def main() -> int:
         if args.group_id:
             parser.error("--group-id is not available with --gemc-cuts")
         gemc_cuts = load_cuts(str(args.gemc_cuts))
+        append_dropped = not args.omit_dropped_topologies
+        retained_pages, audit_pages = comparison_page_counts(
+            cuts,
+            gemc_cuts,
+            append_dropped_topologies=append_dropped,
+        )
         variables = render_comparison_diagnostics(
             cuts,
             gemc_cuts,
             args.output,
             data_label=args.data_label,
             gemc_label=args.gemc_label,
-            append_dropped_topologies=not args.omit_dropped_topologies,
+            append_dropped_topologies=append_dropped,
+        )
+        print(
+            f"Pages: retained-topology section={retained_pages}, "
+            f"failed-topology appendix={audit_pages}"
         )
         print(
             f"Rendered paired diagnostics for {len(variables)} variables "

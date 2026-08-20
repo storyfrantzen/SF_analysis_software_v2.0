@@ -235,6 +235,25 @@ def render_comparison_diagnostics(
     return variables
 
 
+def comparison_page_counts(
+    data_cuts: ExclusivityCuts,
+    gemc_cuts: ExclusivityCuts,
+    *,
+    append_dropped_topologies: bool = True,
+) -> tuple[int, int]:
+    """Return retained-section and failed-topology appendix page counts."""
+    variables, retained_topologies, dropped_topologies = _comparison_layout(
+        data_cuts, gemc_cuts
+    )
+    retained_pages = len(variables) if retained_topologies else 0
+    audit_pages = (
+        len(variables) * len(dropped_topologies)
+        if append_dropped_topologies
+        else 0
+    )
+    return retained_pages, audit_pages
+
+
 def _comparison_layout(
     data_cuts: ExclusivityCuts,
     gemc_cuts: ExclusivityCuts,
@@ -329,15 +348,18 @@ def _comparison_variable_page(
     positions = tuple(
         _retained_topology_positions(cuts) for cuts, _, _ in samples
     )
-    page_domain = _shared_variable_domain(
-        data_cuts,
-        positions[0],
-        gemc_cuts,
-        positions[1],
-        topologies,
-        variable_index,
-    )
-    shared_x_axis = None
+    column_domains = {
+        topology: _shared_variable_domain(
+            data_cuts,
+            positions[0],
+            gemc_cuts,
+            positions[1],
+            (topology,),
+            variable_index,
+        )
+        for topology in topologies
+    }
+    shared_x_axes = [None] * number_of_columns
     row_plot_axes = []
     column_axes = [[] for _ in topologies]
     for row, ((cuts, sample_label, palette), position_map) in enumerate(
@@ -349,10 +371,12 @@ def _comparison_variable_page(
             inner = outer[row, column].subgridspec(
                 1, 2, width_ratios=(3.75, 1.55), wspace=0.045
             )
-            plot_axis = figure.add_subplot(inner[0, 0], sharex=shared_x_axis)
+            plot_axis = figure.add_subplot(
+                inner[0, 0], sharex=shared_x_axes[column]
+            )
             sample_axes.append(plot_axis)
-            if shared_x_axis is None:
-                shared_x_axis = plot_axis
+            if shared_x_axes[column] is None:
+                shared_x_axes[column] = plot_axis
             information_grid = inner[0, 1].subgridspec(
                 3, 1, height_ratios=(1.05, 1.55, 0.9), hspace=0.11
             )
@@ -370,7 +394,7 @@ def _comparison_variable_page(
                     topology,
                     variable,
                     sample_label,
-                    page_domain,
+                    column_domains[topology],
                     palette,
                     show_xlabel,
                 )
@@ -381,7 +405,7 @@ def _comparison_variable_page(
                 position,
                 variable_index,
                 variable,
-                page_domain,
+                column_domains[topology],
                 palette,
                 show_xlabel,
             )
