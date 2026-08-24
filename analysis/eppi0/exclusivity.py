@@ -684,6 +684,8 @@ def apply_cuts(
     iq2: Array,
     ixb: Array,
     it: Array,
+    *,
+    exclude_variables: tuple[str, ...] = (),
 ) -> Array:
     if cuts.grouping != GROUPING:
         raise ValueError(f"unsupported exclusivity grouping: {cuts.grouping}")
@@ -691,7 +693,16 @@ def apply_cuts(
         raise ValueError(f"unsupported exclusivity estimator: {cuts.estimator}")
     detector = np.asarray(proton_detector, dtype=np.int64)
     ft_photons = np.asarray(ft_photons, dtype=np.int64)
-    groups = _group_ids(detector, ft_photons, iq2, ixb, it, cuts.global_mode)
+    excluded = set(exclude_variables)
+    unknown = excluded.difference(cuts.variables)
+    if unknown:
+        raise ValueError(
+            "cannot exclude variables absent from the exclusivity table: "
+            + ", ".join(sorted(unknown))
+        )
+    groups = event_group_ids(
+        detector, ft_photons, iq2, ixb, it, cuts.global_mode
+    )
     mask = np.zeros(detector.size, dtype=bool)
     if cuts.group_ids.size == 0:
         return mask
@@ -702,6 +713,8 @@ def apply_cuts(
     rows = np.flatnonzero(known)
     mask[rows] = True
     for variable_index, name in enumerate(cuts.variables):
+        if name in excluded:
+            continue
         raw = np.asarray(values[name], dtype=float)
         lo = cuts.lower[positions[rows], variable_index]
         hi = cuts.upper[positions[rows], variable_index]
@@ -709,6 +722,18 @@ def apply_cuts(
             raise ValueError("exclusivity cut table contains inactive windows")
         mask[rows] &= np.isfinite(raw[rows]) & (raw[rows] >= lo) & (raw[rows] <= hi)
     return mask
+
+
+def event_group_ids(
+    detector: Array,
+    ft_photons: Array,
+    iq2: Array,
+    ixb: Array,
+    it: Array,
+    global_mode: bool,
+) -> Array:
+    """Return the persisted exclusivity-group ID for every event."""
+    return _group_ids(detector, ft_photons, iq2, ixb, it, global_mode)
 
 
 def estimate_window(

@@ -130,6 +130,7 @@ python3 analysis/run_analysis.py radiative-correction born_lund/ rad_lund/ \
 python3 analysis/run_analysis.py unfold data_events.npz \
   results/response/response_matrix.npz results/response/response_meta.npz \
   --config configs/analysis/rgk/6.535.json --output results/unfolding.npz \
+  --background-cuts results/data_exclusivity.npz \
   --current-efficiency-correction \
     results/data_efficiency/rgk_6.535/current_efficiency_correction.json \
   --radiative-correction results/C_rad.npz
@@ -145,6 +146,42 @@ python3 analysis/run_analysis.py cross-section results/unfolding.npz \
 python3 analysis/run_analysis.py fit-harmonics results/cross_section.npz \
   --output results/harmonics.npz
 ```
+
+`unfold --background-cuts` performs the nonpeaking-background subtraction at
+the reconstructed-yield stage, before feed-in subtraction and D'Agostini
+unfolding.  For each retained proton/photon topology it refits
+`rec_m_gg` in the final N-1 sample (all other exclusivity cuts applied), uses
+the nominal `rec_m_gg` window as the signal region, and uses the remainder of
+the fitted domain as sidebands.  The fitted linear-background shape determines
+the topology-specific transfer factor
+
+```text
+alpha = fitted background in signal window / fitted background in sidebands,
+N_background(bin, topology) = alpha(topology) * N_sideband(bin, topology).
+```
+
+Current-efficiency event weights, when requested, are applied to both regions.
+The saved variance contains signal-region counting variance, transferred
+sideband counting variance, and the diagonal contribution from the bootstrapped
+transfer-factor uncertainty.  The unfolding NPZ keeps the raw signal-region,
+sideband, estimated-background, and subtracted spectra together with every fit
+window and transfer factor.  The cross-section and harmonic artifacts carry the
+background-subtraction provenance fields downstream.
+
+The sideband and cut table must come from the same compact data sample.  If
+`--selection-mask` is also supplied, `unfold` verifies that it exactly matches
+the signal region reconstructed from `--background-cuts`; otherwise it stops.
+The first implementation deliberately accepts only the default pooled
+global-by-topology cut tables; local kinematic cut tables would conflate a
+changing signal definition with the background-shape estimate.
+Literal bin-by-bin subtraction can fluctuate below zero in sparse bins.
+The default `--background-negative-policy error` stops if this occurs in a
+reconstructed bin connected by the response matrix to any truth bin above the
+configured acceptance threshold. After inspecting the recorded spectra,
+`--background-negative-policy clip` explicitly permits nonnegative clipping
+and records the number and total deficit of clipped bins. It is never silent.
+Change the transfer-factor uncertainty sampling with
+`--background-alpha-bootstrap`; zero disables that uncertainty component.
 
 For production MC response building, avoid serializing one dense row per
 generated event. Build the sparse response directly from the converter and
@@ -648,8 +685,11 @@ the limit with `--maximum-groups`. A high reduced chi-square is an audit flag,
 not an automatic rejection: a statistically significant but imperfect model
 should be inspected rather than silently discarded.
 
-Pass the GEMC mask to `response --selection-mask` and the data mask to
-`unfold --selection-mask`. Use `--per-bin-cuts` only when one deliberately wants
+Pass the GEMC mask to `response --selection-mask`. For data, either pass the
+mask to `unfold --selection-mask` without background subtraction, or pass the
+corresponding data cut table to `unfold --background-cuts` so the command can
+reconstruct both its signal and N-1 sideband regions. Use `--per-bin-cuts` only
+when one deliberately wants
 local kinematic windows with automatic same-topology fallback instead of the
 default pooled topology windows. Cut tables produced
 before photon-topology grouping or before the v8 bootstrap/audited fits are

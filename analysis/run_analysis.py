@@ -17,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from eppi0.binning import from_config
 from eppi0.bin_centering import AaoExecutableEvaluator, compute_bin_centering
+from eppi0.background_subtraction import METHOD as BACKGROUND_METHOD
+from eppi0.background_subtraction import estimate_mgg_background
 from eppi0.cross_section import (
     DEFAULT_VOLUME_INTEGRATION_POINTS,
     Target,
@@ -28,6 +30,7 @@ from eppi0.current_efficiency import (
     load_current_efficiency_correction,
     response_meta_sha256,
 )
+from eppi0.exclusivity import load_cuts
 from eppi0.response import build_response
 from eppi0.radiative_correction import compute_radiative_correction
 from eppi0.root_response import build_response_from_root
@@ -47,6 +50,29 @@ CURRENT_EFFICIENCY_PROVENANCE_FIELDS = (
     "current_efficiency_weight_min",
     "current_efficiency_weight_max",
     "current_efficiency_model_json",
+)
+
+BACKGROUND_PROVENANCE_FIELDS = (
+    "background_subtraction_applied",
+    "background_subtraction_method",
+    "background_cuts_artifact",
+    "background_cuts_sha256",
+    "background_negative_policy",
+    "background_negative_bins",
+    "background_negative_supported_bins",
+    "background_alpha_bootstrap",
+    "background_group_ids",
+    "background_signal_lower",
+    "background_signal_upper",
+    "background_fit_lower",
+    "background_fit_upper",
+    "background_alpha",
+    "background_alpha_uncertainty",
+    "background_fit_model",
+    "background_fit_entries",
+    "background_fit_bic",
+    "background_fit_deviance",
+    "background_fit_ndof",
 )
 
 
@@ -117,6 +143,29 @@ def parser() -> argparse.ArgumentParser:
     unfold.add_argument("--config", type=Path, required=True)
     unfold.add_argument("--output", type=Path, required=True)
     unfold.add_argument("--selection-mask", type=Path)
+    unfold.add_argument(
+        "--background-cuts",
+        type=Path,
+        help=(
+            "Global data exclusivity-cut NPZ used to estimate topology-specific "
+            "m_gg sideband background before feed-in subtraction and unfolding"
+        ),
+    )
+    unfold.add_argument(
+        "--background-alpha-bootstrap",
+        type=int,
+        default=200,
+        help="Poisson refits used for each sideband transfer-factor uncertainty",
+    )
+    unfold.add_argument(
+        "--background-negative-policy",
+        choices=("error", "clip"),
+        default="error",
+        help=(
+            "Action when sideband subtraction makes a REC bin connected to retained "
+            "truth space negative; default error avoids silently biasing unfolding"
+        ),
+    )
     unfold.add_argument("--iterations", type=int, default=25)
     unfold.add_argument("--bootstrap", type=int, default=200)
     unfold.add_argument("--seed", type=int, default=12345)
@@ -533,6 +582,36 @@ def command_response_root(args: argparse.Namespace) -> None:
     print(f"Wrote {metadata_path}")
 
 
+def _signed_bin_means(
+    binning,
+    flat: np.ndarray,
+    values: dict[str, np.ndarray],
+    weights: np.ndarray,
+    size: int,
+) -> dict[str, np.ndarray]:
+    """Compute sideband-subtracted bin means from signed event weights."""
+    flat = np.asarray(flat, dtype=np.int64)
+    weights = np.asarray(weights, dtype=float)
+    valid_bin = (flat >= 0) & (flat < size) & np.isfinite(weights)
+    denominator = np.bincount(
+        flat[valid_bin], weights=weights[valid_bin], minlength=size
+    )
+    output = {}
+    for name, raw in values.items():
+        raw = np.asarray(raw, dtype=float)
+        valid = valid_bin & np.isfinite(raw)
+        numerator = np.bincount(
+            flat[valid], weights=weights[valid] * raw[valid], minlength=size
+        )
+        output[name] = np.divide(
+            numerator,
+            denominator,
+            out=np.full(size, np.nan),
+            where=denominator > 0.0,
+        )
+    return output
+
+
 def command_unfold(args: argparse.Namespace) -> None:
     data = np.load(args.data, allow_pickle=False)
     metadata = np.load(args.response_meta, allow_pickle=False)
@@ -543,14 +622,17 @@ def command_unfold(args: argparse.Namespace) -> None:
     rec_flat = binning.coordinates_to_flat(
         data["rec_Q2"], data["rec_xB"], data["rec_minus_t"], data["rec_trento_phi"]
     )
-    selected = rec_flat >= 0
+    base_selected = rec_flat >= 0
     if "rec_selected" in data.files:
-        selected &= np.asarray(data["rec_selected"], dtype=bool)
-    if args.selection_mask:
-        selected &= _load_mask(args.selection_mask, selected.size)
+        base_selected &= np.asarray(data["rec_selected"], dtype=bool)
+    selection_mask = (
+        _load_mask(args.selection_mask, base_selected.size)
+        if args.selection_mask
+        else None
+    )
     current_efficiency_path = getattr(args, "current_efficiency_correction", None)
     current_efficiency = None
-    selected_weights = np.ones(int(selected.sum()), dtype=float)
+    event_weights = np.ones(base_selected.size, dtype=float)
     if current_efficiency_path is not None:
         current_efficiency = load_current_efficiency_correction(current_efficiency_path)
         actual_response_hash = response_meta_sha256(args.response_meta)
@@ -565,19 +647,144 @@ def command_unfold(args: argparse.Namespace) -> None:
                 "--current-efficiency-correction requires a data sample with a run array"
             )
         event_runs = np.asarray(data["run"], dtype=np.int64)
-        if event_runs.shape != selected.shape:
+        if event_runs.shape != base_selected.shape:
             raise ValueError("data run array shape does not match reconstructed events")
-        selected_weights = current_efficiency.event_weights(event_runs[selected])
-    measured_unweighted = np.bincount(
-        rec_flat[selected], minlength=binning.size
-    ).astype(float)
-    measured = np.bincount(
-        rec_flat[selected], weights=selected_weights, minlength=binning.size
-    ).astype(float)
-    measured_variance = np.bincount(
-        rec_flat[selected], weights=selected_weights**2, minlength=binning.size
-    ).astype(float)
-    efficiency = metadata["efficiency"]
+        event_weights[base_selected] = current_efficiency.event_weights(
+            event_runs[base_selected]
+        )
+
+    background_cuts_path = getattr(args, "background_cuts", None)
+    background = None
+    if background_cuts_path is not None:
+        cuts = load_cuts(str(background_cuts_path))
+        required = {
+            *cuts.variables,
+            "rec_proton_detector",
+            "rec_ft_photon_count",
+        }
+        missing = sorted(required.difference(data.files))
+        if missing:
+            raise ValueError(
+                "--background-cuts requires compact-data arrays: "
+                + ", ".join(missing)
+            )
+        iq2, ixb, it, _ = binning.indices(
+            data["rec_Q2"],
+            data["rec_xB"],
+            data["rec_minus_t"],
+            data["rec_trento_phi"],
+        )
+        background = estimate_mgg_background(
+            cuts=cuts,
+            values={name: data[name] for name in cuts.variables},
+            proton_detector=data["rec_proton_detector"],
+            ft_photons=data["rec_ft_photon_count"],
+            iq2=iq2,
+            ixb=ixb,
+            it=it,
+            rec_flat=rec_flat,
+            base_mask=base_selected,
+            event_weights=event_weights,
+            number_of_bins=binning.size,
+            alpha_bootstrap=getattr(args, "background_alpha_bootstrap", 200),
+            seed=args.seed,
+        )
+        selected = background.signal_region_mask
+        if selection_mask is not None and not np.array_equal(
+            base_selected & selection_mask, selected
+        ):
+            disagreement = int(
+                np.count_nonzero((base_selected & selection_mask) != selected)
+            )
+            raise ValueError(
+                "--selection-mask disagrees with the signal region derived from "
+                f"--background-cuts for {disagreement} events; omit the mask or "
+                "supply the mask generated from the same cut table"
+            )
+        measured_unweighted = background.signal_region_unweighted.copy()
+        measured_signal_region = background.signal_region.copy()
+        measured_signal_region_variance = background.signal_region_variance.copy()
+        measured_sideband = background.sideband.copy()
+        measured_sideband_unweighted = background.sideband_unweighted.copy()
+        measured_sideband_variance = background.sideband_variance.copy()
+        estimated_background = background.estimated_background.copy()
+        estimated_background_variance = (
+            background.estimated_background_variance.copy()
+        )
+        background_subtracted_unclipped = background.background_subtracted.copy()
+        measured = background_subtracted_unclipped.copy()
+        measured_variance = background.background_subtracted_variance.copy()
+        mean_mask = background.signal_region_mask | background.sideband_mask
+        means = _signed_bin_means(
+            binning,
+            rec_flat[mean_mask],
+            {
+                "Q2": data["rec_Q2"][mean_mask],
+                "xB": data["rec_xB"][mean_mask],
+                "minus_t": data["rec_minus_t"][mean_mask],
+                "phi": np.mod(data["rec_trento_phi"][mean_mask], 2.0 * np.pi)
+                * 180.0
+                / np.pi,
+            },
+            background.net_event_weights[mean_mask],
+            binning.size,
+        )
+    else:
+        selected = base_selected.copy()
+        if selection_mask is not None:
+            selected &= selection_mask
+        selected_weights = event_weights[selected]
+        measured_unweighted = np.bincount(
+            rec_flat[selected], minlength=binning.size
+        ).astype(float)
+        measured = np.bincount(
+            rec_flat[selected], weights=selected_weights, minlength=binning.size
+        ).astype(float)
+        measured_variance = np.bincount(
+            rec_flat[selected],
+            weights=selected_weights**2,
+            minlength=binning.size,
+        ).astype(float)
+        measured_signal_region = measured.copy()
+        measured_signal_region_variance = measured_variance.copy()
+        measured_sideband = np.zeros(binning.size, dtype=float)
+        measured_sideband_unweighted = np.zeros(binning.size, dtype=float)
+        measured_sideband_variance = np.zeros(binning.size, dtype=float)
+        estimated_background = np.zeros(binning.size, dtype=float)
+        estimated_background_variance = np.zeros(binning.size, dtype=float)
+        background_subtracted_unclipped = measured.copy()
+        means = binning.bin_means(
+            rec_flat[selected],
+            {
+                "Q2": data["rec_Q2"][selected],
+                "xB": data["rec_xB"][selected],
+                "minus_t": data["rec_minus_t"][selected],
+                "phi": np.mod(data["rec_trento_phi"][selected], 2.0 * np.pi)
+                * 180.0
+                / np.pi,
+            },
+            weights=selected_weights,
+        )
+
+    efficiency = np.asarray(metadata["efficiency"], dtype=float)
+    negative = measured < -1.0e-12
+    retained_truth = efficiency > minimum_acceptance
+    supported_rec = np.asarray(response[:, retained_truth].sum(axis=1)).ravel() > 0.0
+    supported_negative = negative & supported_rec
+    negative_policy = getattr(args, "background_negative_policy", "error")
+    if background is not None and np.any(supported_negative) and negative_policy == "error":
+        minimum = float(np.min(measured[supported_negative]))
+        raise ValueError(
+            "m_gg sideband subtraction produced "
+            f"{int(np.count_nonzero(supported_negative))} negative REC bins connected "
+            f"to retained truth space (minimum {minimum:.6g}); inspect the sideband "
+            "model or rerun explicitly with "
+            "--background-negative-policy clip"
+        )
+    background_clipped_deficit = np.maximum(-measured, 0.0)
+    if np.any(negative):
+        measured = np.maximum(measured, 0.0)
+
     corrected = subtract_feed_in(
         measured, float(metadata["feed_in_fraction"]), metadata["feed_in_shape"]
     )
@@ -651,16 +858,6 @@ def command_unfold(args: argparse.Namespace) -> None:
             radiative_valid, np.hypot(sigma_total, radiative_sigma), 0.0
         )
 
-    means = binning.bin_means(
-        rec_flat[selected],
-        {
-            "Q2": data["rec_Q2"][selected],
-            "xB": data["rec_xB"][selected],
-            "minus_t": data["rec_minus_t"][selected],
-            "phi": np.mod(data["rec_trento_phi"][selected], 2.0 * np.pi) * 180.0 / np.pi,
-        },
-        weights=selected_weights,
-    )
     beam_charge = float(data["beam_charge_c"]) if "beam_charge_c" in data.files else np.nan
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -668,6 +865,15 @@ def command_unfold(args: argparse.Namespace) -> None:
         measured=measured,
         measured_unweighted=measured_unweighted,
         measured_variance=measured_variance,
+        measured_signal_region=measured_signal_region,
+        measured_signal_region_variance=measured_signal_region_variance,
+        measured_sideband=measured_sideband,
+        measured_sideband_unweighted=measured_sideband_unweighted,
+        measured_sideband_variance=measured_sideband_variance,
+        estimated_background=estimated_background,
+        estimated_background_variance=estimated_background_variance,
+        background_subtracted_unclipped=background_subtracted_unclipped,
+        background_clipped_deficit=background_clipped_deficit,
         acceptance_corrected=acceptance_corrected,
         unfolded=unfolded,
         sigma_stat=sigma_stat,
@@ -690,6 +896,91 @@ def command_unfold(args: argparse.Namespace) -> None:
         iterations=args.iterations,
         bootstrap=args.bootstrap,
         random_seed=args.seed,
+        background_subtraction_applied=background is not None,
+        background_subtraction_method=(BACKGROUND_METHOD if background is not None else ""),
+        background_cuts_artifact=(
+            str(Path(background_cuts_path).resolve())
+            if background_cuts_path is not None
+            else ""
+        ),
+        background_cuts_sha256=(
+            response_meta_sha256(background_cuts_path)
+            if background_cuts_path is not None
+            else ""
+        ),
+        background_negative_policy=(negative_policy if background is not None else ""),
+        background_negative_bins=int(np.count_nonzero(negative)),
+        background_negative_supported_bins=int(np.count_nonzero(supported_negative)),
+        background_alpha_bootstrap=(
+            getattr(args, "background_alpha_bootstrap", 200)
+            if background is not None
+            else 0
+        ),
+        background_group_ids=(
+            background.group_ids if background is not None else np.empty(0, dtype=np.int64)
+        ),
+        background_signal_lower=(
+            background.signal_lower if background is not None else np.empty(0)
+        ),
+        background_signal_upper=(
+            background.signal_upper if background is not None else np.empty(0)
+        ),
+        background_fit_lower=(
+            background.fit_lower if background is not None else np.empty(0)
+        ),
+        background_fit_upper=(
+            background.fit_upper if background is not None else np.empty(0)
+        ),
+        background_alpha=(
+            background.alpha if background is not None else np.empty(0)
+        ),
+        background_alpha_uncertainty=(
+            background.alpha_uncertainty if background is not None else np.empty(0)
+        ),
+        background_fit_model=(
+            background.fit_model if background is not None else np.empty(0, dtype="<U1")
+        ),
+        background_fit_entries=(
+            background.fit_entries
+            if background is not None
+            else np.empty(0, dtype=np.int64)
+        ),
+        background_fit_bic=(
+            background.fit_bic if background is not None else np.empty(0)
+        ),
+        background_fit_deviance=(
+            background.fit_deviance if background is not None else np.empty(0)
+        ),
+        background_fit_ndof=(
+            background.fit_ndof
+            if background is not None
+            else np.empty(0, dtype=np.int64)
+        ),
+        background_signal_region_by_group=(
+            background.signal_region_by_group
+            if background is not None
+            else np.empty((0, binning.size))
+        ),
+        background_sideband_by_group=(
+            background.sideband_by_group
+            if background is not None
+            else np.empty((0, binning.size))
+        ),
+        background_sideband_variance_by_group=(
+            background.sideband_variance_by_group
+            if background is not None
+            else np.empty((0, binning.size))
+        ),
+        estimated_background_by_group=(
+            background.estimated_background_by_group
+            if background is not None
+            else np.empty((0, binning.size))
+        ),
+        estimated_background_variance_by_group=(
+            background.estimated_background_variance_by_group
+            if background is not None
+            else np.empty((0, binning.size))
+        ),
         current_efficiency_applied=current_efficiency is not None,
         current_efficiency_artifact=(
             str(Path(current_efficiency_path).resolve())
@@ -709,11 +1000,11 @@ def command_unfold(args: argparse.Namespace) -> None:
         current_efficiency_D_reference=(
             current_efficiency.d_reference if current_efficiency is not None else np.nan
         ),
-        current_efficiency_weight_min=float(selected_weights.min())
-        if selected_weights.size
+        current_efficiency_weight_min=float(event_weights[selected].min())
+        if np.any(selected)
         else np.nan,
-        current_efficiency_weight_max=float(selected_weights.max())
-        if selected_weights.size
+        current_efficiency_weight_max=float(event_weights[selected].max())
+        if np.any(selected)
         else np.nan,
         current_efficiency_model_json=(
             json.dumps(current_efficiency.payload, sort_keys=True)
@@ -722,6 +1013,19 @@ def command_unfold(args: argparse.Namespace) -> None:
         ),
     )
     print(f"Measured in-range events: {measured_unweighted.sum():.0f}")
+    if background is not None:
+        print(
+            "m_gg background subtraction: "
+            f"signal-region={measured_signal_region.sum():.8g}, "
+            f"background={estimated_background.sum():.8g}, "
+            f"subtracted={background_subtracted_unclipped.sum():.8g}"
+        )
+        if np.any(negative):
+            print(
+                "WARNING: clipped "
+                f"{int(np.count_nonzero(negative))} negative REC bins; total "
+                f"clipped deficit={background_clipped_deficit.sum():.8g}"
+            )
     if current_efficiency is not None:
         print(
             "Current-efficiency weighted yield: "
@@ -2229,7 +2533,10 @@ def command_cross_section(args: argparse.Namespace) -> None:
                 "and uncertainty divided by C_BC"
             ),
         )
-    for name in CURRENT_EFFICIENCY_PROVENANCE_FIELDS:
+    for name in (
+        *CURRENT_EFFICIENCY_PROVENANCE_FIELDS,
+        *BACKGROUND_PROVENANCE_FIELDS,
+    ):
         if name in result.files:
             payload[name] = result[name]
     np.savez_compressed(args.output, **payload)
@@ -2254,7 +2561,10 @@ def command_harmonics(args: argparse.Namespace) -> None:
         xb_edges=cross_section["xb_edges"],
         t_edges=cross_section["t_edges"],
     )
-    for name in CURRENT_EFFICIENCY_PROVENANCE_FIELDS:
+    for name in (
+        *CURRENT_EFFICIENCY_PROVENANCE_FIELDS,
+        *BACKGROUND_PROVENANCE_FIELDS,
+    ):
         if name in cross_section.files:
             payload[name] = cross_section[name]
     np.savez_compressed(args.output, **payload)

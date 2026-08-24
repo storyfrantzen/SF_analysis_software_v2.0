@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from eppi0.binning import AnalysisBinning, from_config, legacy_binning
 from eppi0.bin_centering import compute_bin_centering, physical_mask
+from eppi0.background_subtraction import estimate_mgg_background
 from eppi0.cross_section import (
     integrated_luminosity_fb,
     physical_bin_volumes,
@@ -1238,6 +1239,153 @@ class ExclusivityTests(unittest.TestCase):
 
 
 class UnfoldingTests(unittest.TestCase):
+    def test_mgg_background_is_estimated_before_unfolding(self) -> None:
+        rng = np.random.default_rng(19)
+        signal = rng.normal(0.135, 0.009, 12_000)
+        background = rng.uniform(0.04, 0.24, 4_000)
+        masses = np.concatenate((signal, background))
+        rng.shuffle(masses)
+        count = masses.size
+        zeros = np.zeros(count, dtype=np.int64)
+        detectors = np.ones(count, dtype=np.int64)
+        cuts = derive_cuts(
+            {"rec_m_gg": masses},
+            detectors,
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            variables=("rec_m_gg",),
+            topologies=(1,),
+            photon_topologies=(0,),
+            minimum_events=50,
+            fit_histogram_bins=100,
+            minimum_signal_fraction=0.05,
+        )
+        estimate = estimate_mgg_background(
+            cuts=cuts,
+            values={"rec_m_gg": masses},
+            proton_detector=detectors,
+            ft_photons=zeros,
+            iq2=zeros,
+            ixb=zeros,
+            it=zeros,
+            rec_flat=np.arange(count) % 2,
+            base_mask=np.ones(count, dtype=bool),
+            event_weights=np.ones(count),
+            number_of_bins=2,
+            alpha_bootstrap=20,
+            seed=23,
+        )
+
+        self.assertEqual(estimate.group_ids.tolist(), [4])
+        self.assertGreater(float(estimate.estimated_background.sum()), 500.0)
+        self.assertLess(
+            float(estimate.background_subtracted.sum()),
+            float(estimate.signal_region.sum()),
+        )
+        np.testing.assert_allclose(
+            estimate.background_subtracted,
+            estimate.signal_region - estimate.estimated_background,
+        )
+        self.assertTrue(np.all(estimate.alpha > 0.0))
+        self.assertTrue(np.all(estimate.alpha_uncertainty > 0.0))
+
+    def test_unfold_records_and_uses_background_subtraction(self) -> None:
+        rng = np.random.default_rng(29)
+        masses = np.concatenate(
+            (rng.normal(0.135, 0.009, 9_000), rng.uniform(0.04, 0.24, 3_000))
+        )
+        rng.shuffle(masses)
+        count = masses.size
+        zeros = np.zeros(count, dtype=np.int64)
+        detectors = np.ones(count, dtype=np.int64)
+        cuts = derive_cuts(
+            {"rec_m_gg": masses},
+            detectors,
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            variables=("rec_m_gg",),
+            topologies=(1,),
+            photon_topologies=(0,),
+            minimum_events=50,
+            fit_histogram_bins=100,
+            minimum_signal_fraction=0.05,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            config_path = tmpdir / "analysis.json"
+            data_path = tmpdir / "data.npz"
+            matrix_path = tmpdir / "response.npz"
+            meta_path = tmpdir / "response_meta.npz"
+            cuts_path = tmpdir / "data_exclusivity.npz"
+            output_path = tmpdir / "unfolding.npz"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "beam_energy": 6.535,
+                        "minimum_acceptance": 0.005,
+                        "binning": {
+                            "Q2": [1.0, 1.5],
+                            "xB": [0.1, 0.3],
+                            "minus_t": [0.1, 0.3],
+                            "phi_deg": [0.0, 180.0, 360.0],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            phi = np.where(np.arange(count) % 2, np.pi, 0.1)
+            np.savez_compressed(
+                data_path,
+                rec_Q2=np.full(count, 1.2),
+                rec_xB=np.full(count, 0.2),
+                rec_minus_t=np.full(count, 0.2),
+                rec_trento_phi=phi,
+                rec_selected=np.ones(count, dtype=bool),
+                rec_m_gg=masses,
+                rec_proton_detector=detectors,
+                rec_ft_photon_count=zeros,
+                beam_charge_c=np.asarray(1.0e-9),
+            )
+            save_npz(matrix_path, eye(2, format="csr"))
+            np.savez_compressed(
+                meta_path,
+                efficiency=np.ones(2),
+                feed_in_fraction=0.0,
+                feed_in_shape=np.zeros(2),
+                response_variance_sum=np.zeros(2),
+            )
+            save_cuts(str(cuts_path), cuts)
+            args = argparse.Namespace(
+                data=data_path,
+                response_matrix=matrix_path,
+                response_meta=meta_path,
+                config=config_path,
+                output=output_path,
+                selection_mask=None,
+                background_cuts=cuts_path,
+                background_alpha_bootstrap=20,
+                background_negative_policy="error",
+                iterations=0,
+                bootstrap=0,
+                seed=31,
+                radiative_correction=None,
+                current_efficiency_correction=None,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_unfold(args)
+            with np.load(output_path, allow_pickle=False) as result:
+                self.assertTrue(bool(result["background_subtraction_applied"]))
+                self.assertGreater(float(result["estimated_background"].sum()), 0.0)
+                self.assertLess(
+                    float(result["measured"].sum()),
+                    float(result["measured_signal_region"].sum()),
+                )
+                np.testing.assert_allclose(result["unfolded"], result["measured"])
+
     def test_identity_response_returns_measured_spectrum(self) -> None:
         response = csr_matrix(np.eye(3))
         measured = np.array([10.0, 20.0, 30.0])
@@ -1663,6 +1811,11 @@ class NormalizationTests(unittest.TestCase):
                 current_efficiency_applied=np.asarray(True),
                 current_efficiency_D_reference=np.asarray(0.98),
                 current_efficiency_model_json=np.asarray('{"schema_version": 1}'),
+                background_subtraction_applied=np.asarray(True),
+                background_subtraction_method=np.asarray(
+                    "topology-mgg-nminus1-sideband-v1"
+                ),
+                background_alpha=np.asarray([0.2]),
             )
             shape = (1, 1, 1, 1)
             np.savez_compressed(
@@ -1700,6 +1853,12 @@ class NormalizationTests(unittest.TestCase):
         self.assertEqual(
             output["current_efficiency_model_json"].item(), '{"schema_version": 1}'
         )
+        self.assertTrue(output["background_subtraction_applied"].item())
+        self.assertEqual(
+            output["background_subtraction_method"].item(),
+            "topology-mgg-nminus1-sideband-v1",
+        )
+        np.testing.assert_allclose(output["background_alpha"], [0.2])
 
 
 class BinCenteringTests(unittest.TestCase):
