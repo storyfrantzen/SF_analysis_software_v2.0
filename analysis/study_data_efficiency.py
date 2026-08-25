@@ -499,25 +499,6 @@ def _linear_prediction_uncertainty(
     return np.sqrt(np.maximum(variance, 0.0))
 
 
-def _padded_limits(
-    *values: np.ndarray, padding_fraction: float = 0.06
-) -> tuple[float, float]:
-    finite = [
-        np.asarray(value, dtype=float)[np.isfinite(value)]
-        for value in values
-        if np.asarray(value).size
-    ]
-    finite = [value for value in finite if value.size]
-    if not finite:
-        raise ValueError("cannot determine plot limits without finite values")
-    combined = np.concatenate(finite)
-    lower = float(np.min(combined))
-    upper = float(np.max(combined))
-    span = max(upper - lower, 0.02 * max(abs(lower), abs(upper), 1.0))
-    padding = padding_fraction * span
-    return lower - padding, upper + padding
-
-
 def write_plots(
     path,
     records,
@@ -563,9 +544,9 @@ def write_plots(
         fig, (axis, residual_axis) = plt.subplots(
             2,
             1,
-            figsize=(8.5, 8.5),
+            figsize=(8.5, 6.5),
             sharex=True,
-            gridspec_kw={"height_ratios": [2.2, 1]},
+            gridspec_kw={"height_ratios": [2, 1]},
         )
         for name in excluded_classes:
             members = [
@@ -604,9 +585,11 @@ def write_plots(
             [group.effective_current_nA for group in groups],
             [group.yield_events_per_nC * data_scale for group in groups],
             yerr=[group.statistical_uncertainty_events_per_nC * data_scale for group in groups],
-            fmt="s",
-            markersize=7,
+            fmt="o",
+            markersize=6,
             color="black",
+            markerfacecolor="black",
+            markeredgecolor="black",
             linewidth=1.2,
             label="charge-aggregated groups",
             zorder=4,
@@ -691,11 +674,16 @@ def write_plots(
                 0.985,
                 0.975,
                 (
-                    rf"$d\eta_{{\rm data}}/dI={data_slope:.3e}"
-                    rf"\pm{data_slope_uncertainty:.2e}\ {{\rm nA}}^{{-1}}$"
+                    "Normalized slopes\n"
+                    rf"$\eta_{{\mathrm{{data}}}}:\ "
+                    rf"({data_slope * 1.0e3:.3f}\pm"
+                    rf"{data_slope_uncertainty * 1.0e3:.3f})"
+                    rf"\times10^{{-3}}\ \mathrm{{nA}}^{{-1}}$"
                     "\n"
-                    rf"$d\eta_{{\rm GEMC}}/dI={gemc_slope:.3e}"
-                    rf"\pm{gemc_slope_uncertainty:.2e}\ {{\rm nA}}^{{-1}}$"
+                    rf"$\eta_{{\mathrm{{GEMC}}}}:\ "
+                    rf"({gemc_slope * 1.0e3:.3f}\pm"
+                    rf"{gemc_slope_uncertainty * 1.0e3:.3f})"
+                    rf"\times10^{{-3}}\ \mathrm{{nA}}^{{-1}}$"
                 ),
                 transform=axis.transAxes,
                 fontsize="x-small",
@@ -709,36 +697,6 @@ def write_plots(
                 },
                 zorder=8,
             )
-            group_eta = np.asarray(
-                [group.yield_events_per_nC * data_scale for group in groups],
-                dtype=float,
-            )
-            group_eta_uncertainty = np.asarray(
-                [
-                    group.statistical_uncertainty_events_per_nC * data_scale
-                    for group in groups
-                ],
-                dtype=float,
-            )
-            gemc_eta = np.asarray(
-                [point.efficiency * gemc_scale for point in gemc_points], dtype=float
-            )
-            gemc_eta_uncertainty = np.asarray(
-                [point.statistical_uncertainty * gemc_scale for point in gemc_points],
-                dtype=float,
-            )
-            axis.set_ylim(
-                *_padded_limits(
-                    data_fit_curve - data_fit_uncertainty,
-                    data_fit_curve + data_fit_uncertainty,
-                    gemc_fit.predict(fit_current) * gemc_scale,
-                    group_eta - group_eta_uncertainty,
-                    group_eta + group_eta_uncertainty,
-                    gemc_eta - gemc_eta_uncertainty,
-                    gemc_eta + gemc_eta_uncertainty,
-                    np.asarray([1.0]),
-                )
-            )
             axis.set_ylabel(r"Relative efficiency $\eta(I)$")
             axis.set_title(f"RGK data/GEMC current study: {selection_label}")
         else:
@@ -750,7 +708,12 @@ def write_plots(
         group_current = np.asarray([group.effective_current_nA for group in groups])
         if show_relative:
             d_curve, _ = correction.d_factor(fit_current)
-            residual_axis.plot(fit_current, d_curve, color="black", label="fit ratio")
+            residual_axis.plot(
+                fit_current,
+                d_curve,
+                color="black",
+                label=r"$D(I)$ from fitted $\eta$",
+            )
             group_data_eta = np.asarray(
                 [group.yield_events_per_nC for group in groups], dtype=float
             ) / fit.intercept_events_per_nC
@@ -769,20 +732,21 @@ def write_plots(
                 group_current,
                 group_d,
                 yerr=group_d_sigma,
-                fmt="s",
+                fmt="o",
+                markersize=6,
                 color="black",
+                markerfacecolor="black",
+                markeredgecolor="black",
                 label="data group / MC fit",
             )
-            residual_axis.axhline(1.0, color="0.3", linewidth=1.0)
-            residual_axis.set_ylabel(r"$D(I)=\eta_{data}/\eta_{MC}$")
-            residual_axis.set_ylim(
-                *_padded_limits(
-                    d_curve,
-                    group_d - group_d_sigma,
-                    group_d + group_d_sigma,
-                    np.asarray([1.0]),
-                )
+            residual_axis.axhline(
+                1.0,
+                color="0.35",
+                linewidth=1.2,
+                linestyle=":",
+                label=r"$D=1$",
             )
+            residual_axis.set_ylabel(r"$D(I)=\eta_{data}/\eta_{MC}$")
             residual_axis.legend(fontsize="xx-small")
         else:
             group_residual = np.asarray(
@@ -795,12 +759,14 @@ def write_plots(
                 group_current,
                 group_residual / group_uncertainty,
                 yerr=np.ones(group_current.size),
-                fmt="s",
+                fmt="o",
+                markersize=6,
                 color="black",
             )
             residual_axis.axhline(0.0, color="0.3", linewidth=1.0)
             residual_axis.set_ylabel("Pull")
         residual_axis.set_xlabel("RCDB beam current (nA)")
+        residual_axis.set_xlim(-0.03 * float(fit_current[-1]), float(fit_current[-1]))
         residual_axis.grid(True, alpha=0.25)
         fig.tight_layout()
         pdf.savefig(fig)
@@ -818,7 +784,8 @@ def write_plots(
                 group_current,
                 group_residual / group_uncertainty,
                 yerr=np.ones(group_current.size),
-                fmt="s",
+                fmt="o",
+                markersize=6,
                 color="black",
             )
             pull_axis.axhline(0.0, color="0.3", linewidth=1.0)

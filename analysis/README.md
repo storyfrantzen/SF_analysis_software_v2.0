@@ -267,9 +267,11 @@ The output directory contains:
   page is `D(I) = eta_data(I) / eta_MC(I)`. The upper panel displays
   unit-normalized data and GEMC efficiencies, their slopes, and the propagated
   data-fit uncertainty; the ratio panel intentionally has no uncertainty band.
-  Excluded runs remain visible on the current plot as crosses colored and labeled
-  by their manifest run class. The run-stability page draws each charge-weighted
-  run-group yield as a matching dotted line.
+  Its automatic vertical ranges retain run-level outliers, while its compact
+  panels and fitted-domain current range avoid unnecessary page space. Excluded
+  runs remain visible on the current plot as crosses colored and labeled by their
+  manifest run class. The run-stability page draws each charge-weighted run-group
+  yield as a matching dotted line.
 
 Use `--fit-level runs` only as a diagnostic. The nominal group-level fit avoids
 treating the many runs within one production setting as independent current
