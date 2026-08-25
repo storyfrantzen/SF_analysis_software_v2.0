@@ -489,6 +489,35 @@ def _prepare_matplotlib() -> None:
     os.environ.setdefault("XDG_CACHE_HOME", str(xdg_dir))
 
 
+def _linear_prediction_uncertainty(
+    current_nA: np.ndarray, covariance: list[list[float]]
+) -> np.ndarray:
+    current = np.asarray(current_nA, dtype=float)
+    design = np.column_stack((np.ones(current.size), current))
+    covariance_array = np.asarray(covariance, dtype=float)
+    variance = np.einsum("ij,jk,ik->i", design, covariance_array, design)
+    return np.sqrt(np.maximum(variance, 0.0))
+
+
+def _padded_limits(
+    *values: np.ndarray, padding_fraction: float = 0.06
+) -> tuple[float, float]:
+    finite = [
+        np.asarray(value, dtype=float)[np.isfinite(value)]
+        for value in values
+        if np.asarray(value).size
+    ]
+    finite = [value for value in finite if value.size]
+    if not finite:
+        raise ValueError("cannot determine plot limits without finite values")
+    combined = np.concatenate(finite)
+    lower = float(np.min(combined))
+    upper = float(np.max(combined))
+    span = max(upper - lower, 0.02 * max(abs(lower), abs(upper), 1.0))
+    padding = padding_fraction * span
+    return lower - padding, upper + padding
+
+
 def write_plots(
     path,
     records,
@@ -526,11 +555,17 @@ def write_plots(
     show_relative = gemc_points is not None and gemc_fit is not None
     if show_relative and fit.intercept_events_per_nC <= 0.0:
         raise ValueError("data zero-current intercept must be positive for a GEMC overlay")
-    data_scale = 100.0 / fit.intercept_events_per_nC if show_relative else 1.0
+    if show_relative and correction is None:
+        raise ValueError("a current-efficiency correction model is required for a GEMC overlay")
+    data_scale = 1.0 / fit.intercept_events_per_nC if show_relative else 1.0
 
     with PdfPages(path) as pdf:
         fig, (axis, residual_axis) = plt.subplots(
-            2, 1, figsize=(8.5, 8.5), sharex=True, gridspec_kw={"height_ratios": [3, 1]}
+            2,
+            1,
+            figsize=(8.5, 8.5),
+            sharex=True,
+            gridspec_kw={"height_ratios": [2.2, 1]},
         )
         for name in excluded_classes:
             members = [
@@ -582,11 +617,30 @@ def write_plots(
             + [1.0]
         )
         fit_current = np.linspace(0.0, max_current * 1.08, 200)
+        if show_relative:
+            data_fit_curve = correction.data_model.relative_efficiency(fit_current)
+            data_fit_uncertainty = correction.data_model.relative_uncertainty(fit_current)
+        else:
+            data_fit_curve = fit.predict(fit_current)
+            data_fit_uncertainty = _linear_prediction_uncertainty(
+                fit_current, fit.covariance
+            )
         axis.plot(
             fit_current,
-            fit.predict(fit_current) * data_scale,
+            data_fit_curve,
             color="black",
             label="data linear fit" if show_relative else "linear fit",
+            zorder=3,
+        )
+        axis.fill_between(
+            fit_current,
+            data_fit_curve - data_fit_uncertainty,
+            data_fit_curve + data_fit_uncertainty,
+            color="0.35",
+            alpha=0.18,
+            linewidth=0.0,
+            label="data fit uncertainty" if show_relative else "fit uncertainty",
+            zorder=2,
         )
         axis.scatter(
             [0.0],
@@ -598,7 +652,7 @@ def write_plots(
             zorder=5,
         )
         if show_relative:
-            gemc_scale = 100.0 / gemc_fit.intercept
+            gemc_scale = 1.0 / gemc_fit.intercept
             axis.errorbar(
                 [point.current_nA for point in gemc_points],
                 [point.efficiency * gemc_scale for point in gemc_points],
@@ -619,7 +673,73 @@ def write_plots(
                 linewidth=1.5,
                 label="GEMC linear fit",
             )
-            axis.set_ylabel("Efficiency relative to fitted 0 nA (%)")
+            data_slope = (
+                correction.data_model.slope_per_nA
+                / correction.data_model.intercept
+            )
+            data_slope_uncertainty = float(
+                correction.data_model.relative_uncertainty(1.0)
+            )
+            gemc_slope = (
+                correction.gemc_model.slope_per_nA
+                / correction.gemc_model.intercept
+            )
+            gemc_slope_uncertainty = float(
+                correction.gemc_model.relative_uncertainty(1.0)
+            )
+            axis.text(
+                0.985,
+                0.975,
+                (
+                    rf"$d\eta_{{\rm data}}/dI={data_slope:.3e}"
+                    rf"\pm{data_slope_uncertainty:.2e}\ {{\rm nA}}^{{-1}}$"
+                    "\n"
+                    rf"$d\eta_{{\rm GEMC}}/dI={gemc_slope:.3e}"
+                    rf"\pm{gemc_slope_uncertainty:.2e}\ {{\rm nA}}^{{-1}}$"
+                ),
+                transform=axis.transAxes,
+                fontsize="x-small",
+                va="top",
+                ha="right",
+                bbox={
+                    "boxstyle": "round,pad=0.3",
+                    "facecolor": "white",
+                    "edgecolor": "0.7",
+                    "alpha": 0.9,
+                },
+                zorder=8,
+            )
+            group_eta = np.asarray(
+                [group.yield_events_per_nC * data_scale for group in groups],
+                dtype=float,
+            )
+            group_eta_uncertainty = np.asarray(
+                [
+                    group.statistical_uncertainty_events_per_nC * data_scale
+                    for group in groups
+                ],
+                dtype=float,
+            )
+            gemc_eta = np.asarray(
+                [point.efficiency * gemc_scale for point in gemc_points], dtype=float
+            )
+            gemc_eta_uncertainty = np.asarray(
+                [point.statistical_uncertainty * gemc_scale for point in gemc_points],
+                dtype=float,
+            )
+            axis.set_ylim(
+                *_padded_limits(
+                    data_fit_curve - data_fit_uncertainty,
+                    data_fit_curve + data_fit_uncertainty,
+                    gemc_fit.predict(fit_current) * gemc_scale,
+                    group_eta - group_eta_uncertainty,
+                    group_eta + group_eta_uncertainty,
+                    gemc_eta - gemc_eta_uncertainty,
+                    gemc_eta + gemc_eta_uncertainty,
+                    np.asarray([1.0]),
+                )
+            )
+            axis.set_ylabel(r"Relative efficiency $\eta(I)$")
             axis.set_title(f"RGK data/GEMC current study: {selection_label}")
         else:
             axis.set_ylabel("Yield (events/nC)")
@@ -629,19 +749,8 @@ def write_plots(
 
         group_current = np.asarray([group.effective_current_nA for group in groups])
         if show_relative:
-            if correction is None:
-                raise ValueError("a current-efficiency correction model is required for D(I)")
-            d_curve, d_curve_uncertainty = correction.d_factor(fit_current)
+            d_curve, _ = correction.d_factor(fit_current)
             residual_axis.plot(fit_current, d_curve, color="black", label="fit ratio")
-            residual_axis.fill_between(
-                fit_current,
-                d_curve - d_curve_uncertainty,
-                d_curve + d_curve_uncertainty,
-                color="0.6",
-                alpha=0.25,
-                linewidth=0.0,
-                label="fit uncertainty",
-            )
             group_data_eta = np.asarray(
                 [group.yield_events_per_nC for group in groups], dtype=float
             ) / fit.intercept_events_per_nC
@@ -666,7 +775,15 @@ def write_plots(
             )
             residual_axis.axhline(1.0, color="0.3", linewidth=1.0)
             residual_axis.set_ylabel(r"$D(I)=\eta_{data}/\eta_{MC}$")
-            residual_axis.legend(fontsize="xx-small", ncol=2)
+            residual_axis.set_ylim(
+                *_padded_limits(
+                    d_curve,
+                    group_d - group_d_sigma,
+                    group_d + group_d_sigma,
+                    np.asarray([1.0]),
+                )
+            )
+            residual_axis.legend(fontsize="xx-small")
         else:
             group_residual = np.asarray(
                 [group.yield_events_per_nC for group in groups]
@@ -714,6 +831,7 @@ def write_plots(
             plt.close(fig)
 
         fig, (yield_axis, charge_axis) = plt.subplots(2, 1, figsize=(8.5, 8.5), sharex=True)
+        groups_by_name = {group.group: group for group in groups}
         for name in classes:
             members = sorted(
                 (record for record in included if record.run_class == name),
@@ -728,12 +846,31 @@ def write_plots(
                 color=colors[name],
                 label=name,
             )
+            group = groups_by_name.get(name)
+            if group is not None:
+                yield_axis.hlines(
+                    group.yield_events_per_nC,
+                    members[0].run,
+                    members[-1].run,
+                    color=colors[name],
+                    linestyle=":",
+                    linewidth=1.6,
+                    zorder=1,
+                )
             charge_axis.scatter(
                 [record.run for record in members],
                 [record.charge_nC for record in members],
                 s=18,
                 color=colors[name],
             )
+        yield_axis.plot(
+            [],
+            [],
+            color="0.3",
+            linestyle=":",
+            linewidth=1.6,
+            label="charge-weighted group mean",
+        )
         yield_axis.set_ylabel("Yield (events/nC)")
         yield_axis.set_title("Included-run stability")
         yield_axis.grid(True, alpha=0.25)
