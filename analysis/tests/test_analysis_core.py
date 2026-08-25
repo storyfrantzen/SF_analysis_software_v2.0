@@ -1557,6 +1557,37 @@ class UnfoldingTests(unittest.TestCase):
                 q2_mean = float(result["Q2_mean"][0])
                 applied = bool(result["current_efficiency_applied"])
 
+            excluded_correction_path = tmpdir / "excluded_current_efficiency.json"
+            excluded_output_path = tmpdir / "excluded_unfolding.npz"
+            excluded_payload = correction_artifact(
+                data_model=data_model,
+                gemc_model=gemc_model,
+                reference_current_nA=60.0,
+                reference_label="merged_60nA",
+                reference_response_meta=meta_path,
+                run_records=records,
+                sources={},
+                analysis_excluded_runs=(1001,),
+            )
+            excluded_correction_path.write_text(
+                json.dumps(excluded_payload), encoding="utf-8"
+            )
+            args.output = excluded_output_path
+            args.current_efficiency_correction = excluded_correction_path
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_unfold(args)
+            with np.load(excluded_output_path, allow_pickle=False) as result:
+                excluded_measured = float(result["measured"][0])
+                excluded_variance = float(result["measured_variance"][0])
+                excluded_q2_mean = float(result["Q2_mean"][0])
+                excluded_charge = float(result["beam_charge_c"])
+                original_charge = float(result["beam_charge_original_c"])
+                excluded_unweighted = float(result["measured_unweighted"][0])
+                excluded_events = int(
+                    result["current_efficiency_excluded_event_count"]
+                )
+                excluded_runs = result["current_efficiency_excluded_runs"].tolist()
+
         low_current_weight = 0.85
         high_current_weight = 0.85 / 0.4
         self.assertAlmostEqual(measured, low_current_weight + high_current_weight)
@@ -1569,6 +1600,14 @@ class UnfoldingTests(unittest.TestCase):
             / (low_current_weight + high_current_weight),
         )
         self.assertTrue(applied)
+        self.assertAlmostEqual(excluded_measured, high_current_weight)
+        self.assertAlmostEqual(excluded_variance, high_current_weight**2)
+        self.assertAlmostEqual(excluded_q2_mean, 1.4)
+        self.assertAlmostEqual(excluded_charge, 1.0e-9)
+        self.assertAlmostEqual(original_charge, 2.0e-9)
+        self.assertEqual(excluded_unweighted, 1.0)
+        self.assertEqual(excluded_events, 1)
+        self.assertEqual(excluded_runs, [1001])
 
 
 class RadiativeCorrectionTests(unittest.TestCase):

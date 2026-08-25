@@ -388,10 +388,14 @@ python3 analysis/study_data_efficiency.py \
 
 The efficiency-study command defaults to unflagged P3/P4 runs and counts all
 selected candidates. Supply a fixed event mask with `--selection-mask` for the
-signal-yield study. Add `--include-classes P3 P4 L5` only after confirming L5
-trigger and prescale compatibility. The run-current manifest deliberately
-retains suspect, mixed-trigger, empty-target, and half-torus entries so each
-nominal exclusion remains auditable.
+signal-yield study, or add `--background-cuts data_exclusivity.npz` for the
+sideband-subtracted current-dependence systematic. Add
+`--include-classes P3 P4 L5` only after confirming L5 trigger and prescale
+compatibility. The run-current manifest deliberately retains suspect,
+mixed-trigger, empty-target, and half-torus entries so each nominal exclusion
+remains auditable. Fit exclusions do not remove physics data; use
+`--exclude-class-downstream T` or repeat `--exclude-run-downstream` to assign
+zero event weight and remove the corresponding per-run charge downstream.
 
 For conversion of the complete reconstructed-DST holdings, including the
 luminosity-scan runs, use the more compact converter config:

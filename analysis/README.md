@@ -217,7 +217,7 @@ ordering.
 `study_data_efficiency.py` joins the selected-event run numbers to the QADB
 charge arrays and `configs/efficiency/rgk/6.535/run_currents.json`. It writes a
 complete per-run audit table, charge-aggregated current-group yields, a linear
-zero-current fit, and a two-page diagnostic PDF. Its conservative default fit
+zero-current fit, and a multipage diagnostic PDF. Its conservative default fit
 uses only unflagged P3 and P4 runs:
 
 ```bash
@@ -239,6 +239,31 @@ python3 analysis/study_data_efficiency.py \
   --output-dir results/data_efficiency/rgk_6.535_fixed_selection
 ```
 
+As a systematic check, replace the integer selected count by the same
+topology-dependent sideband subtraction used upstream of unfolding:
+
+```bash
+python3 analysis/study_data_efficiency.py \
+  results/data/rgk_6.535_data_events.npz \
+  --background-cuts results/cuts/data_exclusivity.npz \
+  --selection-mask results/data_exclusivity.npy \
+  --include-classes L4 L5 P3 P4 \
+  --output-dir results/data_efficiency/rgk_6.535_sideband_systematic
+```
+
+`--background-cuts` performs one common global-by-topology N-1
+`m_gg` fit, uses each fitted linear-background transfer factor `alpha_g`, and
+forms the run yield
+
+`N_r = N_signal,r - sum_g alpha_g N_sideband,r,g`.
+
+The optional selection mask becomes a consistency assertion: the command stops
+if it differs from the signal window reconstructed from the supplied cut table.
+Counting uncertainties use `N_signal + sum_g alpha_g^2 N_sideband,g`. The
+bootstrap uncertainty of each common `alpha_g` is recorded in
+`fit_summary.json` as a correlated systematic and is deliberately not treated
+as an independent statistical error for every run or run class.
+
 Include L5 only after confirming that its physics trigger and prescale are
 compatible with P3/P4. L4 trigger tests, mixed/random-trigger L6 runs, the E2
 empty-target run, and half-torus T runs are excluded unless explicitly admitted
@@ -254,14 +279,16 @@ ratio. Its effective current is charge weighted. The default fit therefore uses
 The output directory contains:
 
 - `run_yields.csv`: every charge-bearing run, its counts, charge, current
-  metadata, inclusion decision, and exclusion reason;
+  metadata, signal-region and sideband counts, estimated background, net signal,
+  inclusion decision, and exclusion reason;
 - `current_group_yields.csv`: charge-aggregated fit points and their relative
   efficiencies;
 - `fit_summary.json`: inputs, filters, charge validation, fit covariance,
   warnings, zero-current result, and the selected GEMC reference response;
 - `current_efficiency_correction.json` (when GEMC inputs are supplied): the
   fitted data and GEMC models, `D(I)`, reference-response fingerprint, all
-  usable run currents, and the nominal per-run unfolding weights;
+  usable run currents, nominal per-run unfolding weights, downstream selection,
+  and the resulting analysis beam charge;
 - `data_efficiency_diagnostics.pdf`: current-dependence, fit pulls, and
   included-run stability plots. With GEMC inputs, the lower panel of the first
   page is `D(I) = eta_data(I) / eta_MC(I)`. The upper panel displays
@@ -330,6 +357,8 @@ python3 analysis/study_data_efficiency.py data_events.npz \
   --include-classes L4 L5 P4 P3 \
   --gemc-manifest /path/to/gemc_efficiency_manifest.json \
   --reference-current-na 60 \
+  --exclude-class-downstream T \
+  --exclude-class-downstream E2 \
   --output-dir results/data_efficiency/rgk_6.535
 ```
 
@@ -349,18 +378,32 @@ for each selected event from run `r`. Equivalently,
 `w_r = [eta_data(I_ref) / eta_data(I_r)] / D(I_ref)`.
 
 The weighted reconstructed histogram is unfolded with the response built at
-`I_ref`; the resulting yield is still normalized by the original physical beam
-charge. The study filters determine which runs constrain the fit, not which
-runs belong to the physics dataset. The correction artifact therefore carries
-every charge-bearing run with a usable manifest current, records each run's fit
-inclusion separately, and `unfold` stops if a selected event has no usable
-current. Remove runs from the physics dataset explicitly rather than relying on
-fit exclusions to remove them.
+`I_ref`. Ordinary study filters (`--include-classes`, `--include-run`,
+`--exclude-run`, current quality, and minimum group charge) determine only
+which runs constrain the current fit; they do not remove runs from the physics
+dataset. To remove runs downstream, repeat `--exclude-run-downstream RUN` or
+`--exclude-class-downstream CLASS`. The correction artifact assigns those runs
+zero event weight, and `unfold` removes them before the signal/background
+histograms are built. It also sets the analysis charge to the original
+file-level charge minus the excluded per-run charges, so excluded runs
+contribute neither yield nor luminosity while the no-exclusion case preserves
+the converter's normalization exactly. For example,
+`--exclude-class-downstream T` removes all half-torus runs. This explicit
+distinction prevents a fit-only exclusion from silently changing the physics
+sample.
+
+Every charge-bearing run that remains downstream must have a usable current.
+A run without current metadata must either be repaired in the manifest or
+explicitly excluded downstream; otherwise artifact construction stops. The
+artifact records both original and analysis charge, included/excluded run lists,
+fit inclusion, analysis inclusion, exclusion reasons, and the applied weight
+for every run.
 
 `unfold` verifies the SHA-256 fingerprint of `response_meta.npz` against the
 chosen reference sample before applying any weights. It stores the complete
 correction JSON, the reference current, `D(I_ref)`, weight range, unweighted
-counts, weighted counts, and `sum(w^2)` in its output. Weighted bin means and
+counts, weighted counts, `sum(w^2)`, original/analysis beam charge, and the
+downstream-excluded run list in its output. Weighted bin means and
 bootstrap statistical fluctuations use the same event weights. The fit-model
 uncertainties recorded per run in the JSON are correlated calibration
 uncertainties; they are intentionally preserved for systematic variations and

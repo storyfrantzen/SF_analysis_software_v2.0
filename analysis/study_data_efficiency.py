@@ -24,6 +24,7 @@ from eppi0.current_efficiency import (
     CurrentEfficiencyCorrection,
     RelativeLinearEfficiency,
     correction_artifact,
+    response_meta_sha256,
 )
 from eppi0.gemc_efficiency import (
     attach_relative_gemc_efficiencies,
@@ -63,10 +64,33 @@ def parse_args() -> argparse.Namespace:
         help="Array name when --selection-mask is an NPZ (default: mask)",
     )
     parser.add_argument(
+        "--background-cuts",
+        type=Path,
+        help=(
+            "Global data exclusivity-cut NPZ used to replace selected counts with "
+            "topology-specific m_gg sideband-subtracted signal yields"
+        ),
+    )
+    parser.add_argument(
+        "--background-alpha-bootstrap",
+        type=int,
+        default=200,
+        help="Poisson refits used to audit each sideband transfer-factor uncertainty",
+    )
+    parser.add_argument(
+        "--background-seed",
+        type=int,
+        default=12345,
+        help="Random seed for the sideband transfer-factor bootstrap",
+    )
+    parser.add_argument(
         "--include-classes",
         nargs="+",
         default=["P3", "P4"],
-        help="Run classes admitted to the nominal fit (default: P3 P4)",
+        help=(
+            "Run classes admitted to the nominal fit (default: P3 P4); this "
+            "does not select the downstream physics sample"
+        ),
     )
     parser.add_argument(
         "--include-qualities",
@@ -79,14 +103,19 @@ def parse_args() -> argparse.Namespace:
         action="append",
         type=int,
         default=[],
-        help="Admit a run even when its class is not listed; may be repeated",
+        help=(
+            "Admit a run to the fit even when its class is not listed; may be repeated"
+        ),
     )
     parser.add_argument(
         "--exclude-run",
         action="append",
         type=int,
         default=[],
-        help="Exclude a run explicitly; may be repeated",
+        help=(
+            "Exclude a run from the current fit only; does not remove it downstream; "
+            "may be repeated"
+        ),
     )
     parser.add_argument(
         "--fit-level",
@@ -101,6 +130,25 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Exclude an otherwise eligible run when its QADB charge is less than this "
             "fraction of the eligible charge in its run-class group (default: 0)"
+        ),
+    )
+    parser.add_argument(
+        "--exclude-class-downstream",
+        action="append",
+        default=[],
+        help=(
+            "Assign zero downstream event weight to every run in this manifest class "
+            "and remove its charge from the analysis luminosity; may be repeated"
+        ),
+    )
+    parser.add_argument(
+        "--exclude-run-downstream",
+        action="append",
+        type=int,
+        default=[],
+        help=(
+            "Assign zero downstream event weight to this run and remove its charge "
+            "from the analysis luminosity; may be repeated"
         ),
     )
     gemc_input = parser.add_mutually_exclusive_group()
@@ -150,6 +198,9 @@ def main() -> int:
         include_runs=args.include_run,
         exclude_runs=args.exclude_run,
         minimum_group_charge_fraction=args.minimum_group_charge_fraction,
+        background_cuts_path=args.background_cuts,
+        background_alpha_bootstrap=args.background_alpha_bootstrap,
+        background_seed=args.background_seed,
     )
     groups = aggregate_current_groups(records)
     fit = fit_linear_yield(records, groups, fit_level=args.fit_level)
@@ -180,6 +231,13 @@ def main() -> int:
         attach_relative_gemc_efficiencies(gemc_points, gemc_fit)
     elif args.reference_current_na is not None:
         raise ValueError("--reference-current-na requires GEMC efficiency inputs")
+    if (
+        args.exclude_class_downstream or args.exclude_run_downstream
+    ) and gemc_points is None:
+        raise ValueError(
+            "downstream exclusions require GEMC inputs so they can be persisted in "
+            "current_efficiency_correction.json"
+        )
 
     correction = None
     correction_payload = None
@@ -203,12 +261,33 @@ def main() -> int:
             reference_label=reference_point.label,
             reference_response_meta=Path(reference_point.response_meta),
             run_records=records,
+            analysis_excluded_classes=args.exclude_class_downstream,
+            analysis_excluded_runs=args.exclude_run_downstream,
+            original_beam_charge_c=(
+                validation["stored_total_charge_c"]
+                if validation["stored_total_charge_c"] is not None
+                else validation["run_charge_sum_c"]
+            ),
+            data_quantity=(
+                "m_gg sideband-subtracted data signal yield in events/nC"
+                if args.background_cuts is not None
+                else "selected data yield in events/nC"
+            ),
             sources={
                 "data_sample": str(args.sample.resolve()),
                 "current_manifest": str(args.manifest.resolve()),
                 "selection_mask": (
                     str(args.selection_mask.resolve()) if args.selection_mask else None
                 ),
+                "background_cuts": (
+                    str(args.background_cuts.resolve()) if args.background_cuts else None
+                ),
+                "background_cuts_sha256": (
+                    response_meta_sha256(args.background_cuts)
+                    if args.background_cuts
+                    else None
+                ),
+                "background_subtraction": validation["background_subtraction"],
                 "gemc": gemc_source,
             },
         )
@@ -224,8 +303,19 @@ def main() -> int:
             run_currents_nA={
                 int(run): float(values["current_nA"])
                 for run, values in correction_payload["runs"].items()
+                if values.get("current_nA") is not None
             },
             payload=correction_payload,
+            run_event_weights={
+                int(run): float(values["event_weight"])
+                for run, values in correction_payload["runs"].items()
+            },
+            analysis_beam_charge_c=correction_payload["analysis_selection"][
+                "analysis_beam_charge_c"
+            ],
+            original_beam_charge_c=correction_payload["analysis_selection"][
+                "original_beam_charge_c"
+            ],
         )
 
     warnings = study_warnings(
@@ -244,18 +334,30 @@ def main() -> int:
         write_csv(gemc_csv, [asdict(point) for point in gemc_points])
 
     summary = {
-        "schema_version": 2,
+        "schema_version": 3,
         "study": "RGK charge-normalized data yield versus beam current",
         "interpretation": (
-            "Relative data efficiency only after fixed signal selection and "
+            "Relative data efficiency after a common signal definition and "
             "run-condition compatibility have been validated."
         ),
         "sample": str(args.sample.resolve()),
         "manifest": str(args.manifest.resolve()),
         "selection": {
-            "mode": "fixed_mask" if args.selection_mask else "all_selected_candidates",
+            "mode": validation["yield_mode"],
             "mask": str(args.selection_mask.resolve()) if args.selection_mask else None,
             "mask_key": args.selection_mask_key if args.selection_mask else None,
+            "background_cuts": (
+                str(args.background_cuts.resolve()) if args.background_cuts else None
+            ),
+            "background_cuts_sha256": (
+                response_meta_sha256(args.background_cuts)
+                if args.background_cuts
+                else None
+            ),
+            "background_alpha_bootstrap": (
+                args.background_alpha_bootstrap if args.background_cuts else None
+            ),
+            "background_seed": args.background_seed if args.background_cuts else None,
         },
         "filters": {
             "include_classes": args.include_classes,
@@ -263,6 +365,8 @@ def main() -> int:
             "include_runs": args.include_run,
             "exclude_runs": args.exclude_run,
             "minimum_group_charge_fraction": args.minimum_group_charge_fraction,
+            "exclude_classes_downstream": args.exclude_class_downstream,
+            "exclude_runs_downstream": args.exclude_run_downstream,
         },
         "validation": validation,
         "fit": asdict(fit),
@@ -287,6 +391,7 @@ def main() -> int:
             "method": correction_payload["method"],
             "reference": correction_payload["reference"],
             "fit_included_runs": correction_payload["fit_included_runs"],
+            "analysis_selection": correction_payload["analysis_selection"],
             "application_run_count": len(correction_payload["runs"]),
         }
         correction_json.write_text(
@@ -303,14 +408,21 @@ def main() -> int:
         records,
         groups,
         fit,
-        args.selection_mask is not None,
+        validation["yield_mode"],
         gemc_points=gemc_points,
         gemc_fit=gemc_fit,
         correction=correction,
     )
 
     print(f"Candidate events: {validation['candidate_events']}")
-    print(f"Signal events: {validation['signal_events']}")
+    print(f"Signal yield: {validation['signal_events']:.8g}")
+    if args.background_cuts is not None:
+        print(
+            "Sideband subtraction: "
+            f"signal-region={validation['signal_region_events']}, "
+            f"sideband={validation['sideband_events']}, "
+            f"background={validation['estimated_background_events']:.8g}"
+        )
     print(f"Included runs: {sum(record.included for record in records)}")
     print(f"Current groups: {len(groups)}")
     print(
@@ -400,10 +512,17 @@ def study_warnings(
     gemc_validation=None,
 ) -> list[str]:
     warnings: list[str] = []
-    if args.selection_mask is None:
+    if args.selection_mask is None and args.background_cuts is None:
         warnings.append(
-            "No fixed signal-selection mask was supplied; yields count all selected candidates "
-            "and are not background-subtracted signal yields."
+            "No fixed signal-selection mask or background-cut table was supplied; "
+            "yields count all selected candidates and are not background-subtracted "
+            "signal yields."
+        )
+    if args.background_cuts is not None:
+        warnings.append(
+            "The sideband transfer factors are common to all runs. Their bootstrap "
+            "uncertainties are recorded as correlated systematic information and are not "
+            "added independently to the current-fit point uncertainties."
         )
     if "L5" in args.include_classes:
         warnings.append(
@@ -504,7 +623,7 @@ def write_plots(
     records,
     groups,
     fit,
-    has_selection_mask: bool,
+    yield_mode: str,
     *,
     gemc_points=None,
     gemc_fit=None,
@@ -532,7 +651,11 @@ def write_plots(
         name: plt.get_cmap("tab10")(index % 10)
         for index, name in enumerate(plotted_classes)
     }
-    selection_label = "fixed-mask signal" if has_selection_mask else "all selected candidates"
+    selection_label = {
+        "fixed_selection_mask": "fixed-mask signal",
+        "mgg_sideband_subtracted": r"$m_{\gamma\gamma}$ sideband-subtracted signal",
+        "all_selected_candidates": "all selected candidates",
+    }.get(yield_mode, yield_mode.replace("_", " "))
     show_relative = gemc_points is not None and gemc_fit is not None
     if show_relative and fit.intercept_events_per_nC <= 0.0:
         raise ValueError("data zero-current intercept must be positive for a GEMC overlay")

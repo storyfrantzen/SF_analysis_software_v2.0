@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import sys
 import tempfile
 import unittest
@@ -21,7 +22,11 @@ from eppi0.data_efficiency import (
     fit_linear_yield,
     load_selection_mask,
 )
-from eppi0.current_efficiency import load_current_efficiency_correction
+from eppi0.current_efficiency import (
+    RelativeLinearEfficiency,
+    correction_artifact,
+    load_current_efficiency_correction,
+)
 from eppi0.gemc_efficiency import (
     attach_relative_gemc_efficiencies,
     fit_linear_efficiency,
@@ -49,6 +54,10 @@ class DataEfficiencyTests(unittest.TestCase):
         np.savez_compressed(
             sample_path,
             run=event_runs,
+            rec_selected=np.ones(event_runs.size, dtype=bool),
+            rec_m_gg=np.full(event_runs.size, 0.135),
+            rec_proton_detector=np.ones(event_runs.size, dtype=np.int32),
+            rec_ft_photon_count=np.zeros(event_runs.size, dtype=np.int32),
             beam_charge_run=charge_runs,
             beam_charge_by_run_c=charge_c,
             beam_charge_c=np.asarray(charge_c.sum()),
@@ -156,6 +165,59 @@ class DataEfficiencyTests(unittest.TestCase):
         l5 = next(group for group in groups if group.group == "L5")
         self.assertEqual(l5.run_numbers, [1002])
 
+    def test_background_subtracted_run_yields_use_signed_sideband_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            sample, manifest = self.write_inputs(directory)
+            with np.load(sample) as data:
+                event_runs = np.asarray(data["run"])
+            signal = np.zeros(event_runs.size, dtype=bool)
+            sideband = np.zeros(event_runs.size, dtype=bool)
+            run_rows = np.flatnonzero(event_runs == 1001)
+            signal[run_rows[:10]] = True
+            sideband[run_rows[10:14]] = True
+            net_weights = signal.astype(float) - 0.25 * sideband.astype(float)
+            background = SimpleNamespace(
+                signal_region_mask=signal,
+                sideband_mask=sideband,
+                net_event_weights=net_weights,
+                group_ids=np.asarray([4]),
+                signal_lower=np.asarray([0.11]),
+                signal_upper=np.asarray([0.16]),
+                fit_lower=np.asarray([0.08]),
+                fit_upper=np.asarray([0.20]),
+                alpha=np.asarray([0.25]),
+                alpha_uncertainty=np.asarray([0.02]),
+                fit_model=np.asarray(["gaussian+sideband-linear"]),
+                fit_entries=np.asarray([event_runs.size]),
+            )
+            cuts = SimpleNamespace(variables=("rec_m_gg",))
+            with (
+                patch("eppi0.data_efficiency.load_cuts", return_value=cuts),
+                patch(
+                    "eppi0.data_efficiency.estimate_mgg_background",
+                    return_value=background,
+                ),
+            ):
+                records, validation = build_run_yields(
+                    sample,
+                    manifest,
+                    include_classes=("L5", "P4", "P3"),
+                    background_cuts_path=directory / "cuts.npz",
+                )
+            groups = aggregate_current_groups(records)
+
+        run = next(record for record in records if record.run == 1001)
+        self.assertEqual(validation["yield_mode"], "mgg_sideband_subtracted")
+        self.assertEqual(run.signal_region_events, 10)
+        self.assertEqual(run.sideband_events, 4)
+        self.assertAlmostEqual(run.estimated_background_events, 1.0)
+        self.assertAlmostEqual(run.signal_events, 9.0)
+        self.assertAlmostEqual(run.signal_statistical_variance, 10.25)
+        l5 = next(group for group in groups if group.group == "L5")
+        self.assertAlmostEqual(l5.signal_events, 9.0)
+        self.assertAlmostEqual(l5.signal_statistical_variance, 10.25)
+
     def test_gemc_response_metadata_fit_and_relative_efficiency(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -209,6 +271,63 @@ class DataEfficiencyTests(unittest.TestCase):
         self.assertAlmostEqual(fit.slope_per_nA, -0.002)
         self.assertAlmostEqual(points[1].relative_efficiency, 0.85)
         self.assertEqual(fit.ndf, 0)
+
+    def test_missing_current_run_must_be_excluded_downstream(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            response_meta = directory / "response_meta.npz"
+            np.savez_compressed(response_meta, efficiency=np.ones(1))
+            model = RelativeLinearEfficiency(
+                1.0, -0.001, ((0.0, 0.0), (0.0, 0.0))
+            )
+            records = [
+                SimpleNamespace(
+                    run=1001,
+                    current_nA=50.0,
+                    charge_c=1.0e-9,
+                    run_class="P3",
+                    current_quality="unflagged",
+                    included=True,
+                    exclusion_reason="",
+                ),
+                SimpleNamespace(
+                    run=1002,
+                    current_nA=None,
+                    charge_c=0.2e-9,
+                    run_class="E2",
+                    current_quality="missing",
+                    included=False,
+                    exclusion_reason="missing_current",
+                ),
+            ]
+            with self.assertRaisesRegex(ValueError, "1002.*no usable current"):
+                correction_artifact(
+                    data_model=model,
+                    gemc_model=model,
+                    reference_current_nA=50.0,
+                    reference_label="merged_50nA",
+                    reference_response_meta=response_meta,
+                    run_records=records,
+                    sources={},
+                )
+            payload = correction_artifact(
+                data_model=model,
+                gemc_model=model,
+                reference_current_nA=50.0,
+                reference_label="merged_50nA",
+                reference_response_meta=response_meta,
+                run_records=records,
+                sources={},
+                analysis_excluded_classes=("E2",),
+            )
+            artifact = directory / "correction.json"
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            loaded = load_current_efficiency_correction(artifact)
+
+        self.assertEqual(loaded.excluded_runs, (1002,))
+        self.assertEqual(float(loaded.event_weights(np.asarray([1002]))[0]), 0.0)
+        self.assertAlmostEqual(loaded.original_beam_charge_c, 1.2e-9)
+        self.assertAlmostEqual(loaded.analysis_beam_charge_c, 1.0e-9)
 
     def test_selected_run_without_charge_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -290,6 +409,8 @@ class DataEfficiencyTests(unittest.TestCase):
                 "P3",
                 "--exclude-run",
                 "1001",
+                "--exclude-run-downstream",
+                "1002",
                 "--minimum-group-charge-fraction",
                 "0.001",
                 "--gemc-manifest",
@@ -312,6 +433,16 @@ class DataEfficiencyTests(unittest.TestCase):
             weight, _ = correction.weights_for_currents(60.0)
             self.assertAlmostEqual(float(weight), 0.85 / 0.4)
             self.assertIn(1001, correction.run_currents_nA)
+            self.assertEqual(correction.excluded_runs, (1002,))
+            self.assertEqual(float(correction.event_weights(np.asarray([1002]))[0]), 0.0)
+            self.assertAlmostEqual(correction.original_beam_charge_c, 6.0e-9)
+            self.assertAlmostEqual(correction.analysis_beam_charge_c, 5.0e-9)
+            self.assertEqual(
+                summary["current_efficiency_correction"]["analysis_selection"][
+                    "excluded_runs"
+                ],
+                [1002],
+            )
             self.assertTrue((output / "run_yields.csv").is_file())
             self.assertTrue((output / "current_group_yields.csv").is_file())
             self.assertTrue((output / "gemc_efficiency_points.csv").is_file())

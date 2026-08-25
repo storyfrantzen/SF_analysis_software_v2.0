@@ -49,6 +49,10 @@ CURRENT_EFFICIENCY_PROVENANCE_FIELDS = (
     "current_efficiency_D_reference",
     "current_efficiency_weight_min",
     "current_efficiency_weight_max",
+    "current_efficiency_original_beam_charge_c",
+    "current_efficiency_analysis_beam_charge_c",
+    "current_efficiency_excluded_runs",
+    "current_efficiency_excluded_event_count",
     "current_efficiency_model_json",
 )
 
@@ -633,6 +637,7 @@ def command_unfold(args: argparse.Namespace) -> None:
     current_efficiency_path = getattr(args, "current_efficiency_correction", None)
     current_efficiency = None
     event_weights = np.ones(base_selected.size, dtype=float)
+    current_efficiency_excluded_event_count = 0
     if current_efficiency_path is not None:
         current_efficiency = load_current_efficiency_correction(current_efficiency_path)
         actual_response_hash = response_meta_sha256(args.response_meta)
@@ -649,9 +654,12 @@ def command_unfold(args: argparse.Namespace) -> None:
         event_runs = np.asarray(data["run"], dtype=np.int64)
         if event_runs.shape != base_selected.shape:
             raise ValueError("data run array shape does not match reconstructed events")
-        event_weights[base_selected] = current_efficiency.event_weights(
-            event_runs[base_selected]
-        )
+        selected_rows = np.flatnonzero(base_selected)
+        selected_run_weights = current_efficiency.event_weights(event_runs[selected_rows])
+        event_weights[selected_rows] = selected_run_weights
+        excluded_rows = selected_rows[selected_run_weights == 0.0]
+        current_efficiency_excluded_event_count = int(excluded_rows.size)
+        base_selected[excluded_rows] = False
 
     background_cuts_path = getattr(args, "background_cuts", None)
     background = None
@@ -858,7 +866,15 @@ def command_unfold(args: argparse.Namespace) -> None:
             radiative_valid, np.hypot(sigma_total, radiative_sigma), 0.0
         )
 
-    beam_charge = float(data["beam_charge_c"]) if "beam_charge_c" in data.files else np.nan
+    original_beam_charge = (
+        float(data["beam_charge_c"]) if "beam_charge_c" in data.files else np.nan
+    )
+    beam_charge = (
+        float(current_efficiency.analysis_beam_charge_c)
+        if current_efficiency is not None
+        and current_efficiency.analysis_beam_charge_c is not None
+        else original_beam_charge
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         args.output,
@@ -885,6 +901,7 @@ def command_unfold(args: argparse.Namespace) -> None:
         kl_divergence=kl,
         efficiency=efficiency,
         beam_charge_c=beam_charge,
+        beam_charge_original_c=original_beam_charge,
         Q2_mean=means["Q2"],
         xB_mean=means["xB"],
         minus_t_mean=means["minus_t"],
@@ -1006,6 +1023,26 @@ def command_unfold(args: argparse.Namespace) -> None:
         current_efficiency_weight_max=float(event_weights[selected].max())
         if np.any(selected)
         else np.nan,
+        current_efficiency_original_beam_charge_c=(
+            current_efficiency.original_beam_charge_c
+            if current_efficiency is not None
+            and current_efficiency.original_beam_charge_c is not None
+            else original_beam_charge
+        ),
+        current_efficiency_analysis_beam_charge_c=(
+            current_efficiency.analysis_beam_charge_c
+            if current_efficiency is not None
+            and current_efficiency.analysis_beam_charge_c is not None
+            else beam_charge
+        ),
+        current_efficiency_excluded_runs=(
+            np.asarray(current_efficiency.excluded_runs, dtype=np.int64)
+            if current_efficiency is not None
+            else np.empty(0, dtype=np.int64)
+        ),
+        current_efficiency_excluded_event_count=(
+            current_efficiency_excluded_event_count
+        ),
         current_efficiency_model_json=(
             json.dumps(current_efficiency.payload, sort_keys=True)
             if current_efficiency is not None
@@ -1031,6 +1068,13 @@ def command_unfold(args: argparse.Namespace) -> None:
             "Current-efficiency weighted yield: "
             f"{measured.sum():.8g} (I_ref={current_efficiency.reference_current_nA:g} nA)"
         )
+        if current_efficiency.excluded_runs:
+            print(
+                "Downstream run exclusions: "
+                f"runs={len(current_efficiency.excluded_runs)}, "
+                f"in-range events={current_efficiency_excluded_event_count}, "
+                f"analysis charge={beam_charge:.8g} C"
+            )
     print(f"Wrote {args.output}")
 
 

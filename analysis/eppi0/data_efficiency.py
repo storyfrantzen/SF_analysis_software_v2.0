@@ -10,6 +10,10 @@ from typing import Iterable
 
 import numpy as np
 
+from .background_subtraction import METHOD as BACKGROUND_METHOD
+from .background_subtraction import estimate_mgg_background
+from .exclusivity import load_cuts
+
 
 @dataclass
 class RunYield:
@@ -19,7 +23,11 @@ class RunYield:
     current_quality: str | None
     nominal_current_nA: float | None
     candidate_events: int
-    signal_events: int
+    signal_events: float
+    signal_statistical_variance: float
+    signal_region_events: int
+    sideband_events: int
+    estimated_background_events: float
     charge_c: float
     charge_nC: float
     total_events: int | None
@@ -38,7 +46,11 @@ class CurrentGroupYield:
     runs: int
     run_numbers: list[int]
     effective_current_nA: float
-    signal_events: int
+    signal_events: float
+    signal_statistical_variance: float
+    signal_region_events: int
+    sideband_events: int
+    estimated_background_events: float
     charge_c: float
     charge_nC: float
     yield_events_per_nC: float
@@ -144,6 +156,19 @@ def _optional_run_map(sample, key: str, charge_runs: np.ndarray) -> dict[int, in
     return {run: int(value) for run, value in mapped.items()}
 
 
+def _sum_by_run(runs: np.ndarray, values: np.ndarray) -> dict[int, float]:
+    runs = np.asarray(runs, dtype=np.int64)
+    values = np.asarray(values, dtype=float)
+    if runs.ndim != 1 or values.shape != runs.shape:
+        raise ValueError("per-run accumulation arrays must be one-dimensional and aligned")
+    unique_runs, inverse = np.unique(runs, return_inverse=True)
+    totals = np.bincount(inverse, weights=values, minlength=unique_runs.size)
+    return {
+        int(run): float(total)
+        for run, total in zip(unique_runs, totals, strict=True)
+    }
+
+
 def build_run_yields(
     sample_path: Path,
     manifest_path: Path,
@@ -155,6 +180,9 @@ def build_run_yields(
     include_runs: Iterable[int] = (),
     exclude_runs: Iterable[int] = (),
     minimum_group_charge_fraction: float = 0.0,
+    background_cuts_path: Path | None = None,
+    background_alpha_bootstrap: int = 200,
+    background_seed: int | None = 12345,
 ) -> tuple[list[RunYield], dict]:
     include_class_set = set(include_classes)
     include_quality_set = set(include_qualities)
@@ -175,11 +203,95 @@ def build_run_yields(
         event_runs = np.asarray(sample["run"], dtype=np.int64)
         if event_runs.ndim != 1:
             raise ValueError("sample run array must be one-dimensional")
-        mask = (
+        fixed_mask = (
             load_selection_mask(selection_mask_path, event_runs.size, selection_mask_key)
             if selection_mask_path is not None
             else np.ones(event_runs.size, dtype=bool)
         )
+        background_metadata = None
+        if background_cuts_path is not None:
+            cuts = load_cuts(str(background_cuts_path))
+            background_required = {
+                *cuts.variables,
+                "rec_proton_detector",
+                "rec_ft_photon_count",
+            }
+            background_missing = sorted(background_required.difference(sample.files))
+            if background_missing:
+                raise ValueError(
+                    "background-subtracted current study requires compact-data arrays: "
+                    + ", ".join(background_missing)
+                )
+            base_mask = (
+                np.asarray(sample["rec_selected"], dtype=bool)
+                if "rec_selected" in sample.files
+                else np.ones(event_runs.size, dtype=bool)
+            )
+            if base_mask.shape != event_runs.shape:
+                raise ValueError("sample rec_selected array must match the run array")
+            dummy_index = np.zeros(event_runs.size, dtype=np.int64)
+            background = estimate_mgg_background(
+                cuts=cuts,
+                values={name: np.asarray(sample[name]) for name in cuts.variables},
+                proton_detector=np.asarray(sample["rec_proton_detector"]),
+                ft_photons=np.asarray(sample["rec_ft_photon_count"]),
+                iq2=dummy_index,
+                ixb=dummy_index,
+                it=dummy_index,
+                rec_flat=dummy_index,
+                base_mask=base_mask,
+                event_weights=np.ones(event_runs.size, dtype=float),
+                number_of_bins=1,
+                alpha_bootstrap=background_alpha_bootstrap,
+                seed=background_seed,
+            )
+            if selection_mask_path is not None and not np.array_equal(
+                base_mask & fixed_mask, background.signal_region_mask
+            ):
+                disagreement = int(
+                    np.count_nonzero(
+                        (base_mask & fixed_mask) != background.signal_region_mask
+                    )
+                )
+                raise ValueError(
+                    "--selection-mask disagrees with the signal region derived from "
+                    f"--background-cuts for {disagreement} events"
+                )
+            signal_region_mask = background.signal_region_mask
+            sideband_mask = background.sideband_mask
+            signal_event_weights = background.net_event_weights
+            signal_variance_weights = signal_event_weights**2
+            yield_mode = "mgg_sideband_subtracted"
+            background_metadata = {
+                "method": BACKGROUND_METHOD,
+                "cuts": str(Path(background_cuts_path).resolve()),
+                "alpha_bootstrap": int(background_alpha_bootstrap),
+                "seed": background_seed,
+                "group_ids": background.group_ids.tolist(),
+                "signal_lower": background.signal_lower.tolist(),
+                "signal_upper": background.signal_upper.tolist(),
+                "fit_lower": background.fit_lower.tolist(),
+                "fit_upper": background.fit_upper.tolist(),
+                "alpha": background.alpha.tolist(),
+                "alpha_uncertainty": background.alpha_uncertainty.tolist(),
+                "fit_model": background.fit_model.tolist(),
+                "fit_entries": background.fit_entries.tolist(),
+                "statistical_variance": (
+                    "Poisson signal-plus-alpha-squared-sideband counting variance; "
+                    "the common transfer-factor fit uncertainty is retained separately "
+                    "as a correlated systematic"
+                ),
+            }
+        else:
+            signal_region_mask = fixed_mask
+            sideband_mask = np.zeros(event_runs.size, dtype=bool)
+            signal_event_weights = signal_region_mask.astype(float)
+            signal_variance_weights = signal_region_mask.astype(float)
+            yield_mode = (
+                "fixed_selection_mask"
+                if selection_mask_path is not None
+                else "all_selected_candidates"
+            )
         charge_runs = np.asarray(sample["beam_charge_run"], dtype=np.int64)
         charges_c = np.asarray(sample["beam_charge_by_run_c"], dtype=float)
         charge_map = {
@@ -196,7 +308,10 @@ def build_run_yields(
         )
 
     candidate_counts = Counter(int(run) for run in event_runs)
-    signal_counts = Counter(int(run) for run in event_runs[mask])
+    signal_counts = _sum_by_run(event_runs, signal_event_weights)
+    signal_variances = _sum_by_run(event_runs, signal_variance_weights)
+    signal_region_counts = Counter(int(run) for run in event_runs[signal_region_mask])
+    sideband_counts = Counter(int(run) for run in event_runs[sideband_mask])
     missing_charge_runs = sorted(set(candidate_counts).difference(charge_map))
     if missing_charge_runs:
         raise ValueError(
@@ -235,10 +350,14 @@ def build_run_yields(
             reasons.append("nonpositive_charge")
         charge_nC = charge_c * 1.0e9
         candidates = int(candidate_counts.get(run, 0))
-        signals = int(signal_counts.get(run, 0))
+        signals = float(signal_counts.get(run, 0.0))
+        signal_variance = float(signal_variances.get(run, 0.0))
+        signal_region = int(signal_region_counts.get(run, 0))
+        sideband = int(sideband_counts.get(run, 0))
+        estimated_background = float(signal_region - signals)
         if charge_nC > 0.0:
             yield_value = signals / charge_nC
-            uncertainty = np.sqrt(max(signals, 1)) / charge_nC
+            uncertainty = np.sqrt(max(signal_variance, 1.0)) / charge_nC
         else:
             yield_value = None
             uncertainty = None
@@ -251,6 +370,10 @@ def build_run_yields(
                 nominal_current_nA=nominal_current,
                 candidate_events=candidates,
                 signal_events=signals,
+                signal_statistical_variance=signal_variance,
+                signal_region_events=signal_region,
+                sideband_events=sideband,
+                estimated_background_events=estimated_background,
                 charge_c=charge_c,
                 charge_nC=charge_nC,
                 total_events=total_events.get(run),
@@ -276,7 +399,15 @@ def build_run_yields(
     )
     validation = {
         "candidate_events": int(event_runs.size),
-        "signal_events": int(mask.sum()),
+        "yield_mode": yield_mode,
+        "signal_events": float(signal_event_weights.sum()),
+        "signal_statistical_variance": float(signal_variance_weights.sum()),
+        "signal_region_events": int(signal_region_mask.sum()),
+        "sideband_events": int(sideband_mask.sum()),
+        "estimated_background_events": float(
+            signal_region_mask.sum() - signal_event_weights.sum()
+        ),
+        "background_subtraction": background_metadata,
         "charge_rows": len(charge_map),
         "run_charge_sum_c": run_charge_sum_c,
         "stored_total_charge_c": stored_total_charge_c,
@@ -342,7 +473,15 @@ def aggregate_current_groups(records: Iterable[RunYield]) -> list[CurrentGroupYi
         charge_nC = charge_c * 1.0e9
         if charge_nC <= 0.0:
             raise ValueError(f"current group {name} has nonpositive charge")
-        signals = int(sum(member.signal_events for member in members))
+        signals = float(sum(member.signal_events for member in members))
+        signal_variance = float(
+            sum(member.signal_statistical_variance for member in members)
+        )
+        signal_region = int(sum(member.signal_region_events for member in members))
+        sideband = int(sum(member.sideband_events for member in members))
+        estimated_background = float(
+            sum(member.estimated_background_events for member in members)
+        )
         current = float(
             sum(member.charge_c * float(member.current_nA) for member in members)
             / charge_c
@@ -354,10 +493,16 @@ def aggregate_current_groups(records: Iterable[RunYield]) -> list[CurrentGroupYi
                 run_numbers=[member.run for member in members],
                 effective_current_nA=current,
                 signal_events=signals,
+                signal_statistical_variance=signal_variance,
+                signal_region_events=signal_region,
+                sideband_events=sideband,
+                estimated_background_events=estimated_background,
                 charge_c=charge_c,
                 charge_nC=charge_nC,
                 yield_events_per_nC=signals / charge_nC,
-                statistical_uncertainty_events_per_nC=np.sqrt(max(signals, 1))
+                statistical_uncertainty_events_per_nC=np.sqrt(
+                    max(signal_variance, 1.0)
+                )
                 / charge_nC,
             )
         )
