@@ -744,7 +744,6 @@ def write_plots(
                 color="0.35",
                 linewidth=1.2,
                 linestyle=":",
-                label=r"$D=1$",
             )
             residual_axis.set_ylabel(r"$D(I)=\eta_{data}/\eta_{MC}$")
             residual_axis.legend(fontsize="xx-small")
@@ -797,7 +796,13 @@ def write_plots(
             pdf.savefig(fig)
             plt.close(fig)
 
-        fig, (yield_axis, charge_axis) = plt.subplots(2, 1, figsize=(8.5, 8.5), sharex=True)
+        fig, (yield_axis, charge_axis) = plt.subplots(
+            2,
+            1,
+            figsize=(8.5, 8.5),
+            sharex=True,
+            gridspec_kw={"height_ratios": [2.2, 1.0]},
+        )
         groups_by_name = {group.group: group for group in groups}
         for name in classes:
             members = sorted(
@@ -815,10 +820,8 @@ def write_plots(
             )
             group = groups_by_name.get(name)
             if group is not None:
-                yield_axis.hlines(
+                yield_axis.axhline(
                     group.yield_events_per_nC,
-                    members[0].run,
-                    members[-1].run,
                     color=colors[name],
                     linestyle=":",
                     linewidth=1.6,
