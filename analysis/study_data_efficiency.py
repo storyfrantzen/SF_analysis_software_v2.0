@@ -410,6 +410,9 @@ def main() -> int:
     plots_pdf = args.output_dir / "data_efficiency_diagnostics.pdf"
     gemc_csv = args.output_dir / "gemc_efficiency_points.csv"
     correction_json = args.output_dir / "current_efficiency_correction.json"
+    fit_excluded_csv = (
+        args.output_dir / "fit_excluded_but_analysis_included_runs.csv"
+    )
     write_csv(run_csv, run_yield_rows(records))
     write_csv(group_csv, current_group_rows(groups))
     if gemc_points is not None:
@@ -483,9 +486,32 @@ def main() -> int:
             "method": correction_payload["method"],
             "reference": correction_payload["reference"],
             "fit_included_runs": correction_payload["fit_included_runs"],
+            "fit_selection": correction_payload["fit_selection"],
+            "fit_excluded_but_analysis_included_artifact": str(
+                fit_excluded_csv.resolve()
+            ),
             "analysis_selection": correction_payload["analysis_selection"],
             "application_run_count": len(correction_payload["runs"]),
         }
+        write_csv_allow_empty(
+            fit_excluded_csv,
+            correction_payload["fit_selection"][
+                "excluded_but_analysis_included_runs"
+            ],
+            fieldnames=(
+                "run",
+                "run_class",
+                "current_nA",
+                "nominal_current_nA",
+                "current_quality",
+                "charge_c",
+                "charge_fraction_of_analysis",
+                "candidate_events",
+                "signal_events",
+                "fit_exclusion_reason",
+                "event_weight",
+            ),
+        )
         correction_json.write_text(
             json.dumps(correction_payload, indent=2, sort_keys=True, allow_nan=False)
             + "\n",
@@ -565,6 +591,15 @@ def main() -> int:
             f"{fit.slope_uncertainty_events_per_nC_per_nA:.8g} events/(nC nA)"
         )
     if gemc_fit is not None:
+        fit_selection = correction_payload["fit_selection"]
+        print(
+            "Fit-excluded but analysis-included runs: "
+            f"{fit_selection['excluded_but_analysis_included_run_count']} "
+            "(charge="
+            f"{fit_selection['excluded_but_analysis_included_beam_charge_c']:.8g} C, "
+            "fraction="
+            f"{fit_selection['excluded_but_analysis_included_charge_fraction']:.6g})"
+        )
         print(
             "GEMC zero-current efficiency: "
             f"{gemc_fit.intercept:.8g} +/- {gemc_fit.intercept_uncertainty:.8g}"
@@ -586,6 +621,7 @@ def main() -> int:
     if gemc_points is not None:
         print(f"Wrote {gemc_csv}")
         print(f"Wrote {correction_json}")
+        print(f"Wrote {fit_excluded_csv}")
     print(f"Wrote {summary_json}")
     print(f"Wrote {plots_pdf}")
     return 0
@@ -724,6 +760,19 @@ def write_csv(path: Path, rows: list[dict]) -> None:
         raise ValueError(f"cannot write empty table: {path}")
     with path.open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_csv_allow_empty(
+    path: Path, rows: list[dict], *, fieldnames: tuple[str, ...]
+) -> None:
+    """Write an audit table even when the selected run category is empty."""
+
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(
+            stream, fieldnames=list(fieldnames), extrasaction="ignore"
+        )
         writer.writeheader()
         writer.writerows(rows)
 

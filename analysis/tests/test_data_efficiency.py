@@ -421,6 +421,78 @@ class DataEfficiencyTests(unittest.TestCase):
         self.assertAlmostEqual(loaded.original_beam_charge_c, 1.2e-9)
         self.assertAlmostEqual(loaded.analysis_beam_charge_c, 1.0e-9)
 
+    def test_correction_lists_fit_excluded_analysis_included_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            response_meta = directory / "response_meta.npz"
+            np.savez_compressed(response_meta, efficiency=np.ones(1))
+            model = RelativeLinearEfficiency(
+                1.0, -0.001, ((0.0, 0.0), (0.0, 0.0))
+            )
+            records = [
+                SimpleNamespace(
+                    run=1001,
+                    current_nA=50.0,
+                    nominal_current_nA=50.0,
+                    charge_c=8.0e-9,
+                    run_class="P3",
+                    current_quality="unflagged",
+                    candidate_events=800,
+                    signal_events=700.0,
+                    included=True,
+                    exclusion_reason="",
+                ),
+                SimpleNamespace(
+                    run=1002,
+                    current_nA=60.0,
+                    nominal_current_nA=60.0,
+                    charge_c=2.0e-9,
+                    run_class="P3",
+                    current_quality="suspect",
+                    candidate_events=200,
+                    signal_events=170.0,
+                    included=False,
+                    exclusion_reason="current_quality_not_included",
+                ),
+            ]
+            payload = correction_artifact(
+                data_model=model,
+                gemc_model=model,
+                reference_current_nA=50.0,
+                reference_label="merged_50nA",
+                reference_response_meta=response_meta,
+                run_records=records,
+                sources={},
+            )
+
+        fit_selection = payload["fit_selection"]
+        self.assertEqual(fit_selection["excluded_but_analysis_included_run_count"], 1)
+        self.assertAlmostEqual(
+            fit_selection["excluded_but_analysis_included_beam_charge_c"], 2.0e-9
+        )
+        self.assertAlmostEqual(
+            fit_selection["excluded_but_analysis_included_charge_fraction"], 0.2
+        )
+        self.assertEqual(
+            fit_selection["excluded_but_analysis_included_runs"],
+            [
+                {
+                    "run": 1002,
+                    "run_class": "P3",
+                    "current_nA": 60.0,
+                    "nominal_current_nA": 60.0,
+                    "current_quality": "suspect",
+                    "charge_c": 2.0e-9,
+                    "charge_fraction_of_analysis": 0.2,
+                    "candidate_events": 200,
+                    "signal_events": 170.0,
+                    "fit_exclusion_reason": "current_quality_not_included",
+                    "fit_exclusion_reasons": ["current_quality_not_included"],
+                    "event_weight": payload["runs"]["1002"]["event_weight"],
+                }
+            ],
+        )
+
     def test_selected_run_without_charge_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -575,6 +647,11 @@ class DataEfficiencyTests(unittest.TestCase):
             self.assertTrue((output / "current_group_yields.csv").is_file())
             self.assertTrue((output / "gemc_efficiency_points.csv").is_file())
             self.assertTrue((output / "current_efficiency_correction.json").is_file())
+            fit_excluded_csv = (
+                output / "fit_excluded_but_analysis_included_runs.csv"
+            )
+            self.assertTrue(fit_excluded_csv.is_file())
+            self.assertEqual(len(fit_excluded_csv.read_text().splitlines()), 1)
             self.assertGreater((output / "data_efficiency_diagnostics.pdf").stat().st_size, 0)
 
 

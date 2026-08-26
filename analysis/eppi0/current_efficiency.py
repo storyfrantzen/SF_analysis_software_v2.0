@@ -299,9 +299,24 @@ def correction_artifact(
             "current_nA": (
                 float(record.current_nA) if record.current_nA is not None else None
             ),
+            "nominal_current_nA": (
+                float(record.nominal_current_nA)
+                if getattr(record, "nominal_current_nA", None) is not None
+                else None
+            ),
             "run_class": record.run_class,
             "current_quality": record.current_quality,
             "charge_c": float(record.charge_c),
+            "candidate_events": (
+                int(record.candidate_events)
+                if getattr(record, "candidate_events", None) is not None
+                else None
+            ),
+            "signal_events": (
+                float(record.signal_events)
+                if getattr(record, "signal_events", None) is not None
+                else None
+            ),
             "fit_included": bool(record.included),
             "fit_exclusion_reason": record.exclusion_reason,
             "analysis_included": analysis_included,
@@ -329,6 +344,34 @@ def correction_artifact(
     analysis_beam_charge_c = original_beam_charge_c - excluded_beam_charge_c
     if analysis_beam_charge_c <= 0.0:
         raise ValueError("downstream exclusions leave no positive analysis beam charge")
+    fit_excluded_analysis_included = []
+    for run, values in sorted(runs.items(), key=lambda item: int(item[0])):
+        if values["fit_included"] or not values["analysis_included"]:
+            continue
+        reason_text = str(values["fit_exclusion_reason"] or "")
+        fit_excluded_analysis_included.append(
+            {
+                "run": int(run),
+                "run_class": values["run_class"],
+                "current_nA": values["current_nA"],
+                "nominal_current_nA": values["nominal_current_nA"],
+                "current_quality": values["current_quality"],
+                "charge_c": values["charge_c"],
+                "charge_fraction_of_analysis": (
+                    values["charge_c"] / analysis_beam_charge_c
+                ),
+                "candidate_events": values["candidate_events"],
+                "signal_events": values["signal_events"],
+                "fit_exclusion_reason": reason_text,
+                "fit_exclusion_reasons": [
+                    reason for reason in reason_text.split(";") if reason
+                ],
+                "event_weight": values["event_weight"],
+            }
+        )
+    fit_excluded_analysis_included_charge_c = float(
+        sum(entry["charge_c"] for entry in fit_excluded_analysis_included)
+    )
     eta_data_reference = float(data_model.relative_efficiency(reference_current_nA))
     eta_mc_reference = float(gemc_model.relative_efficiency(reference_current_nA))
     return {
@@ -362,6 +405,21 @@ def correction_artifact(
         },
         "runs": runs,
         "fit_included_runs": sorted(int(record.run) for record in run_records if record.included),
+        "fit_selection": {
+            "included_runs": sorted(
+                int(record.run) for record in run_records if record.included
+            ),
+            "excluded_but_analysis_included_runs": fit_excluded_analysis_included,
+            "excluded_but_analysis_included_run_count": len(
+                fit_excluded_analysis_included
+            ),
+            "excluded_but_analysis_included_beam_charge_c": (
+                fit_excluded_analysis_included_charge_c
+            ),
+            "excluded_but_analysis_included_charge_fraction": (
+                fit_excluded_analysis_included_charge_c / analysis_beam_charge_c
+            ),
+        },
         "analysis_selection": {
             "excluded_classes": sorted(excluded_classes),
             "requested_excluded_runs": sorted(excluded_runs),
