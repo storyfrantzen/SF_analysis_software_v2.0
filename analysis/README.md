@@ -321,6 +321,27 @@ ratio. Its effective current is charge weighted. The default fit therefore uses
 `N_k = sum_r N_r`, `Q_k = sum_r Q_r`,
 `I_k = sum_r(Q_r I_r) / Q_k`, and `Y_k = N_k / Q_k`.
 
+When compatible running periods have different overall yield normalizations,
+fit separate intercepts without forcing separate current-loss laws by repeating
+`--shared-slope-period`:
+
+```bash
+python3 analysis/study_data_efficiency.py data_events.npz \
+  --manifest run_currents.json \
+  --include-classes E_LOW E_PROD L_LOW L_PROD \
+  --shared-slope-period early=E_LOW,E_PROD \
+  --shared-slope-period late=L_LOW,L_PROD \
+  --output-dir results/data_efficiency/shared_slope
+```
+
+This performs one joint fit,
+`Y_p(I) = A_p (1 + beta I)`: every named period gets its own zero-current
+normalization `A_p`, while all periods constrain the same fractional slope
+`beta`. Every included class must appear in exactly one mapping. The complete
+joint covariance is saved in `fit_summary.json` and in the correction
+provenance; downstream relative efficiency uses `eta_data(I)=1+beta I`, for
+which the nuisance normalizations cancel.
+
 The output directory contains:
 
 - `run_yields.csv`: every charge-bearing run, its counts, charge, current

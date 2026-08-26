@@ -6,7 +6,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 import numpy as np
 
@@ -71,6 +71,7 @@ class LinearYieldFit:
     ndf: int
     points: int
     fit_level: str
+    fit_model: str = "single_intercept_absolute_slope"
 
     def predict(self, current_nA: np.ndarray | float) -> np.ndarray:
         current = np.asarray(current_nA, dtype=float)
@@ -90,6 +91,74 @@ class LinearYieldFit:
         variance = float(gradient @ covariance @ gradient)
         uncertainty = float(np.sqrt(max(variance, 0.0)))
         return float(efficiency), uncertainty
+
+
+@dataclass
+class SharedFractionalYieldFit:
+    """One zero-current normalization per period and one fractional current slope."""
+
+    period_intercepts_events_per_nC: dict[str, float]
+    period_intercept_uncertainties_events_per_nC: dict[str, float]
+    fractional_slope_per_nA: float
+    fractional_slope_uncertainty_per_nA: float
+    parameter_names: list[str]
+    covariance: list[list[float]]
+    period_classes: dict[str, list[str]]
+    class_periods: dict[str, str]
+    chi2: float
+    ndf: int
+    points: int
+    fit_level: str
+    fit_model: str = "shared_fractional_slope_separate_intercepts"
+
+    def period_for_class(self, run_class: str) -> str:
+        try:
+            return self.class_periods[run_class]
+        except KeyError as exc:
+            raise ValueError(
+                f"run class '{run_class}' is not assigned to a shared-slope period"
+            ) from exc
+
+    def intercept_for_class(self, run_class: str) -> float:
+        return self.period_intercepts_events_per_nC[
+            self.period_for_class(run_class)
+        ]
+
+    def predict(self, current_nA: np.ndarray | float, *, period: str) -> np.ndarray:
+        current = np.asarray(current_nA, dtype=float)
+        try:
+            intercept = self.period_intercepts_events_per_nC[period]
+        except KeyError as exc:
+            raise ValueError(f"unknown shared-slope period '{period}'") from exc
+        return intercept * (1.0 + self.fractional_slope_per_nA * current)
+
+    def prediction_uncertainty(
+        self, current_nA: np.ndarray | float, *, period: str
+    ) -> np.ndarray:
+        current = np.atleast_1d(np.asarray(current_nA, dtype=float))
+        try:
+            period_index = self.parameter_names.index(f"intercept:{period}")
+            intercept = self.period_intercepts_events_per_nC[period]
+        except (KeyError, ValueError) as exc:
+            raise ValueError(f"unknown shared-slope period '{period}'") from exc
+        beta_index = self.parameter_names.index("fractional_slope_per_nA")
+        gradient = np.zeros((current.size, len(self.parameter_names)), dtype=float)
+        gradient[:, period_index] = 1.0 + self.fractional_slope_per_nA * current
+        gradient[:, beta_index] = intercept * current
+        covariance = np.asarray(self.covariance, dtype=float)
+        variance = np.einsum("ij,jk,ik->i", gradient, covariance, gradient)
+        result = np.sqrt(np.maximum(variance, 0.0))
+        return result if np.ndim(current_nA) else result[0]
+
+    def relative_efficiency(
+        self, current_nA: np.ndarray | float
+    ) -> tuple[np.ndarray | float, np.ndarray | float]:
+        current = np.asarray(current_nA, dtype=float)
+        efficiency = 1.0 + self.fractional_slope_per_nA * current
+        uncertainty = np.abs(current) * self.fractional_slope_uncertainty_per_nA
+        if np.ndim(current_nA):
+            return efficiency, uncertainty
+        return float(efficiency), float(uncertainty)
 
 
 def load_current_manifest(path: Path) -> tuple[dict, dict[int, dict]]:
@@ -665,8 +734,185 @@ def fit_linear_yield(
     )
 
 
+def fit_shared_fractional_yield(
+    records: Iterable[RunYield],
+    groups: Iterable[CurrentGroupYield],
+    *,
+    period_classes: Mapping[str, Iterable[str]],
+    fit_level: str = "groups",
+) -> SharedFractionalYieldFit:
+    """Fit ``Y_period(I) = A_period * (1 + beta * I)`` jointly.
+
+    The supplied period mapping is deliberately explicit: run-class names alone do
+    not reliably encode changes in target, trigger, detector state, or normalization.
+    """
+
+    normalized_period_classes: dict[str, list[str]] = {}
+    class_periods: dict[str, str] = {}
+    for raw_period, raw_classes in period_classes.items():
+        period = str(raw_period).strip()
+        classes = [str(value).strip() for value in raw_classes if str(value).strip()]
+        if not period:
+            raise ValueError("shared-slope period names must not be empty")
+        if not classes:
+            raise ValueError(f"shared-slope period '{period}' contains no run classes")
+        if period in normalized_period_classes:
+            raise ValueError(f"duplicate shared-slope period '{period}'")
+        for run_class in classes:
+            if run_class in class_periods:
+                raise ValueError(
+                    f"run class '{run_class}' is assigned to both "
+                    f"'{class_periods[run_class]}' and '{period}'"
+                )
+            class_periods[run_class] = period
+        normalized_period_classes[period] = classes
+
+    periods = list(normalized_period_classes)
+    if len(periods) < 2:
+        raise ValueError("the shared fractional-slope model requires at least two periods")
+
+    if fit_level == "groups":
+        points = list(groups)
+        point_classes = [point.group for point in points]
+        current = np.asarray([point.effective_current_nA for point in points], dtype=float)
+        values = np.asarray([point.yield_events_per_nC for point in points], dtype=float)
+        uncertainties = np.asarray(
+            [point.statistical_uncertainty_events_per_nC for point in points], dtype=float
+        )
+    elif fit_level == "runs":
+        points = [record for record in records if record.included]
+        point_classes = [record.run_class for record in points]
+        current = np.asarray([record.current_nA for record in points], dtype=float)
+        values = np.asarray([record.yield_events_per_nC for record in points], dtype=float)
+        uncertainties = np.asarray(
+            [record.statistical_uncertainty_events_per_nC for record in points], dtype=float
+        )
+    else:
+        raise ValueError("fit_level must be 'groups' or 'runs'")
+
+    missing_classes = sorted(
+        {str(value) for value in point_classes if value is None or value not in class_periods}
+    )
+    if missing_classes:
+        raise ValueError(
+            "included fit classes are absent from --shared-slope-period mappings: "
+            + ", ".join(missing_classes)
+        )
+    point_periods = [class_periods[str(value)] for value in point_classes]
+    unused_periods = [period for period in periods if period not in point_periods]
+    if unused_periods:
+        raise ValueError(
+            "shared-slope periods contain no included fit points: "
+            + ", ".join(unused_periods)
+        )
+
+    parameter_count = len(periods) + 1
+    if current.size < parameter_count:
+        raise ValueError(
+            f"the shared-slope fit needs at least {parameter_count} points for "
+            f"{len(periods)} period intercepts and one slope"
+        )
+    if np.unique(current).size < 2:
+        raise ValueError("fit points must contain at least two distinct currents")
+    if not (
+        np.all(np.isfinite(current))
+        and np.all(np.isfinite(values))
+        and np.all(np.isfinite(uncertainties))
+        and np.all(uncertainties > 0.0)
+        and np.all(values > 0.0)
+    ):
+        raise ValueError("fit inputs contain invalid values or uncertainties")
+
+    period_indices = np.asarray([periods.index(period) for period in point_periods])
+    inverse_variance = 1.0 / uncertainties**2
+    initial_intercepts = np.asarray(
+        [
+            np.average(
+                values[period_indices == index],
+                weights=inverse_variance[period_indices == index],
+            )
+            for index in range(len(periods))
+        ],
+        dtype=float,
+    )
+    fractional_slope_seeds: list[float] = []
+    for index in range(len(initial_intercepts)):
+        selected = period_indices == index
+        if np.count_nonzero(selected) >= 2 and np.unique(current[selected]).size >= 2:
+            absolute_slope, absolute_intercept = np.polyfit(
+                current[selected], values[selected], 1
+            )
+            if np.isfinite(absolute_intercept) and absolute_intercept > 0.0:
+                fractional_slope_seeds.append(float(absolute_slope / absolute_intercept))
+    initial_beta = float(np.median(fractional_slope_seeds)) if fractional_slope_seeds else 0.0
+    maximum_current = float(np.max(current))
+    beta_lower = -0.999 / maximum_current if maximum_current > 0.0 else -np.inf
+    initial_beta = max(initial_beta, beta_lower + 1.0e-8)
+    initial = np.concatenate((initial_intercepts, [initial_beta]))
+
+    def residual(parameters: np.ndarray) -> np.ndarray:
+        intercepts = parameters[:-1]
+        beta = parameters[-1]
+        model = intercepts[period_indices] * (1.0 + beta * current)
+        return (model - values) / uncertainties
+
+    def jacobian(parameters: np.ndarray) -> np.ndarray:
+        intercepts = parameters[:-1]
+        beta = parameters[-1]
+        result = np.zeros((current.size, parameter_count), dtype=float)
+        result[np.arange(current.size), period_indices] = (
+            1.0 + beta * current
+        ) / uncertainties
+        result[:, -1] = intercepts[period_indices] * current / uncertainties
+        return result
+
+    from scipy.optimize import least_squares
+
+    lower = np.concatenate((np.full(len(periods), np.finfo(float).tiny), [beta_lower]))
+    upper = np.full(parameter_count, np.inf)
+    optimized = least_squares(
+        residual,
+        initial,
+        jac=jacobian,
+        bounds=(lower, upper),
+        x_scale="jac",
+    )
+    if not optimized.success:
+        raise ValueError(f"shared fractional-slope fit failed: {optimized.message}")
+    normal = optimized.jac.T @ optimized.jac
+    if np.linalg.matrix_rank(normal) < parameter_count:
+        raise ValueError("shared fractional-slope covariance is singular")
+    covariance = np.linalg.inv(normal)
+    parameters = optimized.x
+    intercepts = parameters[:-1]
+    beta = float(parameters[-1])
+    return SharedFractionalYieldFit(
+        period_intercepts_events_per_nC={
+            period: float(intercepts[index]) for index, period in enumerate(periods)
+        },
+        period_intercept_uncertainties_events_per_nC={
+            period: float(np.sqrt(max(covariance[index, index], 0.0)))
+            for index, period in enumerate(periods)
+        },
+        fractional_slope_per_nA=beta,
+        fractional_slope_uncertainty_per_nA=float(
+            np.sqrt(max(covariance[-1, -1], 0.0))
+        ),
+        parameter_names=[f"intercept:{period}" for period in periods]
+        + ["fractional_slope_per_nA"],
+        covariance=covariance.tolist(),
+        period_classes=normalized_period_classes,
+        class_periods=class_periods,
+        chi2=float(np.sum(residual(parameters) ** 2)),
+        ndf=int(current.size - parameter_count),
+        points=int(current.size),
+        fit_level=fit_level,
+    )
+
+
 def attach_relative_efficiencies(
-    groups: Iterable[CurrentGroupYield], fit: LinearYieldFit
+    groups: Iterable[CurrentGroupYield],
+    fit: LinearYieldFit | SharedFractionalYieldFit,
 ) -> None:
     for group in groups:
         efficiency, uncertainty = fit.relative_efficiency(group.effective_current_nA)

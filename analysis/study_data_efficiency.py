@@ -13,11 +13,14 @@ import tempfile
 import numpy as np
 
 from eppi0.data_efficiency import (
+    LinearYieldFit,
+    SharedFractionalYieldFit,
     aggregate_current_groups,
     attach_relative_efficiencies,
     build_run_yields,
     current_group_rows,
     fit_linear_yield,
+    fit_shared_fractional_yield,
     run_yield_rows,
 )
 from eppi0.current_efficiency import (
@@ -124,6 +127,17 @@ def parse_args() -> argparse.Namespace:
         help="Fit charge-aggregated run classes or individual runs",
     )
     parser.add_argument(
+        "--shared-slope-period",
+        action="append",
+        default=[],
+        metavar="PERIOD=CLASS1,CLASS2",
+        help=(
+            "Fit Y_period(I)=A_period(1+beta I), with a separate zero-current "
+            "normalization for each explicitly mapped period and one shared fractional "
+            "slope beta; repeat once per period"
+        ),
+    )
+    parser.add_argument(
         "--minimum-group-charge-fraction",
         type=float,
         default=0.0,
@@ -196,8 +210,54 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def parse_shared_slope_periods(specifications: list[str]) -> dict[str, list[str]]:
+    periods: dict[str, list[str]] = {}
+    assigned_classes: dict[str, str] = {}
+    for specification in specifications:
+        if "=" not in specification:
+            raise ValueError(
+                "--shared-slope-period must have the form PERIOD=CLASS1,CLASS2"
+            )
+        raw_period, raw_classes = specification.split("=", 1)
+        period = raw_period.strip()
+        classes = [value.strip() for value in raw_classes.split(",") if value.strip()]
+        if not period or not classes:
+            raise ValueError(
+                "--shared-slope-period must have a nonempty period and class list"
+            )
+        if period in periods:
+            raise ValueError(f"duplicate --shared-slope-period name: {period}")
+        for run_class in classes:
+            if run_class in assigned_classes:
+                raise ValueError(
+                    f"run class '{run_class}' is assigned to both "
+                    f"'{assigned_classes[run_class]}' and '{period}'"
+                )
+            assigned_classes[run_class] = period
+        periods[period] = classes
+    return periods
+
+
+def data_relative_model(
+    fit: LinearYieldFit | SharedFractionalYieldFit,
+) -> RelativeLinearEfficiency:
+    if isinstance(fit, SharedFractionalYieldFit):
+        variance = fit.fractional_slope_uncertainty_per_nA**2
+        return RelativeLinearEfficiency(
+            intercept=1.0,
+            slope_per_nA=fit.fractional_slope_per_nA,
+            covariance=((0.0, 0.0), (0.0, variance)),
+        )
+    return RelativeLinearEfficiency(
+        intercept=fit.intercept_events_per_nC,
+        slope_per_nA=fit.slope_events_per_nC_per_nA,
+        covariance=tuple(tuple(row) for row in fit.covariance),
+    )
+
+
 def main() -> int:
     args = parse_args()
+    shared_slope_periods = parse_shared_slope_periods(args.shared_slope_period)
     records, validation = build_run_yields(
         args.sample,
         args.manifest,
@@ -214,7 +274,15 @@ def main() -> int:
         background_seed=args.background_seed,
     )
     groups = aggregate_current_groups(records)
-    fit = fit_linear_yield(records, groups, fit_level=args.fit_level)
+    if shared_slope_periods:
+        fit = fit_shared_fractional_yield(
+            records,
+            groups,
+            period_classes=shared_slope_periods,
+            fit_level=args.fit_level,
+        )
+    else:
+        fit = fit_linear_yield(records, groups, fit_level=args.fit_level)
     attach_relative_efficiencies(groups, fit)
 
     gemc_points = None
@@ -261,11 +329,7 @@ def main() -> int:
             set(args.exclude_run_downstream).union(automatic_downstream_exclusions)
         )
         reference_point = resolve_reference_point(gemc_points, args.reference_current_na)
-        data_model = RelativeLinearEfficiency(
-            intercept=fit.intercept_events_per_nC,
-            slope_per_nA=fit.slope_events_per_nC_per_nA,
-            covariance=tuple(tuple(row) for row in fit.covariance),
-        )
+        data_model = data_relative_model(fit)
         gemc_model = RelativeLinearEfficiency(
             intercept=gemc_fit.intercept,
             slope_per_nA=gemc_fit.slope_per_nA,
@@ -305,6 +369,7 @@ def main() -> int:
                     else None
                 ),
                 "background_subtraction": validation["background_subtraction"],
+                "data_fit": asdict(fit),
                 "gemc": gemc_source,
             },
         )
@@ -388,6 +453,7 @@ def main() -> int:
             "exclude_runs": args.exclude_run,
             "minimum_group_charge_fraction": args.minimum_group_charge_fraction,
             "low_yield_sigma_threshold": args.low_yield_sigma_threshold,
+            "shared_slope_periods": shared_slope_periods,
             "exclude_classes_downstream": args.exclude_class_downstream,
             "exclude_runs_downstream": args.exclude_run_downstream,
             "automatic_low_yield_excluded_runs_downstream": validation[
@@ -475,16 +541,29 @@ def main() -> int:
                 str(run) for run in validation["runs_below_group_yield_threshold"]
             )
         )
-    print(
-        "Zero-current yield: "
-        f"{fit.intercept_events_per_nC:.8g} +/- "
-        f"{fit.intercept_uncertainty_events_per_nC:.8g} events/nC"
-    )
-    print(
-        "Current slope: "
-        f"{fit.slope_events_per_nC_per_nA:.8g} +/- "
-        f"{fit.slope_uncertainty_events_per_nC_per_nA:.8g} events/(nC nA)"
-    )
+    if isinstance(fit, SharedFractionalYieldFit):
+        for period, intercept in fit.period_intercepts_events_per_nC.items():
+            print(
+                f"Zero-current yield ({period}): {intercept:.8g} +/- "
+                f"{fit.period_intercept_uncertainties_events_per_nC[period]:.8g} "
+                "events/nC"
+            )
+        print(
+            "Shared fractional current slope: "
+            f"{fit.fractional_slope_per_nA:.8g} +/- "
+            f"{fit.fractional_slope_uncertainty_per_nA:.8g} nA^-1"
+        )
+    else:
+        print(
+            "Zero-current yield: "
+            f"{fit.intercept_events_per_nC:.8g} +/- "
+            f"{fit.intercept_uncertainty_events_per_nC:.8g} events/nC"
+        )
+        print(
+            "Current slope: "
+            f"{fit.slope_events_per_nC_per_nA:.8g} +/- "
+            f"{fit.slope_uncertainty_events_per_nC_per_nA:.8g} events/(nC nA)"
+        )
     if gemc_fit is not None:
         print(
             "GEMC zero-current efficiency: "
@@ -568,16 +647,23 @@ def study_warnings(
         )
     if any(label != "unflagged" for label in args.include_qualities):
         warnings.append("Flagged RCDB current values are included.")
-    if fit.points < 3:
+    if fit.ndf <= 0:
         warnings.append(
-            "The fit has fewer than three points; a linear zero-current extrapolation has no "
-            "goodness-of-fit test and cannot test curvature."
+            "The current fit has no residual degrees of freedom; it cannot test the "
+            "assumed current dependence."
         )
-    if fit.intercept_events_per_nC <= 0.0:
+    if isinstance(fit, SharedFractionalYieldFit):
+        intercepts = list(fit.period_intercepts_events_per_nC.values())
+        slope = fit.fractional_slope_per_nA
+    else:
+        intercepts = [fit.intercept_events_per_nC]
+        slope = fit.slope_events_per_nC_per_nA
+    if any(intercept <= 0.0 for intercept in intercepts):
         warnings.append(
-            "The fitted zero-current yield is nonpositive; relative efficiencies are undefined."
+            "At least one fitted zero-current yield is nonpositive; relative efficiencies "
+            "are undefined."
         )
-    if fit.slope_events_per_nC_per_nA > 0.0:
+    if slope > 0.0:
         warnings.append(
             "The fitted yield rises with current; residual background or changing run conditions "
             "may dominate over efficiency loss."
@@ -662,6 +748,33 @@ def _linear_prediction_uncertainty(
     return np.sqrt(np.maximum(variance, 0.0))
 
 
+def _intercept_for_class(
+    fit: LinearYieldFit | SharedFractionalYieldFit, run_class: str
+) -> float:
+    if isinstance(fit, SharedFractionalYieldFit):
+        return fit.intercept_for_class(run_class)
+    return fit.intercept_events_per_nC
+
+
+def _predict_groups(
+    fit: LinearYieldFit | SharedFractionalYieldFit, groups
+) -> np.ndarray:
+    if isinstance(fit, SharedFractionalYieldFit):
+        return np.asarray(
+            [
+                fit.predict(
+                    group.effective_current_nA,
+                    period=fit.period_for_class(group.group),
+                )
+                for group in groups
+            ],
+            dtype=float,
+        )
+    return fit.predict(
+        np.asarray([group.effective_current_nA for group in groups], dtype=float)
+    )
+
+
 def write_plots(
     path,
     records,
@@ -702,11 +815,14 @@ def write_plots(
         "all_selected_candidates": "all selected candidates",
     }.get(yield_mode, yield_mode.replace("_", " "))
     show_relative = gemc_points is not None and gemc_fit is not None
-    if show_relative and fit.intercept_events_per_nC <= 0.0:
+    if isinstance(fit, SharedFractionalYieldFit):
+        data_intercepts = list(fit.period_intercepts_events_per_nC.values())
+    else:
+        data_intercepts = [fit.intercept_events_per_nC]
+    if show_relative and any(value <= 0.0 for value in data_intercepts):
         raise ValueError("data zero-current intercept must be positive for a GEMC overlay")
     if show_relative and correction is None:
         raise ValueError("a current-efficiency correction model is required for a GEMC overlay")
-    data_scale = 1.0 / fit.intercept_events_per_nC if show_relative else 1.0
     study_prefix = f"{str(run_group).strip()} " if run_group else ""
 
     with PdfPages(path) as pdf:
@@ -723,6 +839,9 @@ def write_plots(
                 for record in excluded
                 if (record.run_class or "unclassified") == name
             ]
+            if isinstance(fit, SharedFractionalYieldFit) and name not in fit.class_periods:
+                continue
+            data_scale = 1.0 / _intercept_for_class(fit, name) if show_relative else 1.0
             axis.scatter(
                 [record.current_nA for record in members],
                 [record.yield_events_per_nC * data_scale for record in members],
@@ -736,6 +855,7 @@ def write_plots(
             )
         for name in classes:
             members = [record for record in included if record.run_class == name]
+            data_scale = 1.0 / _intercept_for_class(fit, name) if show_relative else 1.0
             axis.errorbar(
                 [record.current_nA for record in members],
                 [record.yield_events_per_nC * data_scale for record in members],
@@ -750,10 +870,22 @@ def write_plots(
                 alpha=0.7,
                 label=f"{name} runs",
             )
+        group_scales = np.asarray(
+            [
+                1.0 / _intercept_for_class(fit, group.group)
+                if show_relative
+                else 1.0
+                for group in groups
+            ],
+            dtype=float,
+        )
         axis.errorbar(
             [group.effective_current_nA for group in groups],
-            [group.yield_events_per_nC * data_scale for group in groups],
-            yerr=[group.statistical_uncertainty_events_per_nC * data_scale for group in groups],
+            np.asarray([group.yield_events_per_nC for group in groups]) * group_scales,
+            yerr=np.asarray(
+                [group.statistical_uncertainty_events_per_nC for group in groups]
+            )
+            * group_scales,
             fmt="o",
             markersize=6,
             color="black",
@@ -772,37 +904,100 @@ def write_plots(
         if show_relative:
             data_fit_curve = correction.data_model.relative_efficiency(fit_current)
             data_fit_uncertainty = correction.data_model.relative_uncertainty(fit_current)
+            axis.plot(
+                fit_current,
+                data_fit_curve,
+                color="black",
+                label=(
+                    "data shared fractional-slope fit"
+                    if isinstance(fit, SharedFractionalYieldFit)
+                    else "data linear fit"
+                ),
+                zorder=3,
+            )
+            axis.fill_between(
+                fit_current,
+                data_fit_curve - data_fit_uncertainty,
+                data_fit_curve + data_fit_uncertainty,
+                color="0.35",
+                alpha=0.18,
+                linewidth=0.0,
+                label="data fit uncertainty",
+                zorder=2,
+            )
+            axis.scatter(
+                [0.0],
+                [1.0],
+                marker="*",
+                s=110,
+                color="black",
+                label="zero-current normalization",
+                zorder=5,
+            )
+        elif isinstance(fit, SharedFractionalYieldFit):
+            period_colors = {
+                period: plt.get_cmap("Dark2")(index % 8)
+                for index, period in enumerate(fit.period_intercepts_events_per_nC)
+            }
+            for period, intercept in fit.period_intercepts_events_per_nC.items():
+                curve = fit.predict(fit_current, period=period)
+                uncertainty = fit.prediction_uncertainty(fit_current, period=period)
+                color = period_colors[period]
+                axis.plot(
+                    fit_current,
+                    curve,
+                    color=color,
+                    label=f"{period} shared-slope fit",
+                    zorder=3,
+                )
+                axis.fill_between(
+                    fit_current,
+                    curve - uncertainty,
+                    curve + uncertainty,
+                    color=color,
+                    alpha=0.14,
+                    linewidth=0.0,
+                    zorder=2,
+                )
+                axis.scatter(
+                    [0.0],
+                    [intercept],
+                    marker="*",
+                    s=90,
+                    color=color,
+                    zorder=5,
+                )
         else:
             data_fit_curve = fit.predict(fit_current)
             data_fit_uncertainty = _linear_prediction_uncertainty(
                 fit_current, fit.covariance
             )
-        axis.plot(
-            fit_current,
-            data_fit_curve,
-            color="black",
-            label="data linear fit" if show_relative else "linear fit",
-            zorder=3,
-        )
-        axis.fill_between(
-            fit_current,
-            data_fit_curve - data_fit_uncertainty,
-            data_fit_curve + data_fit_uncertainty,
-            color="0.35",
-            alpha=0.18,
-            linewidth=0.0,
-            label="data fit uncertainty" if show_relative else "fit uncertainty",
-            zorder=2,
-        )
-        axis.scatter(
-            [0.0],
-            [fit.intercept_events_per_nC * data_scale],
-            marker="*",
-            s=110,
-            color="black",
-            label="zero-current extrapolation",
-            zorder=5,
-        )
+            axis.plot(
+                fit_current,
+                data_fit_curve,
+                color="black",
+                label="linear fit",
+                zorder=3,
+            )
+            axis.fill_between(
+                fit_current,
+                data_fit_curve - data_fit_uncertainty,
+                data_fit_curve + data_fit_uncertainty,
+                color="0.35",
+                alpha=0.18,
+                linewidth=0.0,
+                label="fit uncertainty",
+                zorder=2,
+            )
+            axis.scatter(
+                [0.0],
+                [fit.intercept_events_per_nC],
+                marker="*",
+                s=110,
+                color="black",
+                label="zero-current extrapolation",
+                zorder=5,
+            )
         if show_relative:
             gemc_scale = 1.0 / gemc_fit.intercept
             axis.errorbar(
@@ -887,11 +1082,11 @@ def write_plots(
             )
             group_data_eta = np.asarray(
                 [group.yield_events_per_nC for group in groups], dtype=float
-            ) / fit.intercept_events_per_nC
+            ) * group_scales
             group_data_sigma = np.asarray(
                 [group.statistical_uncertainty_events_per_nC for group in groups],
                 dtype=float,
-            ) / fit.intercept_events_per_nC
+            ) * group_scales
             group_mc_eta = correction.gemc_model.relative_efficiency(group_current)
             group_mc_sigma = correction.gemc_model.relative_uncertainty(group_current)
             group_d = group_data_eta / group_mc_eta
@@ -921,7 +1116,7 @@ def write_plots(
         else:
             group_residual = np.asarray(
                 [group.yield_events_per_nC for group in groups]
-            ) - fit.predict(group_current)
+            ) - _predict_groups(fit, groups)
             group_uncertainty = np.asarray(
                 [group.statistical_uncertainty_events_per_nC for group in groups]
             )
@@ -945,7 +1140,7 @@ def write_plots(
         if show_relative:
             group_residual = np.asarray(
                 [group.yield_events_per_nC for group in groups]
-            ) - fit.predict(group_current)
+            ) - _predict_groups(fit, groups)
             group_uncertainty = np.asarray(
                 [group.statistical_uncertainty_events_per_nC for group in groups]
             )

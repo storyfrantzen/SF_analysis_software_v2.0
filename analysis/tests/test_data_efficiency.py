@@ -20,6 +20,7 @@ from eppi0.data_efficiency import (
     attach_relative_efficiencies,
     build_run_yields,
     fit_linear_yield,
+    fit_shared_fractional_yield,
     load_selection_mask,
 )
 from eppi0.current_efficiency import (
@@ -104,6 +105,45 @@ class DataEfficiencyTests(unittest.TestCase):
         self.assertAlmostEqual(fit.slope_events_per_nC_per_nA, -1.0)
         self.assertEqual(fit.ndf, 1)
         self.assertAlmostEqual(groups[0].relative_efficiency, 0.95)
+
+    def test_shared_fractional_slope_has_separate_period_intercepts(self) -> None:
+        beta = -0.0025
+        specifications = (
+            ("E5", "early", 5.0, 100.0),
+            ("E30", "early", 30.0, 100.0),
+            ("E55", "early", 55.0, 100.0),
+            ("L5", "late", 5.0, 125.0),
+            ("L35", "late", 35.0, 125.0),
+            ("L60", "late", 60.0, 125.0),
+        )
+        groups = [
+            SimpleNamespace(
+                group=run_class,
+                effective_current_nA=current,
+                yield_events_per_nC=intercept * (1.0 + beta * current),
+                statistical_uncertainty_events_per_nC=0.25,
+            )
+            for run_class, _, current, intercept in specifications
+        ]
+        fit = fit_shared_fractional_yield(
+            [],
+            groups,
+            period_classes={
+                "early": ["E5", "E30", "E55"],
+                "late": ["L5", "L35", "L60"],
+            },
+        )
+
+        self.assertEqual(fit.fit_model, "shared_fractional_slope_separate_intercepts")
+        self.assertAlmostEqual(fit.period_intercepts_events_per_nC["early"], 100.0)
+        self.assertAlmostEqual(fit.period_intercepts_events_per_nC["late"], 125.0)
+        self.assertAlmostEqual(fit.fractional_slope_per_nA, beta)
+        self.assertEqual(fit.ndf, 3)
+        self.assertEqual(np.asarray(fit.covariance).shape, (3, 3))
+        efficiency, uncertainty = fit.relative_efficiency(60.0)
+        self.assertAlmostEqual(efficiency, 0.85)
+        self.assertGreater(uncertainty, 0.0)
+        self.assertAlmostEqual(float(fit.predict(20.0, period="late")), 118.75)
 
     def test_default_style_filter_excludes_low_current_class(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -470,6 +510,10 @@ class DataEfficiencyTests(unittest.TestCase):
                 "L5",
                 "P4",
                 "P3",
+                "--shared-slope-period",
+                "early=L5",
+                "--shared-slope-period",
+                "production=P4,P3",
                 "--exclude-run-downstream",
                 "1002",
                 "--minimum-group-charge-fraction",
@@ -491,7 +535,19 @@ class DataEfficiencyTests(unittest.TestCase):
                 summary["study"],
                 "TEST charge-normalized data yield versus beam current",
             )
-            self.assertAlmostEqual(summary["fit"]["intercept_events_per_nC"], 100.0)
+            self.assertEqual(
+                summary["fit"]["fit_model"],
+                "shared_fractional_slope_separate_intercepts",
+            )
+            self.assertAlmostEqual(
+                summary["fit"]["period_intercepts_events_per_nC"]["early"],
+                100.0,
+            )
+            self.assertAlmostEqual(
+                summary["fit"]["period_intercepts_events_per_nC"]["production"],
+                100.0,
+            )
+            self.assertAlmostEqual(summary["fit"]["fractional_slope_per_nA"], -0.01)
             self.assertAlmostEqual(summary["gemc"]["fit"]["intercept"], 0.8)
             self.assertAlmostEqual(correction.reference_current_nA, 60.0)
             self.assertAlmostEqual(correction.d_reference, 0.4 / 0.85)
