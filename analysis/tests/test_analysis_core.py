@@ -29,6 +29,7 @@ from eppi0.current_efficiency import (
     RelativeLinearEfficiency,
     correction_artifact,
 )
+from eppi0.campaign_diagnostics import render_campaign_diagnostics
 from eppi0.event_sample import (
     build_generated_sample,
     generated_particle_columns,
@@ -2142,6 +2143,107 @@ class HarmonicTests(unittest.TestCase):
             & QUALITY_COVARIANCE_ILL_CONDITIONED,
             0,
         )
+
+
+class CampaignDiagnosticTests(unittest.TestCase):
+    def test_campaign_report_contains_attrition_quality_and_response_support(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            unfolding_path = root / "unfolding.npz"
+            cross_section_path = root / "cross_section.npz"
+            harmonics_path = root / "harmonics.npz"
+            response_path = root / "response_meta.npz"
+            q2_edges = np.array([1.0, 2.0])
+            xb_edges = np.array([0.1, 0.2])
+            t_edges = np.array([0.1, 0.3])
+            phi_edges = np.linspace(0.0, 360.0, 5)
+            shape = (1, 1, 1, 4)
+            acceptance = np.array([True, True, False, False]).reshape(shape)
+            uncertainty_valid = acceptance.copy()
+            all_valid = np.ones(shape, dtype=bool)
+
+            np.savez_compressed(
+                unfolding_path,
+                efficiency=np.array([0.02, 0.01, 0.001, 0.0]),
+                radiative_reliable=np.ones(4, dtype=bool),
+                corrected_yield=np.array([10.0, 8.0, 0.0, 0.0]),
+                corrected_uncertainty=np.array([2.0, 3.0, 0.0, 0.0]),
+                measured=np.array([2.0, 1.0, 0.0, 0.0]),
+                measured_signal_region=np.array([2.2, 1.1, 0.0, 0.0]),
+                estimated_background=np.array([0.2, 0.1, 0.0, 0.0]),
+                background_clipped_deficit=np.zeros(4),
+                unfolded=np.array([9.0, 7.0, 0.0, 0.0]),
+                beam_charge_original_c=2.0,
+                beam_charge_c=1.8,
+                current_efficiency_applied=True,
+                current_efficiency_reference_current_nA=60.0,
+                current_efficiency_D_reference=0.96,
+                current_efficiency_excluded_runs=np.array([99]),
+                current_efficiency_excluded_event_count=4,
+                background_subtraction_applied=True,
+                background_negative_policy="clip",
+            )
+            np.savez_compressed(
+                cross_section_path,
+                reduced_cross_section=np.array([1.0, 2.0, np.nan, np.nan]).reshape(shape),
+                uncertainty=np.array([0.2, 0.6, np.nan, np.nan]).reshape(shape),
+                bin_volume=np.ones(shape),
+                luminosity_fb=3.5,
+                minimum_acceptance=0.005,
+                acceptance_validity_mask=acceptance,
+                radiative_validity_mask=all_valid,
+                bin_centering_validity_mask=all_valid,
+                yield_validity_mask=all_valid,
+                uncertainty_validity_mask=uncertainty_valid,
+                normalization_validity_mask=all_valid,
+                final_validity_mask=acceptance,
+                q2_edges=q2_edges,
+                xb_edges=xb_edges,
+                t_edges=t_edges,
+                phi_edges=phi_edges,
+            )
+            np.savez_compressed(
+                harmonics_path,
+                parameters=np.array([[[[1.0, 0.1, 0.0]]]]),
+                covariance=np.eye(3).reshape(1, 1, 1, 3, 3),
+                parameter_uncertainties=np.ones((1, 1, 1, 3)),
+                chi2_ndf=np.array([[[1.2]]]),
+                points=np.array([[[4]]]),
+                fit_success=np.array([[[True]]]),
+                quality_mask=np.array([[[False]]]),
+                quality_status=np.array([[[QUALITY_SPARSE]]], dtype=np.uint16),
+                quality_reason_names=np.array(["sparse_phi_coverage"]),
+                quality_reason_bits=np.array([QUALITY_SPARSE], dtype=np.uint16),
+                quality_minimum_points=12,
+                quality_maximum_chi2_ndf=3.0,
+                quality_maximum_covariance_condition=1.0e4,
+                quality_maximum_relative_A_uncertainty=0.5,
+                quality_requires_nonnegative=True,
+            )
+            np.savez_compressed(
+                response_path,
+                truth_total=np.array([100.0, 50.0, 5.0, 0.0]),
+                reconstructed_total=np.array([2.0, 1.0, 0.0, 0.0]),
+                efficiency=np.array([0.02, 0.01, 0.001, 0.0]),
+                response_variance_sum=np.array([1.0e-4, 1.0e-4, 1.0e-5, 0.0]),
+            )
+
+            report = render_campaign_diagnostics(
+                unfolding_path,
+                cross_section_path,
+                harmonics_path,
+                response_meta_path=response_path,
+                title="Synthetic campaign",
+                software_revision="abc123",
+                invocation="synthetic invocation",
+            )
+            self.assertIn("# Synthetic campaign", report)
+            self.assertIn("Final valid bins (all requirements) | 2 / 4", report)
+            self.assertIn("Production-quality harmonic fits: **0**", report)
+            self.assertIn("## Response-MC support", report)
+            self.assertIn("Physical bins failing the acceptance requirement | 2", report)
+            self.assertIn("## Automated triage", report)
+            self.assertIn("## Analyst sign-off checklist", report)
 
 
 if __name__ == "__main__":

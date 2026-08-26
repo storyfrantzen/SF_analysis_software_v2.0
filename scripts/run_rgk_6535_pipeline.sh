@@ -325,6 +325,18 @@ stage_plots() {
         --output-dir "$RESULTS_DIR/plots/harmonics" --quilt
 }
 
+stage_campaign_diagnostics() {
+    local log_file=$1
+    run_command "$log_file" python3 "$REPO_ROOT/analysis/run_analysis.py" \
+        campaign-diagnostics \
+        "$RESULTS_DIR/unfolding.npz" \
+        "$RESULTS_DIR/cross_section.npz" \
+        "$RESULTS_DIR/harmonics.npz" \
+        --response-meta "$RESULTS_DIR/response/response_meta.npz" \
+        --title "RGK 6.535 GeV campaign diagnostic" \
+        --output "$RESULTS_DIR/campaign_diagnostics.md"
+}
+
 if ((DRY_RUN == 0)); then
     mkdir -p "$BUILD_DIR" "$ROOT_DIR" "$RESULTS_DIR" "$LOG_DIR" "$STATE_DIR" "$PROVENANCE_DIR"
     provenance_lines=(
@@ -393,5 +405,6 @@ run_stage 13_bin_centering stage_bin_centering
 run_stage 14_cross_section stage_cross_section
 run_stage 15_harmonics stage_harmonics
 run_stage 16_plots stage_plots
+run_stage 17_campaign_diagnostics stage_campaign_diagnostics
 
 printf '\nRGK 6.535 GeV pipeline complete.\nResults: %s\nLogs: %s\n' "$RESULTS_DIR" "$LOG_DIR"

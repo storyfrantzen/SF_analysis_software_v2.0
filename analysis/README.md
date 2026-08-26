@@ -50,7 +50,9 @@ mass.
   non-mutating N-1 stability audit;
 - `eppi0.event_sample`: radiative/non-radiative GEN construction and REC joins;
 - `eppi0.data_efficiency`: run-charge joins, current grouping, and zero-current fits;
-- `eppi0.harmonics`: weighted `A + B cos(phi) + C cos(2 phi)` fits.
+- `eppi0.harmonics`: weighted `A + B cos(phi) + C cos(2 phi)` fits;
+- `eppi0.campaign_diagnostics`: reproducible numerical end-of-campaign Markdown
+  audits spanning normalization, validity, response support, and harmonic quality.
 
 ## Dependencies
 
@@ -145,7 +147,25 @@ python3 analysis/run_analysis.py cross-section results/unfolding.npz \
 
 python3 analysis/run_analysis.py fit-harmonics results/cross_section.npz \
   --output results/harmonics.npz
+
+python3 analysis/run_analysis.py campaign-diagnostics \
+  results/unfolding.npz results/cross_section.npz results/harmonics.npz \
+  --response-meta results/response/response_meta.npz \
+  --title "RGK 6.535 GeV nominal campaign" \
+  --output results/campaign_diagnostics.md
 ```
+
+`campaign-diagnostics` is the standard numerical campaign handoff.  It records
+absolute input paths, sizes, SHA-256 checksums, the software revision, and the
+exact invocation.  Its Markdown tables summarize charge and luminosity,
+current-efficiency and background corrections, independent and sequential 4D
+validity-mask attrition, final phi coverage, cross-section and uncertainty
+quantiles, harmonic-fit rejection flags, and an analyst sign-off checklist.
+Supplying `--response-meta` additionally partitions physical bins that fail the
+acceptance requirement by generated-event support and reports the relative
+multinomial response-probability uncertainty.  The automated triage is explicitly
+diagnostic: it identifies where losses occur but does not select a binning or
+declare a physics result valid.
 
 The cross-section artifact carries an explicit four-dimensional
 `final_validity_mask`.  It is the intersection of acceptance above the configured

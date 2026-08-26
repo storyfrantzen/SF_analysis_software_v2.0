@@ -7,6 +7,8 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
+import shlex
+import subprocess
 import sys
 
 import numpy as np
@@ -19,6 +21,7 @@ from eppi0.binning import from_config
 from eppi0.bin_centering import AaoExecutableEvaluator, compute_bin_centering
 from eppi0.background_subtraction import METHOD as BACKGROUND_METHOD
 from eppi0.background_subtraction import estimate_mgg_background
+from eppi0.campaign_diagnostics import render_campaign_diagnostics
 from eppi0.cross_section import (
     DEFAULT_VOLUME_INTEGRATION_POINTS,
     Target,
@@ -489,6 +492,28 @@ def parser() -> argparse.ArgumentParser:
         default="panel",
         help="Use one y scale per -t quilt or independently scale every panel (default: panel)",
     )
+
+    campaign_diagnostics = commands.add_parser(
+        "campaign-diagnostics",
+        help="Write a numerical Markdown audit from final campaign artifacts",
+    )
+    campaign_diagnostics.add_argument("unfolding", type=Path)
+    campaign_diagnostics.add_argument("cross_section", type=Path)
+    campaign_diagnostics.add_argument("harmonics", type=Path)
+    campaign_diagnostics.add_argument(
+        "--response-meta",
+        type=Path,
+        help=(
+            "Optional response_meta.npz used to quantify generated support and "
+            "response-MC statistical limitations"
+        ),
+    )
+    campaign_diagnostics.add_argument(
+        "--title",
+        default="EPPI0 campaign diagnostic",
+        help="Campaign-specific Markdown title",
+    )
+    campaign_diagnostics.add_argument("--output", type=Path, required=True)
 
     acceptance = commands.add_parser("acceptance-plots", help="Plot acceptance diagnostics from response metadata")
     acceptance.add_argument("response_meta", type=Path)
@@ -2854,6 +2879,32 @@ def command_harmonic_plots(args: argparse.Namespace) -> None:
     print(f"Wrote harmonic plots under {args.output_dir}")
 
 
+def command_campaign_diagnostics(args: argparse.Namespace) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    revision = "not recorded"
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode == 0 and completed.stdout.strip():
+        revision = completed.stdout.strip()
+    report = render_campaign_diagnostics(
+        args.unfolding,
+        args.cross_section,
+        args.harmonics,
+        response_meta_path=args.response_meta,
+        title=args.title,
+        software_revision=revision,
+        invocation=shlex.join(sys.argv),
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report, encoding="utf-8")
+    print(f"Wrote {args.output}")
+
+
 def command_cross_section_plots(args: argparse.Namespace) -> None:
     cross_section = np.load(args.cross_section, allow_pickle=False)
     harmonics = np.load(args.harmonics, allow_pickle=False)
@@ -4769,6 +4820,8 @@ def main() -> int:
         command_harmonic_plots(args)
     elif args.command == "cross-section-plots":
         command_cross_section_plots(args)
+    elif args.command == "campaign-diagnostics":
+        command_campaign_diagnostics(args)
     elif args.command == "acceptance-plots":
         command_acceptance_plots(args)
     elif args.command == "response-plots":
