@@ -1,4 +1,4 @@
-"""Charge-normalized RGK data-yield study as a function of beam current."""
+"""Charge-normalized data-yield study as a function of beam current."""
 
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ class RunYield:
     yield_events_per_nC: float | None
     statistical_uncertainty_events_per_nC: float | None
     group_charge_fraction: float | None
+    group_yield_pull: float | None
     included: bool
     exclusion_reason: str
 
@@ -180,6 +181,7 @@ def build_run_yields(
     include_runs: Iterable[int] = (),
     exclude_runs: Iterable[int] = (),
     minimum_group_charge_fraction: float = 0.0,
+    low_yield_sigma_threshold: float = 5.0,
     background_cuts_path: Path | None = None,
     background_alpha_bootstrap: int = 200,
     background_seed: int | None = 12345,
@@ -191,10 +193,13 @@ def build_run_yields(
     minimum_group_charge_fraction = float(minimum_group_charge_fraction)
     if not 0.0 <= minimum_group_charge_fraction < 1.0:
         raise ValueError("minimum_group_charge_fraction must be in [0,1)")
+    low_yield_sigma_threshold = float(low_yield_sigma_threshold)
+    if not np.isfinite(low_yield_sigma_threshold) or low_yield_sigma_threshold < 0.0:
+        raise ValueError("low_yield_sigma_threshold must be finite and nonnegative")
     if not include_class_set and not include_run_set:
         raise ValueError("at least one included run class or explicit run is required")
 
-    _, manifest_runs = load_current_manifest(manifest_path)
+    manifest, manifest_runs = load_current_manifest(manifest_path)
     with np.load(sample_path, allow_pickle=False) as sample:
         required = {"run", "beam_charge_run", "beam_charge_by_run_c"}
         missing = sorted(required.difference(sample.files))
@@ -382,6 +387,7 @@ def build_run_yields(
                 yield_events_per_nC=yield_value,
                 statistical_uncertainty_events_per_nC=uncertainty,
                 group_charge_fraction=None,
+                group_yield_pull=None,
                 included=not reasons,
                 exclusion_reason=";".join(reasons),
             )
@@ -389,6 +395,9 @@ def build_run_yields(
 
     low_contribution_runs = apply_minimum_group_charge_fraction(
         records, minimum_group_charge_fraction
+    )
+    low_yield_runs = apply_low_yield_outlier_rejection(
+        records, low_yield_sigma_threshold
     )
 
     run_charge_sum_c = float(sum(charge_map.values()))
@@ -414,8 +423,11 @@ def build_run_yields(
         "charge_difference_c": charge_difference_c,
         "selected_runs_missing_charge": missing_charge_runs,
         "charge_runs_missing_manifest": sorted(set(charge_map).difference(manifest_runs)),
+        "dataset": manifest.get("dataset", {}),
         "minimum_group_charge_fraction": minimum_group_charge_fraction,
         "runs_below_minimum_group_charge_fraction": low_contribution_runs,
+        "low_yield_sigma_threshold": low_yield_sigma_threshold,
+        "runs_below_group_yield_threshold": low_yield_runs,
     }
     return records, validation
 
@@ -456,6 +468,92 @@ def apply_minimum_group_charge_fraction(
                     else reason
                 )
                 rejected.append(member.run)
+    return sorted(rejected)
+
+
+def apply_low_yield_outlier_rejection(
+    records: Iterable[RunYield], sigma_threshold: float = 5.0
+) -> list[int]:
+    """Reject runs significantly below their current group's yield.
+
+    Each run is compared with the charge-aggregated yield of the other eligible
+    runs in its class.  The pull denominator combines the run's statistical
+    uncertainty with the statistical uncertainty of that leave-one-out group
+    mean.  Removing the lowest failing run and repeating makes the result
+    deterministic while preventing a low run from diluting its own discrepancy.
+
+    A threshold of zero disables this filter.  Groups containing only one run
+    cannot define an independent reference and are left unchanged.
+    """
+    sigma_threshold = float(sigma_threshold)
+    if not np.isfinite(sigma_threshold) or sigma_threshold < 0.0:
+        raise ValueError("sigma_threshold must be finite and nonnegative")
+    if sigma_threshold == 0.0:
+        return []
+
+    grouped: dict[str, list[RunYield]] = {}
+    for record in records:
+        if record.included:
+            if record.run_class is None:
+                raise ValueError(f"included run {record.run} has no run class")
+            grouped.setdefault(record.run_class, []).append(record)
+
+    rejected: list[int] = []
+    for name, initial_members in grouped.items():
+        members = list(initial_members)
+        while len(members) >= 2:
+            pulls: dict[int, float] = {}
+            for member in members:
+                others = [other for other in members if other is not member]
+                reference_charge_nC = float(sum(other.charge_nC for other in others))
+                if reference_charge_nC <= 0.0:
+                    raise ValueError(
+                        f"current group {name} has nonpositive leave-one-out charge"
+                    )
+                reference_signal = float(sum(other.signal_events for other in others))
+                reference_variance = float(
+                    sum(other.signal_statistical_variance for other in others)
+                )
+                reference_yield = reference_signal / reference_charge_nC
+                reference_uncertainty = (
+                    np.sqrt(max(reference_variance, 1.0)) / reference_charge_nC
+                )
+                if (
+                    member.yield_events_per_nC is None
+                    or member.statistical_uncertainty_events_per_nC is None
+                ):
+                    raise ValueError(
+                        f"included run {member.run} has no finite yield information"
+                    )
+                combined_uncertainty = float(
+                    np.hypot(
+                        member.statistical_uncertainty_events_per_nC,
+                        reference_uncertainty,
+                    )
+                )
+                if not np.isfinite(combined_uncertainty) or combined_uncertainty <= 0.0:
+                    raise ValueError(
+                        f"included run {member.run} has invalid yield uncertainty"
+                    )
+                pull = (
+                    member.yield_events_per_nC - reference_yield
+                ) / combined_uncertainty
+                member.group_yield_pull = float(pull)
+                pulls[member.run] = float(pull)
+
+            worst = min(members, key=lambda member: pulls[member.run])
+            if pulls[worst.run] >= -sigma_threshold:
+                break
+            worst.included = False
+            reason = "below_group_mean_yield_threshold"
+            worst.exclusion_reason = (
+                f"{worst.exclusion_reason};{reason}"
+                if worst.exclusion_reason
+                else reason
+            )
+            rejected.append(worst.run)
+            members.remove(worst)
+
     return sorted(rejected)
 
 

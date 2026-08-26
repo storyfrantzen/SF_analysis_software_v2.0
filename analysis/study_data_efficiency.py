@@ -133,6 +133,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--low-yield-sigma-threshold",
+        type=float,
+        default=5.0,
+        help=(
+            "Exclude a run from its fit group and downstream analysis when its yield "
+            "is more than this many statistical standard deviations below the "
+            "leave-one-out group mean; use 0 to disable (default: 5)"
+        ),
+    )
+    parser.add_argument(
         "--exclude-class-downstream",
         action="append",
         default=[],
@@ -198,6 +208,7 @@ def main() -> int:
         include_runs=args.include_run,
         exclude_runs=args.exclude_run,
         minimum_group_charge_fraction=args.minimum_group_charge_fraction,
+        low_yield_sigma_threshold=args.low_yield_sigma_threshold,
         background_cuts_path=args.background_cuts,
         background_alpha_bootstrap=args.background_alpha_bootstrap,
         background_seed=args.background_seed,
@@ -243,6 +254,12 @@ def main() -> int:
     correction_payload = None
     reference_point = None
     if gemc_points is not None and gemc_fit is not None:
+        automatic_downstream_exclusions = validation[
+            "runs_below_group_yield_threshold"
+        ]
+        downstream_excluded_runs = sorted(
+            set(args.exclude_run_downstream).union(automatic_downstream_exclusions)
+        )
         reference_point = resolve_reference_point(gemc_points, args.reference_current_na)
         data_model = RelativeLinearEfficiency(
             intercept=fit.intercept_events_per_nC,
@@ -262,7 +279,7 @@ def main() -> int:
             reference_response_meta=Path(reference_point.response_meta),
             run_records=records,
             analysis_excluded_classes=args.exclude_class_downstream,
-            analysis_excluded_runs=args.exclude_run_downstream,
+            analysis_excluded_runs=downstream_excluded_runs,
             original_beam_charge_c=(
                 validation["stored_total_charge_c"]
                 if validation["stored_total_charge_c"] is not None
@@ -335,7 +352,12 @@ def main() -> int:
 
     summary = {
         "schema_version": 3,
-        "study": "RGK charge-normalized data yield versus beam current",
+        "study": (
+            f"{validation['dataset'].get('run_group')} charge-normalized data yield "
+            "versus beam current"
+            if validation["dataset"].get("run_group")
+            else "Charge-normalized data yield versus beam current"
+        ),
         "interpretation": (
             "Relative data efficiency after a common signal definition and "
             "run-condition compatibility have been validated."
@@ -365,8 +387,12 @@ def main() -> int:
             "include_runs": args.include_run,
             "exclude_runs": args.exclude_run,
             "minimum_group_charge_fraction": args.minimum_group_charge_fraction,
+            "low_yield_sigma_threshold": args.low_yield_sigma_threshold,
             "exclude_classes_downstream": args.exclude_class_downstream,
             "exclude_runs_downstream": args.exclude_run_downstream,
+            "automatic_low_yield_excluded_runs_downstream": validation[
+                "runs_below_group_yield_threshold"
+            ],
         },
         "validation": validation,
         "fit": asdict(fit),
@@ -409,6 +435,7 @@ def main() -> int:
         groups,
         fit,
         validation["yield_mode"],
+        run_group=validation["dataset"].get("run_group"),
         gemc_points=gemc_points,
         gemc_fit=gemc_fit,
         correction=correction,
@@ -435,6 +462,17 @@ def main() -> int:
             + ", ".join(
                 str(run)
                 for run in validation["runs_below_minimum_group_charge_fraction"]
+            )
+        )
+    print(
+        "Runs below the group mean yield threshold: "
+        f"{len(validation['runs_below_group_yield_threshold'])}"
+    )
+    if validation["runs_below_group_yield_threshold"]:
+        print(
+            "Low-yield run exclusions: "
+            + ", ".join(
+                str(run) for run in validation["runs_below_group_yield_threshold"]
             )
         )
     print(
@@ -566,6 +604,12 @@ def study_warnings(
             "Runs below the minimum within-group charge fraction were excluded after the "
             "ordinary run filters."
         )
+    if validation.get("runs_below_group_yield_threshold"):
+        warnings.append(
+            "Runs more than the configured number of statistical standard deviations "
+            "below their leave-one-out group mean were excluded from the current fit and "
+            "will receive zero downstream weight in the correction artifact."
+        )
     if gemc_fit is not None and gemc_fit.points < 3:
         warnings.append(
             "The GEMC current fit has only two points; it implements the assumed linear "
@@ -625,6 +669,7 @@ def write_plots(
     fit,
     yield_mode: str,
     *,
+    run_group=None,
     gemc_points=None,
     gemc_fit=None,
     correction=None,
@@ -662,6 +707,7 @@ def write_plots(
     if show_relative and correction is None:
         raise ValueError("a current-efficiency correction model is required for a GEMC overlay")
     data_scale = 1.0 / fit.intercept_events_per_nC if show_relative else 1.0
+    study_prefix = f"{str(run_group).strip()} " if run_group else ""
 
     with PdfPages(path) as pdf:
         fig, (axis, residual_axis) = plt.subplots(
@@ -821,10 +867,12 @@ def write_plots(
                 zorder=8,
             )
             axis.set_ylabel(r"Relative efficiency $\eta(I)$")
-            axis.set_title(f"RGK data/GEMC current study: {selection_label}")
+            axis.set_title(
+                f"{study_prefix}data/GEMC current study: {selection_label}"
+            )
         else:
             axis.set_ylabel("Yield (events/nC)")
-            axis.set_title(f"RGK data current study: {selection_label}")
+            axis.set_title(f"{study_prefix}data current study: {selection_label}")
         axis.grid(True, alpha=0.25)
         axis.legend(fontsize="x-small", ncol=3)
 

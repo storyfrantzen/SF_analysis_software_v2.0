@@ -69,6 +69,7 @@ class DataEfficiencyTests(unittest.TestCase):
         manifest_path.write_text(
             json.dumps(
                 {
+                    "dataset": {"run_group": "TEST"},
                     "runs": {
                         str(run): {
                             "run_class": run_class,
@@ -164,6 +165,57 @@ class DataEfficiencyTests(unittest.TestCase):
         self.assertEqual(validation["runs_below_minimum_group_charge_fraction"], [1001])
         l5 = next(group for group in groups if group.group == "L5")
         self.assertEqual(l5.run_numbers, [1002])
+
+    def test_default_low_yield_filter_excludes_five_sigma_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            sample, manifest = self.write_inputs(directory)
+            with np.load(sample) as data:
+                event_runs = np.asarray(data["run"])
+            mask = np.ones(event_runs.size, dtype=bool)
+            low_run_rows = np.flatnonzero(event_runs == 1001)
+            mask[low_run_rows[1:]] = False
+            mask_path = directory / "selection.npy"
+            np.save(mask_path, mask)
+
+            records, validation = build_run_yields(
+                sample,
+                manifest,
+                selection_mask_path=mask_path,
+                include_classes=("L5", "P4", "P3"),
+            )
+            groups = aggregate_current_groups(records)
+
+        low_run = next(record for record in records if record.run == 1001)
+        self.assertFalse(low_run.included)
+        self.assertLess(low_run.group_yield_pull, -5.0)
+        self.assertIn("below_group_mean_yield_threshold", low_run.exclusion_reason)
+        self.assertEqual(validation["low_yield_sigma_threshold"], 5.0)
+        self.assertEqual(validation["runs_below_group_yield_threshold"], [1001])
+        l5 = next(group for group in groups if group.group == "L5")
+        self.assertEqual(l5.run_numbers, [1002])
+
+    def test_zero_low_yield_threshold_disables_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            sample, manifest = self.write_inputs(directory)
+            with np.load(sample) as data:
+                event_runs = np.asarray(data["run"])
+            mask = np.ones(event_runs.size, dtype=bool)
+            low_run_rows = np.flatnonzero(event_runs == 1001)
+            mask[low_run_rows[1:]] = False
+            mask_path = directory / "selection.npy"
+            np.save(mask_path, mask)
+            records, validation = build_run_yields(
+                sample,
+                manifest,
+                selection_mask_path=mask_path,
+                include_classes=("L5", "P4", "P3"),
+                low_yield_sigma_threshold=0.0,
+            )
+
+        self.assertTrue(next(record for record in records if record.run == 1001).included)
+        self.assertEqual(validation["runs_below_group_yield_threshold"], [])
 
     def test_background_subtracted_run_yields_use_signed_sideband_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -357,6 +409,17 @@ class DataEfficiencyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             sample, manifest = self.write_inputs(directory)
+            with np.load(sample) as data:
+                arrays = {key: data[key] for key in data.files}
+            keep = np.asarray(arrays["run"]) != 1001
+            first_low_run_event = np.flatnonzero(np.asarray(arrays["run"]) == 1001)[0]
+            keep[first_low_run_event] = True
+            event_size = np.asarray(arrays["run"]).size
+            for key, values in list(arrays.items()):
+                values = np.asarray(values)
+                if values.ndim == 1 and values.size == event_size:
+                    arrays[key] = values[keep]
+            np.savez_compressed(sample, **arrays)
             output = directory / "output"
             edges = {
                 "q2_edges": np.asarray([1.0, 2.0]),
@@ -407,8 +470,6 @@ class DataEfficiencyTests(unittest.TestCase):
                 "L5",
                 "P4",
                 "P3",
-                "--exclude-run",
-                "1001",
                 "--exclude-run-downstream",
                 "1002",
                 "--minimum-group-charge-fraction",
@@ -426,6 +487,10 @@ class DataEfficiencyTests(unittest.TestCase):
             )
 
             self.assertEqual(result, 0)
+            self.assertEqual(
+                summary["study"],
+                "TEST charge-normalized data yield versus beam current",
+            )
             self.assertAlmostEqual(summary["fit"]["intercept_events_per_nC"], 100.0)
             self.assertAlmostEqual(summary["gemc"]["fit"]["intercept"], 0.8)
             self.assertAlmostEqual(correction.reference_current_nA, 60.0)
@@ -433,15 +498,22 @@ class DataEfficiencyTests(unittest.TestCase):
             weight, _ = correction.weights_for_currents(60.0)
             self.assertAlmostEqual(float(weight), 0.85 / 0.4)
             self.assertIn(1001, correction.run_currents_nA)
-            self.assertEqual(correction.excluded_runs, (1002,))
+            self.assertEqual(correction.excluded_runs, (1001, 1002))
+            self.assertEqual(float(correction.event_weights(np.asarray([1001]))[0]), 0.0)
             self.assertEqual(float(correction.event_weights(np.asarray([1002]))[0]), 0.0)
             self.assertAlmostEqual(correction.original_beam_charge_c, 6.0e-9)
-            self.assertAlmostEqual(correction.analysis_beam_charge_c, 5.0e-9)
+            self.assertAlmostEqual(correction.analysis_beam_charge_c, 4.0e-9)
             self.assertEqual(
                 summary["current_efficiency_correction"]["analysis_selection"][
                     "excluded_runs"
                 ],
-                [1002],
+                [1001, 1002],
+            )
+            self.assertEqual(
+                summary["filters"][
+                    "automatic_low_yield_excluded_runs_downstream"
+                ],
+                [1001],
             )
             self.assertTrue((output / "run_yields.csv").is_file())
             self.assertTrue((output / "current_group_yields.csv").is_file())

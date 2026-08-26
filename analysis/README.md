@@ -259,10 +259,11 @@ ordering.
 ## Data current-efficiency study
 
 `study_data_efficiency.py` joins the selected-event run numbers to the QADB
-charge arrays and `configs/efficiency/rgk/6.535/run_currents.json`. It writes a
-complete per-run audit table, charge-aggregated current-group yields, a linear
-zero-current fit, and a multipage diagnostic PDF. Its conservative default fit
-uses only unflagged P3 and P4 runs:
+charge arrays and a run-current manifest. The manifest's `dataset.run_group`
+labels the outputs, so the same command reports RGA or RGK without a hard-coded
+campaign name. It writes a complete per-run audit table, charge-aggregated
+current-group yields, a linear zero-current fit, and a multipage diagnostic PDF.
+Its conservative RGK default fit uses only unflagged P3 and P4 runs:
 
 ```bash
 python3 analysis/study_data_efficiency.py \
@@ -348,6 +349,18 @@ The output directory contains:
 Use `--fit-level runs` only as a diagnostic. The nominal group-level fit avoids
 treating the many runs within one production setting as independent current
 settings.
+
+By default, an otherwise eligible run is rejected when its charge-normalized
+yield lies more than five statistical standard deviations below the
+leave-one-out mean of its run-class group. The pull combines the run's counting
+uncertainty with the uncertainty of that independently calculated group mean.
+The lowest failing run is removed and the audit repeats, which prevents a bad
+run from diluting its own discrepancy. These runs are recorded in
+`run_yields.csv` with `below_group_mean_yield_threshold`; when a GEMC correction
+artifact is produced, they also receive zero downstream event weight and their
+charge is removed from the analysis luminosity. Use
+`--low-yield-sigma-threshold 0` only to disable this safeguard for a systematic
+check.
 
 To prevent a negligible-charge run from moving the effective current of a
 run-class group, set a minimum within-group QADB-charge contribution:

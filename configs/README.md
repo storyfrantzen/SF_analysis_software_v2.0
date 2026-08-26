@@ -395,7 +395,10 @@ compatibility. The run-current manifest deliberately retains suspect,
 mixed-trigger, empty-target, and half-torus entries so each nominal exclusion
 remains auditable. Fit exclusions do not remove physics data; use
 `--exclude-class-downstream T` or repeat `--exclude-run-downstream` to assign
-zero event weight and remove the corresponding per-run charge downstream.
+zero event weight and remove the corresponding per-run charge downstream. The
+exception is the default one-sided five-sigma low-yield safeguard: runs rejected
+as `below_group_mean_yield_threshold` are automatically assigned zero downstream
+weight when the correction artifact is written.
 
 For conversion of the complete reconstructed-DST holdings, including the
 luminosity-scan runs, use the more compact converter config:
