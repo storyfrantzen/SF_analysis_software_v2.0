@@ -147,6 +147,30 @@ python3 analysis/run_analysis.py fit-harmonics results/cross_section.npz \
   --output results/harmonics.npz
 ```
 
+The cross-section artifact carries an explicit four-dimensional
+`final_validity_mask`.  It is the intersection of acceptance above the configured
+minimum, radiative reliability, bin-centering reliability, finite nonnegative
+corrected yield, finite positive propagated uncertainty, and positive physical
+volume and virtual-photon flux.  Invalid cross-section values and uncertainties
+are stored as `NaN`, and the component masks are retained separately so every
+rejection can be audited.  The harmonic stage consumes this mask directly.
+
+`fit-harmonics` retains every numerically solvable raw weighted fit, but only sets
+`quality_mask` for fits that satisfy the production guards.  Defaults require at
+least 12 valid phi bins, `chi2/ndf <= 3`, covariance condition number `<= 1e4`,
+`sigma_A/abs(A) <= 0.5`, a positive-definite finite covariance matrix, and a
+nonnegative `A + B cos(phi) + C cos(2 phi)` curve over the complete phi range.
+The last condition is evaluated analytically, not on a plotting grid.  Override
+individual thresholds with `--minimum-points`, `--maximum-chi2-ndf`,
+`--maximum-covariance-condition`, and
+`--maximum-relative-a-uncertainty`; use `--allow-negative-fits` only for an
+explicit diagnostic variation.  The artifact records raw parameters, covariance,
+parameter uncertainties, condition number, exact fitted minimum, a bit-coded
+rejection status, and the accepted quality mask.  Plot commands use
+`quality_mask` by default; `--include-quality-rejected` exposes the raw rejected
+fits for auditing.  `harmonic-plots` also writes
+`harmonic_fit_quality_summary.csv` with the decoded rejection reasons.
+
 `unfold --background-cuts` performs the nonpeaking-background subtraction at
 the reconstructed-yield stage, before feed-in subtraction and D'Agostini
 unfolding.  For each retained proton/photon topology it refits
@@ -834,9 +858,10 @@ LUND event structure. Type-1 generator submissions are not yet supported. The
 `SourceFiles` tree also stores the resolved stratum and weight for file-level
 auditing. The existing response builders consume `weight` directly.
 
-The harmonic stage retains the legacy weighted fit
-`A + B cos(phi) + C cos(2 phi)` and stores coefficients, full covariance,
-chi-square per degree of freedom, and the number of contributing phi bins.
+The harmonic stage uses the weighted fit `A + B cos(phi) + C cos(2 phi)` and
+stores both its raw numerical result and the production-quality decision
+described above.  This keeps weak fits inspectable without allowing sparse,
+ill-conditioned, imprecise, or negative curves into nominal coefficient plots.
 
 The radiative-correction command streams Born and radiative LUND files directly
 into configured analysis bins, using the same electron-proton Trento phi

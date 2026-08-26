@@ -49,7 +49,14 @@ from eppi0.exclusivity_diagnostics import (
     render_diagnostics,
 )
 from eppi0.exclusivity_models import estimate_model, maximum_fit_parameters
-from eppi0.harmonics import fit_phi
+from eppi0.harmonics import (
+    QUALITY_COVARIANCE_ILL_CONDITIONED,
+    QUALITY_NEGATIVE_CROSS_SECTION,
+    QUALITY_SPARSE,
+    fit_grid,
+    fit_phi,
+    minimum_harmonic_cross_section,
+)
 from eppi0.response import build_response, build_response_from_counts
 from eppi0.radiative_correction import (
     _lund_files,
@@ -1833,7 +1840,7 @@ class NormalizationTests(unittest.TestCase):
                             "Q2": [1.2, 1.4],
                             "xB": [0.2, 0.3],
                             "minus_t": [0.2, 0.3],
-                            "phi_deg": [0.0, 180.0],
+                            "phi_deg": [0.0, 180.0, 360.0],
                         },
                     }
                 ),
@@ -1842,11 +1849,12 @@ class NormalizationTests(unittest.TestCase):
             np.savez_compressed(
                 unfolding_path,
                 beam_charge_c=1.0e-3,
-                efficiency=np.asarray([1.0]),
-                corrected_yield=np.asarray([100.0]),
-                corrected_uncertainty=np.asarray([10.0]),
-                Q2_mean=np.asarray([1.35]),
-                xB_mean=np.asarray([0.28]),
+                efficiency=np.asarray([1.0, 1.0]),
+                corrected_yield=np.asarray([100.0, 100.0]),
+                corrected_uncertainty=np.asarray([10.0, 10.0]),
+                radiative_reliable=np.asarray([True, False]),
+                Q2_mean=np.asarray([1.35, 1.35]),
+                xB_mean=np.asarray([0.28, 0.28]),
                 current_efficiency_applied=np.asarray(True),
                 current_efficiency_D_reference=np.asarray(0.98),
                 current_efficiency_model_json=np.asarray('{"schema_version": 1}'),
@@ -1856,7 +1864,7 @@ class NormalizationTests(unittest.TestCase):
                 ),
                 background_alpha=np.asarray([0.2]),
             )
-            shape = (1, 1, 1, 1)
+            shape = (1, 1, 1, 2)
             np.savez_compressed(
                 centering_path,
                 C_BC=np.full(shape, 2.0),
@@ -1879,14 +1887,20 @@ class NormalizationTests(unittest.TestCase):
         expected = (
             100.0
             * 1.0e-6
-            / (float(output["luminosity_fb"]) * 0.988 * output["bin_volume"].item() * flux)
+            / (
+                float(output["luminosity_fb"])
+                * 0.988
+                * output["bin_volume"][0, 0, 0, 0]
+                * flux
+            )
             / 2.0
         )
-        self.assertAlmostEqual(output["reduced_cross_section"].item(), expected)
-        self.assertEqual(output["flux_q2_mean"].item(), 1.25)
-        self.assertEqual(output["flux_xb_mean"].item(), 0.24)
-        self.assertEqual(output["uncentered_q2_mean"].item(), 1.35)
-        self.assertEqual(output["uncentered_xb_mean"].item(), 0.28)
+        self.assertAlmostEqual(output["reduced_cross_section"][0, 0, 0, 0], expected)
+        self.assertTrue(np.isnan(output["reduced_cross_section"][0, 0, 0, 1]))
+        np.testing.assert_allclose(output["flux_q2_mean"], [1.25, 1.25])
+        np.testing.assert_allclose(output["flux_xb_mean"], [0.24, 0.24])
+        np.testing.assert_allclose(output["uncentered_q2_mean"], [1.35, 1.35])
+        np.testing.assert_allclose(output["uncentered_xb_mean"], [0.28, 0.28])
         self.assertTrue(output["current_efficiency_applied"].item())
         self.assertEqual(output["current_efficiency_D_reference"].item(), 0.98)
         self.assertEqual(
@@ -1898,6 +1912,17 @@ class NormalizationTests(unittest.TestCase):
             "topology-mgg-nminus1-sideband-v1",
         )
         np.testing.assert_allclose(output["background_alpha"], [0.2])
+        self.assertTrue(np.all(output["acceptance_validity_mask"]))
+        np.testing.assert_array_equal(
+            output["radiative_validity_mask"], [[[[True, False]]]]
+        )
+        self.assertTrue(np.all(output["bin_centering_validity_mask"]))
+        self.assertTrue(np.all(output["yield_validity_mask"]))
+        self.assertTrue(np.all(output["uncertainty_validity_mask"]))
+        self.assertTrue(np.all(output["normalization_validity_mask"]))
+        np.testing.assert_array_equal(
+            output["final_validity_mask"], [[[[True, False]]]]
+        )
 
 
 class BinCenteringTests(unittest.TestCase):
@@ -2059,6 +2084,64 @@ class HarmonicTests(unittest.TestCase):
         fit = fit_phi(phi, values, np.full(phi.size, 0.1))
         self.assertIsNotNone(fit)
         np.testing.assert_allclose(fit.parameters, expected, atol=1e-12)
+
+    def test_exact_harmonic_minimum_checks_endpoints_and_vertex(self) -> None:
+        self.assertAlmostEqual(minimum_harmonic_cross_section([4.0, 1.0, 0.0]), 3.0)
+        # 2 x^2 - 2 x + 2 has its minimum 1.5 at x = 0.5.
+        self.assertAlmostEqual(minimum_harmonic_cross_section([3.0, -2.0, 1.0]), 1.5)
+
+    def test_harmonic_quality_guards_preserve_raw_fit_and_flag_rejections(self) -> None:
+        phi_edges = np.linspace(0.0, 360.0, 21)
+        phi = 0.5 * (phi_edges[:-1] + phi_edges[1:])
+        radians = np.deg2rad(phi)
+        uncertainty = np.full((1, 1, 1, phi.size), 0.1)
+
+        positive = 4.0 + 0.5 * np.cos(radians) + 0.2 * np.cos(2.0 * radians)
+        accepted = fit_grid(
+            positive.reshape(1, 1, 1, -1),
+            uncertainty,
+            phi_edges,
+        )
+        self.assertTrue(accepted["fit_success"].item())
+        self.assertTrue(accepted["quality_mask"].item())
+        self.assertEqual(accepted["quality_status"].item(), 0)
+
+        sparse_mask = np.zeros_like(uncertainty, dtype=bool)
+        sparse_mask[..., :8] = True
+        sparse = fit_grid(
+            positive.reshape(1, 1, 1, -1),
+            uncertainty,
+            phi_edges,
+            validity_mask=sparse_mask,
+        )
+        self.assertTrue(sparse["fit_success"].item())
+        self.assertFalse(sparse["quality_mask"].item())
+        self.assertNotEqual(sparse["quality_status"].item() & QUALITY_SPARSE, 0)
+
+        negative = 1.0 + 2.0 * np.cos(radians)
+        rejected = fit_grid(
+            negative.reshape(1, 1, 1, -1),
+            uncertainty,
+            phi_edges,
+        )
+        self.assertTrue(rejected["fit_success"].item())
+        self.assertLess(rejected["minimum_fitted_cross_section"].item(), 0.0)
+        self.assertNotEqual(
+            rejected["quality_status"].item() & QUALITY_NEGATIVE_CROSS_SECTION,
+            0,
+        )
+
+        ill_conditioned = fit_grid(
+            positive.reshape(1, 1, 1, -1),
+            uncertainty,
+            phi_edges,
+            maximum_covariance_condition=1.0,
+        )
+        self.assertNotEqual(
+            ill_conditioned["quality_status"].item()
+            & QUALITY_COVARIANCE_ILL_CONDITIONED,
+            0,
+        )
 
 
 if __name__ == "__main__":

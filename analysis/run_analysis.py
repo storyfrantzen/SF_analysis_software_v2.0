@@ -25,6 +25,7 @@ from eppi0.cross_section import (
     integrated_luminosity_fb,
     physical_bin_volumes,
     reduced_cross_section,
+    virtual_photon_flux,
 )
 from eppi0.current_efficiency import (
     load_current_efficiency_correction,
@@ -34,7 +35,15 @@ from eppi0.exclusivity import load_cuts
 from eppi0.response import build_response
 from eppi0.radiative_correction import compute_radiative_correction
 from eppi0.root_response import build_response_from_root
-from eppi0.harmonics import fit_grid
+from eppi0.harmonics import (
+    DEFAULT_MAXIMUM_CHI2_NDF,
+    DEFAULT_MAXIMUM_COVARIANCE_CONDITION,
+    DEFAULT_MAXIMUM_RELATIVE_A_UNCERTAINTY,
+    DEFAULT_MINIMUM_POINTS,
+    QUALITY_REASON_BITS,
+    QUALITY_REASON_NAMES,
+    fit_grid,
+)
 from eppi0.phase_space import AnalysisPhaseSpace
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes, subtract_feed_in
 
@@ -77,6 +86,18 @@ BACKGROUND_PROVENANCE_FIELDS = (
     "background_fit_bic",
     "background_fit_deviance",
     "background_fit_ndof",
+)
+
+CROSS_SECTION_VALIDITY_FIELDS = (
+    "minimum_acceptance",
+    "acceptance_validity_mask",
+    "radiative_validity_mask",
+    "bin_centering_validity_mask",
+    "yield_validity_mask",
+    "uncertainty_validity_mask",
+    "normalization_validity_mask",
+    "final_validity_mask",
+    "final_validity_definition",
 )
 
 
@@ -375,14 +396,57 @@ def parser() -> argparse.ArgumentParser:
         help="Use one y scale per -t quilt or independently scale every panel (default: panel)",
     )
 
-    harmonics = commands.add_parser("fit-harmonics", help="Fit A + B cos(phi) + C cos(2 phi)")
+    harmonics = commands.add_parser(
+        "fit-harmonics",
+        help="Fit A + B cos(phi) + C cos(2 phi) with auditable quality guards",
+    )
     harmonics.add_argument("cross_section", type=Path)
     harmonics.add_argument("--output", type=Path, required=True)
+    harmonics.add_argument(
+        "--minimum-points",
+        type=int,
+        default=DEFAULT_MINIMUM_POINTS,
+        help=f"Minimum valid phi bins for a production-quality fit (default: {DEFAULT_MINIMUM_POINTS})",
+    )
+    harmonics.add_argument(
+        "--maximum-chi2-ndf",
+        type=float,
+        default=DEFAULT_MAXIMUM_CHI2_NDF,
+        help=f"Maximum chi2/ndf for a production-quality fit (default: {DEFAULT_MAXIMUM_CHI2_NDF:g})",
+    )
+    harmonics.add_argument(
+        "--maximum-covariance-condition",
+        type=float,
+        default=DEFAULT_MAXIMUM_COVARIANCE_CONDITION,
+        help=(
+            "Maximum covariance-matrix condition number for a production-quality "
+            f"fit (default: {DEFAULT_MAXIMUM_COVARIANCE_CONDITION:g})"
+        ),
+    )
+    harmonics.add_argument(
+        "--maximum-relative-a-uncertainty",
+        type=float,
+        default=DEFAULT_MAXIMUM_RELATIVE_A_UNCERTAINTY,
+        help=(
+            "Maximum sigma_A/abs(A) for a production-quality fit "
+            f"(default: {DEFAULT_MAXIMUM_RELATIVE_A_UNCERTAINTY:g})"
+        ),
+    )
+    harmonics.add_argument(
+        "--allow-negative-fits",
+        action="store_true",
+        help="Do not reject fits whose harmonic curve becomes negative for some phi",
+    )
 
     harmonic_plots = commands.add_parser("harmonic-plots", help="Plot harmonic-fit diagnostics")
     harmonic_plots.add_argument("harmonics", type=Path)
     harmonic_plots.add_argument("--output-dir", type=Path, required=True)
     harmonic_plots.add_argument("--min-points", type=int, default=4)
+    harmonic_plots.add_argument(
+        "--include-quality-rejected",
+        action="store_true",
+        help="Plot every numerically successful raw fit instead of only quality-accepted fits",
+    )
     harmonic_plots.add_argument(
         "--quilt",
         action="store_true",
@@ -409,6 +473,11 @@ def parser() -> argparse.ArgumentParser:
     xsec_plots.add_argument("harmonics", type=Path)
     xsec_plots.add_argument("--output-dir", type=Path, required=True)
     xsec_plots.add_argument("--min-points", type=int, default=4)
+    xsec_plots.add_argument(
+        "--include-quality-rejected",
+        action="store_true",
+        help="Plot every numerically successful raw fit instead of only quality-accepted fits",
+    )
     xsec_plots.add_argument(
         "--quilt",
         action="store_true",
@@ -2459,7 +2528,22 @@ def command_cross_section(args: argparse.Namespace) -> None:
     xb_fallback[flat_positions.ravel()] = ((binning.xb_edges[:-1] + binning.xb_edges[1:]) / 2.0)[ixb].ravel()
     q2_means = np.where(np.isfinite(result["Q2_mean"]), result["Q2_mean"], q2_fallback)
     xb_means = np.where(np.isfinite(result["xB_mean"]), result["xB_mean"], xb_fallback)
-    valid = result["efficiency"] > float(config.get("minimum_acceptance", 0.005))
+    minimum_acceptance = float(config.get("minimum_acceptance", 0.005))
+    efficiency = np.asarray(result["efficiency"], dtype=float)
+    if efficiency.shape != (binning.size,):
+        raise ValueError(
+            f"unfolding efficiency has shape {efficiency.shape}; expected {(binning.size,)}"
+        )
+    acceptance_valid = np.isfinite(efficiency) & (efficiency > minimum_acceptance)
+    if "radiative_reliable" in result.files:
+        radiative_valid = np.asarray(result["radiative_reliable"], dtype=bool)
+        if radiative_valid.shape != (binning.size,):
+            raise ValueError(
+                "unfolding radiative_reliable mask has shape "
+                f"{radiative_valid.shape}; expected {(binning.size,)}"
+            )
+    else:
+        radiative_valid = np.ones(binning.size, dtype=bool)
     flux_q2 = q2_means.copy()
     flux_xb = xb_means.copy()
     bin_centering_cbc = None
@@ -2467,7 +2551,7 @@ def command_cross_section(args: argparse.Namespace) -> None:
     bin_centering_q2_center = None
     bin_centering_xb_center = None
     cbc_flat = None
-    apply_mask = None
+    apply_mask = np.ones(binning.size, dtype=bool)
     if args.bin_centering:
         bin_centering = np.load(args.bin_centering, allow_pickle=False)
         required = ("C_BC", "reliable", "q2_center", "xB_center")
@@ -2503,14 +2587,35 @@ def command_cross_section(args: argparse.Namespace) -> None:
             & (q2_center_flat > 0.0)
             & (xb_center_flat > 0.0)
         )
-        valid &= apply_mask
         flux_q2 = np.where(apply_mask, q2_center_flat, q2_means)
         flux_xb = np.where(apply_mask, xb_center_flat, xb_means)
-    yields = result["corrected_yield"] if "corrected_yield" in result.files else result["unfolded"]
+    yields = np.asarray(
+        result["corrected_yield"] if "corrected_yield" in result.files else result["unfolded"],
+        dtype=float,
+    )
     yield_uncertainty = (
-        result["corrected_uncertainty"]
+        np.asarray(result["corrected_uncertainty"], dtype=float)
         if "corrected_uncertainty" in result.files
-        else result["sigma_total"]
+        else np.asarray(result["sigma_total"], dtype=float)
+    )
+    if yields.shape != (binning.size,) or yield_uncertainty.shape != (binning.size,):
+        raise ValueError("unfolded yield and uncertainty must match the configured binning")
+    yield_valid = np.isfinite(yields) & (yields >= 0.0)
+    uncertainty_valid = np.isfinite(yield_uncertainty) & (yield_uncertainty > 0.0)
+    flux = virtual_photon_flux(flux_q2, flux_xb, beam_energy)
+    normalization_valid = (
+        np.isfinite(volumes)
+        & (volumes > 0.0)
+        & np.isfinite(flux)
+        & (flux > 0.0)
+    )
+    final_valid = (
+        acceptance_valid
+        & radiative_valid
+        & apply_mask
+        & yield_valid
+        & uncertainty_valid
+        & normalization_valid
     )
     values, errors = reduced_cross_section(
         yields,
@@ -2521,13 +2626,16 @@ def command_cross_section(args: argparse.Namespace) -> None:
         luminosity,
         beam_energy,
         branching_ratio=float(config["pi0_to_gg_branching_ratio"]),
-        valid=valid,
+        valid=final_valid,
     )
-    if cbc_flat is not None and apply_mask is not None:
+    if cbc_flat is not None:
         values = np.divide(values, cbc_flat, out=np.zeros_like(values), where=apply_mask)
         errors = np.divide(errors, cbc_flat, out=np.zeros_like(errors), where=apply_mask)
     values /= args.global_normalization
     errors /= args.global_normalization
+    # Invalid bins remain explicitly masked and cannot masquerade as measured zeros.
+    values = np.where(final_valid, values, np.nan)
+    errors = np.where(final_valid, errors, np.nan)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(
         reduced_cross_section=binning.unflatten(values),
@@ -2547,6 +2655,19 @@ def command_cross_section(args: argparse.Namespace) -> None:
         reduced_cross_section_units="nb/(GeV^2 rad)",
         luminosity_fb=luminosity,
         global_normalization=args.global_normalization,
+        minimum_acceptance=minimum_acceptance,
+        acceptance_validity_mask=binning.unflatten(acceptance_valid),
+        radiative_validity_mask=binning.unflatten(radiative_valid),
+        bin_centering_validity_mask=binning.unflatten(apply_mask),
+        yield_validity_mask=binning.unflatten(yield_valid),
+        uncertainty_validity_mask=binning.unflatten(uncertainty_valid),
+        normalization_validity_mask=binning.unflatten(normalization_valid),
+        final_validity_mask=binning.unflatten(final_valid),
+        final_validity_definition=(
+            "acceptance above minimum, reliable radiative correction, reliable bin "
+            "centering, finite nonnegative corrected yield, finite positive propagated "
+            "uncertainty, and positive physical volume and virtual-photon flux"
+        ),
         q2_edges=binning.q2_edges,
         xb_edges=binning.xb_edges,
         t_edges=binning.t_edges,
@@ -2587,15 +2708,43 @@ def command_cross_section(args: argparse.Namespace) -> None:
     print(f"Integrated luminosity: {luminosity:.6g} fb^-1")
     if args.bin_centering:
         print(f"Applied bin-centering correction: {args.bin_centering}")
+    print(
+        "Final valid cross-section bins: "
+        f"{int(np.count_nonzero(final_valid))}/{binning.size} "
+        f"(acceptance={int(np.count_nonzero(acceptance_valid))}, "
+        f"radiative={int(np.count_nonzero(radiative_valid))}, "
+        f"bin-centering={int(np.count_nonzero(apply_mask))}, "
+        f"positive-uncertainty={int(np.count_nonzero(uncertainty_valid))})"
+    )
     print(f"Wrote {args.output}")
 
 
 def command_harmonics(args: argparse.Namespace) -> None:
     cross_section = np.load(args.cross_section, allow_pickle=False)
+    values = np.asarray(cross_section["reduced_cross_section"], dtype=float)
+    uncertainties = np.asarray(cross_section["uncertainty"], dtype=float)
+    if "final_validity_mask" in cross_section.files:
+        final_validity_mask = np.asarray(cross_section["final_validity_mask"], dtype=bool)
+        if final_validity_mask.shape != values.shape:
+            raise ValueError("cross-section final_validity_mask does not match its values")
+        validity_source = "cross_section.final_validity_mask"
+    else:
+        final_validity_mask = (
+            np.isfinite(values)
+            & np.isfinite(uncertainties)
+            & (uncertainties > 0.0)
+        )
+        validity_source = "legacy finite positive-uncertainty fallback"
     fits = fit_grid(
-        cross_section["reduced_cross_section"],
-        cross_section["uncertainty"],
+        values,
+        uncertainties,
         cross_section["phi_edges"],
+        validity_mask=final_validity_mask,
+        minimum_points=args.minimum_points,
+        maximum_chi2_ndf=args.maximum_chi2_ndf,
+        maximum_covariance_condition=args.maximum_covariance_condition,
+        maximum_relative_a_uncertainty=args.maximum_relative_a_uncertainty,
+        require_nonnegative=not args.allow_negative_fits,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(
@@ -2604,15 +2753,41 @@ def command_harmonics(args: argparse.Namespace) -> None:
         q2_edges=cross_section["q2_edges"],
         xb_edges=cross_section["xb_edges"],
         t_edges=cross_section["t_edges"],
+        phi_edges=cross_section["phi_edges"],
+        fit_validity_source=validity_source,
+        quality_reason_names=np.asarray(QUALITY_REASON_NAMES),
+        quality_reason_bits=QUALITY_REASON_BITS,
+        quality_minimum_points=args.minimum_points,
+        quality_maximum_chi2_ndf=args.maximum_chi2_ndf,
+        quality_maximum_covariance_condition=args.maximum_covariance_condition,
+        quality_maximum_relative_A_uncertainty=args.maximum_relative_a_uncertainty,
+        quality_requires_nonnegative=not args.allow_negative_fits,
+        quality_definition=(
+            "raw weighted least-squares coefficients are retained; quality_mask additionally "
+            "requires the configured phi coverage, chi2/ndf, positive-definite well-conditioned "
+            "covariance, relative A precision, and nonnegative harmonic curve"
+        ),
     )
     for name in (
         *CURRENT_EFFICIENCY_PROVENANCE_FIELDS,
         *BACKGROUND_PROVENANCE_FIELDS,
+        *CROSS_SECTION_VALIDITY_FIELDS,
     ):
         if name in cross_section.files:
             payload[name] = cross_section[name]
     np.savez_compressed(args.output, **payload)
-    print(f"Successful fits: {np.isfinite(fits['chi2_ndf']).sum()}")
+    fit_success = np.asarray(fits["fit_success"], dtype=bool)
+    quality_mask = np.asarray(fits["quality_mask"], dtype=bool)
+    status = np.asarray(fits["quality_status"], dtype=np.uint16)
+    print(f"Numerically successful raw fits: {int(np.count_nonzero(fit_success))}")
+    print(f"Production-quality fits: {int(np.count_nonzero(quality_mask))}")
+    for name, bit in zip(QUALITY_REASON_NAMES, QUALITY_REASON_BITS):
+        flagged = (status & bit) != 0
+        count = int(
+            np.count_nonzero(flagged if name == "fit_failed" else (flagged & fit_success))
+        )
+        if count:
+            print(f"Quality rejection {name}: {count}")
     print(f"Wrote {args.output}")
 
 
@@ -2636,7 +2811,11 @@ def command_harmonic_plots(args: argparse.Namespace) -> None:
         raise ValueError("harmonic arrays do not match bin-edge dimensions")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    fit_mask = np.isfinite(chi2_ndf) & (points >= args.min_points)
+    raw_fit_mask = np.isfinite(chi2_ndf) & (points >= args.min_points)
+    if "quality_mask" in harmonics.files and not args.include_quality_rejected:
+        fit_mask = raw_fit_mask & np.asarray(harmonics["quality_mask"], dtype=bool)
+    else:
+        fit_mask = raw_fit_mask
     _plot_harmonic_overview_maps(
         fit_mask,
         chi2_ndf,
@@ -2661,10 +2840,17 @@ def command_harmonic_plots(args: argparse.Namespace) -> None:
         quilt_scale_percentile=args.quilt_scale_percentile,
         quilt_scale_mode=args.quilt_scale_mode,
     )
-    print(f"Successful fits: {int(fit_mask.sum())}")
+    quality_csv = args.output_dir / "harmonic_fit_quality_summary.csv"
+    _write_harmonic_quality_summary(harmonics, quality_csv)
+    print(f"Plotted fits: {int(fit_mask.sum())}")
+    if "quality_mask" in harmonics.files and not args.include_quality_rejected:
+        print("Plot selection: production quality_mask")
+    elif args.include_quality_rejected:
+        print("Plot selection: all numerically successful raw fits")
     print(f"Coefficient pages: {pages}")
     if args.quilt:
         print("Coefficient PDF includes one stitched quilt page")
+    print(f"Wrote {quality_csv}")
     print(f"Wrote harmonic plots under {args.output_dir}")
 
 
@@ -2681,6 +2867,12 @@ def command_cross_section_plots(args: argparse.Namespace) -> None:
     q2_edges = np.asarray(harmonics["q2_edges"], dtype=float)
     xb_edges = np.asarray(harmonics["xb_edges"], dtype=float)
     t_edges = np.asarray(harmonics["t_edges"], dtype=float)
+    if "quality_mask" in harmonics.files and not args.include_quality_rejected:
+        quality_mask = np.asarray(harmonics["quality_mask"], dtype=bool)
+        if quality_mask.shape != parameters.shape[:-1]:
+            raise ValueError("harmonic quality_mask does not match fit dimensions")
+        parameters = np.where(quality_mask[..., None], parameters, np.nan)
+        chi2_ndf = np.where(quality_mask, chi2_ndf, np.nan)
 
     if values.shape != uncertainties.shape or values.ndim != 4:
         raise ValueError("cross-section values and uncertainties must be equal 4D arrays")
@@ -3392,6 +3584,106 @@ def _plot_pass_fraction_map(
     fig.tight_layout()
     fig.savefig(output, dpi=200)
     plt.close(fig)
+
+
+def _write_harmonic_quality_summary(harmonics, output: Path) -> None:
+    parameters = np.asarray(harmonics["parameters"], dtype=float)
+    covariance = np.asarray(harmonics["covariance"], dtype=float)
+    points = np.asarray(harmonics["points"], dtype=int)
+    chi2_ndf = np.asarray(harmonics["chi2_ndf"], dtype=float)
+    fit_success = (
+        np.asarray(harmonics["fit_success"], dtype=bool)
+        if "fit_success" in harmonics.files
+        else np.isfinite(chi2_ndf)
+    )
+    quality_mask = (
+        np.asarray(harmonics["quality_mask"], dtype=bool)
+        if "quality_mask" in harmonics.files
+        else fit_success.copy()
+    )
+    quality_status = (
+        np.asarray(harmonics["quality_status"], dtype=np.uint16)
+        if "quality_status" in harmonics.files
+        else np.zeros(points.shape, dtype=np.uint16)
+    )
+    condition = (
+        np.asarray(harmonics["covariance_condition"], dtype=float)
+        if "covariance_condition" in harmonics.files
+        else np.full(points.shape, np.nan)
+    )
+    relative_a = (
+        np.asarray(harmonics["relative_A_uncertainty"], dtype=float)
+        if "relative_A_uncertainty" in harmonics.files
+        else np.full(points.shape, np.nan)
+    )
+    minimum = (
+        np.asarray(harmonics["minimum_fitted_cross_section"], dtype=float)
+        if "minimum_fitted_cross_section" in harmonics.files
+        else np.full(points.shape, np.nan)
+    )
+    if "parameter_uncertainties" in harmonics.files:
+        parameter_uncertainties = np.asarray(
+            harmonics["parameter_uncertainties"], dtype=float
+        )
+    else:
+        diagonal = np.diagonal(covariance, axis1=-2, axis2=-1)
+        parameter_uncertainties = np.sqrt(np.where(diagonal >= 0.0, diagonal, np.nan))
+    reason_names = (
+        tuple(str(item) for item in harmonics["quality_reason_names"])
+        if "quality_reason_names" in harmonics.files
+        else QUALITY_REASON_NAMES
+    )
+    reason_bits = (
+        np.asarray(harmonics["quality_reason_bits"], dtype=np.uint16)
+        if "quality_reason_bits" in harmonics.files
+        else QUALITY_REASON_BITS
+    )
+    q2_edges = np.asarray(harmonics["q2_edges"], dtype=float)
+    xb_edges = np.asarray(harmonics["xb_edges"], dtype=float)
+    t_edges = np.asarray(harmonics["t_edges"], dtype=float)
+    lines = [
+        "iq2,q2_low,q2_high,ixb,xb_low,xb_high,it,t_low,t_high,points,"
+        "fit_success,quality_accepted,quality_status,quality_reasons,chi2_ndf,"
+        "covariance_condition,relative_A_uncertainty,minimum_fitted_cross_section,"
+        "A,A_uncertainty,B,B_uncertainty,C,C_uncertainty"
+    ]
+    for index in np.ndindex(points.shape):
+        if points[index] <= 0 and not fit_success[index]:
+            continue
+        iq2, ixb, it = index
+        reasons = "|".join(
+            name
+            for name, bit in zip(reason_names, reason_bits)
+            if quality_status[index] & bit
+        )
+        row = (
+            iq2,
+            q2_edges[iq2],
+            q2_edges[iq2 + 1],
+            ixb,
+            xb_edges[ixb],
+            xb_edges[ixb + 1],
+            it,
+            t_edges[it],
+            t_edges[it + 1],
+            int(points[index]),
+            int(fit_success[index]),
+            int(quality_mask[index]),
+            int(quality_status[index]),
+            reasons,
+            float(chi2_ndf[index]),
+            float(condition[index]),
+            float(relative_a[index]),
+            float(minimum[index]),
+            float(parameters[index][0]),
+            float(parameter_uncertainties[index][0]),
+            float(parameters[index][1]),
+            float(parameter_uncertainties[index][1]),
+            float(parameters[index][2]),
+            float(parameter_uncertainties[index][2]),
+        )
+        lines.append(",".join(str(item) for item in row))
+    output.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _plot_harmonic_overview_maps(
