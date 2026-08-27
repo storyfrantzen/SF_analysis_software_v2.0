@@ -91,14 +91,6 @@ class CurrentEfficiencyCorrection:
         eta_mc = float(self.gemc_model.relative_efficiency(self.reference_current_nA))
         if not np.isfinite(eta_mc) or eta_mc <= 0.0:
             raise ValueError("GEMC relative efficiency is nonpositive at the reference current")
-        for run, current in self.run_currents_nA.items():
-            if not np.isfinite(current) or current < 0.0:
-                raise ValueError(f"invalid current for run {run}: {current}")
-            eta_data = float(self.data_model.relative_efficiency(current))
-            if not np.isfinite(eta_data) or eta_data <= 0.0:
-                raise ValueError(
-                    f"data relative efficiency is nonpositive for run {run} at {current} nA"
-                )
         if self.run_event_weights is not None:
             missing_weights = sorted(
                 set(self.run_currents_nA).difference(self.run_event_weights)
@@ -113,6 +105,21 @@ class CurrentEfficiencyCorrection:
                 for weight in self.run_event_weights.values()
             ):
                 raise ValueError("run event weights must be finite and nonnegative")
+        for run, current in self.run_currents_nA.items():
+            # Preserve audited current metadata for excluded runs. Their exact
+            # current is immaterial because they contribute zero event weight.
+            if (
+                self.run_event_weights is not None
+                and float(self.run_event_weights[run]) == 0.0
+            ):
+                continue
+            if not np.isfinite(current) or current < 0.0:
+                raise ValueError(f"invalid current for run {run}: {current}")
+            eta_data = float(self.data_model.relative_efficiency(current))
+            if not np.isfinite(eta_data) or eta_data <= 0.0:
+                raise ValueError(
+                    f"data relative efficiency is nonpositive for run {run} at {current} nA"
+                )
         for label, charge in (
             ("analysis", self.analysis_beam_charge_c),
             ("original", self.original_beam_charge_c),
@@ -252,6 +259,15 @@ def correction_artifact(
             "downstream exclusions contain unknown run classes: "
             + ", ".join(unknown_classes)
         )
+
+    def downstream_exclusion_reasons(record) -> list[str]:
+        reasons = []
+        if record.run_class in excluded_classes:
+            reasons.append("excluded_downstream_class")
+        if int(record.run) in excluded_runs:
+            reasons.append("excluded_downstream_run")
+        return reasons
+
     reference_response_meta = reference_response_meta.resolve()
     correction = CurrentEfficiencyCorrection(
         data_model=data_model,
@@ -263,7 +279,11 @@ def correction_artifact(
         run_currents_nA={
             int(record.run): float(record.current_nA)
             for record in run_records
-            if record.current_nA is not None and record.charge_c > 0.0
+            if (
+                record.current_nA is not None
+                and record.charge_c > 0.0
+                and not downstream_exclusion_reasons(record)
+            )
         },
         payload={},
     )
@@ -273,21 +293,18 @@ def correction_artifact(
     for record in run_records:
         if record.charge_c <= 0.0:
             continue
-        exclusion_reasons = []
-        if record.run_class in excluded_classes:
-            exclusion_reasons.append("excluded_downstream_class")
-        if int(record.run) in excluded_runs:
-            exclusion_reasons.append("excluded_downstream_run")
+        exclusion_reasons = downstream_exclusion_reasons(record)
         analysis_included = not exclusion_reasons
         if record.current_nA is None and analysis_included:
             raise ValueError(
                 f"charge-bearing run {record.run} has no usable current; exclude it "
                 "downstream explicitly or supply current metadata"
             )
-        if record.current_nA is None:
+        if not analysis_included:
             weight = 0.0
             uncertainty = 0.0
         else:
+            assert record.current_nA is not None
             weight, uncertainty = correction.weights_for_currents(
                 float(record.current_nA)
             )

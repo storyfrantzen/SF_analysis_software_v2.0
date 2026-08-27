@@ -421,6 +421,71 @@ class DataEfficiencyTests(unittest.TestCase):
         self.assertAlmostEqual(loaded.original_beam_charge_c, 1.2e-9)
         self.assertAlmostEqual(loaded.analysis_beam_charge_c, 1.0e-9)
 
+    def test_negative_current_run_may_be_excluded_downstream(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            response_meta = directory / "response_meta.npz"
+            np.savez_compressed(response_meta, efficiency=np.ones(1))
+            model = RelativeLinearEfficiency(
+                1.0, -0.001, ((0.0, 0.0), (0.0, 0.0))
+            )
+            records = [
+                SimpleNamespace(
+                    run=1001,
+                    current_nA=50.0,
+                    charge_c=1.0e-9,
+                    run_class="P3",
+                    current_quality="unflagged",
+                    included=True,
+                    exclusion_reason="",
+                ),
+                SimpleNamespace(
+                    run=1002,
+                    current_nA=-0.00649446,
+                    charge_c=0.2e-9,
+                    run_class="REVIEW_EXCLUDED",
+                    current_quality="suspect",
+                    included=False,
+                    exclusion_reason="current_quality_not_included",
+                ),
+            ]
+            with self.assertRaisesRegex(ValueError, "invalid current for run 1002"):
+                correction_artifact(
+                    data_model=model,
+                    gemc_model=model,
+                    reference_current_nA=50.0,
+                    reference_label="merged_50nA",
+                    reference_response_meta=response_meta,
+                    run_records=records,
+                    sources={},
+                )
+            payload = correction_artifact(
+                data_model=model,
+                gemc_model=model,
+                reference_current_nA=50.0,
+                reference_label="merged_50nA",
+                reference_response_meta=response_meta,
+                run_records=records,
+                sources={},
+                analysis_excluded_classes=("REVIEW_EXCLUDED",),
+            )
+            artifact = directory / "correction.json"
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            loaded = load_current_efficiency_correction(artifact)
+
+        excluded = payload["runs"]["1002"]
+        self.assertEqual(excluded["current_nA"], -0.00649446)
+        self.assertFalse(excluded["analysis_included"])
+        self.assertEqual(
+            excluded["analysis_exclusion_reason"], "excluded_downstream_class"
+        )
+        self.assertEqual(excluded["event_weight"], 0.0)
+        self.assertEqual(loaded.run_currents_nA[1002], -0.00649446)
+        self.assertEqual(loaded.excluded_runs, (1002,))
+        self.assertEqual(float(loaded.event_weights(np.asarray([1002]))[0]), 0.0)
+        self.assertAlmostEqual(loaded.original_beam_charge_c, 1.2e-9)
+        self.assertAlmostEqual(loaded.analysis_beam_charge_c, 1.0e-9)
+
     def test_correction_lists_fit_excluded_analysis_included_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
