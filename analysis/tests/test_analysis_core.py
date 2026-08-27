@@ -1764,6 +1764,62 @@ class RadiativeCorrectionTests(unittest.TestCase):
             )
             self.assertEqual(npz_fields["born_normalization_generators"][0], "aao_norad")
 
+            safe_mode3 = Path(tmp) / "safe_mode3.norm"
+            safe_mode3.write_text(
+                "\n".join([
+                    "generator=aao_rad",
+                    "sig_sum=0.0007",
+                    "events=5002",
+                    "mcall_max=4",
+                    "sampling_mode=3",
+                    "mode3_schema=aao-rad-mode3-v2",
+                    "mode3_direct_fraction=0.75",
+                    "mode3_duplicate_events=2",
+                    "",
+                ]),
+                encoding="utf-8",
+            )
+            safe = _read_generator_normalization_summary(safe_mode3)
+            self.assertEqual(safe.records[0].sampling_mode, 3.0)
+            self.assertEqual(safe.records[0].mode3_direct_fraction, 0.75)
+            safe_fields = _normalization_npz_fields("radiative", safe)
+            np.testing.assert_allclose(
+                safe_fields["radiative_normalization_mode3_duplicate_events"],
+                [2.0],
+            )
+
+            unsafe_multiplicity = Path(tmp) / "unsafe_multiplicity.norm"
+            unsafe_multiplicity.write_text(
+                "sig_sum=5.784\nevents=5000\nmcall_max=40930660\n"
+                "sampling_mode=3\nmode3_schema=aao-rad-mode3-v2\n"
+                "mode3_direct_fraction=0.75\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                ValueError, "final-multiplicity truncation signature"
+            ):
+                _read_generator_normalization_summary(unsafe_multiplicity)
+
+            unsafe_support = Path(tmp) / "unsafe_support.norm"
+            unsafe_support.write_text(
+                "sig_sum=0.0007\nevents=5000\nmcall_max=2\n"
+                "sampling_mode=3\nmode3_schema=aao-rad-mode3-v2\n"
+                "mode3_direct_fraction=1.0\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "bounded full-support"):
+                _read_generator_normalization_summary(unsafe_support)
+
+            legacy_mode3 = Path(tmp) / "legacy_mode3.norm"
+            legacy_mode3.write_text(
+                "sig_sum=0.0007\nevents=5000\nmcall_max=3\n"
+                "sampling_mode=3\nmode3_schema=aao-rad-mode3-v1\n"
+                "mode3_direct_fraction=0.75\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "cannot prove"):
+                _read_generator_normalization_summary(legacy_mode3)
+
             legacy = Path(tmp) / "legacy"
             legacy.mkdir()
             (legacy / "job1.sum").write_text("sig_sum=2.0\n", encoding="utf-8")

@@ -947,8 +947,13 @@ define the selected bins, and the integrated cross sections used for each
 sample. When sidecars are supplied, the artifact also preserves the
 normalization records used to get those cross sections: sidecar paths,
 combination method, `sig_sum`, `sig_int`, `events`, `ntries`, `nevent`,
-`mcall_max`, `sigr_max`, generator name, and units. Regenerate the diagnostic
-report later without rereading LUND files:
+`mcall_max`, `sigr_max`, mode-3 proposal metadata, generator name, and units.
+Mode-3 sidecars are rejected when the direct proposal leaves less than 5%
+legacy support, when `mcall_max > events`, or when they predate the v2 sidecar
+schema that records the untruncated behavior. Regenerate an affected sample
+with the bounded full-support proposal and a validated envelope; do not pool or
+omit the failed job. Regenerate the diagnostic report later without rereading
+LUND files:
 
 ```bash
 python3 analysis/run_analysis.py radiative-correction-plots results/C_rad.npz \

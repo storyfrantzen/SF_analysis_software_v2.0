@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 import re
 import shlex
@@ -103,6 +104,10 @@ CROSS_SECTION_VALIDITY_FIELDS = (
     "final_validity_definition",
 )
 
+MODE3_MINIMUM_LEGACY_FRACTION = 0.05
+MODE3_MAXIMUM_DIRECT_FRACTION = 1.0 - MODE3_MINIMUM_LEGACY_FRACTION
+SAFE_MODE3_SCHEMA = "aao-rad-mode3-v2"
+
 
 @dataclass(frozen=True)
 class GeneratorNormalizationRecord:
@@ -114,6 +119,10 @@ class GeneratorNormalizationRecord:
     nevent: float | None = None
     mcall_max: float | None = None
     sigr_max: float | None = None
+    sampling_mode: float | None = None
+    mode3_direct_fraction: float | None = None
+    mode3_duplicate_events: float | None = None
+    mode3_schema: str = ""
     generator: str = ""
     units: str = ""
 
@@ -1436,7 +1445,7 @@ def _normalization_sidecar_files(path: Path, suffix: str, *, max_files: int | No
 def _read_generator_normalization_record(path: Path) -> GeneratorNormalizationRecord:
     text = path.read_text(encoding="utf-8", errors="replace")
     fields = _parse_generator_key_values(text)
-    return GeneratorNormalizationRecord(
+    record = GeneratorNormalizationRecord(
         path=path,
         sig_sum=_parse_generator_integrated_cross_section(text, path),
         events=_optional_positive_generator_float(fields, "events", path),
@@ -1445,9 +1454,73 @@ def _read_generator_normalization_record(path: Path) -> GeneratorNormalizationRe
         nevent=_optional_positive_generator_float(fields, "nevent", path),
         mcall_max=_optional_positive_generator_float(fields, "mcall_max", path),
         sigr_max=_optional_positive_generator_float(fields, "sigr_max", path),
+        sampling_mode=_optional_nonnegative_generator_float(
+            fields, "sampling_mode", path
+        ),
+        mode3_direct_fraction=_optional_nonnegative_generator_float(
+            fields, "mode3_direct_fraction", path
+        ),
+        mode3_duplicate_events=_optional_nonnegative_generator_float(
+            fields, "mode3_duplicate_events", path
+        ),
+        mode3_schema=fields.get("mode3_schema", ""),
         generator=fields.get("generator", ""),
         units=fields.get("integrated_cross_section_units", ""),
     )
+    _validate_generator_normalization_record(record)
+    return record
+
+
+def _validate_generator_normalization_record(
+    record: GeneratorNormalizationRecord,
+) -> None:
+    """Reject mode-3 sidecars that cannot represent an unbiased event stream."""
+
+    is_mode3 = (
+        record.sampling_mode is not None
+        and math.isclose(record.sampling_mode, 3.0)
+    ) or bool(record.mode3_schema)
+    if not is_mode3:
+        return
+    if record.mode3_schema != SAFE_MODE3_SCHEMA:
+        version = record.mode3_schema or "missing"
+        raise ValueError(
+            f"Unsafe mode-3 normalization in {record.path}: schema={version!r} "
+            f"predates {SAFE_MODE3_SCHEMA}, which preserves the complete final "
+            "stochastic multiplicity. Regenerate this sample; the old sidecar "
+            "cannot prove that its final event block was untruncated."
+        )
+    missing = [
+        name
+        for name in ("events", "mcall_max", "mode3_direct_fraction")
+        if getattr(record, name) is None
+    ]
+    if missing:
+        raise ValueError(
+            f"Unsafe mode-3 normalization in {record.path}: v2 sidecar lacks "
+            f"required safety metadata {', '.join(missing)}."
+        )
+    if (
+        record.mode3_direct_fraction is not None
+        and record.mode3_direct_fraction > MODE3_MAXIMUM_DIRECT_FRACTION + 1.0e-12
+    ):
+        raise ValueError(
+            f"Unsafe mode-3 normalization in {record.path}: direct fraction "
+            f"{record.mode3_direct_fraction:.8g} leaves less than "
+            f"{MODE3_MINIMUM_LEGACY_FRACTION:.0%} legacy support. Regenerate "
+            "with the bounded full-support proposal mixture."
+        )
+    if (
+        record.events is not None
+        and record.mcall_max is not None
+        and record.mcall_max > record.events
+    ):
+        raise ValueError(
+            f"Unsafe mode-3 normalization in {record.path}: mcall_max="
+            f"{record.mcall_max:.8g} exceeds emitted events={record.events:.8g}. "
+            "This is the legacy final-multiplicity truncation signature; "
+            "do not pool or use this sample."
+        )
 
 
 def _parse_generator_integrated_cross_section(text: str, path: Path) -> float:
@@ -1485,6 +1558,20 @@ def _optional_positive_generator_float(
     if value is None:
         return None
     return _positive_finite_float(value, key, path)
+
+
+def _optional_nonnegative_generator_float(
+    fields: dict[str, str],
+    key: str,
+    path: Path,
+) -> float | None:
+    value = fields.get(key)
+    if value is None:
+        return None
+    parsed = float(value.replace("D", "E").replace("d", "e"))
+    if not np.isfinite(parsed) or parsed < 0.0:
+        raise ValueError(f"{key} in {path} must be nonnegative and finite")
+    return parsed
 
 
 def _parse_generator_events(text: str, path: Path) -> float | None:
@@ -1531,6 +1618,16 @@ def _normalization_npz_fields(
         f"{label}_normalization_nevent": floats("nevent"),
         f"{label}_normalization_mcall_max": floats("mcall_max"),
         f"{label}_normalization_sigr_max": floats("sigr_max"),
+        f"{label}_normalization_sampling_mode": floats("sampling_mode"),
+        f"{label}_normalization_mode3_direct_fraction": floats(
+            "mode3_direct_fraction"
+        ),
+        f"{label}_normalization_mode3_duplicate_events": floats(
+            "mode3_duplicate_events"
+        ),
+        f"{label}_normalization_mode3_schema": np.asarray(
+            [record.mode3_schema for record in records]
+        ),
     }
 
 
