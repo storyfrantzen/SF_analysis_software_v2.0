@@ -1788,6 +1788,51 @@ class RadiativeCorrectionTests(unittest.TestCase):
                 [2.0],
             )
 
+            safe_born_mode3 = Path(tmp) / "safe_born_mode3.norm"
+            safe_born_mode3.write_text(
+                "\n".join([
+                    "generator=aao_norad",
+                    "sig_sum=0.00038",
+                    "events=5002",
+                    "mcall_max=4",
+                    "sampling_mode=3",
+                    "mode3_schema=aao-norad-mode3-v2",
+                    "mode3_target_events=5000",
+                    "mode3_event_overshoot=2",
+                    "mode3_complete_final_multiplicity=1",
+                    "",
+                ]),
+                encoding="utf-8",
+            )
+            safe_born = _read_generator_normalization_summary(safe_born_mode3)
+            self.assertEqual(
+                safe_born.records[0].mode3_schema, "aao-norad-mode3-v2"
+            )
+            safe_born_fields = _normalization_npz_fields("born", safe_born)
+            np.testing.assert_allclose(
+                safe_born_fields["born_normalization_mode3_event_overshoot"],
+                [2.0],
+            )
+
+            inconsistent_born_mode3 = Path(tmp) / "inconsistent_born_mode3.norm"
+            inconsistent_born_mode3.write_text(
+                safe_born_mode3.read_text(encoding="utf-8").replace(
+                    "mode3_event_overshoot=2", "mode3_event_overshoot=1"
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "counts are inconsistent"):
+                _read_generator_normalization_summary(inconsistent_born_mode3)
+
+            legacy_born_mode3 = Path(tmp) / "legacy_born_mode3.norm"
+            legacy_born_mode3.write_text(
+                "generator=aao_norad\nsig_sum=0.00038\nevents=5000\n"
+                "mcall_max=2\nsampling_mode=3\n",
+                encoding="utf-8",
+            )
+            legacy_born = _read_generator_normalization_summary(legacy_born_mode3)
+            self.assertEqual(legacy_born.records[0].mode3_schema, "")
+
             unsafe_multiplicity = Path(tmp) / "unsafe_multiplicity.norm"
             unsafe_multiplicity.write_text(
                 "sig_sum=5.784\nevents=5000\nmcall_max=40930660\n"

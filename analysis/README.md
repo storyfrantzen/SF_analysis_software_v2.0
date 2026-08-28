@@ -948,12 +948,19 @@ sample. When sidecars are supplied, the artifact also preserves the
 normalization records used to get those cross sections: sidecar paths,
 combination method, `sig_sum`, `sig_int`, `events`, `ntries`, `nevent`,
 `mcall_max`, `sigr_max`, mode-3 proposal metadata, generator name, and units.
-Mode-3 sidecars are rejected when the direct proposal leaves less than 5%
-legacy support, when `mcall_max > events`, or when they predate the v2 sidecar
-schema that records the untruncated behavior. Regenerate an affected sample
-with the bounded full-support proposal and a validated envelope; do not pool or
-omit the failed job. Regenerate the diagnostic report later without rereading
-LUND files:
+Radiative mode-3 sidecars are rejected when the direct proposal leaves less
+than 5% legacy support, when `mcall_max > events`, or when they predate the
+`aao-rad-mode3-v2` schema that records the untruncated behavior. Born mode-3
+sidecars using `aao-norad-mode3-v2` require consistent target/actual event and
+overshoot counts, a certified complete final multiplicity block, and
+`mcall_max` no larger than the requested job capacity. Completed legacy Born
+sidecars remain readable because the old Born generator already emitted a
+complete multiplicity block before checking its event limit; they lack only the
+new protection against resource-exhausting job-sized blocks. Regenerate a job
+that triggers either new fail-safe with a validated envelope; for radiative
+production also use the bounded full-support proposal. Do not pool or
+selectively omit a failed job. Regenerate the diagnostic report later without
+rereading LUND files:
 
 ```bash
 python3 analysis/run_analysis.py radiative-correction-plots results/C_rad.npz \

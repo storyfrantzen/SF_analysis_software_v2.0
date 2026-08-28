@@ -106,7 +106,8 @@ CROSS_SECTION_VALIDITY_FIELDS = (
 
 MODE3_MINIMUM_LEGACY_FRACTION = 0.05
 MODE3_MAXIMUM_DIRECT_FRACTION = 1.0 - MODE3_MINIMUM_LEGACY_FRACTION
-SAFE_MODE3_SCHEMA = "aao-rad-mode3-v2"
+SAFE_RADIATIVE_MODE3_SCHEMA = "aao-rad-mode3-v2"
+SAFE_BORN_MODE3_SCHEMA = "aao-norad-mode3-v2"
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,9 @@ class GeneratorNormalizationRecord:
     sampling_mode: float | None = None
     mode3_direct_fraction: float | None = None
     mode3_duplicate_events: float | None = None
+    mode3_target_events: float | None = None
+    mode3_event_overshoot: float | None = None
+    mode3_complete_final_multiplicity: float | None = None
     mode3_schema: str = ""
     generator: str = ""
     units: str = ""
@@ -1463,6 +1467,15 @@ def _read_generator_normalization_record(path: Path) -> GeneratorNormalizationRe
         mode3_duplicate_events=_optional_nonnegative_generator_float(
             fields, "mode3_duplicate_events", path
         ),
+        mode3_target_events=_optional_positive_generator_float(
+            fields, "mode3_target_events", path
+        ),
+        mode3_event_overshoot=_optional_nonnegative_generator_float(
+            fields, "mode3_event_overshoot", path
+        ),
+        mode3_complete_final_multiplicity=_optional_nonnegative_generator_float(
+            fields, "mode3_complete_final_multiplicity", path
+        ),
         mode3_schema=fields.get("mode3_schema", ""),
         generator=fields.get("generator", ""),
         units=fields.get("integrated_cross_section_units", ""),
@@ -1482,14 +1495,103 @@ def _validate_generator_normalization_record(
     ) or bool(record.mode3_schema)
     if not is_mode3:
         return
-    if record.mode3_schema != SAFE_MODE3_SCHEMA:
+    is_born = record.generator == "aao_norad" or record.mode3_schema.startswith(
+        "aao-norad-mode3-"
+    )
+    if is_born and not record.mode3_schema:
+        missing = [
+            name for name in ("events", "mcall_max")
+            if getattr(record, name) is None
+        ]
+        if missing:
+            raise ValueError(
+                f"Legacy Born mode-3 normalization in {record.path} lacks "
+                f"required completion metadata {', '.join(missing)}."
+            )
+        assert record.events is not None
+        assert record.mcall_max is not None
+        if record.mcall_max > record.events:
+            raise ValueError(
+                f"Unsafe legacy Born mode-3 normalization in {record.path}: "
+                f"mcall_max={record.mcall_max:.8g} exceeds emitted events="
+                f"{record.events:.8g}."
+            )
+        # Legacy aao_norad emitted every multiplicity block before checking the
+        # requested event limit, so completed sidecars remain unbiased.  The v2
+        # schema additionally proves that pathological job-sized blocks were
+        # rejected before they could exhaust resources.
+        return
+    expected_schema = (
+        SAFE_BORN_MODE3_SCHEMA if is_born else SAFE_RADIATIVE_MODE3_SCHEMA
+    )
+    if record.mode3_schema != expected_schema:
         version = record.mode3_schema or "missing"
+        if is_born:
+            raise ValueError(
+                f"Unsafe Born mode-3 normalization in {record.path}: "
+                f"unrecognized schema={version!r}; expected {expected_schema}."
+            )
         raise ValueError(
             f"Unsafe mode-3 normalization in {record.path}: schema={version!r} "
-            f"predates {SAFE_MODE3_SCHEMA}, which preserves the complete final "
+            f"predates {expected_schema}, which preserves the complete final "
             "stochastic multiplicity. Regenerate this sample; the old sidecar "
             "cannot prove that its final event block was untruncated."
         )
+    if is_born:
+        missing = [
+            name
+            for name in (
+                "events",
+                "mcall_max",
+                "mode3_target_events",
+                "mode3_event_overshoot",
+                "mode3_complete_final_multiplicity",
+            )
+            if getattr(record, name) is None
+        ]
+        if missing:
+            raise ValueError(
+                f"Unsafe Born mode-3 normalization in {record.path}: v2 sidecar "
+                f"lacks required safety metadata {', '.join(missing)}."
+            )
+        assert record.events is not None
+        assert record.mcall_max is not None
+        assert record.mode3_target_events is not None
+        assert record.mode3_event_overshoot is not None
+        assert record.mode3_complete_final_multiplicity is not None
+        expected_overshoot = record.events - record.mode3_target_events
+        if expected_overshoot < 0.0 or not math.isclose(
+            expected_overshoot,
+            record.mode3_event_overshoot,
+            rel_tol=0.0,
+            abs_tol=1.0e-9,
+        ):
+            raise ValueError(
+                f"Unsafe Born mode-3 normalization in {record.path}: emitted, "
+                "target, and overshoot event counts are inconsistent."
+            )
+        if not math.isclose(
+            record.mode3_complete_final_multiplicity,
+            1.0,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        ):
+            raise ValueError(
+                f"Unsafe Born mode-3 normalization in {record.path}: complete "
+                "final stochastic multiplicity is not certified."
+            )
+        if record.mcall_max > record.mode3_target_events:
+            raise ValueError(
+                f"Unsafe Born mode-3 normalization in {record.path}: mcall_max="
+                f"{record.mcall_max:.8g} exceeds requested job capacity="
+                f"{record.mode3_target_events:.8g}."
+            )
+        if record.mode3_event_overshoot >= record.mcall_max:
+            raise ValueError(
+                f"Unsafe Born mode-3 normalization in {record.path}: final "
+                "overshoot is not smaller than mcall_max."
+            )
+        return
     missing = [
         name
         for name in ("events", "mcall_max", "mode3_direct_fraction")
@@ -1624,6 +1726,15 @@ def _normalization_npz_fields(
         ),
         f"{label}_normalization_mode3_duplicate_events": floats(
             "mode3_duplicate_events"
+        ),
+        f"{label}_normalization_mode3_target_events": floats(
+            "mode3_target_events"
+        ),
+        f"{label}_normalization_mode3_event_overshoot": floats(
+            "mode3_event_overshoot"
+        ),
+        f"{label}_normalization_mode3_complete_final_multiplicity": floats(
+            "mode3_complete_final_multiplicity"
         ),
         f"{label}_normalization_mode3_schema": np.asarray(
             [record.mode3_schema for record in records]
