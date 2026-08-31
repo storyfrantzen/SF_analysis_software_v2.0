@@ -1408,6 +1408,89 @@ class UnfoldingTests(unittest.TestCase):
         np.testing.assert_allclose(first[0], second[0])
         np.testing.assert_allclose(first[1], second[1])
 
+    def test_zero_iteration_records_raw_and_feed_in_subtracted_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            config_path = tmpdir / "analysis.json"
+            data_path = tmpdir / "data.npz"
+            matrix_path = tmpdir / "response.npz"
+            meta_path = tmpdir / "response_meta.npz"
+            output_path = tmpdir / "unfolding.npz"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "beam_energy": 6.535,
+                        "minimum_acceptance": 0.005,
+                        "binning": {
+                            "Q2": [1.0, 1.5],
+                            "xB": [0.1, 0.3],
+                            "minus_t": [0.1, 0.3],
+                            "phi_deg": [0.0, 360.0],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            np.savez_compressed(
+                data_path,
+                rec_Q2=np.full(4, 1.2),
+                rec_xB=np.full(4, 0.2),
+                rec_minus_t=np.full(4, 0.2),
+                rec_trento_phi=np.full(4, 0.1),
+                rec_selected=np.ones(4, dtype=bool),
+            )
+            save_npz(matrix_path, csr_matrix([[0.5]]))
+            np.savez_compressed(
+                meta_path,
+                efficiency=np.asarray([0.5]),
+                feed_in_fraction=0.25,
+                feed_in_shape=np.asarray([1.0]),
+                response_variance_sum=np.zeros(1),
+            )
+            args = argparse.Namespace(
+                data=data_path,
+                response_matrix=matrix_path,
+                response_meta=meta_path,
+                config=config_path,
+                output=output_path,
+                selection_mask=None,
+                iterations=0,
+                bootstrap=0,
+                seed=12345,
+                radiative_correction=None,
+                current_efficiency_correction=None,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_unfold(args)
+            with np.load(output_path, allow_pickle=False) as result:
+                np.testing.assert_allclose(result["measured"], [4.0])
+                np.testing.assert_allclose(result["feed_in_corrected_measured"], [3.0])
+                np.testing.assert_allclose(result["acceptance_corrected"], [8.0])
+                np.testing.assert_allclose(result["acceptance_corrected_raw"], [8.0])
+                np.testing.assert_allclose(
+                    result["acceptance_corrected_feed_in_subtracted"], [6.0]
+                )
+                np.testing.assert_allclose(result["unfolded"], [8.0])
+                self.assertEqual(str(result["unfolding_method"]), "bin_by_bin_efficiency")
+                self.assertEqual(
+                    str(result["unfolding_input_definition"]),
+                    "measured_without_feed_in_subtraction",
+                )
+                self.assertFalse(bool(result["feed_in_subtraction_applied_to_unfolded"]))
+
+            args.iterations = 1
+            args.bootstrap = 5
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_unfold(args)
+            with np.load(output_path, allow_pickle=False) as result:
+                np.testing.assert_allclose(result["unfolded"], [6.0])
+                self.assertEqual(str(result["unfolding_method"]), "iterative_bayes")
+                self.assertEqual(
+                    str(result["unfolding_input_definition"]),
+                    "feed_in_subtracted_measured",
+                )
+                self.assertTrue(bool(result["feed_in_subtraction_applied_to_unfolded"]))
+
     def test_unfold_divides_by_radiative_correction(self) -> None:
         config = Path("configs/analysis/rgk/6.535.json")
         binning = from_config(config)

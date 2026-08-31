@@ -227,6 +227,19 @@ and records the number and total deficit of clipped bins. It is never silent.
 Change the transfer-factor uncertainty sampling with
 `--background-alpha-bootstrap`; zero disables that uncertainty component.
 
+The unfolding artifact preserves both bin-by-bin acceptance diagnostics around
+the response feed-in subtraction. `acceptance_corrected` remains the legacy
+alias of `acceptance_corrected_raw = measured / efficiency`, while
+`acceptance_corrected_feed_in_subtracted` divides the stored
+`feed_in_corrected_measured` spectrum by the same efficiency. With
+`--iterations 0`, `unfolded` deliberately remains the raw legacy diagnostic and
+the artifact records `unfolding_method = bin_by_bin_efficiency`,
+`unfolding_input_definition = measured_without_feed_in_subtraction`, and
+`feed_in_subtraction_applied_to_unfolded = false`. Positive iteration counts use
+the feed-in-subtracted spectrum and record the corresponding iterative-Bayes
+provenance. The feed-in-subtracted bin-by-bin array is a central-value diagnostic;
+no separate covariance for that diagnostic is currently stored.
+
 For production MC response building, avoid serializing one dense row per
 generated event. Build the sparse response directly from the converter and
 selected ROOT files:

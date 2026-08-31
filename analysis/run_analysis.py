@@ -906,8 +906,16 @@ def command_unfold(args: argparse.Namespace) -> None:
     acceptance_corrected = np.divide(
         measured, efficiency, out=np.zeros_like(measured), where=efficiency > minimum_acceptance
     )
+    acceptance_corrected_feed_in_subtracted = np.divide(
+        corrected,
+        efficiency,
+        out=np.zeros_like(corrected),
+        where=efficiency > minimum_acceptance,
+    )
     if args.iterations == 0:
         unfolded = acceptance_corrected.copy()
+        unfolding_method = "bin_by_bin_efficiency"
+        unfolding_input_definition = "measured_without_feed_in_subtraction"
         kl = np.empty(0)
         sigma_stat = np.divide(
             np.sqrt(measured_variance),
@@ -916,6 +924,8 @@ def command_unfold(args: argparse.Namespace) -> None:
             where=efficiency > minimum_acceptance,
         )
     else:
+        unfolding_method = "iterative_bayes"
+        unfolding_input_definition = "feed_in_subtracted_measured"
         result = iterative_bayes(
             response,
             corrected,
@@ -1005,8 +1015,18 @@ def command_unfold(args: argparse.Namespace) -> None:
         estimated_background_variance=estimated_background_variance,
         background_subtracted_unclipped=background_subtracted_unclipped,
         background_clipped_deficit=background_clipped_deficit,
+        feed_in_corrected_measured=corrected,
+        feed_in_fraction=float(metadata["feed_in_fraction"]),
+        feed_in_shape=metadata["feed_in_shape"],
         acceptance_corrected=acceptance_corrected,
+        acceptance_corrected_raw=acceptance_corrected,
+        acceptance_corrected_feed_in_subtracted=(
+            acceptance_corrected_feed_in_subtracted
+        ),
         unfolded=unfolded,
+        unfolding_method=unfolding_method,
+        unfolding_input_definition=unfolding_input_definition,
+        feed_in_subtraction_applied_to_unfolded=args.iterations > 0,
         sigma_stat=sigma_stat,
         sigma_mc=sigma_mc,
         sigma_total=sigma_total,
