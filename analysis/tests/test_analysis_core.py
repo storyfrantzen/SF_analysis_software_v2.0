@@ -1442,10 +1442,12 @@ class UnfoldingTests(unittest.TestCase):
             )
             c_rad_flat = np.ones(binning.size)
             c_rad_flat[flat] = 2.0
+            delta_c_flat = np.zeros(binning.size)
+            delta_c_flat[flat] = 0.2
             np.savez_compressed(
                 correction_path,
                 C_rad=binning.unflatten(c_rad_flat),
-                delta_C=np.zeros(binning.shape),
+                delta_C=binning.unflatten(delta_c_flat),
                 reliable=np.ones(binning.shape, dtype=bool),
             )
             args = argparse.Namespace(
@@ -1465,6 +1467,11 @@ class UnfoldingTests(unittest.TestCase):
             result = np.load(output_path, allow_pickle=False)
         self.assertEqual(result["unfolded"][flat], 1.0)
         self.assertEqual(result["corrected_yield"][flat], 0.5)
+        self.assertEqual(result["sigma_total"][flat], 1.0)
+        self.assertAlmostEqual(
+            result["corrected_uncertainty"][flat],
+            np.hypot(1.0 / 2.0, 1.0 * 0.2 / 2.0**2),
+        )
 
     def test_unfold_applies_run_current_weights_and_weighted_statistics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -969,8 +969,16 @@ def command_unfold(args: argparse.Namespace) -> None:
             out=np.zeros_like(unfolded),
             where=radiative_valid,
         )
+        unfolded_sigma_after_radiative_correction = np.divide(
+            sigma_total,
+            factor,
+            out=np.zeros_like(sigma_total),
+            where=radiative_valid,
+        )
         corrected_uncertainty = np.where(
-            radiative_valid, np.hypot(sigma_total, radiative_sigma), 0.0
+            radiative_valid,
+            np.hypot(unfolded_sigma_after_radiative_correction, radiative_sigma),
+            0.0,
         )
 
     original_beam_charge = (
