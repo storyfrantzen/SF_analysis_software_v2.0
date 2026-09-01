@@ -13,14 +13,25 @@ from .cross_section import virtual_photon_flux
 from .exclusive_kinematics import (
     PI0_MASS_GEV,
     PROTON_MASS_GEV,
-    kallen,
     physical_mask,
-    t_limits_pi0,
 )
 from .phase_space import AnalysisPhaseSpace
 
 
 Array = np.ndarray
+
+AAO_RAW_CROSS_SECTION_UNITS = "microbarn/sr"
+AAO_REDUCED_CROSS_SECTION_UNITS = "nb/(GeV^2 rad)"
+AAO_CROSS_SECTION_CONVERSION = (
+    "d2sigma/(dt dphi) [nb/(GeV^2 rad)] = "
+    "aao_sigma0 [microbarn/sr] * 1000 / (2*q_cm*p_meson_cm)"
+)
+
+_AAO_MESON_MASS_GEV = {
+    1: PI0_MASS_GEV,
+    3: 0.13957018,
+    5: 0.547853,
+}
 
 
 @dataclass(frozen=True)
@@ -52,6 +63,68 @@ def midpoint_grid(lo: float, hi: float, points: int) -> Array:
 def circular_mean_deg(values: Array) -> float:
     radians = np.deg2rad(np.asarray(values, float))
     return float(np.rad2deg(np.arctan2(np.mean(np.sin(radians)), np.mean(np.cos(radians)))) % 360.0)
+
+
+def aao_sigma0_to_reduced_cross_section(
+    points: Array,
+    sigma0: Array,
+    *,
+    channel: int = 1,
+) -> Array:
+    """Convert AAO's virtual-photon ``sigma0`` from microbarn/sr to nb/(GeV^2 rad).
+
+    ``aao_xsec`` returns the angular cross section used internally by the AAO
+    event generator before its phase-space Jacobian is applied.  With
+    ``dOmega = dcos(theta*) dphi`` and ``dt = 2 q* p* dcos(theta*)``, the
+    conversion to the reduced ``dt dphi`` convention is ``1000 / (2 q* p*)``.
+    """
+    points = np.asarray(points, dtype=float)
+    sigma0 = np.asarray(sigma0, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 4:
+        raise ValueError("AAO points must have shape (N, 4) for (xB, Q2, t, phi)")
+    if sigma0.shape != (points.shape[0],):
+        raise ValueError(
+            f"AAO sigma0 has shape {sigma0.shape}; expected {(points.shape[0],)}"
+        )
+    try:
+        meson_mass = _AAO_MESON_MASS_GEV[int(channel)]
+    except KeyError as exc:
+        raise ValueError(
+            f"unsupported AAO channel {channel}; expected 1 (pi0), 3 (pi+), or 5 (eta)"
+        ) from exc
+
+    xb = points[:, 0]
+    q2 = points[:, 1]
+    result = np.full(sigma0.shape, np.nan, dtype=float)
+    valid = np.isfinite(xb) & np.isfinite(q2) & np.isfinite(sigma0)
+    valid &= (xb > 0.0) & (xb < 1.0) & (q2 > 0.0)
+    if not np.any(valid):
+        return result
+
+    proton_mass2 = PROTON_MASS_GEV**2
+    meson_mass2 = meson_mass**2
+    w2 = proton_mass2 + q2[valid] * (1.0 / xb[valid] - 1.0)
+    physical = w2 > (PROTON_MASS_GEV + meson_mass) ** 2
+    if not np.any(physical):
+        return result
+
+    valid_indices = np.flatnonzero(valid)[physical]
+    w2 = w2[physical]
+    q2_physical = q2[valid_indices]
+    w = np.sqrt(w2)
+    q_cm2 = ((w2 + q2_physical + proton_mass2) / (2.0 * w)) ** 2 - proton_mass2
+    meson_energy_cm = (w2 + meson_mass2 - proton_mass2) / (2.0 * w)
+    meson_momentum_cm2 = meson_energy_cm**2 - meson_mass2
+    physical_momenta = (q_cm2 > 0.0) & (meson_momentum_cm2 > 0.0)
+    if not np.any(physical_momenta):
+        return result
+
+    output_indices = valid_indices[physical_momenta]
+    jacobian = 2.0 * np.sqrt(q_cm2[physical_momenta]) * np.sqrt(
+        meson_momentum_cm2[physical_momenta]
+    )
+    result[output_indices] = 1000.0 * sigma0[output_indices] / jacobian
+    return result
 
 
 def compute_bin_centering(
@@ -252,6 +325,8 @@ class AaoExecutableEvaluator:
 
     def __call__(self, points: Array) -> Array:
         points = np.asarray(points, dtype=float)
+        if points.ndim != 2 or points.shape[1] != 4:
+            raise ValueError("AAO points must have shape (N, 4) for (xB, Q2, t, phi)")
         jobs = [
             (
                 str(self.exe),
@@ -270,7 +345,11 @@ class AaoExecutableEvaluator:
             values = self._pool.map(_call_aao_xsec_job, jobs, chunksize=max(1, int(self.chunk_size)))
         else:
             values = [_call_aao_xsec_job(job) for job in jobs]
-        return np.asarray(values, dtype=float)
+        return aao_sigma0_to_reduced_cross_section(
+            points,
+            np.asarray(values, dtype=float),
+            channel=self.channel,
+        )
 
 
 def _call_aao_xsec_job(job: tuple[str, float, int, int, int, bool, tuple[float, float, float, float]]) -> float:

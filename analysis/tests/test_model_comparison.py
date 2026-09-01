@@ -6,6 +6,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -13,6 +14,10 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from eppi0.binning import AnalysisBinning
+from eppi0.bin_centering import (
+    AaoExecutableEvaluator,
+    aao_sigma0_to_reduced_cross_section,
+)
 from eppi0.model_comparison import (
     TabulatedModelEvaluator,
     average_model_over_bins,
@@ -67,6 +72,35 @@ class StructureFunctionTests(unittest.TestCase):
         )
         self.assertFalse(result.valid[0])
         self.assertTrue(np.all(np.isnan(result.uncertainties[0])))
+
+
+class AaoCrossSectionConventionTests(unittest.TestCase):
+    def test_sigma0_is_converted_from_angular_microbarns_to_reduced_nb(self) -> None:
+        points = np.asarray([[0.3, 2.0, -0.2, 37.0]])
+        converted = aao_sigma0_to_reduced_cross_section(
+            points, np.asarray([1.0]), channel=1
+        )
+        np.testing.assert_allclose(converted, [333.1022415446145], rtol=1.0e-12)
+
+    def test_evaluator_converts_raw_executable_output(self) -> None:
+        points = np.asarray([[0.3, 2.0, -0.2, 37.0]])
+        evaluator = AaoExecutableEvaluator(
+            Path("/unused/aao_xsec"), 6.535, channel=1, workers=1
+        )
+        with patch("eppi0.bin_centering._call_aao_xsec_job", return_value=0.003):
+            converted = evaluator(points)
+        np.testing.assert_allclose(
+            converted,
+            aao_sigma0_to_reduced_cross_section(points, np.asarray([0.003])),
+        )
+
+    def test_unsupported_channel_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported AAO channel"):
+            aao_sigma0_to_reduced_cross_section(
+                np.asarray([[0.3, 2.0, -0.2, 0.0]]),
+                np.asarray([1.0]),
+                channel=2,
+            )
 
 
 class TabulatedModelTests(unittest.TestCase):
@@ -135,7 +169,12 @@ class ModelAveragingTests(unittest.TestCase):
     def test_model_harmonics_use_the_data_harmonic_reference(self) -> None:
         phi_edges = np.arange(0.0, 360.0 + 45.0, 45.0)
         phi = np.deg2rad(0.5 * (phi_edges[:-1] + phi_edges[1:]))
-        values = (2.0 + 0.3 * np.cos(phi) - 0.2 * np.cos(2.0 * phi))[None, None, None]
+        values = (
+            2.0
+            + 0.3 * np.cos(phi)
+            - 0.2 * np.cos(2.0 * phi)
+            + 0.02 * np.cos(3.0 * phi)
+        )[None, None, None]
         result = SimpleNamespace(
             reduced_cross_section=values,
             reliable=np.ones(values.shape, dtype=bool),
@@ -159,6 +198,10 @@ class ModelAveragingTests(unittest.TestCase):
         np.testing.assert_allclose(payload["epsilon"], expected)
         np.testing.assert_allclose(payload["q2_harmonic_reference"], q2_reference)
         np.testing.assert_allclose(payload["xb_harmonic_reference"], xb_reference)
+        self.assertTrue(payload["fit_success"][0, 0, 0])
+        self.assertTrue(payload["quality_mask"][0, 0, 0])
+        self.assertEqual(payload["quality_status"][0, 0, 0], 0)
+        self.assertLess(payload["chi2_ndf"][0, 0, 0], 1.0e-3)
 
 
 class ModelCommandIntegrationTests(unittest.TestCase):
@@ -264,6 +307,7 @@ class ModelCommandIntegrationTests(unittest.TestCase):
             model = np.load(merged, allow_pickle=False)
             self.assertTrue(np.all(model["reliable"]))
             self.assertTrue(np.all(model["fit_success"]))
+            self.assertTrue(np.all(model["quality_mask"]))
             self.assertEqual(str(model["model_name"]), "synthetic")
             epsilon = float(epsilon_from_xb_q2(2.0, 0.3, 6.535))
             expected_u_after_transform = (10.0 + epsilon * 2.0) / 2.0
@@ -316,6 +360,44 @@ class ModelCommandIntegrationTests(unittest.TestCase):
                 (plot_dir / "model_comparison_structure_functions.pdf").is_file()
             )
             self.assertTrue((plot_dir / "model_comparison_summary.csv").is_file())
+
+    def test_plots_reject_legacy_unconverted_aao_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config, cross_section, table = self._write_inputs(root)
+            model_path = root / "model.npz"
+            command_model_prediction(
+                self._prediction_args(config, cross_section, table, model_path, 0)
+            )
+            with np.load(model_path, allow_pickle=False) as source:
+                payload = {name: np.asarray(source[name]) for name in source.files}
+            payload["model_source_kind"] = "aao_executable"
+            payload.pop("aao_cross_section_conversion", None)
+            np.savez_compressed(model_path, **payload)
+            harmonics = root / "harmonics.npz"
+            model = np.load(model_path, allow_pickle=False)
+            np.savez_compressed(
+                harmonics,
+                parameters=model["parameters"],
+                covariance=np.broadcast_to(np.eye(3) * 0.01, (1, 1, 2, 3, 3)),
+                fit_success=np.ones((1, 1, 2), dtype=bool),
+                quality_mask=np.ones((1, 1, 2), dtype=bool),
+                q2_edges=model["q2_edges"],
+                xb_edges=model["xb_edges"],
+                t_edges=model["t_edges"],
+                phi_edges=model["phi_edges"],
+            )
+            with self.assertRaisesRegex(ValueError, "regenerate"):
+                command_model_comparison_plots(
+                    SimpleNamespace(
+                        cross_section=cross_section,
+                        harmonics=harmonics,
+                        models=[model_path],
+                        config=config,
+                        output_dir=root / "plots",
+                        include_quality_rejected=False,
+                    )
+                )
 
 
 if __name__ == "__main__":

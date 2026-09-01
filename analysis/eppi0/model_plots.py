@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .bin_centering import AAO_CROSS_SECTION_CONVERSION
 from .binning import AnalysisBinning
 from .structure_functions import (
     STRUCTURE_FUNCTION_NAMES,
@@ -126,6 +127,13 @@ def render_model_comparison(
             ):
                 raise ValueError(f"model artifact has incompatible {name}")
         name = _text(model, "model_name", f"model_{index + 1}")
+        if _text(model, "model_source_kind", "") == "aao_executable" and _text(
+            model, "aao_cross_section_conversion", ""
+        ) != AAO_CROSS_SECTION_CONVERSION:
+            raise ValueError(
+                f"AAO model artifact {name!r} lacks the required angular-to-t "
+                "cross-section conversion; regenerate it with model-prediction"
+            )
         if "beam_energy" in model.files and not np.isclose(
             float(np.asarray(model["beam_energy"]).item()),
             beam_energy,

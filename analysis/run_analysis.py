@@ -19,7 +19,13 @@ from scipy.sparse import load_npz, save_npz
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from eppi0.binning import AnalysisBinning, from_config
-from eppi0.bin_centering import AaoExecutableEvaluator, compute_bin_centering
+from eppi0.bin_centering import (
+    AAO_CROSS_SECTION_CONVERSION,
+    AAO_RAW_CROSS_SECTION_UNITS,
+    AAO_REDUCED_CROSS_SECTION_UNITS,
+    AaoExecutableEvaluator,
+    compute_bin_centering,
+)
 from eppi0.background_subtraction import METHOD as BACKGROUND_METHOD
 from eppi0.background_subtraction import estimate_mgg_background
 from eppi0.campaign_diagnostics import render_campaign_diagnostics
@@ -2568,6 +2574,9 @@ def _save_bin_centering_artifact(
         theory=theory,
         channel=channel,
         resonance=resonance,
+        aao_raw_cross_section_units=AAO_RAW_CROSS_SECTION_UNITS,
+        aao_reduced_cross_section_units=AAO_REDUCED_CROSS_SECTION_UNITS,
+        aao_cross_section_conversion=AAO_CROSS_SECTION_CONVERSION,
         bin_start=bin_start,
         bin_stop=bin_stop,
         total_3d_bins=total_3d_bins,
@@ -2624,6 +2633,9 @@ def command_bin_centering_merge(args: argparse.Namespace) -> None:
         "theory",
         "channel",
         "resonance",
+        "aao_raw_cross_section_units",
+        "aao_reduced_cross_section_units",
+        "aao_cross_section_conversion",
         "phase_space_Q2_min",
         "phase_space_W_min",
         "phase_space_electron_p_min",
@@ -2639,6 +2651,9 @@ def command_bin_centering_merge(args: argparse.Namespace) -> None:
             values = np.asarray(partial[edge_name], dtype=float)
             if values.shape != expected.shape or not np.allclose(values, expected):
                 raise ValueError(f"{path} {edge_name} does not match the first partial")
+        for key in metadata_keys:
+            if not _matching_npz_field(first, partial, key):
+                raise ValueError(f"{path} metadata {key} does not match the first partial")
         computed = (
             np.asarray(partial["computed"], dtype=bool)
             if "computed" in partial.files
@@ -3271,8 +3286,8 @@ def _model_fit_payload(
         valid = reliable[index] & np.isfinite(values[index])
         if not np.any(valid):
             continue
-        scale = max(1.0, float(np.max(np.abs(values[index][valid]))))
-        artificial_uncertainty[index][valid] = 1.0e-8 * scale
+        scale = max(1.0e-12, float(np.max(np.abs(values[index][valid]))))
+        artificial_uncertainty[index][valid] = scale
     fits = fit_grid(
         values,
         artificial_uncertainty,
@@ -3283,6 +3298,17 @@ def _model_fit_payload(
         maximum_covariance_condition=DEFAULT_MAXIMUM_COVARIANCE_CONDITION,
         maximum_relative_a_uncertainty=DEFAULT_MAXIMUM_RELATIVE_A_UNCERTAINTY,
         require_nonnegative=True,
+    )
+    # A deterministic model has no experimental point uncertainties, so the
+    # data-fit chi2 and precision cuts do not define model quality.  Retain the
+    # common fitter and its diagnostics, but accept every numerically successful
+    # model fit with sufficient full-rank phi coverage.
+    fit_success = np.asarray(fits["fit_success"], dtype=bool)
+    fits["quality_mask"] = fit_success.copy()
+    fits["quality_status"] = np.where(
+        fit_success,
+        np.uint16(0),
+        np.asarray(fits["quality_status"], dtype=np.uint16),
     )
 
     def reference_mean(grid: np.ndarray) -> np.ndarray:
@@ -3373,8 +3399,16 @@ def _model_prediction_payload(
         "reduced_cross_section_units": "nb/(GeV^2 rad)",
         "structure_function_units": "nb/GeV^2",
         "model_fit_uncertainty_definition": (
-            "algorithmic 1e-8 relative scale used only to run the identical weighted "
-            "harmonic fitter; derived covariance is not a model uncertainty"
+            "constant per-bin model amplitude scale used only to normalize the "
+            "deterministic harmonic fit; derived covariance is not a model uncertainty"
+        ),
+        "model_fit_quality_definition": (
+            "quality_mask equals fit_success for deterministic models; experimental "
+            "chi2, precision, and covariance thresholds are not applied"
+        ),
+        "model_chi2_ndf_definition": (
+            "squared harmonic residual normalized by the per-bin model amplitude "
+            "scale and ndf; diagnostic only, not a statistical chi2"
         ),
         "forward_average_definition": (
             "<virtual_photon_flux * reduced_cross_section>_physical_bin / "
@@ -3469,6 +3503,9 @@ def command_model_prediction(args: argparse.Namespace) -> None:
             aao_theory=args.theory,
             aao_channel=args.channel,
             aao_resonance=args.resonance,
+            aao_raw_cross_section_units=AAO_RAW_CROSS_SECTION_UNITS,
+            aao_reduced_cross_section_units=AAO_REDUCED_CROSS_SECTION_UNITS,
+            aao_cross_section_conversion=AAO_CROSS_SECTION_CONVERSION,
         )
         with evaluator:
             result = average_model_over_bins(
@@ -3536,6 +3573,13 @@ def command_model_prediction_merge(args: argparse.Namespace) -> None:
     if not partials:
         raise ValueError("at least one partial model artifact is required")
     first = partials[0]
+    if _npz_string(first, "model_source_kind", "") == "aao_executable" and _npz_string(
+        first, "aao_cross_section_conversion", ""
+    ) != AAO_CROSS_SECTION_CONVERSION:
+        raise ValueError(
+            "legacy AAO model partials lack the required angular-to-t cross-section "
+            "conversion; regenerate every partial before merging"
+        )
     q2_edges = np.asarray(first["q2_edges"], dtype=float)
     xb_edges = np.asarray(first["xb_edges"], dtype=float)
     t_edges = np.asarray(first["t_edges"], dtype=float)
@@ -3577,6 +3621,9 @@ def command_model_prediction_merge(args: argparse.Namespace) -> None:
         "aao_theory",
         "aao_channel",
         "aao_resonance",
+        "aao_raw_cross_section_units",
+        "aao_reduced_cross_section_units",
+        "aao_cross_section_conversion",
         "table_mode",
         "table_t_input_convention",
         "interpolation",
@@ -3621,6 +3668,9 @@ def command_model_prediction_merge(args: argparse.Namespace) -> None:
         "aao_theory",
         "aao_channel",
         "aao_resonance",
+        "aao_raw_cross_section_units",
+        "aao_reduced_cross_section_units",
+        "aao_cross_section_conversion",
         "table_mode",
         "table_t_input_convention",
         "interpolation",
