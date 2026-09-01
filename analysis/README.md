@@ -59,7 +59,8 @@ mass.
 - Python 3.10 or newer;
 - NumPy and SciPy for the numerical pipeline;
 - Matplotlib for diagnostic PDF output;
-- PyROOT for `build_event_sample.py` and `export_selected_data.py`;
+- PyROOT for `build_event_sample.py`, `export_selected_data.py`, and
+  `export_selected_particle_matches.py`;
 - the project ROOT dictionary when object branches are not already discoverable.
 
 Run the dependency-light tests from the repository root:
@@ -689,6 +690,33 @@ generated topology and kinematics. Every output row therefore has
 `rec_selected=true` and carries both the generated and reconstructed scalar
 columns used by the visualizer. This artifact is intended for reconstruction
 diagnostics, not as the generated denominator for response construction.
+
+The event-level `gEvents` record does not necessarily contain two labeled
+pi0-decay photons. For detector-resolution studies, export the generated match
+of each particle actually chosen by post-processing instead:
+
+```bash
+python3 analysis/export_selected_particle_matches.py \
+  6.535_rgk_eppi0_GEMC.root \
+  6.535_rgk_eppi0_GEMC_selected.root \
+  samples/rgk_6.535_selected_particle_matches.npz \
+  --dictionary build/libROOTBranchesDict.so \
+  --chunk-size 1000000 --progress-chunks 10
+```
+
+The adapter reads the selected roles from `sParticles`, streams the converter
+`rParticles` tree, and joins on
+`(sourceFileId, sourceEventIndex, particleIdx)`. It writes one row per selected
+role occurrence with reconstructed kinematics, detector and sector, the
+converter's `matchedGenIdx` and `matchAngleDeg`, and the matched generated PID
+and kinematics. Selected rows without a generated match are retained with
+`gen_matched=false`. A JSON summary beside the NPZ reports overall and
+role/detector matching fractions plus median, 95th-percentile, and near-limit
+matching-angle diagnostics. Missing converter rows, duplicate source-aware
+keys, selected/converter identity disagreements, and claimed matches with a
+different generated PID stop the export rather than silently corrupting the
+resolution sample. This particle-level artifact is diagnostic only and is not
+the generated denominator for response construction.
 
 `derive_exclusivity.py` uses a deterministic physics-ordered bootstrap followed
 by a fixed-window N-1 stability audit and preserves the global/per-bin modes.
