@@ -18,7 +18,7 @@ from scipy.sparse import load_npz, save_npz
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from eppi0.binning import from_config
+from eppi0.binning import AnalysisBinning, from_config
 from eppi0.bin_centering import AaoExecutableEvaluator, compute_bin_centering
 from eppi0.background_subtraction import METHOD as BACKGROUND_METHOD
 from eppi0.background_subtraction import estimate_mgg_background
@@ -48,7 +48,19 @@ from eppi0.harmonics import (
     QUALITY_REASON_NAMES,
     fit_grid,
 )
+from eppi0.model_comparison import (
+    ModelGridResult,
+    TabulatedModelEvaluator,
+    average_model_over_bins,
+)
+from eppi0.model_plots import render_model_comparison
 from eppi0.phase_space import AnalysisPhaseSpace
+from eppi0.structure_functions import (
+    STRUCTURE_FUNCTION_NAMES,
+    epsilon_from_xb_q2,
+    harmonic_reference_coordinates,
+    harmonic_to_structure_functions,
+)
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes, subtract_feed_in
 
 
@@ -452,6 +464,86 @@ def parser() -> argparse.ArgumentParser:
         "--allow-negative-fits",
         action="store_true",
         help="Do not reject fits whose harmonic curve becomes negative for some phi",
+    )
+
+    structure_functions = commands.add_parser(
+        "structure-functions",
+        help="Convert A, B, C harmonics and full covariance to sigma_U, sigma_LT, sigma_TT",
+    )
+    structure_functions.add_argument("harmonics", type=Path)
+    structure_functions.add_argument("--cross-section", type=Path, required=True)
+    structure_functions.add_argument("--config", type=Path, required=True)
+    structure_functions.add_argument("--output", type=Path, required=True)
+    structure_functions.add_argument(
+        "--include-quality-rejected",
+        action="store_true",
+        help=(
+            "Export numerically successful fits even when the production quality "
+            "mask rejects them"
+        ),
+    )
+
+    model_prediction = commands.add_parser(
+        "model-prediction",
+        help="Forward-average AAO or tabulated theory through the analysis bins and fit harmonics",
+    )
+    model_prediction.add_argument("--config", type=Path, required=True)
+    model_prediction.add_argument("--cross-section", type=Path, required=True)
+    model_prediction.add_argument("--output", type=Path, required=True)
+    model_prediction.add_argument("--model-name", required=True)
+    source = model_prediction.add_mutually_exclusive_group(required=True)
+    source.add_argument("--aao-exe", type=Path, help="Path to the aao_xsec executable")
+    source.add_argument("--table", type=Path, help="CSV model table")
+    model_prediction.add_argument(
+        "--interpolation",
+        choices=("linear", "nearest"),
+        default="linear",
+        help="Interpolation used for tabulated model input (default: linear)",
+    )
+    model_prediction.add_argument(
+        "--N", type=int, default=4, help="Midpoint samples per dimension"
+    )
+    model_prediction.add_argument("--workers", type=int)
+    model_prediction.add_argument("--chunk-size", type=int, default=64)
+    model_prediction.add_argument("--progress-chunks", type=int, default=10)
+    model_prediction.add_argument("--bin-start", type=int, default=0)
+    model_prediction.add_argument("--bin-stop", type=int)
+    model_prediction.add_argument("--bin-chunks", type=int)
+    model_prediction.add_argument("--bin-chunk-index", type=int)
+    model_prediction.add_argument("--theory", type=int, default=5)
+    model_prediction.add_argument("--channel", type=int, default=1)
+    model_prediction.add_argument("--resonance", type=int, default=0)
+    model_prediction.add_argument("--max-failure-fraction", type=float, default=0.0)
+    model_prediction.add_argument("--verbose-failures", action="store_true")
+    model_prediction.add_argument(
+        "--all-bins",
+        action="store_true",
+        help="Evaluate every configured bin instead of only data-valid bins",
+    )
+
+    model_prediction_merge = commands.add_parser(
+        "model-prediction-merge",
+        help="Merge partial model-prediction artifacts and refit the complete harmonic grid",
+    )
+    model_prediction_merge.add_argument("partials", nargs="+", type=Path)
+    model_prediction_merge.add_argument("--output", type=Path, required=True)
+
+    model_comparison = commands.add_parser(
+        "model-comparison-plots",
+        help=(
+            "Overlay forward-averaged model artifacts on cross sections, harmonics, "
+            "and structure functions"
+        ),
+    )
+    model_comparison.add_argument("cross_section", type=Path)
+    model_comparison.add_argument("harmonics", type=Path)
+    model_comparison.add_argument("models", nargs="+", type=Path)
+    model_comparison.add_argument("--config", type=Path, required=True)
+    model_comparison.add_argument("--output-dir", type=Path, required=True)
+    model_comparison.add_argument(
+        "--include-quality-rejected",
+        action="store_true",
+        help="Compare numerically successful data fits even when quality-rejected",
     )
 
     harmonic_plots = commands.add_parser("harmonic-plots", help="Plot harmonic-fit diagnostics")
@@ -3052,6 +3144,533 @@ def command_harmonics(args: argparse.Namespace) -> None:
     print(f"Wrote {args.output}")
 
 
+def _require_matching_edges(
+    left,
+    right,
+    names=("q2_edges", "xb_edges", "t_edges", "phi_edges"),
+) -> None:
+    for name in names:
+        first = np.asarray(left[name], dtype=float)
+        second = np.asarray(right[name], dtype=float)
+        if first.shape != second.shape or not np.allclose(
+            first, second, rtol=0.0, atol=1.0e-12
+        ):
+            raise ValueError(f"artifacts have incompatible {name}")
+
+
+def _matching_npz_field(left, right, name: str) -> bool:
+    if name not in left.files or name not in right.files:
+        return name not in left.files and name not in right.files
+    first = np.asarray(left[name])
+    second = np.asarray(right[name])
+    if first.shape != second.shape:
+        return False
+    if np.issubdtype(first.dtype, np.number) and np.issubdtype(
+        second.dtype, np.number
+    ):
+        return bool(
+            np.allclose(first, second, rtol=1.0e-12, atol=1.0e-12, equal_nan=True)
+        )
+    return bool(np.array_equal(first, second))
+
+
+def command_structure_functions(args: argparse.Namespace) -> None:
+    harmonics = np.load(args.harmonics, allow_pickle=False)
+    cross_section = np.load(args.cross_section, allow_pickle=False)
+    config = load_config(args.config)
+    binning = from_config(args.config)
+    _require_matching_edges(harmonics, cross_section)
+    for name, expected in (
+        ("q2_edges", binning.q2_edges),
+        ("xb_edges", binning.xb_edges),
+        ("t_edges", binning.t_edges),
+        ("phi_edges", binning.phi_edges),
+    ):
+        values = np.asarray(harmonics[name], dtype=float)
+        if values.shape != expected.shape or not np.allclose(
+            values, expected, rtol=0.0, atol=1.0e-12
+        ):
+            raise ValueError(f"harmonic artifact does not match configured {name}")
+    parameters = np.asarray(harmonics["parameters"], dtype=float)
+    covariance = np.asarray(harmonics["covariance"], dtype=float)
+    fit_success = (
+        np.asarray(harmonics["fit_success"], dtype=bool)
+        if "fit_success" in harmonics.files
+        else np.all(np.isfinite(parameters), axis=-1)
+    )
+    selected = fit_success.copy()
+    if "quality_mask" in harmonics.files and not args.include_quality_rejected:
+        selected &= np.asarray(harmonics["quality_mask"], dtype=bool)
+    q2_reference, xb_reference = harmonic_reference_coordinates(
+        binning, cross_section
+    )
+    epsilon = epsilon_from_xb_q2(
+        q2_reference, xb_reference, float(config["beam_energy"])
+    )
+    result = harmonic_to_structure_functions(parameters, covariance, epsilon)
+    valid = selected & result.valid
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        args.output,
+        structure_functions=np.where(valid[..., None], result.values, np.nan),
+        covariance=np.where(valid[..., None, None], result.covariance, np.nan),
+        uncertainties=np.where(valid[..., None], result.uncertainties, np.nan),
+        valid=valid,
+        epsilon=epsilon,
+        q2_reference=q2_reference,
+        xb_reference=xb_reference,
+        minus_t_coordinate=0.5 * (binning.t_edges[:-1] + binning.t_edges[1:]),
+        structure_function_names=STRUCTURE_FUNCTION_NAMES,
+        structure_function_units="nb/GeV^2",
+        beam_energy=float(config["beam_energy"]),
+        harmonic_convention=(
+            "d2sigma/(dt dphi)=A+B*cos(phi)+C*cos(2phi); "
+            "sigma_U=2pi*A, sigma_LT=2pi*B/sqrt(2epsilon(1+epsilon)), "
+            "sigma_TT=2pi*C/epsilon"
+        ),
+        covariance_definition="J * covariance(A,B,C) * J^T",
+        selection_definition=(
+            "numerically successful fits"
+            if args.include_quality_rejected
+            else "production quality_mask"
+        ),
+        q2_edges=binning.q2_edges,
+        xb_edges=binning.xb_edges,
+        t_edges=binning.t_edges,
+        phi_edges=binning.phi_edges,
+    )
+    print(f"Valid structure-function bins: {int(np.count_nonzero(valid))}/{valid.size}")
+    print(f"Wrote {args.output}")
+
+
+def _cross_section_grid(data, name: str, binning, default: np.ndarray) -> np.ndarray:
+    if name not in data.files:
+        return np.asarray(default, dtype=float)
+    values = np.asarray(data[name], dtype=float)
+    if values.shape == binning.shape:
+        return values
+    if values.size == binning.size:
+        return binning.unflatten(values.reshape(-1))
+    raise ValueError(
+        f"cross-section {name} has shape {values.shape}; expected {binning.shape} "
+        f"or {binning.size} flat values"
+    )
+
+
+def _model_fit_payload(
+    result: ModelGridResult,
+    phi_edges: np.ndarray,
+    beam_energy: float,
+    q2_harmonic_reference: np.ndarray | None = None,
+    xb_harmonic_reference: np.ndarray | None = None,
+) -> dict[str, np.ndarray]:
+    values = np.asarray(result.reduced_cross_section, dtype=float)
+    reliable = np.asarray(result.reliable, dtype=bool)
+    artificial_uncertainty = np.full(values.shape, np.nan, dtype=float)
+    for index in np.ndindex(values.shape[:-1]):
+        valid = reliable[index] & np.isfinite(values[index])
+        if not np.any(valid):
+            continue
+        scale = max(1.0, float(np.max(np.abs(values[index][valid]))))
+        artificial_uncertainty[index][valid] = 1.0e-8 * scale
+    fits = fit_grid(
+        values,
+        artificial_uncertainty,
+        phi_edges,
+        validity_mask=reliable,
+        minimum_points=4,
+        maximum_chi2_ndf=DEFAULT_MAXIMUM_CHI2_NDF,
+        maximum_covariance_condition=DEFAULT_MAXIMUM_COVARIANCE_CONDITION,
+        maximum_relative_a_uncertainty=DEFAULT_MAXIMUM_RELATIVE_A_UNCERTAINTY,
+        require_nonnegative=True,
+    )
+
+    def reference_mean(grid: np.ndarray) -> np.ndarray:
+        grid = np.asarray(grid, dtype=float)
+        valid = reliable & np.isfinite(grid)
+        numerator = np.sum(np.where(valid, grid, 0.0), axis=-1)
+        denominator = np.sum(valid, axis=-1)
+        return np.divide(
+            numerator,
+            denominator,
+            out=np.full(values.shape[:-1], np.nan),
+            where=denominator > 0,
+        )
+
+    if (q2_harmonic_reference is None) != (xb_harmonic_reference is None):
+        raise ValueError("Q2 and xB harmonic references must be supplied together")
+    if q2_harmonic_reference is None:
+        q2_reference = reference_mean(result.q2_reference)
+        xb_reference = reference_mean(result.xb_reference)
+    else:
+        q2_reference = np.asarray(q2_harmonic_reference, dtype=float)
+        xb_reference = np.asarray(xb_harmonic_reference, dtype=float)
+        if q2_reference.shape != values.shape[:-1]:
+            raise ValueError("Q2 harmonic reference has incompatible shape")
+        if xb_reference.shape != values.shape[:-1]:
+            raise ValueError("xB harmonic reference has incompatible shape")
+    epsilon = epsilon_from_xb_q2(
+        q2_reference, xb_reference, beam_energy
+    )
+    structure = harmonic_to_structure_functions(
+        fits["parameters"], fits["covariance"], epsilon
+    )
+    structure_valid = np.asarray(fits["fit_success"], dtype=bool) & structure.valid
+    return {
+        **fits,
+        "model_fit_uncertainty": artificial_uncertainty,
+        "structure_functions": np.where(
+            structure_valid[..., None], structure.values, np.nan
+        ),
+        "structure_function_covariance_algorithmic": np.where(
+            structure_valid[..., None, None], structure.covariance, np.nan
+        ),
+        "structure_function_uncertainties_algorithmic": np.where(
+            structure_valid[..., None], structure.uncertainties, np.nan
+        ),
+        "structure_function_valid": structure_valid,
+        "epsilon": epsilon,
+        "q2_harmonic_reference": q2_reference,
+        "xb_harmonic_reference": xb_reference,
+    }
+
+
+def _model_prediction_payload(
+    result: ModelGridResult,
+    binning,
+    *,
+    beam_energy: float,
+    metadata: dict,
+    q2_harmonic_reference: np.ndarray | None = None,
+    xb_harmonic_reference: np.ndarray | None = None,
+) -> dict:
+    fit_payload = _model_fit_payload(
+        result,
+        binning.phi_edges,
+        beam_energy,
+        q2_harmonic_reference=q2_harmonic_reference,
+        xb_harmonic_reference=xb_harmonic_reference,
+    )
+    return {
+        "reduced_cross_section": result.reduced_cross_section,
+        "extracted_bin_average": result.extracted_bin_average,
+        "simple_reduced_average": result.simple_reduced_average,
+        "center_reduced_cross_section": result.center_reduced_cross_section,
+        "reliable": result.reliable,
+        "computed": result.computed,
+        "q2_reference": result.q2_reference,
+        "xb_reference": result.xb_reference,
+        "minus_t_reference": result.minus_t_reference,
+        "phi_reference": result.phi_reference,
+        "n_physical": result.n_physical,
+        "n_valid": result.n_valid,
+        "n_failed": result.n_failed,
+        "physical_fraction": result.physical_fraction,
+        "failure_fraction": result.failure_fraction,
+        **fit_payload,
+        "coefficient_names": np.asarray(["A", "B", "C"]),
+        "structure_function_names": STRUCTURE_FUNCTION_NAMES,
+        "reduced_cross_section_units": "nb/(GeV^2 rad)",
+        "structure_function_units": "nb/GeV^2",
+        "model_fit_uncertainty_definition": (
+            "algorithmic 1e-8 relative scale used only to run the identical weighted "
+            "harmonic fitter; derived covariance is not a model uncertainty"
+        ),
+        "forward_average_definition": (
+            "<virtual_photon_flux * reduced_cross_section>_physical_bin / "
+            "virtual_photon_flux(reference), followed by the same stored data "
+            "bin-centering divisor when present"
+        ),
+        "q2_edges": binning.q2_edges,
+        "xb_edges": binning.xb_edges,
+        "t_edges": binning.t_edges,
+        "phi_edges": binning.phi_edges,
+        "beam_energy": beam_energy,
+        **metadata,
+    }
+
+
+def command_model_prediction(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    binning = from_config(args.config)
+    beam_energy = float(config["beam_energy"])
+    phase_space = AnalysisPhaseSpace.from_config(config)
+    cross_section = np.load(args.cross_section, allow_pickle=False)
+    for name, expected in (
+        ("q2_edges", binning.q2_edges),
+        ("xb_edges", binning.xb_edges),
+        ("t_edges", binning.t_edges),
+        ("phi_edges", binning.phi_edges),
+    ):
+        values = np.asarray(cross_section[name], dtype=float)
+        if values.shape != expected.shape or not np.allclose(
+            values, expected, rtol=0.0, atol=1.0e-12
+        ):
+            raise ValueError(f"cross-section artifact does not match configured {name}")
+    q2_harmonic_reference, xb_harmonic_reference = harmonic_reference_coordinates(
+        binning, cross_section
+    )
+    q2_centers = 0.5 * (binning.q2_edges[:-1] + binning.q2_edges[1:])
+    xb_centers = 0.5 * (binning.xb_edges[:-1] + binning.xb_edges[1:])
+    q2_default = np.broadcast_to(q2_centers[:, None, None, None], binning.shape)
+    xb_default = np.broadcast_to(xb_centers[None, :, None, None], binning.shape)
+    q2_reference = _cross_section_grid(
+        cross_section, "flux_q2_coordinate", binning, q2_default
+    )
+    xb_reference = _cross_section_grid(
+        cross_section, "flux_xb_coordinate", binning, xb_default
+    )
+    transform = _cross_section_grid(
+        cross_section,
+        "bin_centering_C_BC",
+        binning,
+        np.ones(binning.shape, dtype=float),
+    )
+    if args.all_bins or "final_validity_mask" not in cross_section.files:
+        requested = np.ones(binning.shape, dtype=bool)
+    else:
+        requested = np.asarray(cross_section["final_validity_mask"], dtype=bool)
+        if requested.shape != binning.shape:
+            raise ValueError("cross-section final_validity_mask has incompatible shape")
+    bin_start, bin_stop, total_3d = _bin_centering_range(args, binning)
+    metadata = {
+        "model_name": args.model_name,
+        "samples_per_dimension": args.N,
+        "max_failure_fraction": args.max_failure_fraction,
+        "bin_start": bin_start,
+        "bin_stop": bin_stop,
+        "total_3d_bins": total_3d,
+        "data_cross_section_path": str(args.cross_section),
+        "data_valid_bins_only": not args.all_bins,
+        "bin_centering_transform_applied": "bin_centering_C_BC" in cross_section.files,
+        "phase_space_definition": (
+            "exclusive physical bin"
+            if not phase_space.enabled
+            else f"exclusive physical bin and {phase_space.description()}"
+        ),
+        **phase_space.as_npz_fields(),
+    }
+    if args.aao_exe:
+        if not args.aao_exe.is_file():
+            raise FileNotFoundError(f"aao_xsec executable not found: {args.aao_exe}")
+        evaluator = AaoExecutableEvaluator(
+            exe=args.aao_exe,
+            beam_energy=beam_energy,
+            theory=args.theory,
+            channel=args.channel,
+            resonance=args.resonance,
+            workers=args.workers,
+            chunk_size=args.chunk_size,
+            verbose_failures=args.verbose_failures,
+        )
+        metadata.update(
+            model_source_kind="aao_executable",
+            model_source_path=str(args.aao_exe),
+            aao_theory=args.theory,
+            aao_channel=args.channel,
+            aao_resonance=args.resonance,
+        )
+        with evaluator:
+            result = average_model_over_bins(
+                binning,
+                beam_energy,
+                evaluator,
+                samples_per_dimension=args.N,
+                max_failure_fraction=args.max_failure_fraction,
+                bin_start=bin_start,
+                bin_stop=bin_stop,
+                progress_chunks=args.progress_chunks,
+                phase_space=phase_space,
+                q2_reference=q2_reference,
+                xb_reference=xb_reference,
+                transform=transform,
+                requested_mask=requested,
+            )
+    else:
+        evaluator = TabulatedModelEvaluator(
+            args.table, beam_energy, interpolation=args.interpolation
+        )
+        metadata.update(
+            model_source_kind="csv_table",
+            model_source_path=str(args.table),
+            table_mode=evaluator.mode,
+            table_t_input_convention=evaluator.t_input_convention,
+            interpolation=args.interpolation,
+        )
+        result = average_model_over_bins(
+            binning,
+            beam_energy,
+            evaluator,
+            samples_per_dimension=args.N,
+            max_failure_fraction=args.max_failure_fraction,
+            bin_start=bin_start,
+            bin_stop=bin_stop,
+            progress_chunks=args.progress_chunks,
+            phase_space=phase_space,
+            q2_reference=q2_reference,
+            xb_reference=xb_reference,
+            transform=transform,
+            requested_mask=requested,
+        )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        args.output,
+        **_model_prediction_payload(
+            result,
+            binning,
+            beam_energy=beam_energy,
+            metadata=metadata,
+            q2_harmonic_reference=q2_harmonic_reference,
+            xb_harmonic_reference=xb_harmonic_reference,
+        ),
+    )
+    print(
+        f"Reliable model bins: {int(np.count_nonzero(result.reliable))}/"
+        f"{int(np.count_nonzero(result.computed))} computed"
+    )
+    print(f"Wrote {args.output}")
+
+
+def command_model_prediction_merge(args: argparse.Namespace) -> None:
+    partials = [np.load(path, allow_pickle=False) for path in args.partials]
+    if not partials:
+        raise ValueError("at least one partial model artifact is required")
+    first = partials[0]
+    q2_edges = np.asarray(first["q2_edges"], dtype=float)
+    xb_edges = np.asarray(first["xb_edges"], dtype=float)
+    t_edges = np.asarray(first["t_edges"], dtype=float)
+    phi_edges = np.asarray(first["phi_edges"], dtype=float)
+    binning = AnalysisBinning(q2_edges, xb_edges, t_edges, phi_edges)
+    float_fields = (
+        "reduced_cross_section",
+        "extracted_bin_average",
+        "simple_reduced_average",
+        "center_reduced_cross_section",
+        "q2_reference",
+        "xb_reference",
+        "minus_t_reference",
+        "phi_reference",
+        "physical_fraction",
+        "failure_fraction",
+    )
+    int_fields = ("n_physical", "n_valid", "n_failed")
+    merged = {name: np.full(binning.shape, np.nan) for name in float_fields}
+    for name in int_fields:
+        merged[name] = np.zeros(binning.shape, dtype=np.int64)
+    merged["reliable"] = np.zeros(binning.shape, dtype=bool)
+    merged["computed"] = np.zeros(binning.shape, dtype=bool)
+    identity_fields = (
+        "model_name",
+        "model_source_kind",
+        "model_source_path",
+        "beam_energy",
+        "samples_per_dimension",
+        "max_failure_fraction",
+        "total_3d_bins",
+        "data_cross_section_path",
+        "data_valid_bins_only",
+        "bin_centering_transform_applied",
+        "phase_space_definition",
+        "phase_space_Q2_min",
+        "phase_space_W_min",
+        "phase_space_electron_p_min",
+        "aao_theory",
+        "aao_channel",
+        "aao_resonance",
+        "table_mode",
+        "table_t_input_convention",
+        "interpolation",
+        "q2_harmonic_reference",
+        "xb_harmonic_reference",
+    )
+    for path, partial in zip(args.partials, partials):
+        _require_matching_edges(first, partial)
+        for name in identity_fields:
+            if not _matching_npz_field(first, partial, name):
+                raise ValueError(f"partial model artifacts disagree on {name}: {path}")
+        mask = np.asarray(partial["computed"], dtype=bool)
+        if np.any(mask & merged["computed"]):
+            raise ValueError(f"partial model artifact overlaps an earlier chunk: {path}")
+        for name in (*float_fields, *int_fields, "reliable"):
+            values = np.asarray(partial[name])
+            if values.shape != binning.shape:
+                raise ValueError(f"partial {name} has incompatible shape: {path}")
+            merged[name][mask] = values[mask]
+        merged["computed"] |= mask
+    total_3d = int(np.asarray(first["total_3d_bins"]).item())
+    computed3 = np.any(merged["computed"], axis=-1)
+    if int(np.count_nonzero(computed3)) != total_3d:
+        raise ValueError(
+            f"partial model artifacts cover {int(np.count_nonzero(computed3))}/"
+            f"{total_3d} 3D bins"
+        )
+    result = ModelGridResult(**merged)
+    metadata_names = (
+        "model_name",
+        "model_source_kind",
+        "model_source_path",
+        "samples_per_dimension",
+        "max_failure_fraction",
+        "data_cross_section_path",
+        "data_valid_bins_only",
+        "bin_centering_transform_applied",
+        "phase_space_definition",
+        "phase_space_Q2_min",
+        "phase_space_W_min",
+        "phase_space_electron_p_min",
+        "aao_theory",
+        "aao_channel",
+        "aao_resonance",
+        "table_mode",
+        "table_t_input_convention",
+        "interpolation",
+    )
+    metadata = {
+        name: first[name]
+        for name in metadata_names
+        if name in first.files
+    }
+    metadata.update(
+        bin_start=0,
+        bin_stop=total_3d,
+        total_3d_bins=total_3d,
+        merged_partial_paths=np.asarray([str(path) for path in args.partials]),
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        args.output,
+        **_model_prediction_payload(
+            result,
+            binning,
+            beam_energy=float(np.asarray(first["beam_energy"]).item()),
+            metadata=metadata,
+            q2_harmonic_reference=np.asarray(
+                first["q2_harmonic_reference"], dtype=float
+            ),
+            xb_harmonic_reference=np.asarray(
+                first["xb_harmonic_reference"], dtype=float
+            ),
+        ),
+    )
+    print(f"Merged {len(partials)} model artifacts into {args.output}")
+
+
+def command_model_comparison_plots(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    phi_pages, structure_pages, csv_path = render_model_comparison(
+        args.cross_section,
+        args.harmonics,
+        args.models,
+        beam_energy=float(config["beam_energy"]),
+        output_dir=args.output_dir,
+        include_quality_rejected=args.include_quality_rejected,
+    )
+    print(f"Model-comparison phi pages: {phi_pages}")
+    print(f"Model-comparison structure-function pages: {structure_pages}")
+    print(f"Wrote {csv_path}")
+    print(f"Wrote model-comparison plots under {args.output_dir}")
+
+
 def command_harmonic_plots(args: argparse.Namespace) -> None:
     harmonics = np.load(args.harmonics, allow_pickle=False)
     parameters = np.asarray(harmonics["parameters"], dtype=float)
@@ -5052,6 +5671,14 @@ def main() -> int:
         command_cross_section(args)
     elif args.command == "fit-harmonics":
         command_harmonics(args)
+    elif args.command == "structure-functions":
+        command_structure_functions(args)
+    elif args.command == "model-prediction":
+        command_model_prediction(args)
+    elif args.command == "model-prediction-merge":
+        command_model_prediction_merge(args)
+    elif args.command == "model-comparison-plots":
+        command_model_comparison_plots(args)
     elif args.command == "harmonic-plots":
         command_harmonic_plots(args)
     elif args.command == "cross-section-plots":

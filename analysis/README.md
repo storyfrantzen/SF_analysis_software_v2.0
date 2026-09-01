@@ -51,6 +51,10 @@ mass.
 - `eppi0.event_sample`: radiative/non-radiative GEN construction and REC joins;
 - `eppi0.data_efficiency`: run-charge joins, current grouping, and zero-current fits;
 - `eppi0.harmonics`: weighted `A + B cos(phi) + C cos(2 phi)` fits;
+- `eppi0.structure_functions`: covariance-aware conversion of harmonics to
+  `sigma_U`, `sigma_LT`, and `sigma_TT`;
+- `eppi0.model_comparison`: AAO or tabulated-model interpolation and
+  extraction-equivalent physical-bin averaging;
 - `eppi0.campaign_diagnostics`: reproducible numerical end-of-campaign Markdown
   audits spanning normalization, validity, response support, and harmonic quality.
 
@@ -175,6 +179,9 @@ corrected yield, finite positive propagated uncertainty, and positive physical
 volume and virtual-photon flux.  Invalid cross-section values and uncertainties
 are stored as `NaN`, and the component masks are retained separately so every
 rejection can be audited.  The harmonic stage consumes this mask directly.
+
+Theory prediction, structure-function export, and model-overlay commands are
+documented in [`docs/model_comparison.md`](../docs/model_comparison.md).
 
 `fit-harmonics` retains every numerically solvable raw weighted fit, but only sets
 `quality_mask` for fits that satisfy the production guards.  Defaults require at
