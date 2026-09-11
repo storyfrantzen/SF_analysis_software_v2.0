@@ -43,7 +43,10 @@ from eppi0.current_efficiency import (
 )
 from eppi0.exclusivity import load_cuts
 from eppi0.response import build_response
-from eppi0.radiative_correction import compute_radiative_correction
+from eppi0.radiative_correction import (
+    CLUSTER_UNCERTAINTY_MODEL,
+    compute_radiative_correction,
+)
 from eppi0.root_response import build_response_from_root
 from eppi0.harmonics import (
     DEFAULT_MAXIMUM_CHI2_NDF,
@@ -254,7 +257,15 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         help="Use at most this many LUND files from each input for quick smoke tests",
     )
-    radcorr.add_argument("--min-counts", type=int, default=5)
+    radcorr.add_argument(
+        "--min-counts",
+        type=int,
+        default=5,
+        help=(
+            "Minimum Kish effective count in both samples for a reliable bin; "
+            "exact consecutive multiplicity copies count as one proposal cluster"
+        ),
+    )
     radcorr.add_argument(
         "--progress-chunks",
         type=int,
@@ -1347,11 +1358,21 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         args.output,
         C_rad=result.c_rad,
         delta_C=result.delta_c,
+        C_rad_raw=result.c_rad_raw,
+        delta_C_raw=result.delta_c_raw,
         reliable=result.reliable,
         support_overlap=result.support_overlap,
         support_status=result.support_status,
         H_born=binning.unflatten(result.born.counts),
         H_rad=binning.unflatten(result.radiative.counts),
+        H_born_cluster_sumw2=binning.unflatten(
+            result.born.cluster_weight_square_sum
+        ),
+        H_rad_cluster_sumw2=binning.unflatten(
+            result.radiative.cluster_weight_square_sum
+        ),
+        H_born_effective=binning.unflatten(result.born.effective_counts),
+        H_rad_effective=binning.unflatten(result.radiative.effective_counts),
         born_q2_min=result.born.q2_min,
         born_q2_max=result.born.q2_max,
         born_eprime_min=result.born.eprime_min,
@@ -1386,8 +1407,18 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         radiative_events_seen=result.radiative.events_seen,
         born_topology_events=result.born.topology_events,
         radiative_topology_events=result.radiative.topology_events,
+        born_topology_clusters=result.born.topology_clusters,
+        radiative_topology_clusters=result.radiative.topology_clusters,
         born_in_range=result.born.in_range,
         radiative_in_range=result.radiative.in_range,
+        born_in_range_clusters=result.born.in_range_clusters,
+        radiative_in_range_clusters=result.radiative.in_range_clusters,
+        born_maximum_cluster_multiplicity=result.born.maximum_cluster_multiplicity,
+        radiative_maximum_cluster_multiplicity=(
+            result.radiative.maximum_cluster_multiplicity
+        ),
+        uncertainty_model=CLUSTER_UNCERTAINTY_MODEL,
+        reliability_count_definition="kish-effective-count-per-bin",
         born_generated_q2_range=np.asarray([result.born.generated_q2_min, result.born.generated_q2_max]),
         radiative_generated_q2_range=np.asarray([
             result.radiative.generated_q2_min, result.radiative.generated_q2_max,
@@ -1423,12 +1454,24 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
     print(
         "Born events: "
         f"seen={result.born.events_seen}, topology={result.born.topology_events}, "
-        f"in-range={result.born.in_range}"
+        f"in-range={result.born.in_range}, "
+        f"topology-clusters={result.born.topology_clusters}, "
+        f"in-range-clusters={result.born.in_range_clusters}, "
+        f"maximum-cluster-multiplicity={result.born.maximum_cluster_multiplicity}"
     )
     print(
         "Radiative events: "
         f"seen={result.radiative.events_seen}, topology={result.radiative.topology_events}, "
-        f"in-range={result.radiative.in_range}"
+        f"in-range={result.radiative.in_range}, "
+        f"topology-clusters={result.radiative.topology_clusters}, "
+        f"in-range-clusters={result.radiative.in_range_clusters}, "
+        f"maximum-cluster-multiplicity={result.radiative.maximum_cluster_multiplicity}"
+    )
+    print(
+        "Cluster-aware effective support: "
+        f"born={np.sum(result.born.effective_counts):.8g}, "
+        f"radiative={np.sum(result.radiative.effective_counts):.8g}; "
+        f"uncertainty_model={CLUSTER_UNCERTAINTY_MODEL}"
     )
     print(
         "Born generated ranges: "
@@ -1440,7 +1483,10 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         f"Q2={result.radiative.generated_q2_min:.6g}-{result.radiative.generated_q2_max:.6g}, "
         f"Eprime={result.radiative.generated_eprime_min:.6g}-{result.radiative.generated_eprime_max:.6g}"
     )
-    print(f"Reliable bins: {reliable_bins}/{total_bins} with min_counts={args.min_counts}")
+    print(
+        f"Reliable bins: {reliable_bins}/{total_bins} with "
+        f"minimum per-bin effective cluster count={args.min_counts}"
+    )
     print(
         "Support bins: "
         f"overlap={int(np.count_nonzero(result.support_overlap))}, "
@@ -1896,6 +1942,14 @@ def _plot_radiative_correction_diagnostics(
     reliable = np.asarray(correction["reliable"], dtype=bool)
     h_born = np.asarray(correction["H_born"], dtype=float)
     h_rad = np.asarray(correction["H_rad"], dtype=float)
+    h_born_effective = np.asarray(
+        correction["H_born_effective"] if "H_born_effective" in correction.files else h_born,
+        dtype=float,
+    )
+    h_rad_effective = np.asarray(
+        correction["H_rad_effective"] if "H_rad_effective" in correction.files else h_rad,
+        dtype=float,
+    )
     q2_edges = _npz_first(correction, "q2_edges", "Q2_edges")
     xb_edges = _npz_first(correction, "xb_edges", "Xb_edges")
     t_edges = _npz_first(correction, "t_edges")
@@ -1904,7 +1958,13 @@ def _plot_radiative_correction_diagnostics(
     if "support_status" in correction.files:
         support_status = np.asarray(correction["support_status"], dtype=np.uint8)
     else:
-        support_status = _support_status_codes_for_plotting(h_born, h_rad, min_counts)
+        support_status = _support_status_codes_for_plotting(
+            h_born,
+            h_rad,
+            min_counts,
+            born_effective_counts=h_born_effective,
+            radiative_effective_counts=h_rad_effective,
+        )
     if "support_overlap" in correction.files:
         support_overlap = np.asarray(correction["support_overlap"], dtype=bool)
     else:
@@ -1922,6 +1982,8 @@ def _plot_radiative_correction_diagnostics(
         ("reliable", reliable),
         ("H_born", h_born),
         ("H_rad", h_rad),
+        ("H_born_effective", h_born_effective),
+        ("H_rad_effective", h_rad_effective),
         ("support_status", support_status),
     ):
         if values.shape != expected_shape:
@@ -1953,6 +2015,7 @@ def _plot_radiative_correction_diagnostics(
     csv_lines = [
         "iq2,q2_low,q2_high,ixb,xb_low,xb_high,it,t_low,t_high,"
         "reliable_phi_bins,overlap_phi_bins,born_sum,radiative_sum,"
+        "born_effective_sum,radiative_effective_sum,"
         "mean_c_rad,median_c_rad,min_c_rad,max_c_rad,mean_delta_c"
     ]
 
@@ -1968,6 +2031,8 @@ def _plot_radiative_correction_diagnostics(
             support_status,
             h_born,
             h_rad,
+            h_born_effective,
+            h_rad_effective,
             correction,
             min_counts,
         )
@@ -2004,6 +2069,8 @@ def _plot_radiative_correction_diagnostics(
                 for it in range(c_rad.shape[2]):
                     born_phi = h_born[iq2, ixb, it, :]
                     rad_phi = h_rad[iq2, ixb, it, :]
+                    born_effective_phi = h_born_effective[iq2, ixb, it, :]
+                    rad_effective_phi = h_rad_effective[iq2, ixb, it, :]
                     if not np.any((born_phi > 0.0) | (rad_phi > 0.0)):
                         continue
                     reliable_phi = reliable[iq2, ixb, it, :]
@@ -2020,6 +2087,8 @@ def _plot_radiative_correction_diagnostics(
                         status_phi,
                         born_phi,
                         rad_phi,
+                        born_effective_phi,
+                        rad_effective_phi,
                         q2_edges,
                         xb_edges,
                         t_edges,
@@ -2048,6 +2117,8 @@ def _plot_radiative_correction_diagnostics(
                                 int(np.count_nonzero(overlap_phi)),
                                 float(np.sum(born_phi)),
                                 float(np.sum(rad_phi)),
+                                float(np.sum(born_effective_phi)),
+                                float(np.sum(rad_effective_phi)),
                                 float(np.nanmean(values[good])) if np.any(good) else np.nan,
                                 float(np.nanmedian(values[good])) if np.any(good) else np.nan,
                                 float(np.nanmin(values[good])) if np.any(good) else np.nan,
@@ -2073,11 +2144,18 @@ def _support_status_codes_for_plotting(
     born_counts: np.ndarray,
     radiative_counts: np.ndarray,
     min_counts: int,
+    *,
+    born_effective_counts: np.ndarray | None = None,
+    radiative_effective_counts: np.ndarray | None = None,
 ) -> np.ndarray:
+    if born_effective_counts is None:
+        born_effective_counts = born_counts
+    if radiative_effective_counts is None:
+        radiative_effective_counts = radiative_counts
     born_nonzero = born_counts > 0.0
     rad_nonzero = radiative_counts > 0.0
-    born_low = born_counts < min_counts
-    rad_low = radiative_counts < min_counts
+    born_low = born_effective_counts < min_counts
+    rad_low = radiative_effective_counts < min_counts
     status = np.zeros(born_counts.shape, dtype=np.uint8)
     status[~born_nonzero & ~rad_nonzero] = 1
     status[born_nonzero & ~rad_nonzero] = 2
@@ -2099,6 +2177,8 @@ def _plot_radcorr_summary_page(
     support_status: np.ndarray,
     h_born: np.ndarray,
     h_rad: np.ndarray,
+    h_born_effective: np.ndarray,
+    h_rad_effective: np.ndarray,
     correction,
     min_counts: int,
 ) -> None:
@@ -2114,9 +2194,16 @@ def _plot_radcorr_summary_page(
         f"Total bins: {c_rad.size}",
         f"Reliable phi bins: {np.count_nonzero(reliable)}",
         f"Overlap phi bins: {np.count_nonzero(support_overlap)}",
-        f"min_counts: {min_counts}",
+        f"minimum effective counts: {min_counts}",
         f"Born total in-range count: {np.sum(h_born):.8g}",
         f"Radiative total in-range count: {np.sum(h_rad):.8g}",
+        f"Born summed per-bin effective count: {np.sum(h_born_effective):.8g}",
+        f"Radiative summed per-bin effective count: {np.sum(h_rad_effective):.8g}",
+        f"Uncertainty model: {_npz_string(correction, 'uncertainty_model', 'legacy-independent-event-poisson')}",
+        f"Born topology clusters: {_optional_scalar(correction, 'born_topology_clusters'):.8g}",
+        f"Radiative topology clusters: {_optional_scalar(correction, 'radiative_topology_clusters'):.8g}",
+        f"Born maximum cluster multiplicity: {_optional_scalar(correction, 'born_maximum_cluster_multiplicity'):.8g}",
+        f"Radiative maximum cluster multiplicity: {_optional_scalar(correction, 'radiative_maximum_cluster_multiplicity'):.8g}",
         f"Normalization ratio: {_optional_scalar(correction, 'normalization_ratio'):.8g}",
         f"Born integrated cross section: {_optional_scalar(correction, 'born_integrated_cross_section'):.8g}",
         f"Radiative integrated cross section: {_optional_scalar(correction, 'radiative_integrated_cross_section'):.8g}",
@@ -2130,7 +2217,8 @@ def _plot_radcorr_summary_page(
         _range_line(correction, "radiative_generated_eprime_range", "Radiative generated Eprime"),
         "",
         "support_status codes: 0 reliable, 1 both empty, 2 born only,",
-        "3 radiative only, 4 low born, 5 low radiative, 6 low both.",
+        "3 radiative only, 4 low effective born, 5 low effective radiative,",
+        "6 low effective support in both.",
     ]
     counts = np.bincount(support_status.ravel(), minlength=7)
     lines.append("")
@@ -2347,6 +2435,8 @@ def _plot_radcorr_phi_page(
     status,
     born_counts,
     rad_counts,
+    born_effective_counts,
+    rad_effective_counts,
     q2_edges,
     xb_edges,
     t_edges,
@@ -2403,10 +2493,30 @@ def _plot_radcorr_phi_page(
 
     cax.plot(phi_centers, born_counts, "o-", color="#4c78a8", markersize=3, linewidth=1.0, label="born")
     cax.plot(phi_centers, rad_counts, "s-", color="#f58518", markersize=3, linewidth=1.0, label="radiative")
+    if not (
+        np.allclose(born_effective_counts, born_counts)
+        and np.allclose(rad_effective_counts, rad_counts)
+    ):
+        cax.plot(
+            phi_centers,
+            born_effective_counts,
+            "--",
+            color="#4c78a8",
+            linewidth=1.0,
+            label="born effective",
+        )
+        cax.plot(
+            phi_centers,
+            rad_effective_counts,
+            "--",
+            color="#f58518",
+            linewidth=1.0,
+            label="radiative effective",
+        )
     if np.nanmax(np.r_[born_counts, rad_counts]) > 0:
         cax.set_yscale("symlog", linthresh=1.0)
     cax.set_xlabel("phi bin center [deg]")
-    cax.set_ylabel("Generated counts")
+    cax.set_ylabel("Generated / effective counts")
     cax.grid(True, alpha=0.25)
     cax.legend(loc="best", fontsize="small")
     cax.set_xlim(float(phi_centers[0]), float(phi_centers[-1]))

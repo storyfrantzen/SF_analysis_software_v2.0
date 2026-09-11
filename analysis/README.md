@@ -977,8 +977,17 @@ intentionally padded to `1.5 GeV` for RGA and `0.3 GeV` for RGK so alternate
 post-selection thresholds can be studied. Its output is a native `C_rad.npz`
 artifact consumed by `unfold --radiative-correction`; reliability masks and
 correction uncertainties are propagated into the self-contained unfolding
-result. For AAO-generated samples, pass the generator `sig_sum` integrated cross
-sections with `--born-normalization-file` and `--radiative-normalization-file`
+result. Statistical uncertainties are cluster-aware: exact consecutive LUND
+records emitted by one stochastic mode-3 multiplicity decision are grouped as
+one proposal cluster of weight `m`. Per-bin count variance is accumulated as
+`sum(m^2)`, and reliability uses the Kish effective count
+`sum(m)^2 / sum(m^2)` rather than treating repeated records as independent.
+This reduces exactly to the previous Poisson formula when every event has unit
+multiplicity. The artifact preserves raw counts, cluster `sumw2`, effective
+counts, raw pre-reliability corrections and uncertainties, and aggregate
+cluster diagnostics. For AAO-generated samples, pass the generator `sig_sum`
+integrated cross sections with `--born-normalization-file` and
+`--radiative-normalization-file`
 when `.norm` or `.sum` sidecars are available. Each option may point to one
 sidecar or to a directory containing many job sidecars. Directory inputs prefer
 `.norm` files when present, use an `events`-weighted mean `sig_sum` when every
@@ -990,9 +999,9 @@ when entering the values manually. The resulting global factor is
 radiative-to-Born cross-section ratio rather than a raw event-density ratio.
 `unfold --radiative-correction` divides unfolded yields by this factor. The
 artifact also stores support diagnostics: per-bin born/radiative counts, overlap
-and status masks, generated `Q2`/`Eprime` ranges, the phase-space cuts used to
-define the selected bins, and the integrated cross sections used for each
-sample. When sidecars are supplied, the artifact also preserves the
+and cluster-effective status masks, generated `Q2`/`Eprime` ranges, the
+phase-space cuts used to define the selected bins, and the integrated cross
+sections used for each sample. When sidecars are supplied, the artifact also preserves the
 normalization records used to get those cross sections: sidecar paths,
 combination method, `sig_sum`, `sig_int`, `events`, `ntries`, `nevent`,
 `mcall_max`, `sigr_max`, mode-3 proposal metadata, generator name, and units.

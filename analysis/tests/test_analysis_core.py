@@ -70,6 +70,7 @@ from eppi0.phase_space import AnalysisPhaseSpace
 from eppi0.topology import INVALID_TOPOLOGY, ft_photon_count
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
 from run_analysis import (
+    command_radiative_correction,
     command_response,
     command_unfold,
     command_response_plots,
@@ -1722,6 +1723,36 @@ class RadiativeCorrectionTests(unittest.TestCase):
         self.assertTrue(np.isfinite(result.generated_q2_min))
         self.assertTrue(np.isfinite(result.generated_eprime_max))
 
+    def test_lund_histogram_groups_exact_consecutive_multiplicity_copies(self) -> None:
+        bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mode3.lund"
+            event = _lund_event(pi0=True)
+            path.write_text(3 * event, encoding="utf-8")
+            result = histogram_lund(path, bins, beam_energy=6.535, chunk_size=1)
+        self.assertEqual(result.topology_events, 3)
+        self.assertEqual(result.topology_clusters, 1)
+        self.assertEqual(result.in_range, 3)
+        self.assertEqual(result.in_range_clusters, 1)
+        self.assertEqual(result.maximum_cluster_multiplicity, 3)
+        self.assertEqual(result.counts.sum(), 3.0)
+        self.assertEqual(result.cluster_weight_square_sum.sum(), 9.0)
+        self.assertEqual(result.effective_counts.sum(), 1.0)
+
+    def test_lund_histogram_does_not_merge_distinct_full_event_records(self) -> None:
+        bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "distinct.lund"
+            path.write_text(
+                _lund_event(pi0=False) + _lund_event(pi0=True),
+                encoding="utf-8",
+            )
+            result = histogram_lund(path, bins, beam_energy=6.535, chunk_size=1)
+        self.assertEqual(result.topology_events, 2)
+        self.assertEqual(result.topology_clusters, 2)
+        self.assertEqual(result.cluster_weight_square_sum.sum(), 2.0)
+        self.assertEqual(result.effective_counts.sum(), 2.0)
+
     def test_lund_histogram_applies_analysis_phase_space(self) -> None:
         bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
         with tempfile.TemporaryDirectory() as tmp:
@@ -1803,6 +1834,102 @@ class RadiativeCorrectionTests(unittest.TestCase):
             )
         np.testing.assert_allclose(result.c_rad[result.reliable], [0.5])
         self.assertEqual(result.normalization_ratio, 0.5)
+
+    def test_radiative_correction_uses_cluster_aware_uncertainty_and_support(self) -> None:
+        bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
+        with tempfile.TemporaryDirectory() as tmp:
+            born = Path(tmp) / "born.lund"
+            rad = Path(tmp) / "rad.lund"
+            born.write_text(3 * _lund_event(pi0=False), encoding="utf-8")
+            rad.write_text(3 * _lund_event(pi0=True), encoding="utf-8")
+            result = compute_radiative_correction(
+                born,
+                rad,
+                bins,
+                beam_energy=6.535,
+                min_counts=1,
+                chunk_size=1,
+            )
+        self.assertEqual(np.count_nonzero(result.reliable), 1)
+        np.testing.assert_allclose(result.c_rad[result.reliable], [1.0])
+        expected = np.sqrt(2.0 * (9.0 + 0.5) / (3.0 + 0.5) ** 2)
+        np.testing.assert_allclose(result.delta_c[result.reliable], [expected])
+        self.assertGreater(expected, np.sqrt(2.0 / 3.5))
+
+        # Three output records came from only one independent proposal cluster,
+        # so a minimum of two effective observations must reject the bin.
+        with tempfile.TemporaryDirectory() as tmp:
+            born = Path(tmp) / "born.lund"
+            rad = Path(tmp) / "rad.lund"
+            born.write_text(3 * _lund_event(pi0=False), encoding="utf-8")
+            rad.write_text(3 * _lund_event(pi0=True), encoding="utf-8")
+            result = compute_radiative_correction(
+                born,
+                rad,
+                bins,
+                beam_energy=6.535,
+                min_counts=2,
+                chunk_size=1,
+            )
+        self.assertEqual(np.count_nonzero(result.reliable), 0)
+        np.testing.assert_array_equal(result.support_status[result.support_overlap], [6])
+
+    def test_radiative_correction_artifact_records_cluster_statistics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            config = tmpdir / "config.json"
+            born = tmpdir / "born.lund"
+            rad = tmpdir / "rad.lund"
+            output = tmpdir / "C_rad.npz"
+            config.write_text(
+                json.dumps(
+                    {
+                        "beam_energy": 6.535,
+                        "binning": {
+                            "Q2": [1.0, 1.5],
+                            "xB": [0.2, 0.3],
+                            "minus_t": [0.2, 0.3],
+                            "phi_deg": [0.0, 180.0, 360.0],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            born.write_text(2 * _lund_event(pi0=False), encoding="utf-8")
+            rad.write_text(2 * _lund_event(pi0=True), encoding="utf-8")
+            args = argparse.Namespace(
+                born=born,
+                radiative=rad,
+                config=config,
+                output=output,
+                chunk_size=1,
+                max_events=None,
+                max_files=None,
+                min_counts=1,
+                normalization_ratio=None,
+                born_integrated_cross_section=None,
+                radiative_integrated_cross_section=None,
+                born_normalization_file=None,
+                radiative_normalization_file=None,
+                max_normalization_files=None,
+                progress_chunks=0,
+                diagnostic_pdf=None,
+                diagnostic_csv=None,
+                diagnostic_quilt=False,
+                diagnostic_quilt_scale_mode="panel",
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_radiative_correction(args)
+            with np.load(output, allow_pickle=False) as artifact:
+                self.assertEqual(
+                    str(artifact["uncertainty_model"]),
+                    "consecutive-exact-lund-clusters-v1",
+                )
+                self.assertEqual(float(np.sum(artifact["H_born"])), 2.0)
+                self.assertEqual(float(np.sum(artifact["H_born_cluster_sumw2"])), 4.0)
+                self.assertEqual(float(np.sum(artifact["H_born_effective"])), 1.0)
+                self.assertEqual(int(artifact["born_topology_clusters"]), 1)
+                self.assertEqual(int(artifact["born_maximum_cluster_multiplicity"]), 2)
 
     def test_generator_integrated_cross_section_parser_reads_norm_and_sum(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1979,6 +2106,20 @@ class RadiativeCorrectionTests(unittest.TestCase):
         np.testing.assert_array_equal(
             support_status_codes(born, rad, min_counts=5),
             [0, 1, 2, 4, 5, 3, 6],
+        )
+
+    def test_support_status_codes_can_use_effective_cluster_counts(self) -> None:
+        born = np.array([20.0, 20.0, 20.0])
+        rad = np.array([20.0, 20.0, 20.0])
+        np.testing.assert_array_equal(
+            support_status_codes(
+                born,
+                rad,
+                min_counts=5,
+                born_effective_counts=np.array([4.0, 8.0, 4.0]),
+                radiative_effective_counts=np.array([8.0, 4.0, 4.0]),
+            ),
+            [4, 5, 6],
         )
 
 

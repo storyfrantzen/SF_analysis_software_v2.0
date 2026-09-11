@@ -14,11 +14,14 @@ from .phase_space import AnalysisPhaseSpace
 
 Array = np.ndarray
 LUND_TEXT_SUFFIXES = {".lund", ".txt"}
+CLUSTER_UNCERTAINTY_MODEL = "consecutive-exact-lund-clusters-v1"
 
 
 @dataclass(frozen=True)
 class LundHistogramResult:
     counts: Array
+    cluster_weight_square_sum: Array
+    effective_counts: Array
     q2_min: Array
     q2_max: Array
     eprime_min: Array
@@ -26,7 +29,10 @@ class LundHistogramResult:
     files: int
     events_seen: int
     topology_events: int
+    topology_clusters: int
     in_range: int
+    in_range_clusters: int
+    maximum_cluster_multiplicity: int
     generated_q2_min: float
     generated_q2_max: float
     generated_eprime_min: float
@@ -37,6 +43,8 @@ class LundHistogramResult:
 class RadiativeCorrectionResult:
     c_rad: Array
     delta_c: Array
+    c_rad_raw: Array
+    delta_c_raw: Array
     reliable: Array
     support_overlap: Array
     support_status: Array
@@ -140,17 +148,42 @@ def compute_radiative_correction(
     lambda_born = born_result.counts + 0.5
     lambda_rad = radiative_result.counts + 0.5
     c_rad_flat = normalization_ratio * lambda_rad / lambda_born
-    delta_flat = c_rad_flat * np.sqrt((1.0 / lambda_born) + (1.0 / lambda_rad))
-    reliable_flat = (born_result.counts >= min_counts) & (radiative_result.counts >= min_counts)
+    # AAO mode 3 can emit one accepted proposal m times.  Those exact LUND
+    # copies have unit central weight but are one stochastic proposal, not m
+    # independent observations.  For a compound-Poisson histogram the count
+    # variance is sum(m**2), rather than sum(m).  Adding the same Jeffreys 0.5
+    # regularizer used in the central ratio preserves the historical formula
+    # exactly when every event has multiplicity one.
+    born_relative_variance = (
+        born_result.cluster_weight_square_sum + 0.5
+    ) / np.square(lambda_born)
+    radiative_relative_variance = (
+        radiative_result.cluster_weight_square_sum + 0.5
+    ) / np.square(lambda_rad)
+    delta_flat = c_rad_flat * np.sqrt(
+        born_relative_variance + radiative_relative_variance
+    )
+    reliable_flat = (
+        (born_result.effective_counts >= min_counts)
+        & (radiative_result.effective_counts >= min_counts)
+    )
 
     c_rad_safe = np.where(reliable_flat, c_rad_flat, 1.0)
     delta_safe = np.where(reliable_flat, delta_flat, 1.0)
     support_overlap = (born_result.counts > 0.0) & (radiative_result.counts > 0.0)
-    support_status = support_status_codes(born_result.counts, radiative_result.counts, min_counts)
+    support_status = support_status_codes(
+        born_result.counts,
+        radiative_result.counts,
+        min_counts,
+        born_effective_counts=born_result.effective_counts,
+        radiative_effective_counts=radiative_result.effective_counts,
+    )
 
     return RadiativeCorrectionResult(
         c_rad=binning.unflatten(c_rad_safe),
         delta_c=binning.unflatten(delta_safe),
+        c_rad_raw=binning.unflatten(c_rad_flat),
+        delta_c_raw=binning.unflatten(delta_flat),
         reliable=binning.unflatten(reliable_flat),
         support_overlap=binning.unflatten(support_overlap),
         support_status=binning.unflatten(support_status),
@@ -187,6 +220,7 @@ def histogram_lund(
         raise ValueError("max_events must be positive when provided")
     files = _limited_lund_files(pattern_or_dir, max_files)
     counts = np.zeros(binning.size, dtype=float)
+    cluster_weight_square_sum = np.zeros(binning.size, dtype=float)
     q2_min = np.full(binning.size, np.inf)
     q2_max = np.full(binning.size, -np.inf)
     eprime_min = np.full(binning.size, np.inf)
@@ -199,7 +233,7 @@ def histogram_lund(
             f"chunk_size={chunk_size}, progress_chunks={progress_chunks}"
         )
 
-    for chunk_index, (electron, proton) in enumerate(
+    for chunk_index, (electron, proton, multiplicity) in enumerate(
         _iter_lund_chunks(files, chunk_size, max_events, stats, progress_chunks, progress_label),
         start=1,
     ):
@@ -213,13 +247,24 @@ def histogram_lund(
         if phase_space is not None and phase_space.enabled:
             inside &= phase_space.mask(q2, xb, beam_energy)
         inside_flat = flat[inside]
-        counts += np.bincount(inside_flat, minlength=binning.size)
+        inside_multiplicity = multiplicity[inside]
+        counts += np.bincount(
+            inside_flat,
+            weights=inside_multiplicity,
+            minlength=binning.size,
+        )
+        cluster_weight_square_sum += np.bincount(
+            inside_flat,
+            weights=np.square(inside_multiplicity),
+            minlength=binning.size,
+        )
         if inside_flat.size:
             np.minimum.at(q2_min, inside_flat, q2[inside])
             np.maximum.at(q2_max, inside_flat, q2[inside])
             np.minimum.at(eprime_min, inside_flat, eprime[inside])
             np.maximum.at(eprime_max, inside_flat, eprime[inside])
-        stats.in_range += int(np.count_nonzero(inside))
+        stats.in_range += int(np.sum(inside_multiplicity, dtype=np.int64))
+        stats.in_range_clusters += int(np.count_nonzero(inside))
         if progress_chunks > 0 and chunk_index % progress_chunks == 0:
             print(
                 f"[PROGRESS] {progress_label} LUND chunks {chunk_index}: "
@@ -231,9 +276,17 @@ def histogram_lund(
     q2_max = np.where(np.isfinite(q2_max), q2_max, np.nan)
     eprime_min = np.where(np.isfinite(eprime_min), eprime_min, np.nan)
     eprime_max = np.where(np.isfinite(eprime_max), eprime_max, np.nan)
+    effective_counts = np.divide(
+        np.square(counts),
+        cluster_weight_square_sum,
+        out=np.zeros_like(counts),
+        where=cluster_weight_square_sum > 0.0,
+    )
 
     return LundHistogramResult(
         counts=counts,
+        cluster_weight_square_sum=cluster_weight_square_sum,
+        effective_counts=effective_counts,
         q2_min=binning.unflatten(q2_min),
         q2_max=binning.unflatten(q2_max),
         eprime_min=binning.unflatten(eprime_min),
@@ -241,7 +294,10 @@ def histogram_lund(
         files=stats.files,
         events_seen=stats.events_seen,
         topology_events=stats.topology_events,
+        topology_clusters=stats.topology_clusters,
         in_range=stats.in_range,
+        in_range_clusters=stats.in_range_clusters,
+        maximum_cluster_multiplicity=stats.maximum_cluster_multiplicity,
         generated_q2_min=_finite_or_nan(stats.generated_q2_min),
         generated_q2_max=_finite_or_nan(stats.generated_q2_max),
         generated_eprime_min=_finite_or_nan(stats.generated_eprime_min),
@@ -249,7 +305,14 @@ def histogram_lund(
     )
 
 
-def support_status_codes(born_counts: Array, radiative_counts: Array, min_counts: int) -> Array:
+def support_status_codes(
+    born_counts: Array,
+    radiative_counts: Array,
+    min_counts: int,
+    *,
+    born_effective_counts: Array | None = None,
+    radiative_effective_counts: Array | None = None,
+) -> Array:
     """Classify per-bin correction support.
 
     Codes:
@@ -257,18 +320,31 @@ def support_status_codes(born_counts: Array, radiative_counts: Array, min_counts
       1 both samples are empty;
       2 born only;
       3 radiative only;
-      4 both populated but born is below min_counts;
-      5 both populated but radiative is below min_counts;
-      6 both populated but both are below min_counts.
+      4 both populated but born effective support is below min_counts;
+      5 both populated but radiative effective support is below min_counts;
+      6 both populated but both effective supports are below min_counts.
+
+    Effective-count arrays default to the raw counts, preserving the public
+    helper's historical behavior for independent unit-weight events.
     """
     born_counts = np.asarray(born_counts, dtype=float)
     radiative_counts = np.asarray(radiative_counts, dtype=float)
     if born_counts.shape != radiative_counts.shape:
         raise ValueError("born and radiative count arrays must have matching shapes")
+    if born_effective_counts is None:
+        born_effective_counts = born_counts
+    if radiative_effective_counts is None:
+        radiative_effective_counts = radiative_counts
+    born_effective_counts = np.asarray(born_effective_counts, dtype=float)
+    radiative_effective_counts = np.asarray(radiative_effective_counts, dtype=float)
+    if born_effective_counts.shape != born_counts.shape:
+        raise ValueError("born effective-count array must match born counts")
+    if radiative_effective_counts.shape != radiative_counts.shape:
+        raise ValueError("radiative effective-count array must match radiative counts")
     born_nonzero = born_counts > 0.0
     rad_nonzero = radiative_counts > 0.0
-    born_low = born_counts < min_counts
-    rad_low = radiative_counts < min_counts
+    born_low = born_effective_counts < min_counts
+    rad_low = radiative_effective_counts < min_counts
     status = np.zeros(born_counts.shape, dtype=np.uint8)
     status[~born_nonzero & ~rad_nonzero] = 1
     status[born_nonzero & ~rad_nonzero] = 2
@@ -285,7 +361,10 @@ class _LundStats:
     files: int
     events_seen: int = 0
     topology_events: int = 0
+    topology_clusters: int = 0
     in_range: int = 0
+    in_range_clusters: int = 0
+    maximum_cluster_multiplicity: int = 0
     generated_q2_min: float = np.inf
     generated_q2_max: float = -np.inf
     generated_eprime_min: float = np.inf
@@ -304,8 +383,43 @@ def _iter_lund_chunks(
         raise ValueError("chunk_size must be positive")
     electron_rows: list[tuple[float, float, float, float]] = []
     proton_rows: list[tuple[float, float, float, float]] = []
+    multiplicities: list[int] = []
+    buffered_events = 0
+    current_signature: tuple[str, ...] | None = None
+    current_electron: tuple[float, float, float, float] | None = None
+    current_proton: tuple[float, float, float, float] | None = None
+    current_multiplicity = 0
     progress_events = chunk_size * progress_chunks if progress_chunks > 0 else 0
     next_event_progress = progress_events
+
+    def append_current_cluster() -> None:
+        nonlocal buffered_events
+        if current_signature is None:
+            return
+        if current_electron is None or current_proton is None or current_multiplicity <= 0:
+            raise RuntimeError("invalid internal LUND cluster state")
+        electron_rows.append(current_electron)
+        proton_rows.append(current_proton)
+        multiplicities.append(current_multiplicity)
+        buffered_events += current_multiplicity
+        stats.topology_clusters += 1
+        stats.maximum_cluster_multiplicity = max(
+            stats.maximum_cluster_multiplicity,
+            current_multiplicity,
+        )
+
+    def chunk_arrays() -> tuple[Array, Array, Array]:
+        nonlocal buffered_events
+        result = (
+            np.asarray(electron_rows, dtype=float),
+            np.asarray(proton_rows, dtype=float),
+            np.asarray(multiplicities, dtype=float),
+        )
+        electron_rows.clear()
+        proton_rows.clear()
+        multiplicities.clear()
+        buffered_events = 0
+        return result
 
     for file_index, filename in enumerate(files, start=1):
         if progress_chunks > 0 and (file_index == 1 or file_index % progress_chunks == 0):
@@ -330,7 +444,7 @@ def _iter_lund_chunks(
                     print(
                         f"[PROGRESS] {progress_label} LUND events: "
                         f"seen={stats.events_seen}, topology={stats.topology_events}, "
-                        f"pending-topology={len(electron_rows)}"
+                        f"pending-topology={buffered_events + current_multiplicity}"
                     )
                     next_event_progress += progress_events
                 electron = None
@@ -338,11 +452,13 @@ def _iter_lund_chunks(
                 photon_count = 0
                 has_pi0 = False
                 valid = True
+                event_lines = [header]
                 for _ in range(n_particles):
                     row = source.readline()
                     if not row:
                         valid = False
                         break
+                    event_lines.append(row)
                     parts = row.split()
                     if len(parts) < 10:
                         valid = False
@@ -365,27 +481,53 @@ def _iter_lund_chunks(
                     elif pid == 22:
                         photon_count += 1
 
-                if not valid or electron is None or proton is None:
+                topology_valid = (
+                    valid
+                    and electron is not None
+                    and proton is not None
+                    and (has_pi0 or photon_count >= 2)
+                )
+                if not topology_valid:
+                    # An invalid/non-target event is a hard boundary: two equal
+                    # valid records on either side did not come from one emitted
+                    # multiplicity block.
+                    if current_signature is not None:
+                        append_current_cluster()
+                        current_signature = None
+                        current_electron = None
+                        current_proton = None
+                        current_multiplicity = 0
+                    if buffered_events >= chunk_size:
+                        yield chunk_arrays()
                     continue
-                if not (has_pi0 or photon_count >= 2):
-                    continue
-
-                electron_rows.append(electron)
-                proton_rows.append(proton)
                 stats.topology_events += 1
+                signature = tuple(event_lines)
+                if signature == current_signature:
+                    current_multiplicity += 1
+                else:
+                    if current_signature is not None:
+                        append_current_cluster()
+                    current_signature = signature
+                    current_electron = electron
+                    current_proton = proton
+                    current_multiplicity = 1
 
-                if len(electron_rows) >= chunk_size:
-                    yield np.asarray(electron_rows, dtype=float), np.asarray(proton_rows, dtype=float)
-                    electron_rows.clear()
-                    proton_rows.clear()
+                if buffered_events >= chunk_size:
+                    yield chunk_arrays()
 
                 if max_events is not None and stats.topology_events >= max_events:
+                    append_current_cluster()
+                    current_signature = None
+                    current_electron = None
+                    current_proton = None
+                    current_multiplicity = 0
                     if electron_rows:
-                        yield np.asarray(electron_rows, dtype=float), np.asarray(proton_rows, dtype=float)
+                        yield chunk_arrays()
                     return
 
+    append_current_cluster()
     if electron_rows:
-        yield np.asarray(electron_rows, dtype=float), np.asarray(proton_rows, dtype=float)
+        yield chunk_arrays()
 
 
 def _limited_lund_files(pattern_or_dir: str | Path | Sequence[Path], max_files: int | None) -> list[Path]:
