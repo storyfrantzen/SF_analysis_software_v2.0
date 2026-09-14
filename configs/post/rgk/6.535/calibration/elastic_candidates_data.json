@@ -1,0 +1,9 @@
+{
+    "extends": "elastic_candidates_base.json",
+    "outputFile": "6.535_rgk_elastic_candidates.root",
+    "samplingFraction": {
+        "sigma": {
+            "paramsFile": "../../../../../parameters/sampling_fraction/SF_sigma_cut_params_6.535RGKSKIM1.json"
+        }
+    }
+}

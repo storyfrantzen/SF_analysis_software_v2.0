@@ -101,6 +101,7 @@ The converter currently supports:
 - optional QADB filtering and accumulated-charge bookkeeping for data
 - final-state filtering
 - loose DIS skim cuts
+- composable proton energy-loss and data-derived elastic momentum corrections
 - reconstructed-particle branches
 - optional MC truth branches
 - compact generated-event acceptance trees filled before REC filtering

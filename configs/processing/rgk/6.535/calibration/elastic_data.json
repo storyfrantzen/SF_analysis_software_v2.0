@@ -1,0 +1,36 @@
+{
+    "outputFile": "6.535_rgk_elastic_data.root",
+
+    "beamEnergy": 6.535,
+    "torus": 1,
+
+    "qadb": {
+        "enabled": true,
+        "database": "latest",
+        "rejectDefects": [
+            "MarginalOutlier",
+            "TerminalOutlier",
+            "TotalOutlier",
+            "SectorLoss",
+            "LowLiveTime"
+        ],
+        "allowMiscRuns": []
+    },
+
+    "inputValidation": {
+        "enabled": true,
+        "skipMalformed": true
+    },
+
+    "kinematicCorrections": "../../../../../parameters/proton_energy_loss/6.535RGK_INCLUSIVE_GEMC_100M.json",
+
+    "finalState": [
+        { "pid": 11, "count": 1, "mode": "exact" },
+        { "pid": 2212, "count": 1, "mode": "exact" }
+    ],
+    "inclusive": true,
+    "outputPids": [11, 2212],
+
+    "enableSkim": false,
+    "fillMC": false
+}

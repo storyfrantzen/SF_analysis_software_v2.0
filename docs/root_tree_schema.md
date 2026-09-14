@@ -44,6 +44,14 @@ Detector-specific calorimeter deposits are stored as `E_FTCAL` for FT rows and
 as `E_PCAL`, `E_ECIN`, and `E_ECOUT` for FD rows; fields for other detectors
 remain non-finite.
 
+Kinematic corrections preserve the detector-bank values in `p_raw`,
+`theta_raw`, and `phi_raw`. The corrected `p`, `theta`, and `phi` fields drive
+the Cartesian momentum and downstream analysis. `delta_p`, `delta_theta`, and
+`delta_phi` store the total change. For momentum provenance,
+`delta_p_energy_loss` records the simulation-derived proton energy-loss stage
+and `delta_p_elastic` records the subsequent data-derived elastic momentum
+stage; both are zero for stages that were not applied.
+
 For backward compatibility, this tree temporarily retains the repeated
 `event` object used by existing post-processing, calibration scripts, and old
 ROOT readers. New event-level diagnostics must use `rEvents`; they

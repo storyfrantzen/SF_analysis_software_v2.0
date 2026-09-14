@@ -43,6 +43,12 @@ bool detectorAllowed(int det, const std::vector<int>& allowedDetectors) {
     return false;
 }
 
+double detectorMomentum(const RecBranches& particle) {
+    return isFinite(particle.p_raw) && particle.p_raw > 0.0
+        ? particle.p_raw
+        : particle.p;
+}
+
 PrimitiveCutSpec makeCut(const std::string& name,
                          const std::string& op,
                          double min = NAN,
@@ -532,11 +538,13 @@ CutDecision Cuts::evaluateParticle(const RecBranches& p,
         } else if (cut.op == "minPcalEnergy") {
             apply(p.det != 1 || passSFMinPcalCut(p.E_PCAL));
         } else if (cut.op == "samplingFractionDiagonal") {
-            apply(p.det != 1 || passSFTriangleCut(p.E_PCAL, p.E_ECIN, p.p));
+            const double sfMomentum = detectorMomentum(p);
+            apply(p.det != 1 || passSFTriangleCut(p.E_PCAL, p.E_ECIN, sfMomentum));
         } else if (cut.op == "samplingFractionSigma") {
-            const double sf = (p.E_PCAL + p.E_ECIN + p.E_ECOUT) / p.p;
+            const double sfMomentum = detectorMomentum(p);
+            const double sf = (p.E_PCAL + p.E_ECIN + p.E_ECOUT) / sfMomentum;
             apply(p.det != 1 ||
-                  (!sfCoeffs_.empty() && passSFSigmaCut(p.sector, sf, p.p)));
+                  (!sfCoeffs_.empty() && passSFSigmaCut(p.sector, sf, sfMomentum)));
         } else if (cut.op == "samplingFraction") {
             apply(evaluateSamplingFraction(p).pass);
         } else {
@@ -697,11 +705,12 @@ bool Cuts::passesSamplingFraction(const RecBranches& e) const {
 CutDecision Cuts::evaluateSamplingFraction(const RecBranches& e) const {
     CutDecision decision;
     if (!cfg_.sfEnabled || sfCoeffs_.empty() || e.det != 1) return decision;
+    const double sfMomentum = detectorMomentum(e);
     decision.require(passSFMinPcalCut(e.E_PCAL), "sampling_fraction.min_pcal");
-    const double sf = (e.E_PCAL + e.E_ECIN + e.E_ECOUT) / e.p;
-    decision.require(passSFTriangleCut(e.E_PCAL, e.E_ECIN, e.p),
+    const double sf = (e.E_PCAL + e.E_ECIN + e.E_ECOUT) / sfMomentum;
+    decision.require(passSFTriangleCut(e.E_PCAL, e.E_ECIN, sfMomentum),
                      "sampling_fraction.triangle");
-    decision.require(passSFSigmaCut(e.sector, sf, e.p),
+    decision.require(passSFSigmaCut(e.sector, sf, sfMomentum),
                      "sampling_fraction.sigma");
     return decision;
 }

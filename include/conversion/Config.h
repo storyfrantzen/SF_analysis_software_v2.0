@@ -83,6 +83,7 @@ struct Config {
 
     // ── Kinematic corrections ─────────────────
     nlohmann::json kinematicCorrections;
+    nlohmann::json elasticMomentumCorrections;
 
     // ── Constructors ──────────────────────────
 
@@ -273,6 +274,27 @@ struct Config {
                 cf >> kinematicCorrections;
             } else {
                 kinematicCorrections = corrections;
+            }
+        }
+
+        if (j.contains("elasticMomentumCorrections")) {
+            const auto& corrections = j["elasticMomentumCorrections"];
+            if (corrections.is_string()) {
+                std::filesystem::path correctionPath = corrections.get<std::string>();
+                if (correctionPath.is_relative() && !configDir.empty()) {
+                    correctionPath = configDir / correctionPath;
+                }
+
+                std::ifstream cf(correctionPath);
+                if (!cf.is_open()) {
+                    throw std::runtime_error(
+                        "Cannot open elastic momentum corrections file: " +
+                        correctionPath.string()
+                    );
+                }
+                cf >> elasticMomentumCorrections;
+            } else {
+                elasticMomentumCorrections = corrections;
             }
         }
 

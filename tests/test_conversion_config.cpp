@@ -21,6 +21,10 @@ int main() {
     const auto validPath = std::filesystem::current_path() / "test_config_torus_valid.json";
     const auto invalidPath = std::filesystem::current_path() / "test_config_torus_invalid.json";
     const auto legacyPath = std::filesystem::current_path() / "test_config_legacy_y.json";
+    const auto elasticConfigPath =
+        std::filesystem::current_path() / "test_config_elastic_momentum.json";
+    const auto elasticParamsPath =
+        std::filesystem::current_path() / "test_elastic_momentum_params.json";
 
     writeConfig(validPath, -1, 50000000);
     const Config valid(validPath.string());
@@ -56,6 +60,26 @@ int main() {
     std::filesystem::remove(legacyPath);
     if (!rejected) {
         std::cerr << "conversion config accepted the removed y_max cut\n";
+        return 1;
+    }
+
+    {
+        std::ofstream params(elasticParamsPath);
+        params << "{\"schema\":\"elastic_momentum_correction/v1\","
+               << "\"correctionType\":\"fractionalMomentum\","
+               << "\"beamEnergyGeV\":10.604,\"torus\":-1,\"regions\":[]}";
+    }
+    {
+        std::ofstream output(elasticConfigPath);
+        output << "{\"elasticMomentumCorrections\":\""
+               << elasticParamsPath.filename().string() << "\"}";
+    }
+    const Config elastic(elasticConfigPath.string());
+    std::filesystem::remove(elasticConfigPath);
+    std::filesystem::remove(elasticParamsPath);
+    if (elastic.elasticMomentumCorrections.value("schema", std::string{}) !=
+        "elastic_momentum_correction/v1") {
+        std::cerr << "conversion config did not resolve elastic momentum parameters\n";
         return 1;
     }
     return 0;

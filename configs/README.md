@@ -34,7 +34,9 @@ of the following has both a `_torus+1.json` and `_torus-1.json` variant:
 - `processing/rga/10.604/eppi0_GEMC_*.json`;
 - `post/rga/10.604/eppi0_data_*.json`;
 - `post/rga/10.604/eppi0_GEMC_*.json`;
-- `post/rga/10.604/eppi0_cut_diagnostics_*.json`.
+- `post/rga/10.604/eppi0_cut_diagnostics_*.json`;
+- `processing/rga/10.604/calibration/elastic_data_*.json`;
+- `post/rga/10.604/calibration/elastic_candidates_data_*.json`.
 
 The post-processing children extend their matching
 `post/rga/10.604/eppi0_base_torus*.json`. The two bases intentionally differ
@@ -54,8 +56,10 @@ The active RGK 6.535 GeV files are:
 - `processing/rgk/6.535/calibration/sidis_electrons_data.json`;
 - `processing/rgk/6.535/calibration/sidis_electrons_mc.json`;
 - `processing/rgk/6.535/calibration/proton_energy_loss_mc.json`;
+- `processing/rgk/6.535/calibration/elastic_data.json`;
 - `post/rgk/6.535/calibration/electron_sf_candidates.json`;
 - `post/rgk/6.535/calibration/electron_sf_candidates_mc.json`;
+- `post/rgk/6.535/calibration/elastic_candidates_data.json`;
 - `post/rgk/6.535/calibration/proton_energy_loss_fiducial.json`;
 - `post/rgk/6.535/calibration/electron_sf_selected.json`;
 - `efficiency/rgk/6.535/run_currents.json`;
@@ -255,6 +259,39 @@ python3 scripts/derive_proton_energy_loss.py \
 Inspect every FD/CD residual plot and the populated theta domain before using
 the outputs. The electron vertex requirement does not affect these fits because
 the samples contain matched proton rows and no electron selection.
+
+### Elastic electron/proton momentum parameters
+
+Use data and keep the torus polarities separate. These converter configs apply
+the existing proton energy-loss coefficients, but deliberately do not apply an
+elastic momentum correction. The post-processing configs add the normal
+electron ID, vertex, and electron/proton fiducial selections. Coplanarity and
+two-body polar-angle closure are applied by the derivation script without using
+either particle's reconstructed momentum.
+
+```bash
+./build/hipo2root \
+  configs/processing/rga/10.604/calibration/elastic_data_torus+1.json \
+  /path/to/fa18/torus+1/elastic/data 0 1000000
+
+./build/post_process \
+  configs/post/rga/10.604/calibration/elastic_candidates_data_torus+1.json \
+  10.604_rga_fa18_torus+1_elastic_data.root 1000000
+
+python3 scripts/derive_elastic_momentum.py \
+  10.604_rga_fa18_torus+1_elastic_candidates.root \
+  --beam-energy 10.604 \
+  --torus 1 \
+  --output parameters/momentum/10.604RGA_FA18_torus+1_elastic_momentum.json \
+  --plot-dir calibration_plots/momentum/rga_fa18_torus+1 \
+  --dataset-tag 10.604RGA_FA18_torus+1_elastic
+```
+
+Repeat with the three matching `torus-1` config/output names. Before enabling
+the resulting `elasticMomentumCorrections` file in production, require closure
+on held-out runs and repeat the fit while varying the angular cuts, fit orders,
+binning, and run ranges. A nominal-beam-energy mismatch or an uncorrected angle
+bias appears directly as a momentum-scale bias in this method.
 
 ### Data sampling-fraction parameters
 

@@ -70,6 +70,8 @@ void RecBranches::reset() {
     delta_p = 0.0;
     delta_theta = 0.0;
     delta_phi = 0.0;
+    delta_p_energy_loss = 0.0;
+    delta_p_elastic = 0.0;
     beta = NAN;
     chi2pid = NAN;
     trackChi2 = NAN;
@@ -118,6 +120,8 @@ void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx) {
     delta_p = 0.0;
     delta_theta = 0.0;
     delta_phi = 0.0;
+    delta_p_energy_loss = 0.0;
+    delta_p_elastic = 0.0;
     beta    = safeGet(rec->par()->getBeta());
     chi2pid = safeGet(rec->par()->getChi2Pid());
 

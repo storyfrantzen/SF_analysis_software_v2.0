@@ -64,6 +64,21 @@ bool evaluateSameSectorVeto(const RecBranches& photon, const RecBranches& electr
     const auto decision = cuts.evaluateParticle(photon, gamma, {photon, electron}, selected);
     return decision.pass;
 }
+
+bool evaluateSamplingFractionDiagonal(const RecBranches& particle) {
+    PostCutConfig cfg;
+    ParticleRoleSpec electron;
+    electron.role = "electron";
+    electron.pid = 11;
+
+    PrimitiveCutSpec diagonal;
+    diagonal.name = "electron.sf_diagonal";
+    diagonal.op = "samplingFractionDiagonal";
+    electron.cuts.push_back(diagonal);
+
+    const Cuts cuts(cfg);
+    return cuts.evaluateParticle(particle, electron, {particle}, {}).pass;
+}
 }
 
 int main() {
@@ -162,6 +177,18 @@ int main() {
     fdPhoton.sector = ftElectron.sector;
     if (!evaluateSameSectorVeto(fdPhoton, ftElectron)) {
         std::cerr << "same-sector veto compared an FD photon with an FT electron sector\n";
+        return 1;
+    }
+
+    RecBranches correctedElectron;
+    correctedElectron.pid = 11;
+    correctedElectron.det = 1;
+    correctedElectron.p = 10.0;
+    correctedElectron.p_raw = 5.0;
+    correctedElectron.E_PCAL = 0.6;
+    correctedElectron.E_ECIN = 0.5;
+    if (!evaluateSamplingFractionDiagonal(correctedElectron)) {
+        std::cerr << "sampling-fraction PID did not use detector-bank momentum\n";
         return 1;
     }
     return 0;

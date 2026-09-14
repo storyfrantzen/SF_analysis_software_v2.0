@@ -189,6 +189,89 @@ not remove the same proton from the `delta_p` fit. Use
 residual windows is important. These windows are calibration outlier ranges;
 they never reject events when the resulting corrections are applied.
 
+## Elastic Momentum-Scale Corrections
+
+Momentum-scale corrections are a second calibration stage, separate from the
+simulation-derived proton energy-loss correction above. The converter applies
+proton energy loss first and an optional data-derived elastic correction second.
+This ordering makes the proton elastic fit describe the remaining tracking
+momentum bias rather than absorbing material energy loss again.
+
+The calibration uses exclusive-like `ep -> ep` candidates selected with
+fiducial, electron-identification, vertex, coplanarity, and polar-angle closure
+requirements. Each particle's momentum residual is constructed without using
+the other particle's measured momentum:
+
+```text
+p_e,elastic(theta_e) = Ebeam / [1 + Ebeam/Mp (1 - cos(theta_e))]
+
+p_p,elastic(theta_p) =
+    2 Mp Ebeam (Ebeam + Mp) cos(theta_p)
+    / [(Ebeam + Mp)^2 - Ebeam^2 cos^2(theta_p)]
+
+fractional correction = p_elastic / p_rec - 1
+```
+
+This avoids transferring a proton momentum bias into the electron correction,
+or the reverse. The particle angles are assumed to be calibrated independently;
+angle closure should therefore be inspected as a systematic before accepting
+the momentum coefficients.
+
+FD corrections are fitted independently in each sector as a normalized
+`theta`/sector-local-`phi` polynomial. The CD proton correction uses normalized
+`theta` polynomials multiplied by global-`phi` Fourier terms, preserving
+periodicity at +/-180 degrees. Residual-bin centers use an iteratively clipped
+core estimator so radiative and background tails do not set the fitted peak.
+The converter never extrapolates outside the fitted theta/phi support;
+particles outside it retain their input momentum.
+
+For RGK 6.535 GeV, derive a candidate sample and parameters with:
+
+```bash
+./build/hipo2root \
+  configs/processing/rgk/6.535/calibration/elastic_data.json \
+  /path/to/rgk/elastic/hipo
+
+./build/post_process \
+  configs/post/rgk/6.535/calibration/elastic_candidates_data.json \
+  6.535_rgk_elastic_data.root
+
+python3 scripts/derive_elastic_momentum.py \
+  6.535_rgk_elastic_candidates.root \
+  --beam-energy 6.535 \
+  --torus 1 \
+  --output parameters/momentum/6.535RGK_elastic_momentum.json \
+  --plot-dir calibration_plots/momentum/6.535RGK \
+  --dataset-tag 6.535RGK_elastic
+```
+
+RGA has matching `elastic_data_torus+1.json` / `elastic_data_torus-1.json`
+processing configs and `elastic_candidates_data_torus+1.json` /
+`elastic_candidates_data_torus-1.json` post-processing configs. Keep the two
+polarities separate during fitting and application.
+
+After validating the coefficients on held-out runs, enable a parameter file in
+the corresponding production processing config:
+
+```json
+"elasticMomentumCorrections":
+  "../../../../parameters/momentum/6.535RGK_elastic_momentum.json"
+```
+
+The production config must also declare the same `beamEnergy` and nonzero
+`torus` stored in the parameter file. Conversion fails on either mismatch.
+
+The corrected `p`, `px`, `py`, and `pz` values then flow to all downstream
+kinematics. `p_raw` remains the detector-bank value, `delta_p` is the total
+applied momentum change, and `delta_p_energy_loss` plus `delta_p_elastic`
+record the two stages separately. Do not enable elastic corrections in the
+converter used to derive their own calibration sample.
+
+Electron sampling-fraction PID continues to use `p_raw`, because the committed
+sampling-fraction bands were calibrated against detector-bank momentum.
+Analysis momentum thresholds and reconstructed physics kinematics use the
+corrected `p`.
+
 ## Sampling-Fraction Parameters
 
 For a first inclusive-electron SIDIS test, run:

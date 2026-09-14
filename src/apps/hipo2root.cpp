@@ -30,6 +30,7 @@
 
 #include "Config.h"
 #include "GeneratedEvent.h"
+#include "ElasticMomentumCorrections.h"
 #include "ProtonEnergyLossCorrections.h"
 #include "QualityAssurance.h"
 #include "Kinematics.h"
@@ -524,19 +525,40 @@ void fillRecBranch(RecBranches& recBranches,
                    int runNum,
                    int eventNum,
                    int particleIdx,
-                   const ProtonEnergyLossCorrections& corrections) {
-    if (particle->getPid() == 2212 && corrections.enabled()) {
-        const int det = getDetector(particle->par()->getStatus());
-        const double p = particle->getP();
-        const double theta = particle->getTheta();
-        const double phi = particle->getPhi();
-        const CorrectedKinematics corrected = corrections.correct(p, theta, phi, det);
-        recBranches.fill(particle, runNum, eventNum, particleIdx,
-                         corrected.p, corrected.theta, corrected.phi);
+                   const ProtonEnergyLossCorrections& energyLossCorrections,
+                   const ElasticMomentumCorrections& momentumCorrections) {
+    const int pid = particle->getPid();
+    const int det = getDetector(particle->par()->getStatus());
+    const int sector = particle->getSector();
+    const double measuredP = particle->getP();
+    const double measuredTheta = particle->getTheta();
+    const double measuredPhi = particle->getPhi();
+
+    CorrectedKinematics corrected;
+    corrected.p = measuredP;
+    corrected.theta = measuredTheta;
+    corrected.phi = measuredPhi;
+    if (pid == 2212 && energyLossCorrections.enabled()) {
+        corrected = energyLossCorrections.correct(
+            measuredP, measuredTheta, measuredPhi, det
+        );
+    }
+    const double energyLossDeltaP = corrected.p - measuredP;
+
+    const MomentumCorrectionResult momentum = momentumCorrections.correct(
+        corrected.p, corrected.theta, corrected.phi, pid, det, sector
+    );
+    const bool changed = energyLossDeltaP != 0.0 || momentum.deltaP != 0.0 ||
+                         corrected.deltaTheta != 0.0 || corrected.deltaPhi != 0.0;
+    if (!changed) {
+        recBranches.fill(particle, runNum, eventNum, particleIdx);
         return;
     }
 
-    recBranches.fill(particle, runNum, eventNum, particleIdx);
+    recBranches.fill(particle, runNum, eventNum, particleIdx,
+                     momentum.p, corrected.theta, corrected.phi);
+    recBranches.delta_p_energy_loss = energyLossDeltaP;
+    recBranches.delta_p_elastic = momentum.deltaP;
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -588,6 +610,24 @@ int main(int argc, char** argv) {
         }
     }
     const ProtonEnergyLossCorrections corrections(cfg.kinematicCorrections);
+    const ElasticMomentumCorrections momentumCorrections(
+        cfg.elasticMomentumCorrections
+    );
+    if (momentumCorrections.enabled()) {
+        if (std::abs(momentumCorrections.beamEnergyGeV() - cfg.beamEnergy) > 1.0e-6) {
+            std::cerr << "[ERROR] Elastic momentum correction beam energy "
+                      << momentumCorrections.beamEnergyGeV()
+                      << " GeV does not match config beam energy " << cfg.beamEnergy
+                      << " GeV\n";
+            return 1;
+        }
+        if (cfg.torus == 0 || momentumCorrections.torus() != cfg.torus) {
+            std::cerr << "[ERROR] Elastic momentum correction torus "
+                      << momentumCorrections.torus()
+                      << " does not match config torus " << cfg.torus << "\n";
+            return 1;
+        }
+    }
     std::unique_ptr<QualityAssurance> qa;
     try {
         qa = std::make_unique<QualityAssurance>(cfg.qadb);
@@ -661,8 +701,10 @@ int main(int argc, char** argv) {
               << "[INFO] Event limit : "
               << (cfg.maxEvents > 0 ? std::to_string(cfg.maxEvents) : "unlimited")
               << "\n"
-              << "[INFO] Corrections : "
-              << (corrections.enabled() ? "enabled" : "disabled") << "\n";
+              << "[INFO] Proton eloss: "
+              << (corrections.enabled() ? "enabled" : "disabled") << "\n"
+              << "[INFO] Elastic p   : "
+              << (momentumCorrections.enabled() ? "enabled" : "disabled") << "\n";
 
     if (qa->enabled()) {
         std::cout << "[INFO] QADB source : " << cfg.qadb.database << "\n"
@@ -895,7 +937,8 @@ int main(int argc, char** argv) {
                     continue;
                 }
 
-                fillRecBranch(recBranches, particle, rn, en, i, corrections);
+                fillRecBranch(recBranches, particle, rn, en, i,
+                              corrections, momentumCorrections);
                 if (cfg.fillMC) genBranches.reset();
 
                 if (cfg.fillMC && cfg.matchMC && mc) {

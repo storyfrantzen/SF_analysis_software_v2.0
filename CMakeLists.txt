@@ -41,6 +41,7 @@ link_directories(
 )
 
 set(HIPO2ROOT_SOURCES
+  ${PROJECT_SOURCE_DIR}/src/conversion/ElasticMomentumCorrections.cpp
   ${PROJECT_SOURCE_DIR}/src/conversion/GeneratedEvent.cpp
   ${PROJECT_SOURCE_DIR}/src/conversion/ProtonEnergyLossCorrections.cpp
   ${PROJECT_SOURCE_DIR}/src/conversion/QualityAssurance.cpp
@@ -129,6 +130,13 @@ if(BUILD_TESTING)
     ${PROJECT_SOURCE_DIR}/tests/test_conversion_config.cpp
   )
   add_test(NAME conversion_config COMMAND test_conversion_config)
+
+  add_executable(
+    test_elastic_momentum_corrections
+    ${PROJECT_SOURCE_DIR}/tests/test_elastic_momentum_corrections.cpp
+    ${PROJECT_SOURCE_DIR}/src/conversion/ElasticMomentumCorrections.cpp
+  )
+  add_test(NAME elastic_momentum_corrections COMMAND test_elastic_momentum_corrections)
 
   add_executable(
     test_post_cuts
