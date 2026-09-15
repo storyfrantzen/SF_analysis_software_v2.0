@@ -298,6 +298,19 @@ rectangles ensure the converter does not interpolate through rejected or empty
 profile cells. The output records accepted and rejected cell diagnostics plus
 the weighted design-matrix condition number.
 
+With `--plot-dir`, each fitted region now also writes
+`*_profile_vs_phi_by_theta.png`, showing the before and independently
+re-extracted after core centers in each polar-angle slice, with the direct
+surface drawn only over accepted phi cells. `*_cell_fit_discrepancy.png` shows
+the training-cell center minus the fitted surface, both spatially and versus
+theta. For FD fits linear in local phi, `*_phi_coefficients_vs_theta.png`
+shows secondary per-slice intercept/slope summaries against the corresponding
+terms of the direct surface; these slice lines are diagnostics, not a second
+calibration fit. The original `*.png` overview remains, but its accepted-cell
+color range now follows the actual fitted centers rather than the broad peak
+search ceiling. A visually centered overall histogram does not replace
+cell-level or held-out closure checks.
+
 Repeat with the matching `torus-1` config/output names. Before enabling the
 resulting `elasticMomentumCorrections` file in production, require closure on
 held-out runs and repeat the fit while varying missing energy, angular cuts,

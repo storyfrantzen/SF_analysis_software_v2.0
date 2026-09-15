@@ -229,6 +229,14 @@ maximum width, and maximum plausible correction. Fits also require at least two
 profile cells per parameter and a bounded weighted design condition number.
 Only accepted profile-cell rectangles are exported as application support;
 particles in holes or outside the fitted support retain their input momentum.
+The angular-surface coefficients are still obtained from one simultaneous
+weighted fit of the accepted cell centers. Diagnostic plots reorganize those
+same centers into residual-versus-phi profiles within theta slices, show the
+surface's cell-level discrepancies, and—for FD surfaces linear in local
+phi—compare independent slice intercepts/slopes with the direct surface's
+theta dependence. The secondary slice lines never set the exported correction.
+Post-correction core centers are re-extracted from the corrected events in
+each accepted cell, so their core membership need not match the before sample.
 
 For RGK 6.535 GeV, derive a candidate sample and parameters with:
 

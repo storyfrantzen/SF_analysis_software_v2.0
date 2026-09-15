@@ -574,6 +574,24 @@ def region_support_mask(
     return mask & cell_mask
 
 
+def _accepted_cell_mask(
+    theta_deg: np.ndarray,
+    phi_deg: np.ndarray,
+    cell: dict[str, object],
+    theta_grid_hi: float,
+    phi_grid_hi: float,
+) -> np.ndarray:
+    """Use the same half-open intervals as the profile-grid extraction."""
+    theta_lo, theta_hi = (float(value) for value in cell["thetaRangeDeg"])
+    phi_lo, phi_hi = (float(value) for value in cell["phiRangeDeg"])
+    theta_upper = theta_deg <= theta_hi if theta_hi == theta_grid_hi else theta_deg < theta_hi
+    phi_upper = phi_deg <= phi_hi if phi_hi == phi_grid_hi else phi_deg < phi_hi
+    return (
+        (theta_deg >= theta_lo) & theta_upper &
+        (phi_deg >= phi_lo) & phi_upper
+    )
+
+
 def fit_region(
     *,
     pid: int,
@@ -751,13 +769,41 @@ def fit_region(
     )
     region["fit"]["applicationSupportEntries"] = int(np.count_nonzero(supported))
     region["fit"]["applicationSupportFraction"] = float(np.mean(supported))
+    residual_after = (1.0 + residual_values) / (1.0 + fitted_correction) - 1.0
+    for cell in region["fit"]["acceptedProfileCells"]:
+        cell_mask = _accepted_cell_mask(
+            theta, phi, cell, float(theta_edges[-1]), float(phi_edges[-1])
+        )
+        after_estimate = mode_seeded_core(
+            residual_after[cell_mask],
+            peak_search_max_abs_residual=cfg.peak_search_max_abs_residual,
+            peak_seed_half_width=cfg.peak_seed_half_width,
+            sigma_clip=cfg.core_sigma_clip,
+        )
+        fitted_at_center = float(evaluate_region(
+            region,
+            np.asarray([cell["thetaMeanDeg"]]),
+            np.asarray([cell["phiMeanDeg"]]),
+        )[0])
+        cell["surfaceAtCellMean"] = fitted_at_center
+        cell["centerMinusSurface"] = float(cell["center"] - fitted_at_center)
+        cell["afterCenter"] = (
+            after_estimate.center if np.isfinite(after_estimate.center) else None
+        )
+        cell["afterCenterError"] = (
+            after_estimate.error if np.isfinite(after_estimate.error) else None
+        )
+        cell["afterCoreWidth"] = (
+            after_estimate.width if np.isfinite(after_estimate.width) else None
+        )
+        cell["afterCoreEntries"] = after_estimate.entries
     label = f"pid{pid}_det{detector}" + (f"_sector{sector}" if sector else "")
     diagnostics = RegionDiagnostics(
         label=label,
         theta_deg=theta,
         phi_deg=phi,
         residual_before=residual_values,
-        residual_after=(1.0 + residual_values) / (1.0 + fitted_correction) - 1.0,
+        residual_after=residual_after,
         profile_theta_deg=profile.theta_deg,
         profile_phi_deg=profile.phi_deg,
         profile_residual=profile.residual,
@@ -923,6 +969,231 @@ def derive_corrections(
     return output, diagnostics
 
 
+def _accepted_theta_slices(
+    cells: list[dict[str, object]],
+) -> list[tuple[tuple[float, float], list[dict[str, object]]]]:
+    slices: dict[tuple[float, float], list[dict[str, object]]] = {}
+    for cell in cells:
+        theta_range = tuple(float(value) for value in cell["thetaRangeDeg"])
+        slices.setdefault(theta_range, []).append(cell)
+    return [
+        (theta_range, sorted(slice_cells, key=lambda cell: cell["phiMeanDeg"]))
+        for theta_range, slice_cells in sorted(slices.items())
+    ]
+
+
+def _plot_phi_profiles(
+    diagnostic: RegionDiagnostics,
+    output_dir: Path,
+    dataset_tag: str,
+    beam_energy: float,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    region = diagnostic.region
+    slices = _accepted_theta_slices(region["fit"]["acceptedProfileCells"])
+    columns = 2 if len(slices) > 1 else 1
+    rows = int(np.ceil(len(slices) / columns))
+    fig, axes = plt.subplots(
+        rows, columns, figsize=(6.2 * columns, 2.8 * rows),
+        sharex=True, sharey=True, squeeze=False,
+    )
+    plotted_values: list[float] = []
+    for axis, (theta_range, cells) in zip(axes.flat, slices):
+        theta_reference = float(np.mean([cell["thetaMeanDeg"] for cell in cells]))
+        before_phi = np.asarray([cell["phiMeanDeg"] for cell in cells], dtype=float)
+        before_center = 100.0 * np.asarray([cell["center"] for cell in cells], dtype=float)
+        before_error = 100.0 * np.asarray([cell["centerError"] for cell in cells], dtype=float)
+        axis.errorbar(
+            before_phi, before_center, yerr=before_error, fmt="o", markersize=4,
+            capsize=2, color="tab:blue", label="before: cell core",
+        )
+        plotted_values.extend(np.abs(before_center) + before_error)
+        after_cells = [
+            cell for cell in cells if cell["afterCenter"] is not None
+            and cell["afterCenterError"] is not None
+        ]
+        if after_cells:
+            after_phi = np.asarray([cell["phiMeanDeg"] for cell in after_cells], dtype=float)
+            after_center = 100.0 * np.asarray([cell["afterCenter"] for cell in after_cells], dtype=float)
+            after_error = 100.0 * np.asarray(
+                [cell["afterCenterError"] for cell in after_cells], dtype=float
+            )
+            axis.errorbar(
+                after_phi, after_center, yerr=after_error, fmt="s", markersize=4,
+                capsize=2, color="tab:green", label="after: re-extracted core",
+            )
+            plotted_values.extend(np.abs(after_center) + after_error)
+        for index, cell in enumerate(cells):
+            phi_lo, phi_hi = (float(value) for value in cell["phiRangeDeg"])
+            phi_curve = np.linspace(phi_lo, phi_hi, 35)
+            theta_curve = np.full(phi_curve.shape, theta_reference)
+            fitted_curve = 100.0 * evaluate_region(region, theta_curve, phi_curve)
+            axis.plot(
+                phi_curve, fitted_curve, color="tab:orange", linewidth=1.4,
+                label="direct surface at slice mean $\\theta$" if index == 0 else None,
+            )
+            plotted_values.extend(np.abs(fitted_curve))
+        axis.axhline(0.0, color="0.35", linewidth=0.8)
+        axis.set_title(f"$\\theta$ = {theta_range[0]:.1f}–{theta_range[1]:.1f}°  |  {len(cells)} cells")
+        axis.set_xlim(float(region["phiRangeDeg"][0]), float(region["phiRangeDeg"][1]))
+        axis.set_xlabel("sector-local $\\phi$ [deg]" if region["phiVariable"] == "sectorLocal"
+                        else "global $\\phi$ [deg]")
+        axis.set_ylabel("elastic residual / correction [%]")
+    for axis in axes.flat[len(slices):]:
+        axis.set_visible(False)
+    limit = max(0.25, 1.15 * max(plotted_values, default=0.0))
+    for axis in axes.flat[:len(slices)]:
+        axis.set_ylim(-limit, limit)
+    axes.flat[0].legend(loc="best", fontsize="small")
+    save_plot(
+        fig,
+        output_dir / f"{diagnostic.label}_profile_vs_phi_by_theta.png",
+        f"Elastic cell profiles by polar-angle slice: {diagnostic.label}",
+        dataset_tag,
+        beam_energy,
+    )
+    plt.close(fig)
+
+
+def _plot_cell_fit_discrepancies(
+    diagnostic: RegionDiagnostics,
+    output_dir: Path,
+    dataset_tag: str,
+    beam_energy: float,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    cells = diagnostic.region["fit"]["acceptedProfileCells"]
+    theta = np.asarray([cell["thetaMeanDeg"] for cell in cells], dtype=float)
+    phi = np.asarray([cell["phiMeanDeg"] for cell in cells], dtype=float)
+    discrepancy = 100.0 * np.asarray(
+        [cell["centerMinusSurface"] for cell in cells], dtype=float
+    )
+    error = 100.0 * np.asarray([cell["centerError"] for cell in cells], dtype=float)
+    color_limit = max(0.025, 1.15 * float(np.max(np.abs(discrepancy))))
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
+    scatter = axes[0].scatter(
+        theta, phi, c=discrepancy, cmap="coolwarm", vmin=-color_limit,
+        vmax=color_limit, s=45,
+    )
+    fig.colorbar(scatter, ax=axes[0], label="cell center − surface [%]")
+    axes[0].set_xlabel("$\\theta$ [deg]")
+    axes[0].set_ylabel("sector-local $\\phi$ [deg]" if diagnostic.region["phiVariable"] == "sectorLocal"
+                       else "global $\\phi$ [deg]")
+    axes[0].set_title("where the surface misses a cell")
+    axes[1].errorbar(
+        theta, discrepancy, yerr=error, fmt="o", color="tab:blue",
+        markersize=4, capsize=2,
+    )
+    axes[1].axhline(0.0, color="0.35", linewidth=0.8)
+    axes[1].set_xlabel("$\\theta$ [deg]")
+    axes[1].set_ylabel("cell center − surface [%]")
+    axes[1].set_title("cell-level fit discrepancy")
+    save_plot(
+        fig,
+        output_dir / f"{diagnostic.label}_cell_fit_discrepancy.png",
+        f"Training-cell fit discrepancies: {diagnostic.label}",
+        dataset_tag,
+        beam_energy,
+    )
+    plt.close(fig)
+
+
+def phi_slice_line_parameters(
+    cells: list[dict[str, object]],
+    phi_scale_deg: float,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Secondary weighted line fit used only to visualize FD slice trends."""
+    if len(cells) < 2:
+        return None
+    phi = np.asarray([cell["phiMeanDeg"] for cell in cells], dtype=float) / phi_scale_deg
+    residual = np.asarray([cell["center"] for cell in cells], dtype=float)
+    error = np.asarray([cell["centerError"] for cell in cells], dtype=float)
+    if not np.all(np.isfinite(phi)) or not np.all(np.isfinite(residual)) or not np.all(
+        np.isfinite(error) & (error > 0.0)
+    ):
+        return None
+    matrix = np.column_stack((np.ones(phi.size), phi))
+    weighted_matrix = matrix / error[:, None]
+    coefficients, _, rank, _ = np.linalg.lstsq(
+        weighted_matrix, residual / error, rcond=None
+    )
+    if rank != 2:
+        return None
+    covariance = np.linalg.pinv(weighted_matrix.T @ weighted_matrix)
+    coefficient_errors = np.sqrt(np.diag(covariance))
+    return coefficients, coefficient_errors
+
+
+def _plot_slice_phi_coefficients(
+    diagnostic: RegionDiagnostics,
+    output_dir: Path,
+    dataset_tag: str,
+    beam_energy: float,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    region = diagnostic.region
+    if region["basis"] != "polynomial" or any(
+        int(term["phiPower"]) > 1 for term in region["terms"]
+    ):
+        return
+    rows: list[tuple[float, float, np.ndarray, np.ndarray]] = []
+    for theta_range, cells in _accepted_theta_slices(region["fit"]["acceptedProfileCells"]):
+        result = phi_slice_line_parameters(cells, float(region["phiScaleDeg"]))
+        if result is None:
+            continue
+        coefficients, coefficient_errors = result
+        rows.append((
+            float(np.mean([cell["thetaMeanDeg"] for cell in cells])),
+            0.5 * (theta_range[1] - theta_range[0]),
+            coefficients,
+            coefficient_errors,
+        ))
+    if not rows:
+        return
+    theta = np.asarray([row[0] for row in rows], dtype=float)
+    theta_half_width = np.asarray([row[1] for row in rows], dtype=float)
+    coefficients = np.asarray([row[2] for row in rows], dtype=float)
+    coefficient_errors = np.asarray([row[3] for row in rows], dtype=float)
+    theta_curve = np.linspace(*region["thetaRangeDeg"], 150)
+    at_phi_zero = evaluate_region(region, theta_curve, np.zeros(theta_curve.shape))
+    at_phi_plus_scale = evaluate_region(
+        region, theta_curve,
+        np.full(theta_curve.shape, float(region["phiScaleDeg"])),
+    )
+    surface_terms = (at_phi_zero, at_phi_plus_scale - at_phi_zero)
+    labels = (
+        "intercept at local $\\phi=0$ [%]",
+        "change per +30° local $\\phi$ [%]",
+    )
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
+    for index, axis in enumerate(axes):
+        axis.errorbar(
+            theta, 100.0 * coefficients[:, index],
+            xerr=theta_half_width, yerr=100.0 * coefficient_errors[:, index],
+            fmt="o", markersize=4, capsize=2, color="tab:blue",
+            label="independent slice summaries",
+        )
+        axis.plot(
+            theta_curve, 100.0 * surface_terms[index], color="tab:orange",
+            linewidth=1.5, label="simultaneous fitted surface",
+        )
+        axis.set_xlabel("$\\theta$ [deg]")
+        axis.set_ylabel(labels[index])
+        axis.set_title("slice intercept" if index == 0 else "slice azimuthal slope")
+        axis.legend(loc="best", fontsize="small")
+    save_plot(
+        fig,
+        output_dir / f"{diagnostic.label}_phi_coefficients_vs_theta.png",
+        f"Visual FD slice summaries (not a second correction fit): {diagnostic.label}",
+        dataset_tag,
+        beam_energy,
+    )
+    plt.close(fig)
+
+
 def plot_diagnostics(
     diagnostics: list[RegionDiagnostics],
     output_dir: Path,
@@ -935,16 +1206,16 @@ def plot_diagnostics(
     for diagnostic in diagnostics:
         fit = diagnostic.region["fit"]
         fig, axes = plt.subplots(1, 4, figsize=(20, 4.5))
+        center_percent = 100.0 * diagnostic.profile_residual
+        color_limit = max(0.25, 1.15 * float(np.max(np.abs(center_percent))))
         scatter = axes[0].scatter(
             diagnostic.profile_theta_deg,
             diagnostic.profile_phi_deg,
-            c=100.0 * diagnostic.profile_residual,
+            c=center_percent,
             cmap="coolwarm",
             s=35,
-            vmin=-100.0 * diagnostic.region["fit"]["peakSearchMaxAbsResidual"]
-            if "peakSearchMaxAbsResidual" in diagnostic.region["fit"] else None,
-            vmax=100.0 * diagnostic.region["fit"]["peakSearchMaxAbsResidual"]
-            if "peakSearchMaxAbsResidual" in diagnostic.region["fit"] else None,
+            vmin=-color_limit,
+            vmax=color_limit,
         )
         rejected = fit.get("rejectedProfileCells", [])
         rejected_with_entries = [
@@ -1027,6 +1298,9 @@ def plot_diagnostics(
             beam_energy,
         )
         plt.close(fig)
+        _plot_phi_profiles(diagnostic, output_dir, dataset_tag, beam_energy)
+        _plot_cell_fit_discrepancies(diagnostic, output_dir, dataset_tag, beam_energy)
+        _plot_slice_phi_coefficients(diagnostic, output_dir, dataset_tag, beam_energy)
 
 
 def parse_args() -> argparse.Namespace:

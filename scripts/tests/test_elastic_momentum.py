@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import importlib.util
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 
@@ -15,6 +18,8 @@ from scripts.calibration.elastic_momentum import (
     evaluate_region,
     fit_region,
     mode_seeded_core,
+    phi_slice_line_parameters,
+    plot_diagnostics,
     select_elastic_events,
 )
 
@@ -109,6 +114,51 @@ class ElasticKinematicsTests(unittest.TestCase):
 
 
 class ElasticSurfaceFitTests(unittest.TestCase):
+    def test_secondary_slice_line_recovers_intercept_and_slope(self) -> None:
+        cells = [
+            {"phiMeanDeg": phi, "center": 0.004 + 0.002 * phi / 30.0,
+             "centerError": 0.001}
+            for phi in (-20.0, 0.0, 20.0)
+        ]
+        result = phi_slice_line_parameters(cells, 30.0)
+        self.assertIsNotNone(result)
+        coefficients, errors = result
+        np.testing.assert_allclose(coefficients, (0.004, 0.002), atol=1.0e-12)
+        self.assertTrue(np.all(np.isfinite(errors) & (errors > 0.0)))
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("matplotlib") is not None,
+        "Matplotlib is required for elastic-plot diagnostics",
+    )
+    def test_linear_fd_diagnostics_render_all_profile_views(self) -> None:
+        rng = np.random.default_rng(29)
+        entries = 8000
+        theta = rng.uniform(10.0, 30.0, entries)
+        phi = rng.uniform(-29.0, 29.0, entries)
+        residual = 0.004 + 0.002 * phi / 30.0 + rng.normal(0.0, 0.008, entries)
+        region, diagnostic = fit_region(
+            pid=11, detector=1, sector=1, theta_deg=theta, phi_deg=phi,
+            residual=residual, basis="polynomial",
+            cfg=ElasticFitConfig(
+                beam_energy=6.535, torus=1, theta_bins=3, phi_bins=3,
+                theta_order=1, phi_order=1, min_bin_entries=40,
+                min_region_entries=200,
+            ),
+        )
+        accepted = region["fit"]["acceptedProfileCells"]
+        self.assertTrue(all(cell["afterCenter"] is not None for cell in accepted))
+        self.assertTrue(all("centerMinusSurface" in cell for cell in accepted))
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_dir = Path(temporary_directory)
+            plot_diagnostics([diagnostic], output_dir, "plot-test", 6.535)
+            for name in (
+                "pid11_det1_sector1.png",
+                "pid11_det1_sector1_profile_vs_phi_by_theta.png",
+                "pid11_det1_sector1_cell_fit_discrepancy.png",
+                "pid11_det1_sector1_phi_coefficients_vs_theta.png",
+            ):
+                self.assertTrue((output_dir / name).is_file(), name)
+
     def test_exported_fd_regions_are_finite_and_complete(self) -> None:
         rng = np.random.default_rng(61)
         entries_per_sector = 1000
