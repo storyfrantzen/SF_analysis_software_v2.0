@@ -70,6 +70,54 @@ Load QADB before configuring and building on JLab, for example `module load qadb
 If QADB is requested by a config but was unavailable at build time, `hipo2root` exits with
 an explicit error.
 
+### Reproducible run-condition audit
+
+Use `analysis/audit_run_conditions.py` to compile the RCDB conditions, converter
+`RunCharge` counters, and optional QADB `Misc` comments needed by the data-efficiency
+study. The program writes reusable `rcdb_conditions.tsv` and
+`converter_run_charge.tsv` caches, a combined `run_audit.tsv`, an
+`audit_summary.json`, and a `run_currents.json` accepted directly by
+`study_data_efficiency.py`.
+
+RCDB and QADB do not define analysis classes such as production, luminosity-scan,
+trigger-period, or empty-target classes. Supply a previously reviewed manifest with
+`--base-manifest` to preserve those judgments while refreshing the objective metadata.
+Alternatively, use repeatable `--assign-class CLASS=RUNS` and
+`--nominal-current CLASS=NA` options. Previously unseen runs are deliberately labeled
+`unclassified` so they cannot silently enter a fit.
+
+For example, in `tcsh` on the farm:
+
+```tcsh
+set repo = /work/clas12/storyf/SF_analysis_software_v2.0
+source "$repo/docs/jlab-module-setup.csh"
+rehash
+
+if ( ! $?RCDB_CONNECTION ) then
+    setenv RCDB_CONNECTION mysql://rcdb@clasdb-farm.jlab.org/rcdb
+endif
+
+python3 "$repo/analysis/audit_run_conditions.py" \
+    --processing-root "$processing" \
+    --base-manifest "$previous_manifest" \
+    --qadb-datasets rga_fa18_outbending \
+    --run-group RGA \
+    --period "Fall 2018" \
+    --beam-energy-gev 10.604 \
+    --output-dir "$audit"
+```
+
+The script imports the RCDB Python package directly, including the
+`$RCDB_HOME/python` fallback needed when the installed `rcdb` wrapper is not
+executable. A later manifest revision can reuse `--rcdb-input
+$audit/rcdb_conditions.tsv`, `--run-charge-input
+$audit/converter_run_charge.tsv`, and `--qadb-misc-input $audit/qadb_misc.txt`
+without accessing the databases or reopening ROOT.
+
+QADB `Misc` comments are audit information, not automatic rejection decisions. They
+appear as `qadb_misc_review` flags and must be evaluated explicitly before updating
+the converter's `allowMiscRuns` or the downstream run selection.
+
 The converter's optional `diphotonMassSkim` accepts an event when any pair of
 reconstructed PID-22 particles falls within the inclusive `minGeV` and
 `maxGeV` interval. Set it wider than every downstream pi0 mass variation so
