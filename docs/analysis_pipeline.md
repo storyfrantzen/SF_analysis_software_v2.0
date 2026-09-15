@@ -197,10 +197,12 @@ proton energy loss first and an optional data-derived elastic correction second.
 This ordering makes the proton elastic fit describe the remaining tracking
 momentum bias rather than absorbing material energy loss again.
 
-The calibration uses exclusive-like `ep -> ep` candidates selected with
-fiducial, electron-identification, vertex, coplanarity, and polar-angle closure
-requirements. Each particle's momentum residual is constructed without using
-the other particle's measured momentum:
+The calibration uses `ep -> epX` candidates with exactly one reconstructed
+electron and proton, no additional charged tracks, and any number of neutral
+particles. Fiducial, electron-identification, vertex, coplanarity, polar-angle
+closure, and a broad maximum missing-energy requirement select the elastic
+peak. Each particle's momentum residual is constructed without using the other
+particle's measured momentum:
 
 ```text
 p_e,elastic(theta_e) = Ebeam / [1 + Ebeam/Mp (1 - cos(theta_e))]
@@ -220,10 +222,13 @@ the momentum coefficients.
 FD corrections are fitted independently in each sector as a normalized
 `theta`/sector-local-`phi` polynomial. The CD proton correction uses normalized
 `theta` polynomials multiplied by global-`phi` Fourier terms, preserving
-periodicity at +/-180 degrees. Residual-bin centers use an iteratively clipped
-core estimator so radiative and background tails do not set the fitted peak.
-The converter never extrapolates outside the fitted theta/phi support;
-particles outside it retain their input momentum.
+periodicity at +/-180 degrees. Residual-bin centers use a mode-seeded clipped
+core, so the elastic peak need not be the majority population. Cells are
+rejected on minimum core population, retained fraction, peak significance,
+maximum width, and maximum plausible correction. Fits also require at least two
+profile cells per parameter and a bounded weighted design condition number.
+Only accepted profile-cell rectangles are exported as application support;
+particles in holes or outside the fitted support retain their input momentum.
 
 For RGK 6.535 GeV, derive a candidate sample and parameters with:
 
@@ -240,6 +245,7 @@ python3 scripts/derive_elastic_momentum.py \
   6.535_rgk_elastic_candidates.root \
   --beam-energy 6.535 \
   --torus 1 \
+  --missing-energy-max-gev 0.75 \
   --output parameters/momentum/6.535RGK_elastic_momentum.json \
   --plot-dir calibration_plots/momentum/6.535RGK \
   --dataset-tag 6.535RGK_elastic

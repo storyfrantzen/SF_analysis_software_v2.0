@@ -109,7 +109,11 @@ The converter currently supports:
 `hipo2root` reports progress every 1,000,000 input events by default. Pass a
 fourth argument to change that interval, or `0` to disable progress output.
 
-By default, `finalState` rejects reconstructed particles whose PIDs are not listed in the config. Set `inclusive` to `true` for inclusive final-state skims.
+By default, `finalState` rejects reconstructed particles whose PIDs are not
+listed in the config. Set `inclusive` to `true` to permit every additional
+particle, or keep `inclusive: false` and set
+`allowAdditionalNeutralParticles: true` to veto additional charged tracks while
+retaining neutral particles such as photons.
 Use `outputPids` when the event selection should remain broad but only selected
 particle rows should be written. For example, proton energy-loss calibration
 configs require events with at least one reconstructed proton and set

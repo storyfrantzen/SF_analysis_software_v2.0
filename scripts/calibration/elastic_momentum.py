@@ -13,6 +13,7 @@ from .root_arrays import arrays_from_dataframe, has_column, load_dataframe
 
 
 PROTON_MASS_GEV = 0.9382720813
+ELECTRON_MASS_GEV = 0.00051099895
 RAD_TO_DEG = 180.0 / np.pi
 
 
@@ -22,6 +23,7 @@ class ElasticFitConfig:
     torus: int = 0
     coplanarity_max_deg: float = 3.0
     theta_balance_max_deg: float = 2.0
+    missing_energy_max_gev: float = 0.75
     theta_trim_quantile: float = 0.005
     residual_trim_quantile: float = 0.01
     theta_bins: int = 7
@@ -31,6 +33,14 @@ class ElasticFitConfig:
     cd_fourier_harmonics: int = 3
     min_bin_entries: int = 40
     min_region_entries: int = 800
+    peak_search_max_abs_residual: float = 0.10
+    peak_seed_half_width: float = 0.03
+    core_sigma_clip: float = 3.0
+    min_core_fraction: float = 0.20
+    min_peak_significance: float = 3.0
+    max_core_width: float = 0.05
+    min_profile_cells_per_parameter: float = 2.0
+    max_condition_number: float = 1.0e6
 
 
 @dataclass(frozen=True)
@@ -43,7 +53,40 @@ class RegionDiagnostics:
     profile_theta_deg: np.ndarray
     profile_phi_deg: np.ndarray
     profile_residual: np.ndarray
+    profile_error: np.ndarray
+    profile_width: np.ndarray
+    profile_entries: np.ndarray
+    profile_core_fraction: np.ndarray
+    profile_peak_significance: np.ndarray
     region: dict[str, object]
+
+
+@dataclass(frozen=True)
+class CoreEstimate:
+    center: float
+    error: float
+    width: float
+    entries: int
+    total_entries: int
+    mode: float
+    retained_fraction: float
+    peak_significance: float
+    converged: bool
+    mask: np.ndarray
+
+
+@dataclass(frozen=True)
+class ProfileGrid:
+    theta_deg: np.ndarray
+    phi_deg: np.ndarray
+    residual: np.ndarray
+    error: np.ndarray
+    width: np.ndarray
+    entries: np.ndarray
+    core_fraction: np.ndarray
+    peak_significance: np.ndarray
+    support_cells: list[dict[str, list[float]]]
+    rejected_cells: list[dict[str, object]]
 
 
 def wrap_degrees(angle_deg: np.ndarray | float) -> np.ndarray:
@@ -113,6 +156,13 @@ def select_elastic_events(
         RAD_TO_DEG - 180.0
     )
     theta_balance = (proton_theta - expected_proton_theta) * RAD_TO_DEG
+    electron_p = np.asarray(arrays["electronP"], dtype=float)
+    proton_p = np.asarray(arrays["protonP"], dtype=float)
+    missing_energy = (
+        cfg.beam_energy + PROTON_MASS_GEV
+        - np.sqrt(np.square(electron_p) + ELECTRON_MASS_GEV**2)
+        - np.sqrt(np.square(proton_p) + PROTON_MASS_GEV**2)
+    )
 
     finite_columns = [
         "electronP", "electronTheta", "electronPhi", "electronDet", "electronSector",
@@ -121,8 +171,9 @@ def select_elastic_events(
     mask = np.ones(electron_theta.size, dtype=bool)
     for column in finite_columns:
         mask &= np.isfinite(arrays[column])
-    mask &= np.asarray(arrays["electronP"]) > 0.0
-    mask &= np.asarray(arrays["protonP"]) > 0.0
+    mask &= electron_p > 0.0
+    mask &= proton_p > 0.0
+    mask &= np.isfinite(missing_energy)
     mask &= np.asarray(arrays["electronDet"]) == 1
     mask &= (np.asarray(arrays["electronSector"]) >= 1) & (
         np.asarray(arrays["electronSector"]) <= 6
@@ -136,17 +187,22 @@ def select_elastic_events(
     preselection = mask.copy()
     mask &= np.abs(coplanarity) <= cfg.coplanarity_max_deg
     mask &= np.abs(theta_balance) <= cfg.theta_balance_max_deg
+    angular_selection = mask.copy()
+    mask &= missing_energy <= cfg.missing_energy_max_gev
 
     selected = {name: np.asarray(values)[mask] for name, values in arrays.items()}
     selected["coplanarityDeg"] = coplanarity[mask]
     selected["thetaBalanceDeg"] = theta_balance[mask]
+    selected["missingEnergyGeV"] = missing_energy[mask]
     summary: dict[str, object] = {
         "inputCandidates": int(mask.size),
         "preselectedCandidates": int(np.count_nonzero(preselection)),
+        "angularSelectedCandidates": int(np.count_nonzero(angular_selection)),
         "selectedCandidates": int(np.count_nonzero(mask)),
         "selectedFraction": float(np.mean(mask)) if mask.size else 0.0,
         "coplanarityMaxDeg": cfg.coplanarity_max_deg,
         "thetaBalanceMaxDeg": cfg.theta_balance_max_deg,
+        "missingEnergyMaxGeV": cfg.missing_energy_max_gev,
         "preselectionAngularClosure": {
             "coplanarityDeg": _region_summary(coplanarity[preselection]),
             "thetaBalanceDeg": _region_summary(theta_balance[preselection]),
@@ -155,6 +211,13 @@ def select_elastic_events(
             "coplanarityDeg": _region_summary(coplanarity[mask]),
             "thetaBalanceDeg": _region_summary(theta_balance[mask]),
         },
+        "preselectionMissingEnergyGeV": _region_summary(
+            missing_energy[preselection]
+        ),
+        "angularSelectionMissingEnergyGeV": _region_summary(
+            missing_energy[angular_selection]
+        ),
+        "selectedMissingEnergyGeV": _region_summary(missing_energy[mask]),
     }
     return selected, summary
 
@@ -180,18 +243,133 @@ def robust_core(values: np.ndarray) -> tuple[float, float, float, int]:
     return center, error, width, int(core.size)
 
 
+def mode_seeded_core(
+    values: np.ndarray,
+    *,
+    peak_search_max_abs_residual: float,
+    peak_seed_half_width: float,
+    sigma_clip: float,
+) -> CoreEstimate:
+    """Estimate a narrow residual peak without assuming it is the majority."""
+    input_values = np.asarray(values, dtype=float)
+    finite = np.isfinite(input_values)
+    total_entries = int(np.count_nonzero(finite))
+    empty_mask = np.zeros(input_values.shape, dtype=bool)
+    if total_entries < 2:
+        return CoreEstimate(
+            np.nan, np.nan, np.nan, total_entries, total_entries, np.nan,
+            0.0, 0.0, False, empty_mask
+        )
+
+    plausible = finite & (
+        np.abs(input_values) <= peak_search_max_abs_residual
+    )
+    plausible_values = input_values[plausible]
+    if plausible_values.size < 2:
+        return CoreEstimate(
+            np.nan, np.nan, np.nan, int(plausible_values.size), total_entries,
+            np.nan, float(plausible_values.size / total_entries), 0.0, False,
+            empty_mask,
+        )
+
+    histogram_bins = int(np.clip(np.ceil(np.sqrt(plausible_values.size)), 20, 80))
+    histogram, edges = np.histogram(
+        plausible_values,
+        bins=histogram_bins,
+        range=(-peak_search_max_abs_residual, peak_search_max_abs_residual),
+    )
+    smoothed = np.convolve(
+        histogram.astype(float),
+        np.asarray([1.0, 2.0, 3.0, 2.0, 1.0]) / 9.0,
+        mode="same",
+    )
+    peak_index = int(np.argmax(smoothed))
+    mode = float(0.5 * (edges[peak_index] + edges[peak_index + 1]))
+
+    seed_mask = plausible & (
+        np.abs(input_values - mode) <= peak_seed_half_width
+    )
+    if np.count_nonzero(seed_mask) < 2:
+        return CoreEstimate(
+            np.nan, np.nan, np.nan, int(np.count_nonzero(seed_mask)),
+            total_entries, mode, float(np.count_nonzero(seed_mask) / total_entries),
+            0.0, False, seed_mask,
+        )
+
+    core_mask = seed_mask.copy()
+    converged = False
+    for _ in range(12):
+        core = input_values[core_mask]
+        center = float(np.mean(core))
+        median = float(np.median(core))
+        mad = float(np.median(np.abs(core - median)))
+        width = 1.4826 * mad
+        if not np.isfinite(width) or width <= 0.0:
+            width = float(np.std(core, ddof=1)) if core.size > 1 else np.nan
+        if not np.isfinite(width) or width <= 0.0:
+            break
+        candidate_mask = plausible & (
+            np.abs(input_values - center) <= sigma_clip * width
+        )
+        if np.count_nonzero(candidate_mask) < 2:
+            break
+        if np.array_equal(candidate_mask, core_mask):
+            converged = True
+            break
+        core_mask = candidate_mask
+
+    core = input_values[core_mask]
+    if core.size < 2:
+        return CoreEstimate(
+            np.nan, np.nan, np.nan, int(core.size), total_entries, mode,
+            float(core.size / total_entries), 0.0, converged, core_mask,
+        )
+    center = float(np.mean(core))
+    width = float(np.std(core, ddof=1))
+    error = width / np.sqrt(core.size) if width > 0.0 else np.nan
+    sideband_mask = finite & (
+        np.abs(input_values - center) > sigma_clip * width
+    ) & (
+        np.abs(input_values - center) <= 2.0 * sigma_clip * width
+    )
+    sideband_entries = int(np.count_nonzero(sideband_mask))
+    peak_significance = max(
+        0.0,
+        float(core.size - sideband_entries) /
+        np.sqrt(max(float(core.size + sideband_entries), 1.0)),
+    )
+    return CoreEstimate(
+        center=center,
+        error=error,
+        width=width,
+        entries=int(core.size),
+        total_entries=total_entries,
+        mode=mode,
+        retained_fraction=float(core.size / total_entries),
+        peak_significance=peak_significance,
+        converged=converged,
+        mask=core_mask,
+    )
+
+
 def _profile_grid(
     theta: np.ndarray,
     phi: np.ndarray,
     residual: np.ndarray,
     theta_edges: np.ndarray,
     phi_edges: np.ndarray,
-    min_entries: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    cfg: ElasticFitConfig,
+) -> ProfileGrid:
     theta_points: list[float] = []
     phi_points: list[float] = []
     residual_points: list[float] = []
     errors: list[float] = []
+    widths: list[float] = []
+    entries: list[int] = []
+    core_fractions: list[float] = []
+    peak_significances: list[float] = []
+    support_cells: list[dict[str, list[float]]] = []
+    rejected_cells: list[dict[str, object]] = []
     for theta_index, (theta_lo, theta_hi) in enumerate(zip(theta_edges[:-1], theta_edges[1:])):
         theta_mask = (theta >= theta_lo) & (
             (theta <= theta_hi) if theta_index == len(theta_edges) - 2 else (theta < theta_hi)
@@ -201,18 +379,85 @@ def _profile_grid(
                 (phi <= phi_hi) if phi_index == len(phi_edges) - 2 else (phi < phi_hi)
             )
             cell = theta_mask & phi_mask
-            if np.count_nonzero(cell) < min_entries:
+            cell_entries = int(np.count_nonzero(cell))
+            cell_id = {
+                "thetaRangeDeg": [float(theta_lo), float(theta_hi)],
+                "phiRangeDeg": [float(phi_lo), float(phi_hi)],
+            }
+            if cell_entries < cfg.min_bin_entries:
+                rejected_cells.append({
+                    **cell_id,
+                    "reason": "rawEntries",
+                    "value": cell_entries,
+                    "threshold": cfg.min_bin_entries,
+                })
                 continue
-            center, error, _, retained = robust_core(residual[cell])
-            if retained < min_entries or not np.isfinite(center) or not np.isfinite(error) or error <= 0:
+            estimate = mode_seeded_core(
+                residual[cell],
+                peak_search_max_abs_residual=cfg.peak_search_max_abs_residual,
+                peak_seed_half_width=cfg.peak_seed_half_width,
+                sigma_clip=cfg.core_sigma_clip,
+            )
+            quality_failure: tuple[str, float, float] | None = None
+            if estimate.entries < cfg.min_bin_entries:
+                quality_failure = (
+                    "coreEntries", float(estimate.entries), float(cfg.min_bin_entries)
+                )
+            elif not np.isfinite(estimate.center) or not np.isfinite(estimate.error) or estimate.error <= 0:
+                quality_failure = ("finiteCenterError", 0.0, 1.0)
+            elif abs(estimate.center) > cfg.peak_search_max_abs_residual:
+                quality_failure = (
+                    "absoluteCenter", abs(estimate.center),
+                    cfg.peak_search_max_abs_residual,
+                )
+            elif not np.isfinite(estimate.width) or estimate.width > cfg.max_core_width:
+                quality_failure = (
+                    "coreWidth", estimate.width, cfg.max_core_width
+                )
+            elif estimate.retained_fraction < cfg.min_core_fraction:
+                quality_failure = (
+                    "coreFraction", estimate.retained_fraction, cfg.min_core_fraction
+                )
+            elif estimate.peak_significance < cfg.min_peak_significance:
+                quality_failure = (
+                    "peakSignificance", estimate.peak_significance,
+                    cfg.min_peak_significance,
+                )
+            if quality_failure is not None:
+                reason, value, threshold = quality_failure
+                rejected_cells.append({
+                    **cell_id,
+                    "reason": reason,
+                    "value": float(value),
+                    "threshold": float(threshold),
+                    "rawEntries": cell_entries,
+                    "coreEntries": estimate.entries,
+                    "mode": estimate.mode if np.isfinite(estimate.mode) else None,
+                })
                 continue
-            theta_points.append(float(np.mean(theta[cell])))
-            phi_points.append(float(np.mean(phi[cell])))
-            residual_points.append(center)
-            errors.append(error)
-    return tuple(np.asarray(v, dtype=float) for v in (
-        theta_points, phi_points, residual_points, errors
-    ))
+            cell_theta = theta[cell]
+            cell_phi = phi[cell]
+            theta_points.append(float(np.mean(cell_theta[estimate.mask])))
+            phi_points.append(float(np.mean(cell_phi[estimate.mask])))
+            residual_points.append(estimate.center)
+            errors.append(estimate.error)
+            widths.append(estimate.width)
+            entries.append(estimate.entries)
+            core_fractions.append(estimate.retained_fraction)
+            peak_significances.append(estimate.peak_significance)
+            support_cells.append(cell_id)
+    return ProfileGrid(
+        theta_deg=np.asarray(theta_points, dtype=float),
+        phi_deg=np.asarray(phi_points, dtype=float),
+        residual=np.asarray(residual_points, dtype=float),
+        error=np.asarray(errors, dtype=float),
+        width=np.asarray(widths, dtype=float),
+        entries=np.asarray(entries, dtype=int),
+        core_fraction=np.asarray(core_fractions, dtype=float),
+        peak_significance=np.asarray(peak_significances, dtype=float),
+        support_cells=support_cells,
+        rejected_cells=rejected_cells,
+    )
 
 
 def _polynomial_matrix(
@@ -298,6 +543,37 @@ def evaluate_region(
     return np.sum(np.column_stack(columns), axis=1)
 
 
+def region_support_mask(
+    region: dict[str, object],
+    theta_deg: np.ndarray,
+    phi_deg: np.ndarray,
+) -> np.ndarray:
+    theta = np.asarray(theta_deg, dtype=float)
+    phi = np.asarray(phi_deg, dtype=float)
+    theta_range = list(region["thetaRangeDeg"])
+    phi_range = list(region["phiRangeDeg"])
+    mask = (
+        (theta >= float(theta_range[0])) &
+        (theta <= float(theta_range[1])) &
+        (phi >= float(phi_range[0])) &
+        (phi <= float(phi_range[1]))
+    )
+    support_cells = list(region.get("supportCells", []))
+    if not support_cells:
+        return mask
+    cell_mask = np.zeros(theta.shape, dtype=bool)
+    for cell in support_cells:
+        cell_theta = list(cell["thetaRangeDeg"])
+        cell_phi = list(cell["phiRangeDeg"])
+        cell_mask |= (
+            (theta >= float(cell_theta[0])) &
+            (theta <= float(cell_theta[1])) &
+            (phi >= float(cell_phi[0])) &
+            (phi <= float(cell_phi[1]))
+        )
+    return mask & cell_mask
+
+
 def fit_region(
     *,
     pid: int,
@@ -315,6 +591,22 @@ def fit_region(
         raise ValueError("fit orders and Fourier harmonics must be nonnegative")
     if cfg.min_bin_entries < 2 or cfg.min_region_entries < 2:
         raise ValueError("minimum entry counts must be at least two")
+    if not 0.0 < cfg.missing_energy_max_gev:
+        raise ValueError("missing-energy maximum must be positive")
+    if not 0.0 < cfg.peak_search_max_abs_residual < 1.0:
+        raise ValueError("peak-search residual range must be in (0, 1)")
+    if not 0.0 < cfg.peak_seed_half_width <= cfg.peak_search_max_abs_residual:
+        raise ValueError("peak seed half-width must not exceed the search range")
+    if cfg.core_sigma_clip <= 0.0 or cfg.max_core_width <= 0.0:
+        raise ValueError("core sigma clip and maximum width must be positive")
+    if not 0.0 < cfg.min_core_fraction <= 1.0:
+        raise ValueError("minimum core fraction must be in (0, 1]")
+    if cfg.min_peak_significance < 0.0:
+        raise ValueError("minimum peak significance must be nonnegative")
+    if cfg.min_profile_cells_per_parameter < 1.0:
+        raise ValueError("profile-cells-per-parameter must be at least one")
+    if cfg.max_condition_number <= 1.0:
+        raise ValueError("maximum condition number must exceed one")
     finite = np.isfinite(theta_deg) & np.isfinite(phi_deg) & np.isfinite(residual)
     theta = np.asarray(theta_deg, dtype=float)[finite]
     phi = np.asarray(phi_deg, dtype=float)[finite]
@@ -351,19 +643,19 @@ def fit_region(
 
     theta_edges = np.unique(np.quantile(theta, np.linspace(0.0, 1.0, cfg.theta_bins + 1)))
     phi_edges = np.linspace(phi_range[0], phi_range[1], cfg.phi_bins + 1)
-    profile_theta, profile_phi, profile_residual, profile_error = _profile_grid(
-        theta, phi, residual_values, theta_edges, phi_edges, cfg.min_bin_entries
+    profile = _profile_grid(
+        theta, phi, residual_values, theta_edges, phi_edges, cfg
     )
 
     theta_center = 0.5 * (theta_min + theta_max)
     theta_scale = 0.5 * (theta_max - theta_min)
-    theta_normalized = (profile_theta - theta_center) / theta_scale
+    theta_normalized = (profile.theta_deg - theta_center) / theta_scale
     if basis == "polynomial":
         phi_center = 0.0
         phi_scale = 30.0
         matrix, definitions = _polynomial_matrix(
             theta_normalized,
-            (profile_phi - phi_center) / phi_scale,
+            (profile.phi_deg - phi_center) / phi_scale,
             cfg.theta_order,
             cfg.phi_order,
         )
@@ -373,7 +665,7 @@ def fit_region(
         phi_scale = 180.0
         matrix, definitions = _fourier_matrix(
             theta_normalized,
-            profile_phi,
+            profile.phi_deg,
             cfg.theta_order,
             cfg.cd_fourier_harmonics,
         )
@@ -381,25 +673,35 @@ def fit_region(
     else:
         raise ValueError(f"unsupported basis {basis}")
 
-    if matrix.shape[0] < matrix.shape[1]:
+    minimum_profile_cells = int(np.ceil(
+        cfg.min_profile_cells_per_parameter * matrix.shape[1]
+    ))
+    if matrix.shape[0] < minimum_profile_cells:
         raise ValueError(
-            f"region has {matrix.shape[0]} usable profile cells for {matrix.shape[1]} terms"
+            f"region has {matrix.shape[0]} usable profile cells; requires "
+            f"{minimum_profile_cells} for {matrix.shape[1]} terms"
         )
-    weights = 1.0 / profile_error
+    weights = 1.0 / profile.error
     weighted_matrix = matrix * weights[:, None]
-    weighted_residual = profile_residual * weights
-    coefficients, _, rank, _ = np.linalg.lstsq(
+    weighted_residual = profile.residual * weights
+    coefficients, _, rank, singular_values = np.linalg.lstsq(
         weighted_matrix, weighted_residual, rcond=None
     )
     if rank != matrix.shape[1] or not np.all(np.isfinite(coefficients)):
         raise ValueError("region fit is rank deficient")
+    condition_number = float(singular_values[0] / singular_values[-1])
+    if not np.isfinite(condition_number) or condition_number > cfg.max_condition_number:
+        raise ValueError(
+            f"region weighted design condition number {condition_number:.6g} exceeds "
+            f"{cfg.max_condition_number:.6g}"
+        )
 
     terms = [
         {**definition, "coefficient": float(coefficient)}
         for definition, coefficient in zip(definitions, coefficients)
     ]
     predicted = matrix @ coefficients
-    chi2 = float(np.sum(np.square((profile_residual - predicted) / profile_error)))
+    chi2 = float(np.sum(np.square((profile.residual - predicted) / profile.error)))
     ndof = int(matrix.shape[0] - matrix.shape[1])
     region: dict[str, object] = {
         "pid": pid,
@@ -414,6 +716,7 @@ def fit_region(
         "phiVariable": phi_variable,
         "basis": basis,
         "terms": terms,
+        "supportCells": profile.support_cells,
         "fit": {
             "entries": int(theta.size),
             "profileCells": int(matrix.shape[0]),
@@ -421,10 +724,33 @@ def fit_region(
             "chi2": chi2,
             "ndof": ndof,
             "chi2PerNdf": chi2 / ndof if ndof > 0 else None,
+            "weightedDesignConditionNumber": condition_number,
             "residualCoreRange": [float(residual_min), float(residual_max)],
+            "peakSearchMaxAbsResidual": cfg.peak_search_max_abs_residual,
+            "acceptedProfileCells": [
+                {
+                    **support,
+                    "thetaMeanDeg": float(profile.theta_deg[index]),
+                    "phiMeanDeg": float(profile.phi_deg[index]),
+                    "center": float(profile.residual[index]),
+                    "centerError": float(profile.error[index]),
+                    "coreWidth": float(profile.width[index]),
+                    "coreEntries": int(profile.entries[index]),
+                    "coreFraction": float(profile.core_fraction[index]),
+                    "peakSignificance": float(profile.peak_significance[index]),
+                }
+                for index, support in enumerate(profile.support_cells)
+            ],
+            "rejectedProfileCells": profile.rejected_cells,
         },
     }
-    fitted_correction = evaluate_region(region, theta, phi)
+    supported = region_support_mask(region, theta, phi)
+    fitted_correction = np.zeros(theta.shape, dtype=float)
+    fitted_correction[supported] = evaluate_region(
+        region, theta[supported], phi[supported]
+    )
+    region["fit"]["applicationSupportEntries"] = int(np.count_nonzero(supported))
+    region["fit"]["applicationSupportFraction"] = float(np.mean(supported))
     label = f"pid{pid}_det{detector}" + (f"_sector{sector}" if sector else "")
     diagnostics = RegionDiagnostics(
         label=label,
@@ -432,9 +758,14 @@ def fit_region(
         phi_deg=phi,
         residual_before=residual_values,
         residual_after=(1.0 + residual_values) / (1.0 + fitted_correction) - 1.0,
-        profile_theta_deg=profile_theta,
-        profile_phi_deg=profile_phi,
-        profile_residual=profile_residual,
+        profile_theta_deg=profile.theta_deg,
+        profile_phi_deg=profile.phi_deg,
+        profile_residual=profile.residual,
+        profile_error=profile.error,
+        profile_width=profile.width,
+        profile_entries=profile.entries,
+        profile_core_fraction=profile.core_fraction,
+        profile_peak_significance=profile.peak_significance,
         region=region,
     )
     return region, diagnostics
@@ -514,6 +845,15 @@ def derive_corrections(
                     region["particle"] = particle_name
                     region["fit"]["before"] = _region_summary(diagnostic.residual_before)
                     region["fit"]["after"] = _region_summary(diagnostic.residual_after)
+                    supported = region_support_mask(
+                        region, diagnostic.theta_deg, diagnostic.phi_deg
+                    )
+                    region["fit"]["beforeSupported"] = _region_summary(
+                        diagnostic.residual_before[supported]
+                    )
+                    region["fit"]["afterSupported"] = _region_summary(
+                        diagnostic.residual_after[supported]
+                    )
                     regions.append(region)
                     diagnostics.append(diagnostic)
             else:
@@ -536,6 +876,15 @@ def derive_corrections(
                 region["particle"] = particle_name
                 region["fit"]["before"] = _region_summary(diagnostic.residual_before)
                 region["fit"]["after"] = _region_summary(diagnostic.residual_after)
+                supported = region_support_mask(
+                    region, diagnostic.theta_deg, diagnostic.phi_deg
+                )
+                region["fit"]["beforeSupported"] = _region_summary(
+                    diagnostic.residual_before[supported]
+                )
+                region["fit"]["afterSupported"] = _region_summary(
+                    diagnostic.residual_after[supported]
+                )
                 regions.append(region)
                 diagnostics.append(diagnostic)
 
@@ -549,6 +898,7 @@ def derive_corrections(
         "torus": cfg.torus,
         "selection": selection_summary,
         "fitConfiguration": {
+            "missingEnergyMaxGeV": cfg.missing_energy_max_gev,
             "thetaTrimQuantile": cfg.theta_trim_quantile,
             "residualTrimQuantile": cfg.residual_trim_quantile,
             "thetaBins": cfg.theta_bins,
@@ -558,6 +908,14 @@ def derive_corrections(
             "cdFourierHarmonics": cfg.cd_fourier_harmonics,
             "minBinEntries": cfg.min_bin_entries,
             "minRegionEntries": cfg.min_region_entries,
+            "peakSearchMaxAbsResidual": cfg.peak_search_max_abs_residual,
+            "peakSeedHalfWidth": cfg.peak_seed_half_width,
+            "coreSigmaClip": cfg.core_sigma_clip,
+            "minCoreFraction": cfg.min_core_fraction,
+            "minPeakSignificance": cfg.min_peak_significance,
+            "maxCoreWidth": cfg.max_core_width,
+            "minProfileCellsPerParameter": cfg.min_profile_cells_per_parameter,
+            "maxConditionNumber": cfg.max_condition_number,
         },
         "regions": regions,
         "skippedRegions": skipped,
@@ -575,17 +933,36 @@ def plot_diagnostics(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     for diagnostic in diagnostics:
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
+        fit = diagnostic.region["fit"]
+        fig, axes = plt.subplots(1, 4, figsize=(20, 4.5))
         scatter = axes[0].scatter(
             diagnostic.profile_theta_deg,
             diagnostic.profile_phi_deg,
             c=100.0 * diagnostic.profile_residual,
             cmap="coolwarm",
             s=35,
+            vmin=-100.0 * diagnostic.region["fit"]["peakSearchMaxAbsResidual"]
+            if "peakSearchMaxAbsResidual" in diagnostic.region["fit"] else None,
+            vmax=100.0 * diagnostic.region["fit"]["peakSearchMaxAbsResidual"]
+            if "peakSearchMaxAbsResidual" in diagnostic.region["fit"] else None,
         )
+        rejected = fit.get("rejectedProfileCells", [])
+        rejected_with_entries = [
+            cell for cell in rejected if cell.get("reason") != "rawEntries"
+        ]
+        if rejected_with_entries:
+            axes[0].scatter(
+                [0.5 * sum(cell["thetaRangeDeg"]) for cell in rejected_with_entries],
+                [0.5 * sum(cell["phiRangeDeg"]) for cell in rejected_with_entries],
+                marker="x",
+                color="black",
+                s=25,
+                label="rejected peak",
+            )
+            axes[0].legend(loc="best", fontsize="small")
         axes[0].set_xlabel(r"$\theta$ [deg]")
         axes[0].set_ylabel(r"$\phi$ variable [deg]")
-        axes[0].set_title("profile before correction")
+        axes[0].set_title("accepted profile cells")
         fig.colorbar(scatter, ax=axes[0], label=r"$100(p_{el}/p-1)$ [%]")
 
         common_range = np.quantile(diagnostic.residual_before, (0.005, 0.995))
@@ -605,19 +982,42 @@ def plot_diagnostics(
         )
         axes[1].set_xlabel(r"$100(p_{el}/p-1)$ [%]")
         axes[1].set_ylabel("candidates")
-        axes[1].set_title("closure")
+        axes[1].set_title("closure: broad view")
         axes[1].legend()
 
-        axes[2].scatter(
+        core_limit = 100.0 * float(
+            fit.get("peakSearchMaxAbsResidual", 0.10)
+        )
+        axes[2].hist(
+            100.0 * diagnostic.residual_before,
+            bins=100,
+            range=(-core_limit, core_limit),
+            histtype="step",
+            label="before",
+        )
+        axes[2].hist(
+            100.0 * diagnostic.residual_after,
+            bins=100,
+            range=(-core_limit, core_limit),
+            histtype="step",
+            label="after",
+        )
+        axes[2].axvline(0.0, color="black", linewidth=1)
+        axes[2].set_xlabel(r"$100(p_{el}/p-1)$ [%]")
+        axes[2].set_ylabel("candidates")
+        axes[2].set_title("closure: peak view")
+        axes[2].legend()
+
+        axes[3].scatter(
             diagnostic.theta_deg,
             100.0 * diagnostic.residual_after,
             s=1,
             alpha=0.08,
         )
-        axes[2].axhline(0.0, color="black", linewidth=1)
-        axes[2].set_xlabel(r"$\theta$ [deg]")
-        axes[2].set_ylabel("post-correction residual [%]")
-        axes[2].set_title("residual closure vs theta")
+        axes[3].axhline(0.0, color="black", linewidth=1)
+        axes[3].set_xlabel(r"$\theta$ [deg]")
+        axes[3].set_ylabel("post-correction residual [%]")
+        axes[3].set_title("residual closure vs theta")
 
         save_plot(
             fig,
@@ -651,6 +1051,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--particle", choices=("electron", "proton", "both"), default="both")
     parser.add_argument("--coplanarity-max-deg", type=float, default=3.0)
     parser.add_argument("--theta-balance-max-deg", type=float, default=2.0)
+    parser.add_argument("--missing-energy-max-gev", type=float, default=0.75)
     parser.add_argument("--theta-trim-quantile", type=float, default=0.005)
     parser.add_argument("--residual-trim-quantile", type=float, default=0.01)
     parser.add_argument("--theta-bins", type=int, default=7)
@@ -660,6 +1061,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cd-fourier-harmonics", type=int, default=3)
     parser.add_argument("--min-bin-entries", type=int, default=40)
     parser.add_argument("--min-region-entries", type=int, default=800)
+    parser.add_argument("--peak-search-max-abs-residual", type=float, default=0.10)
+    parser.add_argument("--peak-seed-half-width", type=float, default=0.03)
+    parser.add_argument("--core-sigma-clip", type=float, default=3.0)
+    parser.add_argument("--min-core-fraction", type=float, default=0.20)
+    parser.add_argument("--min-peak-significance", type=float, default=3.0)
+    parser.add_argument("--max-core-width", type=float, default=0.05)
+    parser.add_argument("--min-profile-cells-per-parameter", type=float, default=2.0)
+    parser.add_argument("--max-condition-number", type=float, default=1.0e6)
     return parser.parse_args()
 
 
@@ -672,6 +1081,7 @@ def main() -> None:
         torus=args.torus,
         coplanarity_max_deg=args.coplanarity_max_deg,
         theta_balance_max_deg=args.theta_balance_max_deg,
+        missing_energy_max_gev=args.missing_energy_max_gev,
         theta_trim_quantile=args.theta_trim_quantile,
         residual_trim_quantile=args.residual_trim_quantile,
         theta_bins=args.theta_bins,
@@ -681,6 +1091,14 @@ def main() -> None:
         cd_fourier_harmonics=args.cd_fourier_harmonics,
         min_bin_entries=args.min_bin_entries,
         min_region_entries=args.min_region_entries,
+        peak_search_max_abs_residual=args.peak_search_max_abs_residual,
+        peak_seed_half_width=args.peak_seed_half_width,
+        core_sigma_clip=args.core_sigma_clip,
+        min_core_fraction=args.min_core_fraction,
+        min_peak_significance=args.min_peak_significance,
+        max_core_width=args.max_core_width,
+        min_profile_cells_per_parameter=args.min_profile_cells_per_parameter,
+        max_condition_number=args.max_condition_number,
     )
     particles = ("electron", "proton") if args.particle == "both" else (args.particle,)
     arrays = load_elastic_arrays(args.input_file, args.tree, args.max_rows)

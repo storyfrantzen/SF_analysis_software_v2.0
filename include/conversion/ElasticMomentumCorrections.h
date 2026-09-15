@@ -38,6 +38,13 @@ private:
         FourierComponent component = FourierComponent::Constant;
     };
 
+    struct SupportCell {
+        double thetaMinDeg = 0.0;
+        double thetaMaxDeg = 0.0;
+        double phiMinDeg = 0.0;
+        double phiMaxDeg = 0.0;
+    };
+
     struct Region {
         int pid = 0;
         int detector = -1;
@@ -53,6 +60,7 @@ private:
         PhiVariable phiVariable = PhiVariable::Global;
         Basis basis = Basis::Polynomial;
         std::vector<Term> terms;
+        std::vector<SupportCell> supportCells;
     };
 
     std::vector<Region> regions_;

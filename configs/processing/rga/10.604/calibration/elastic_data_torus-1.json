@@ -28,7 +28,8 @@
         { "pid": 11, "count": 1, "mode": "exact" },
         { "pid": 2212, "count": 1, "mode": "exact" }
     ],
-    "inclusive": true,
+    "inclusive": false,
+    "allowAdditionalNeutralParticles": true,
     "outputPids": [11, 2212],
 
     "enableSkim": false,

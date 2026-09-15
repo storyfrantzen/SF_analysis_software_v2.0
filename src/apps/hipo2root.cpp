@@ -430,7 +430,12 @@ bool passesFinalState(const Config& cfg, clas12::clas12reader& c12) {
             const int pid = particle->getPid();
             const bool listed = std::any_of(cfg.finalState.begin(), cfg.finalState.end(),
                                             [pid](const FinalState& s) { return s.pid == pid; });
-            if (!listed) return false;
+            if (listed) continue;
+            if (cfg.allowAdditionalNeutralParticles &&
+                particle->par()->getCharge() == 0) {
+                continue;
+            }
+            return false;
         }
     }
 
@@ -719,7 +724,12 @@ int main(int argc, char** argv) {
             std::cout << "  PID " << s.pid
                       << "  " << (s.exact ? "==" : ">=") << s.count << "\n";
         std::cout << "  Unlisted PIDs: "
-                  << (cfg.inclusive ? "allowed" : "rejected") << "\n";
+                  << (cfg.inclusive
+                          ? "allowed"
+                          : (cfg.allowAdditionalNeutralParticles
+                                 ? "neutral only"
+                                 : "rejected"))
+                  << "\n";
     }
     if (cfg.enableSkim) {
         std::cout << "[INFO] DIS skim: Q2 >= " << cfg.Q2_min

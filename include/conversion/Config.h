@@ -57,6 +57,7 @@ struct Config {
     // ── Final state filter ────────────────────
     std::vector<FinalState> finalState;
     bool inclusive = false;
+    bool allowAdditionalNeutralParticles = false;
     std::vector<int> outputPids;
     long long maxEvents = -1;
 
@@ -256,6 +257,15 @@ struct Config {
         }
 
         inclusive = j.value("inclusive", inclusive);
+        allowAdditionalNeutralParticles = j.value(
+            "allowAdditionalNeutralParticles", allowAdditionalNeutralParticles
+        );
+        if (inclusive && allowAdditionalNeutralParticles) {
+            throw std::runtime_error(
+                "allowAdditionalNeutralParticles requires inclusive=false; "
+                "inclusive=true already permits every additional particle"
+            );
+        }
         outputPids = j.value("outputPids", outputPids);
 
         if (j.contains("kinematicCorrections")) {

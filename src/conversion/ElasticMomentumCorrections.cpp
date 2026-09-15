@@ -132,6 +132,24 @@ ElasticMomentumCorrections::parseRegion(const nlohmann::json& entry) {
         }
         region.terms.push_back(term);
     }
+    if (entry.contains("supportCells")) {
+        if (!entry.at("supportCells").is_array() ||
+            entry.at("supportCells").empty()) {
+            throw std::runtime_error(
+                "Elastic momentum supportCells must be a nonempty array when present"
+            );
+        }
+        for (const auto& supportEntry : entry.at("supportCells")) {
+            const auto thetaSupport = finiteRange(supportEntry, "thetaRangeDeg");
+            const auto phiSupport = finiteRange(supportEntry, "phiRangeDeg");
+            SupportCell support;
+            support.thetaMinDeg = thetaSupport.first;
+            support.thetaMaxDeg = thetaSupport.second;
+            support.phiMinDeg = phiSupport.first;
+            support.phiMaxDeg = phiSupport.second;
+            region.supportCells.push_back(support);
+        }
+    }
     return region;
 }
 
@@ -194,6 +212,19 @@ MomentumCorrectionResult ElasticMomentumCorrections::correct(double p,
         if (thetaDeg < region.thetaMinDeg || thetaDeg > region.thetaMaxDeg ||
             phiDeg < region.phiMinDeg || phiDeg > region.phiMaxDeg) {
             continue;
+        }
+        if (!region.supportCells.empty()) {
+            bool inSupportedCell = false;
+            for (const auto& support : region.supportCells) {
+                if (thetaDeg >= support.thetaMinDeg &&
+                    thetaDeg <= support.thetaMaxDeg &&
+                    phiDeg >= support.phiMinDeg &&
+                    phiDeg <= support.phiMaxDeg) {
+                    inSupportedCell = true;
+                    break;
+                }
+            }
+            if (!inSupportedCell) continue;
         }
 
         const double fractionalCorrection = evaluate(region, thetaDeg, phiDeg);

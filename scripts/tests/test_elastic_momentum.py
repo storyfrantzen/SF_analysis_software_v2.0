@@ -14,6 +14,7 @@ from scripts.calibration.elastic_momentum import (
     derive_corrections,
     evaluate_region,
     fit_region,
+    mode_seeded_core,
     select_elastic_events,
 )
 
@@ -59,6 +60,52 @@ class ElasticKinematicsTests(unittest.TestCase):
         )
         self.assertEqual(summary["selectedCandidates"], 1)
         self.assertEqual(selected["electronP"].size, 1)
+
+    def test_selection_rejects_large_positive_missing_energy(self) -> None:
+        beam_energy = 6.535
+        theta_e = np.deg2rad(np.array([20.0, 20.0]))
+        theta_p = elastic_proton_theta_from_electron(theta_e, beam_energy)
+        electron_p = elastic_electron_momentum(theta_e, beam_energy)
+        arrays = {
+            "electronP": np.array([electron_p[0], 0.5 * electron_p[1]]),
+            "electronTheta": theta_e,
+            "electronPhi": np.zeros(2),
+            "electronDet": np.ones(2, dtype=int),
+            "electronSector": np.ones(2, dtype=int),
+            "protonP": elastic_proton_momentum(theta_p, beam_energy),
+            "protonTheta": theta_p,
+            "protonPhi": np.full(2, np.pi),
+            "protonDet": np.ones(2, dtype=int),
+            "protonSector": np.full(2, 4, dtype=int),
+            "nPid11": np.ones(2, dtype=int),
+            "nPid2212": np.ones(2, dtype=int),
+        }
+        selected, summary = select_elastic_events(
+            arrays,
+            ElasticFitConfig(
+                beam_energy=beam_energy,
+                missing_energy_max_gev=0.75,
+            ),
+        )
+        self.assertEqual(summary["angularSelectedCandidates"], 2)
+        self.assertEqual(summary["selectedCandidates"], 1)
+        self.assertLessEqual(float(selected["missingEnergyGeV"][0]), 0.75)
+
+    def test_mode_seeded_core_finds_peak_below_majority_background(self) -> None:
+        rng = np.random.default_rng(17)
+        signal = rng.normal(0.012, 0.006, 2000)
+        background = rng.uniform(-0.10, 0.10, 4000)
+        estimate = mode_seeded_core(
+            np.concatenate((signal, background)),
+            peak_search_max_abs_residual=0.10,
+            peak_seed_half_width=0.03,
+            sigma_clip=3.0,
+        )
+        self.assertAlmostEqual(estimate.center, 0.012, delta=7.5e-4)
+        self.assertLess(estimate.width, 0.01)
+        self.assertGreater(estimate.peak_significance, 20.0)
+        self.assertGreater(estimate.retained_fraction, 0.40)
+        self.assertLess(estimate.retained_fraction, 0.60)
 
 
 class ElasticSurfaceFitTests(unittest.TestCase):
@@ -106,6 +153,7 @@ class ElasticSurfaceFitTests(unittest.TestCase):
         self.assertEqual(len(correction["regions"]), 6)
         self.assertEqual(len(diagnostics), 6)
         self.assertEqual(correction["torus"], 1)
+        self.assertTrue(all(region["supportCells"] for region in correction["regions"]))
         json.dumps(correction, allow_nan=False)
 
     def test_fd_polynomial_surface_is_recovered(self) -> None:

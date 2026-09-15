@@ -25,6 +25,10 @@ int main() {
         std::filesystem::current_path() / "test_config_elastic_momentum.json";
     const auto elasticParamsPath =
         std::filesystem::current_path() / "test_elastic_momentum_params.json";
+    const auto neutralInclusivePath =
+        std::filesystem::current_path() / "test_config_neutral_inclusive.json";
+    const auto invalidNeutralInclusivePath =
+        std::filesystem::current_path() / "test_config_invalid_neutral_inclusive.json";
 
     writeConfig(validPath, -1, 50000000);
     const Config valid(validPath.string());
@@ -80,6 +84,36 @@ int main() {
     if (elastic.elasticMomentumCorrections.value("schema", std::string{}) !=
         "elastic_momentum_correction/v1") {
         std::cerr << "conversion config did not resolve elastic momentum parameters\n";
+        return 1;
+    }
+
+    {
+        std::ofstream output(neutralInclusivePath);
+        output << "{\"inclusive\":false,"
+               << "\"allowAdditionalNeutralParticles\":true}";
+    }
+    const Config neutralInclusive(neutralInclusivePath.string());
+    std::filesystem::remove(neutralInclusivePath);
+    if (neutralInclusive.inclusive ||
+        !neutralInclusive.allowAdditionalNeutralParticles) {
+        std::cerr << "conversion config did not retain neutral-only topology policy\n";
+        return 1;
+    }
+
+    {
+        std::ofstream output(invalidNeutralInclusivePath);
+        output << "{\"inclusive\":true,"
+               << "\"allowAdditionalNeutralParticles\":true}";
+    }
+    rejected = false;
+    try {
+        const Config invalid(invalidNeutralInclusivePath.string());
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    std::filesystem::remove(invalidNeutralInclusivePath);
+    if (!rejected) {
+        std::cerr << "conversion config accepted an ambiguous additional-particle policy\n";
         return 1;
     }
     return 0;

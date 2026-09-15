@@ -26,6 +26,12 @@ nlohmann::json sampleParameters() {
                 {"phiScaleDeg", 30.0},
                 {"phiVariable", "sectorLocal"},
                 {"basis", "polynomial"},
+                {"supportCells", {
+                    {
+                        {"thetaRangeDeg", {10.0, 30.0}},
+                        {"phiRangeDeg", {-30.0, 15.0}}
+                    }
+                }},
                 {"terms", {
                     {{"thetaPower", 0}, {"phiPower", 0}, {"coefficient", 0.01}},
                     {{"thetaPower", 1}, {"phiPower", 0}, {"coefficient", 0.02}},
@@ -92,6 +98,14 @@ int main() {
     );
     if (outside.deltaP != 0.0) {
         std::cerr << "correction extrapolated beyond the calibrated theta range\n";
+        return 1;
+    }
+
+    const auto unsupportedHole = corrections.correct(
+        4.0, 25.0 * kPi / 180.0, 80.0 * kPi / 180.0, 11, 1, 2
+    );
+    if (unsupportedHole.deltaP != 0.0) {
+        std::cerr << "correction interpolated through an unsupported profile cell\n";
         return 1;
     }
 

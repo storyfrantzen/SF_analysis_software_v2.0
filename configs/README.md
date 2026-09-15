@@ -264,10 +264,13 @@ the samples contain matched proton rows and no electron selection.
 
 Use data and keep the torus polarities separate. These converter configs apply
 the existing proton energy-loss coefficients, but deliberately do not apply an
-elastic momentum correction. The post-processing configs add the normal
-electron ID, vertex, and electron/proton fiducial selections. Coplanarity and
-two-body polar-angle closure are applied by the derivation script without using
-either particle's reconstructed momentum.
+elastic momentum correction. They require exactly one electron and one proton,
+veto other charged particles, and permit additional neutral particles such as
+radiative photons. The post-processing configs add the normal electron ID,
+vertex, and electron/proton fiducial selections. Coplanarity, two-body
+polar-angle closure, and a broad maximum missing-energy requirement are applied
+by the derivation script. The missing-energy requirement suppresses large
+inelastic tails but must be varied when assigning the calibration systematic.
 
 ```bash
 ./build/hipo2root \
@@ -282,16 +285,27 @@ python3 scripts/derive_elastic_momentum.py \
   10.604_rga_fa18_torus+1_elastic_candidates.root \
   --beam-energy 10.604 \
   --torus 1 \
+  --missing-energy-max-gev 0.75 \
   --output parameters/momentum/10.604RGA_FA18_torus+1_elastic_momentum.json \
   --plot-dir calibration_plots/momentum/rga_fa18_torus+1 \
   --dataset-tag 10.604RGA_FA18_torus+1_elastic
 ```
 
-Repeat with the three matching `torus-1` config/output names. Before enabling
-the resulting `elasticMomentumCorrections` file in production, require closure
-on held-out runs and repeat the fit while varying the angular cuts, fit orders,
-binning, and run ranges. A nominal-beam-energy mismatch or an uncorrected angle
-bias appears directly as a momentum-scale bias in this method.
+Cells use a mode-seeded core estimator rather than assuming that the elastic
+peak is the majority population. Cells fail closed when their peak population,
+fraction, significance, width, or center is unacceptable. Exported support-cell
+rectangles ensure the converter does not interpolate through rejected or empty
+profile cells. The output records accepted and rejected cell diagnostics plus
+the weighted design-matrix condition number.
+
+Repeat with the matching `torus-1` config/output names. Before enabling the
+resulting `elasticMomentumCorrections` file in production, require closure on
+held-out runs and repeat the fit while varying missing energy, angular cuts,
+fit orders, binning, topology policy, and run ranges. Compare the neutral-only
+topology against a strict two-particle sample by setting
+`allowAdditionalNeutralParticles` to `false` in a copied processing config. A
+nominal-beam-energy mismatch or an uncorrected angle bias appears directly as a
+momentum-scale bias in this method.
 
 ### Data sampling-fraction parameters
 
