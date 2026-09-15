@@ -571,7 +571,8 @@ void fillRecBranch(RecBranches& recBranches,
 int main(int argc, char** argv) {
 
     if (argc < 3) {
-        std::cerr << "Usage: hipo2root <config.json> <hipo_file_or_directory>... "
+        std::cerr << "Usage: hipo2root <config.json> "
+                  << "<hipo_file_or_directory_or_@manifest>... "
                   << "[max_files] [progress_events]\n";
         return 1;
     }
@@ -643,7 +644,35 @@ int main(int argc, char** argv) {
     // ── Collect .hipo files ───────────────────────────────────────────────────
     std::vector<std::string> hipoFiles;
     for (int argIndex = 2; argIndex < inputArgEnd; ++argIndex) {
-        const fs::path hipoInput = argv[argIndex];
+        const std::string inputArgument = argv[argIndex];
+        if (inputArgument.size() > 1 && inputArgument.front() == '@') {
+            const fs::path manifestPath = inputArgument.substr(1);
+            std::ifstream manifest(manifestPath);
+            if (!manifest.is_open()) {
+                std::cerr << "[ERROR] Could not open HIPO manifest: "
+                          << manifestPath << "\n";
+                return 1;
+            }
+            std::string line;
+            int lineNumber = 0;
+            while (std::getline(manifest, line)) {
+                ++lineNumber;
+                const auto first = line.find_first_not_of(" \t\r\n");
+                if (first == std::string::npos || line[first] == '#') continue;
+                const auto last = line.find_last_not_of(" \t\r\n");
+                const fs::path hipoPath = line.substr(first, last - first + 1);
+                if (!fs::is_regular_file(hipoPath)
+                    || hipoPath.extension() != ".hipo") {
+                    std::cerr << "[ERROR] Invalid HIPO path in manifest "
+                              << manifestPath << " at line " << lineNumber
+                              << ": " << hipoPath << "\n";
+                    return 1;
+                }
+                hipoFiles.push_back(hipoPath.string());
+            }
+            continue;
+        }
+        const fs::path hipoInput = inputArgument;
         if (fs::is_regular_file(hipoInput)) {
             if (hipoInput.extension() != ".hipo") {
                 std::cerr << "[ERROR] Input file is not a .hipo file: " << hipoInput << "\n";
@@ -667,6 +696,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::sort(hipoFiles.begin(), hipoFiles.end());
+    hipoFiles.erase(std::unique(hipoFiles.begin(), hipoFiles.end()), hipoFiles.end());
     if (maxFiles > 0 && static_cast<int>(hipoFiles.size()) > maxFiles) {
         hipoFiles.resize(maxFiles);
     }

@@ -1,0 +1,37 @@
+{
+    "outputFile": "10.604_rga_fa18_torus-1_elastic_data_run_spanning.root",
+
+    "beamEnergy": 10.604,
+    "torus": -1,
+
+    "qadb": {
+        "enabled": true,
+        "database": "latest",
+        "rejectDefects": [
+            "MarginalOutlier",
+            "TerminalOutlier",
+            "TotalOutlier",
+            "SectorLoss",
+            "LowLiveTime"
+        ],
+        "allowMiscRuns": []
+    },
+
+    "inputValidation": {
+        "enabled": true,
+        "skipMalformed": true
+    },
+
+    "kinematicCorrections": "../../../../../parameters/proton_energy_loss/10.604RGA_FA18_torus-1_proton_energy_loss.json",
+
+    "finalState": [
+        { "pid": 11, "count": 1, "mode": "exact" },
+        { "pid": 2212, "count": 1, "mode": "exact" }
+    ],
+    "inclusive": false,
+    "allowAdditionalNeutralParticles": true,
+    "outputPids": [11, 2212],
+
+    "enableSkim": false,
+    "fillMC": false
+}

@@ -224,6 +224,9 @@ tree.
 
 The converter accepts either directories or explicit `.hipo` files. Run these
 commands from the repository root after rebuilding in the JLab environment.
+It also accepts a plain-text manifest as `@path/to/manifest.txt`; this is the
+preferred way to process a finite sample distributed across many runs instead
+of truncating the globally sorted file list.
 
 ### Proton energy-loss corrections
 
@@ -296,7 +299,12 @@ peak is the majority population. Cells fail closed when their peak population,
 fraction, significance, width, or center is unacceptable. Exported support-cell
 rectangles ensure the converter does not interpolate through rejected or empty
 profile cells. The output records accepted and rejected cell diagnostics plus
-the weighted design-matrix condition number.
+the weighted design-matrix singular values and condition number. Phi-dependent
+surfaces require multiple independent phi cells in enough theta slices, use a
+default maximum condition number of 100, and are rejected if their value
+exceeds 5% anywhere on a grid within the accepted support cells. Use
+`--theta-min-deg` to isolate a questionable detector-edge region rather than
+letting a global polynomial absorb it.
 
 For high-statistics diagnostics, add `--profile-binning adaptive` to make phi
 quantiles separately within each theta slice. In this mode `--phi-bins` is a
@@ -327,6 +335,14 @@ topology against a strict two-particle sample by setting
 `allowAdditionalNeutralParticles` to `false` in a copied processing config. A
 nominal-beam-energy mismatch or an uncorrected angle bias appears directly as a
 momentum-scale bias in this method.
+
+For the held-out study, use `scripts/select_hipo_run_sample.py` to choose one or
+more files per run, process the resulting `@manifest` with a config that omits
+`maxEvents`, and run `scripts/validate_elastic_momentum_runs.py`. The validator uses contiguous
+run blocks, alternating two-fold train/holdout evaluation, a pooled common-cell
+stability map, and nested constant/theta-linear/theta-phi models. The output is
+a diagnostic: inspect run epochs and both held-out directions before promoting
+any pooled parameter file.
 
 ### Data sampling-fraction parameters
 

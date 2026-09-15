@@ -227,6 +227,13 @@ core, so the elastic peak need not be the majority population. Cells are
 rejected on minimum core population, retained fraction, peak significance,
 maximum width, and maximum plausible correction. Fits also require at least two
 profile cells per parameter and a bounded weighted design condition number.
+The default maximum condition number is 100. A phi-dependent FD fit must have
+enough theta slices containing multiple independent phi cells; a string of
+single cells following the acceptance ridge is rejected even when the linear
+algebra technically has full rank. The singular values of the weighted design
+matrix are recorded in the JSON. The fitted correction is also sampled on a
+grid throughout every accepted support cell and the region is rejected if it
+exceeds `--max-abs-surface-correction` (5% by default).
 Only accepted profile-cell rectangles are exported as application support;
 particles in holes or outside the fitted support retain their input momentum.
 The angular-surface coefficients are still obtained from one simultaneous
@@ -267,6 +274,74 @@ python3 scripts/filter_root_by_run.py \
 The helper reads `sEvents` by default, refuses to replace an existing output,
 and accepts `--tree NAME` or an explicit `--overwrite` when needed.
 
+Two adjacent runs are useful as a replication check but cannot establish a
+calibration period. For the time-stability study, first make a deterministic
+run-spanning HIPO manifest. One file near the middle of every run is usually a
+better finite sample than processing the first N files in path order. Run the
+manifest command once; then submit the converter in a detached session if
+needed:
+
+```bash
+python3 scripts/select_hipo_run_sample.py \
+  /cache/clas12/rg-a/production/recon/fall2018/torus+1/pass2/dst/recon \
+  manifests/rga_fa18_torus+1_one_file_per_run.txt \
+  --files-per-run 1
+
+./build/hipo2root \
+  configs/processing/rga/10.604/calibration/elastic_data_torus+1_run_spanning.json \
+  @manifests/rga_fa18_torus+1_one_file_per_run.txt 0 100000
+```
+
+`hipo2root` expands an argument of the form `@manifest`; blank lines and lines
+beginning with `#` are ignored. The committed run-spanning processing config
+deliberately omits `maxEvents`, so a global event cap cannot stop at the earliest
+runs and undo the run-spanning selection. The manifest is the finite-sample
+limit.
+
+After post-processing, run the multi-run validator rather than fitting each run
+separately:
+
+```bash
+python3 scripts/validate_elastic_momentum_runs.py \
+  10.604_rga_fa18_torus+1_elastic_candidates_run_spanning.root \
+  --beam-energy 10.604 --torus 1 --particle electron \
+  --theta-min-deg 6.1 --missing-energy-max-gev 0.75 \
+  --profile-binning adaptive \
+  --theta-bins 10 --max-theta-bin-width-deg 0.75 \
+  --phi-bins 7 --target-cell-entries 2000 --min-bin-entries 300 \
+  --block-target-selected 100000 \
+  --models constant theta-linear theta-phi \
+  --max-condition-number 100 --max-abs-surface-correction 0.05 \
+  --output-dir calibration_plots/momentum/rga_fa18_torus+1_multi_run \
+  --dataset-tag 10.604RGA_FA18_torus+1_multi_run
+```
+
+The validator forms contiguous run blocks with roughly the requested number of
+selected elastic candidates, alternates them between folds A and B, fits one
+fold, and evaluates the correction on the other without refitting. It repeats
+the direction so every block is held out once. The outputs include:
+
+- `per_run_raw_centers.png`, which reveals run shifts or calibration epochs;
+- `common_cell_stability_*.png`, where every run block is evaluated in the
+  pooled fit's same theta/phi cells;
+- one `heldout_closure.png` and JSON summary for the sector-constant,
+  theta-linear, and bilinear theta/local-phi models;
+- `run_validation_report.json`, including all blocks, failed regions, held-out
+  metrics, and a conservative diagnostic model recommendation.
+
+If many per-run points or common-cell pixels are missing, each run/block is too
+small for the chosen minimum core population. Increase `--files-per-run` in a
+new manifest rather than reducing the quality thresholds until noisy cells
+look stable. A copied candidate file may also be passed as multiple positional
+inputs to the validator; their arrays are concatenated before forming run
+blocks.
+
+The recommendation favors the simpler model unless the next model reduces the
+median held-out cell-center RMS by at least 10%. Its pooled parameter file is
+still marked pending held-out review and must not be enabled automatically.
+First use the time plots to define stable run periods; then repeat the validator
+within each period and vary the missing-energy and lower-theta selections.
+
 For RGK 6.535 GeV, derive a candidate sample and parameters with:
 
 ```bash
@@ -296,10 +371,12 @@ python3 scripts/derive_elastic_momentum.py \
   10.604_rga_fa18_torus+1_elastic_candidates_trial_v2_100M.root \
   --beam-energy 10.604 --torus 1 --particle electron \
   --missing-energy-max-gev 0.75 \
+  --theta-min-deg 6.1 \
   --profile-binning adaptive \
   --theta-bins 10 --max-theta-bin-width-deg 0.75 \
   --phi-bins 7 --target-cell-entries 600 --min-bin-entries 300 \
   --theta-order 1 --fd-phi-order 1 \
+  --max-condition-number 100 --max-abs-surface-correction 0.05 \
   --output parameters/momentum/10.604RGA_FA18_torus+1_elastic_adaptive_diag.json \
   --plot-dir calibration_plots/momentum/rga_fa18_torus+1_adaptive_diag \
   --dataset-tag 10.604RGA_FA18_torus+1_adaptive_diag

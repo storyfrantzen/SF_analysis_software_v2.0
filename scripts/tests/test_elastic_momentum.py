@@ -199,6 +199,40 @@ class ElasticSurfaceFitTests(unittest.TestCase):
             cell["coreEntries"] >= 100
             for cell in region["fit"]["acceptedProfileCells"]
         ))
+        self.assertTrue(all(
+            item["plannedPhiCells"] >= 2
+            for item in binning["thetaSlices"]
+            if item["rawEntries"] >= 200
+        ))
+
+    def test_explicit_theta_floor_and_surface_guard_are_enforced(self) -> None:
+        rng = np.random.default_rng(43)
+        theta = rng.uniform(5.5, 9.0, 20_000)
+        phi = rng.uniform(-29.0, 29.0, theta.size)
+        residual = 0.004 + rng.normal(0.0, 0.008, theta.size)
+        region, _ = fit_region(
+            pid=11, detector=1, sector=1, theta_deg=theta, phi_deg=phi,
+            residual=residual, basis="polynomial",
+            cfg=ElasticFitConfig(
+                beam_energy=10.604, theta_min_deg=6.1,
+                theta_bins=4, phi_bins=3, theta_order=1, phi_order=1,
+                min_bin_entries=100, min_region_entries=1_000,
+            ),
+        )
+        self.assertGreaterEqual(region["thetaRangeDeg"][0], 6.1)
+        self.assertEqual(len(region["fit"]["weightedDesignSingularValues"]), 4)
+        with self.assertRaisesRegex(ValueError, "support grid"):
+            fit_region(
+                pid=11, detector=1, sector=1, theta_deg=theta, phi_deg=phi,
+                residual=0.08 + rng.normal(0.0, 0.005, theta.size),
+                basis="polynomial",
+                cfg=ElasticFitConfig(
+                    beam_energy=10.604, theta_min_deg=6.1,
+                    theta_bins=4, phi_bins=3, theta_order=0, phi_order=0,
+                    min_bin_entries=100, min_region_entries=1_000,
+                    max_abs_surface_correction=0.05,
+                ),
+            )
 
     def test_exported_fd_regions_are_finite_and_complete(self) -> None:
         rng = np.random.default_rng(61)

@@ -24,6 +24,8 @@ class ElasticFitConfig:
     coplanarity_max_deg: float = 3.0
     theta_balance_max_deg: float = 2.0
     missing_energy_max_gev: float = 0.75
+    theta_min_deg: float | None = None
+    theta_max_deg: float | None = None
     theta_trim_quantile: float = 0.005
     residual_trim_quantile: float = 0.01
     theta_bins: int = 7
@@ -31,6 +33,7 @@ class ElasticFitConfig:
     profile_binning: str = "fixed"
     max_theta_bin_width_deg: float | None = None
     target_cell_entries: int = 500
+    min_phi_cells_per_theta: int = 1
     theta_order: int = 2
     phi_order: int = 2
     cd_fourier_harmonics: int = 3
@@ -43,7 +46,8 @@ class ElasticFitConfig:
     min_peak_significance: float = 3.0
     max_core_width: float = 0.05
     min_profile_cells_per_parameter: float = 2.0
-    max_condition_number: float = 1.0e6
+    max_condition_number: float = 100.0
+    max_abs_surface_correction: float = 0.05
 
 
 @dataclass(frozen=True)
@@ -379,6 +383,7 @@ def _profile_cell_plan(
     theta_edges: np.ndarray,
     phi_range: tuple[float, float],
     cfg: ElasticFitConfig,
+    minimum_phi_cells: int = 1,
 ) -> ProfileCellPlan:
     """Plan fixed cells or occupancy-adaptive phi cells inside theta slices."""
     cells: list[dict[str, object]] = []
@@ -392,10 +397,18 @@ def _profile_cell_plan(
         )
         slice_entries = int(np.count_nonzero(theta_mask))
         if cfg.profile_binning == "adaptive" and slice_entries:
-            requested_phi_bins = min(
-                cfg.phi_bins,
-                max(1, slice_entries // cfg.target_cell_entries),
+            occupancy_target = max(
+                1, int(np.ceil(slice_entries / cfg.target_cell_entries))
             )
+            maximum_supported = max(1, slice_entries // cfg.min_bin_entries)
+            requested_phi_bins = min(cfg.phi_bins, maximum_supported)
+            if maximum_supported >= minimum_phi_cells:
+                requested_phi_bins = max(
+                    minimum_phi_cells,
+                    min(requested_phi_bins, occupancy_target),
+                )
+            else:
+                requested_phi_bins = min(requested_phi_bins, occupancy_target)
             phi_edges = np.unique(np.quantile(
                 phi[theta_mask], np.linspace(0.0, 1.0, requested_phi_bins + 1)
             ))
@@ -429,6 +442,7 @@ def _profile_cell_plan(
             "thetaEdgesDeg": [float(value) for value in theta_edges],
             "maxThetaBinWidthDeg": cfg.max_theta_bin_width_deg,
             "maximumPhiBinsPerTheta": cfg.phi_bins,
+            "minimumPhiCellsForBasis": minimum_phi_cells,
             "targetCellEntries": (
                 cfg.target_cell_entries if cfg.profile_binning == "adaptive" else None
             ),
@@ -704,6 +718,10 @@ def fit_region(
         raise ValueError("maximum theta-bin width must be positive")
     if cfg.target_cell_entries < 2:
         raise ValueError("target cell entries must be at least two")
+    if cfg.min_phi_cells_per_theta < 1:
+        raise ValueError("minimum phi cells per theta slice must be positive")
+    if cfg.min_phi_cells_per_theta > cfg.phi_bins:
+        raise ValueError("minimum phi cells per theta slice exceeds phi bins")
     if cfg.theta_order < 0 or cfg.phi_order < 0 or cfg.cd_fourier_harmonics < 0:
         raise ValueError("fit orders and Fourier harmonics must be nonnegative")
     if cfg.min_bin_entries < 2 or cfg.min_region_entries < 2:
@@ -731,6 +749,13 @@ def fit_region(
         raise ValueError("profile-cells-per-parameter must be at least one")
     if cfg.max_condition_number <= 1.0:
         raise ValueError("maximum condition number must exceed one")
+    if not 0.0 < cfg.max_abs_surface_correction < 1.0:
+        raise ValueError("maximum absolute surface correction must be in (0, 1)")
+    if (
+        cfg.theta_min_deg is not None and cfg.theta_max_deg is not None
+        and cfg.theta_min_deg >= cfg.theta_max_deg
+    ):
+        raise ValueError("minimum theta must be below maximum theta")
     finite = np.isfinite(theta_deg) & np.isfinite(phi_deg) & np.isfinite(residual)
     theta = np.asarray(theta_deg, dtype=float)[finite]
     phi = np.asarray(phi_deg, dtype=float)[finite]
@@ -740,6 +765,14 @@ def fit_region(
     theta = theta[phi_support]
     phi = phi[phi_support]
     residual_values = residual_values[phi_support]
+    requested_theta_support = np.ones(theta.shape, dtype=bool)
+    if cfg.theta_min_deg is not None:
+        requested_theta_support &= theta >= cfg.theta_min_deg
+    if cfg.theta_max_deg is not None:
+        requested_theta_support &= theta <= cfg.theta_max_deg
+    theta = theta[requested_theta_support]
+    phi = phi[requested_theta_support]
+    residual_values = residual_values[requested_theta_support]
     if theta.size < cfg.min_region_entries:
         raise ValueError(f"region has only {theta.size} entries")
 
@@ -772,8 +805,13 @@ def fit_region(
         theta_edges = _split_wide_bins(
             theta_edges, cfg.max_theta_bin_width_deg
         )
+    minimum_phi_cells = (
+        cfg.phi_order + 1 if basis == "polynomial"
+        else 2 * cfg.cd_fourier_harmonics + 1
+    )
+    minimum_phi_cells = max(minimum_phi_cells, cfg.min_phi_cells_per_theta)
     cell_plan = _profile_cell_plan(
-        theta, phi, theta_edges, phi_range, cfg
+        theta, phi, theta_edges, phi_range, cfg, minimum_phi_cells
     )
     profile = _profile_grid(
         theta, phi, residual_values, cell_plan.cells, cfg
@@ -804,6 +842,23 @@ def fit_region(
         phi_variable = "global"
     else:
         raise ValueError(f"unsupported basis {basis}")
+
+    if basis == "polynomial" and cfg.phi_order > 0:
+        accepted_by_theta: dict[int, int] = {}
+        for cell in profile.support_cells:
+            theta_bin = int(cell["thetaBin"])
+            accepted_by_theta[theta_bin] = accepted_by_theta.get(theta_bin, 0) + 1
+        required_theta_slices = cfg.theta_order + 1
+        independent_theta_slices = sum(
+            count >= cfg.phi_order + 1 for count in accepted_by_theta.values()
+        )
+        if independent_theta_slices < required_theta_slices:
+            raise ValueError(
+                "phi-dependent surface has only "
+                f"{independent_theta_slices} theta slices with at least "
+                f"{cfg.phi_order + 1} accepted phi cells; requires "
+                f"{required_theta_slices}"
+            )
 
     minimum_profile_cells = int(np.ceil(
         cfg.min_profile_cells_per_parameter * matrix.shape[1]
@@ -857,6 +912,9 @@ def fit_region(
             "ndof": ndof,
             "chi2PerNdf": chi2 / ndof if ndof > 0 else None,
             "weightedDesignConditionNumber": condition_number,
+            "weightedDesignSingularValues": [
+                float(value) for value in singular_values
+            ],
             "residualCoreRange": [float(residual_min), float(residual_max)],
             "peakSearchMaxAbsResidual": cfg.peak_search_max_abs_residual,
             "profileBinning": {
@@ -882,6 +940,31 @@ def fit_region(
             "rejectedProfileCells": profile.rejected_cells,
         },
     }
+    support_sample_theta: list[float] = []
+    support_sample_phi: list[float] = []
+    for cell in profile.support_cells:
+        theta_lo, theta_hi = (float(value) for value in cell["thetaRangeDeg"])
+        phi_lo, phi_hi = (float(value) for value in cell["phiRangeDeg"])
+        theta_samples = np.linspace(theta_lo, theta_hi, 9)
+        phi_samples = np.linspace(phi_lo, phi_hi, 9)
+        for theta_sample in theta_samples:
+            support_sample_theta.extend([float(theta_sample)] * phi_samples.size)
+            support_sample_phi.extend(float(value) for value in phi_samples)
+    support_values = evaluate_region(
+        region,
+        np.asarray(support_sample_theta, dtype=float),
+        np.asarray(support_sample_phi, dtype=float),
+    )
+    maximum_support_correction = float(np.max(np.abs(support_values)))
+    region["fit"]["maxAbsSurfaceCorrectionOnSupportGrid"] = (
+        maximum_support_correction
+    )
+    if maximum_support_correction > cfg.max_abs_surface_correction:
+        raise ValueError(
+            "surface reaches an absolute correction of "
+            f"{maximum_support_correction:.6g} on its support grid; exceeds "
+            f"{cfg.max_abs_surface_correction:.6g}"
+        )
     supported = region_support_mask(region, theta, phi)
     fitted_correction = np.zeros(theta.shape, dtype=float)
     fitted_correction[supported] = evaluate_region(
@@ -1065,6 +1148,8 @@ def derive_corrections(
         "selection": selection_summary,
         "fitConfiguration": {
             "missingEnergyMaxGeV": cfg.missing_energy_max_gev,
+            "thetaMinDeg": cfg.theta_min_deg,
+            "thetaMaxDeg": cfg.theta_max_deg,
             "thetaTrimQuantile": cfg.theta_trim_quantile,
             "residualTrimQuantile": cfg.residual_trim_quantile,
             "thetaBins": cfg.theta_bins,
@@ -1072,6 +1157,7 @@ def derive_corrections(
             "profileBinning": cfg.profile_binning,
             "maxThetaBinWidthDeg": cfg.max_theta_bin_width_deg,
             "targetCellEntries": cfg.target_cell_entries,
+            "minPhiCellsPerTheta": cfg.min_phi_cells_per_theta,
             "thetaOrder": cfg.theta_order,
             "fdPhiOrder": cfg.phi_order,
             "cdFourierHarmonics": cfg.cd_fourier_harmonics,
@@ -1085,6 +1171,7 @@ def derive_corrections(
             "maxCoreWidth": cfg.max_core_width,
             "minProfileCellsPerParameter": cfg.min_profile_cells_per_parameter,
             "maxConditionNumber": cfg.max_condition_number,
+            "maxAbsSurfaceCorrection": cfg.max_abs_surface_correction,
         },
         "regions": regions,
         "skippedRegions": skipped,
@@ -1540,6 +1627,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coplanarity-max-deg", type=float, default=3.0)
     parser.add_argument("--theta-balance-max-deg", type=float, default=2.0)
     parser.add_argument("--missing-energy-max-gev", type=float, default=0.75)
+    parser.add_argument("--theta-min-deg", type=float)
+    parser.add_argument("--theta-max-deg", type=float)
     parser.add_argument("--theta-trim-quantile", type=float, default=0.005)
     parser.add_argument("--residual-trim-quantile", type=float, default=0.01)
     parser.add_argument("--theta-bins", type=int, default=7)
@@ -1565,6 +1654,7 @@ def parse_args() -> argparse.Namespace:
             "phi cells"
         ),
     )
+    parser.add_argument("--min-phi-cells-per-theta", type=int, default=1)
     parser.add_argument("--theta-order", type=int, default=2)
     parser.add_argument("--fd-phi-order", type=int, default=2)
     parser.add_argument("--cd-fourier-harmonics", type=int, default=3)
@@ -1577,7 +1667,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-peak-significance", type=float, default=3.0)
     parser.add_argument("--max-core-width", type=float, default=0.05)
     parser.add_argument("--min-profile-cells-per-parameter", type=float, default=2.0)
-    parser.add_argument("--max-condition-number", type=float, default=1.0e6)
+    parser.add_argument("--max-condition-number", type=float, default=100.0)
+    parser.add_argument("--max-abs-surface-correction", type=float, default=0.05)
     return parser.parse_args()
 
 
@@ -1591,6 +1682,8 @@ def main() -> None:
         coplanarity_max_deg=args.coplanarity_max_deg,
         theta_balance_max_deg=args.theta_balance_max_deg,
         missing_energy_max_gev=args.missing_energy_max_gev,
+        theta_min_deg=args.theta_min_deg,
+        theta_max_deg=args.theta_max_deg,
         theta_trim_quantile=args.theta_trim_quantile,
         residual_trim_quantile=args.residual_trim_quantile,
         theta_bins=args.theta_bins,
@@ -1598,6 +1691,7 @@ def main() -> None:
         profile_binning=args.profile_binning,
         max_theta_bin_width_deg=args.max_theta_bin_width_deg,
         target_cell_entries=args.target_cell_entries,
+        min_phi_cells_per_theta=args.min_phi_cells_per_theta,
         theta_order=args.theta_order,
         phi_order=args.fd_phi_order,
         cd_fourier_harmonics=args.cd_fourier_harmonics,
@@ -1611,6 +1705,7 @@ def main() -> None:
         max_core_width=args.max_core_width,
         min_profile_cells_per_parameter=args.min_profile_cells_per_parameter,
         max_condition_number=args.max_condition_number,
+        max_abs_surface_correction=args.max_abs_surface_correction,
     )
     particles = ("electron", "proton") if args.particle == "both" else (args.particle,)
     arrays = load_elastic_arrays(args.input_file, args.tree, args.max_rows)
