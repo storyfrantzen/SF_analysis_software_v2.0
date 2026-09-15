@@ -298,6 +298,14 @@ rectangles ensure the converter does not interpolate through rejected or empty
 profile cells. The output records accepted and rejected cell diagnostics plus
 the weighted design-matrix condition number.
 
+For high-statistics diagnostics, add `--profile-binning adaptive` to make phi
+quantiles separately within each theta slice. In this mode `--phi-bins` is a
+maximum, `--target-cell-entries` reduces the phi count in sparse slices, and
+`--max-theta-bin-width-deg` splits physically over-wide theta intervals. The
+resulting `*_profile_cell_map.png` plots show the actual cell rectangles and
+populations. Keep the adaptive output disabled in production until its local
+structure and closure repeat in held-out runs.
+
 With `--plot-dir`, each fitted region now also writes
 `*_profile_vs_phi_by_theta.png`, showing the before and independently
 re-extracted after core centers in each polar-angle slice, with the direct

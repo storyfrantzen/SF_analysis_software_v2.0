@@ -28,6 +28,9 @@ class ElasticFitConfig:
     residual_trim_quantile: float = 0.01
     theta_bins: int = 7
     phi_bins: int = 7
+    profile_binning: str = "fixed"
+    max_theta_bin_width_deg: float | None = None
+    target_cell_entries: int = 500
     theta_order: int = 2
     phi_order: int = 2
     cd_fourier_harmonics: int = 3
@@ -83,10 +86,17 @@ class ProfileGrid:
     error: np.ndarray
     width: np.ndarray
     entries: np.ndarray
+    total_entries: np.ndarray
     core_fraction: np.ndarray
     peak_significance: np.ndarray
-    support_cells: list[dict[str, list[float]]]
+    support_cells: list[dict[str, object]]
     rejected_cells: list[dict[str, object]]
+
+
+@dataclass(frozen=True)
+class ProfileCellPlan:
+    cells: list[dict[str, object]]
+    metadata: dict[str, object]
 
 
 def wrap_degrees(angle_deg: np.ndarray | float) -> np.ndarray:
@@ -352,12 +362,108 @@ def mode_seeded_core(
     )
 
 
+def _split_wide_bins(edges: np.ndarray, maximum_width: float | None) -> np.ndarray:
+    """Split quantile intervals that are too wide in physical angle."""
+    if maximum_width is None:
+        return edges
+    split_edges = [float(edges[0])]
+    for lower, upper in zip(edges[:-1], edges[1:]):
+        pieces = max(1, int(np.ceil((upper - lower) / maximum_width)))
+        split_edges.extend(np.linspace(lower, upper, pieces + 1)[1:].tolist())
+    return np.asarray(split_edges, dtype=float)
+
+
+def _profile_cell_plan(
+    theta: np.ndarray,
+    phi: np.ndarray,
+    theta_edges: np.ndarray,
+    phi_range: tuple[float, float],
+    cfg: ElasticFitConfig,
+) -> ProfileCellPlan:
+    """Plan fixed cells or occupancy-adaptive phi cells inside theta slices."""
+    cells: list[dict[str, object]] = []
+    slices: list[dict[str, object]] = []
+    fixed_phi_edges = np.linspace(phi_range[0], phi_range[1], cfg.phi_bins + 1)
+    theta_pairs = list(zip(theta_edges[:-1], theta_edges[1:]))
+    for theta_index, (theta_lo, theta_hi) in enumerate(theta_pairs):
+        theta_high_inclusive = theta_index == len(theta_pairs) - 1
+        theta_mask = (theta >= theta_lo) & (
+            (theta <= theta_hi) if theta_high_inclusive else (theta < theta_hi)
+        )
+        slice_entries = int(np.count_nonzero(theta_mask))
+        if cfg.profile_binning == "adaptive" and slice_entries:
+            requested_phi_bins = min(
+                cfg.phi_bins,
+                max(1, slice_entries // cfg.target_cell_entries),
+            )
+            phi_edges = np.unique(np.quantile(
+                phi[theta_mask], np.linspace(0.0, 1.0, requested_phi_bins + 1)
+            ))
+        elif cfg.profile_binning == "adaptive":
+            phi_edges = np.asarray([], dtype=float)
+        else:
+            phi_edges = fixed_phi_edges
+        phi_pairs = list(zip(phi_edges[:-1], phi_edges[1:]))
+        for phi_index, (phi_lo, phi_hi) in enumerate(phi_pairs):
+            cells.append({
+                "thetaRangeDeg": [float(theta_lo), float(theta_hi)],
+                "phiRangeDeg": [float(phi_lo), float(phi_hi)],
+                "thetaBin": theta_index,
+                "phiBin": phi_index,
+                "thetaHighInclusive": theta_high_inclusive,
+                "phiHighInclusive": phi_index == len(phi_pairs) - 1,
+            })
+        slices.append({
+            "thetaBin": theta_index,
+            "thetaRangeDeg": [float(theta_lo), float(theta_hi)],
+            "rawEntries": slice_entries,
+            "phiEdgesDeg": [float(value) for value in phi_edges],
+            "plannedPhiCells": len(phi_pairs),
+        })
+    return ProfileCellPlan(
+        cells=cells,
+        metadata={
+            "mode": cfg.profile_binning,
+            "requestedThetaBins": cfg.theta_bins,
+            "actualThetaBins": len(theta_pairs),
+            "thetaEdgesDeg": [float(value) for value in theta_edges],
+            "maxThetaBinWidthDeg": cfg.max_theta_bin_width_deg,
+            "maximumPhiBinsPerTheta": cfg.phi_bins,
+            "targetCellEntries": (
+                cfg.target_cell_entries if cfg.profile_binning == "adaptive" else None
+            ),
+            "plannedProfileCells": len(cells),
+            "thetaSlices": slices,
+        },
+    )
+
+
+def _cell_mask(
+    theta: np.ndarray,
+    phi: np.ndarray,
+    cell: dict[str, object],
+) -> np.ndarray:
+    theta_lo, theta_hi = (float(value) for value in cell["thetaRangeDeg"])
+    phi_lo, phi_hi = (float(value) for value in cell["phiRangeDeg"])
+    theta_upper = (
+        theta <= theta_hi if cell.get("thetaHighInclusive", False)
+        else theta < theta_hi
+    )
+    phi_upper = (
+        phi <= phi_hi if cell.get("phiHighInclusive", False)
+        else phi < phi_hi
+    )
+    return (
+        (theta >= theta_lo) & theta_upper &
+        (phi >= phi_lo) & phi_upper
+    )
+
+
 def _profile_grid(
     theta: np.ndarray,
     phi: np.ndarray,
     residual: np.ndarray,
-    theta_edges: np.ndarray,
-    phi_edges: np.ndarray,
+    planned_cells: list[dict[str, object]],
     cfg: ElasticFitConfig,
 ) -> ProfileGrid:
     theta_points: list[float] = []
@@ -366,86 +472,78 @@ def _profile_grid(
     errors: list[float] = []
     widths: list[float] = []
     entries: list[int] = []
+    total_entries: list[int] = []
     core_fractions: list[float] = []
     peak_significances: list[float] = []
     support_cells: list[dict[str, list[float]]] = []
     rejected_cells: list[dict[str, object]] = []
-    for theta_index, (theta_lo, theta_hi) in enumerate(zip(theta_edges[:-1], theta_edges[1:])):
-        theta_mask = (theta >= theta_lo) & (
-            (theta <= theta_hi) if theta_index == len(theta_edges) - 2 else (theta < theta_hi)
+    for planned_cell in planned_cells:
+        cell = _cell_mask(theta, phi, planned_cell)
+        cell_entries = int(np.count_nonzero(cell))
+        cell_id = dict(planned_cell)
+        if cell_entries < cfg.min_bin_entries:
+            rejected_cells.append({
+                **cell_id,
+                "reason": "rawEntries",
+                "value": cell_entries,
+                "threshold": cfg.min_bin_entries,
+            })
+            continue
+        estimate = mode_seeded_core(
+            residual[cell],
+            peak_search_max_abs_residual=cfg.peak_search_max_abs_residual,
+            peak_seed_half_width=cfg.peak_seed_half_width,
+            sigma_clip=cfg.core_sigma_clip,
         )
-        for phi_index, (phi_lo, phi_hi) in enumerate(zip(phi_edges[:-1], phi_edges[1:])):
-            phi_mask = (phi >= phi_lo) & (
-                (phi <= phi_hi) if phi_index == len(phi_edges) - 2 else (phi < phi_hi)
+        quality_failure: tuple[str, float, float] | None = None
+        if estimate.entries < cfg.min_bin_entries:
+            quality_failure = (
+                "coreEntries", float(estimate.entries), float(cfg.min_bin_entries)
             )
-            cell = theta_mask & phi_mask
-            cell_entries = int(np.count_nonzero(cell))
-            cell_id = {
-                "thetaRangeDeg": [float(theta_lo), float(theta_hi)],
-                "phiRangeDeg": [float(phi_lo), float(phi_hi)],
-            }
-            if cell_entries < cfg.min_bin_entries:
-                rejected_cells.append({
-                    **cell_id,
-                    "reason": "rawEntries",
-                    "value": cell_entries,
-                    "threshold": cfg.min_bin_entries,
-                })
-                continue
-            estimate = mode_seeded_core(
-                residual[cell],
-                peak_search_max_abs_residual=cfg.peak_search_max_abs_residual,
-                peak_seed_half_width=cfg.peak_seed_half_width,
-                sigma_clip=cfg.core_sigma_clip,
+        elif not np.isfinite(estimate.center) or not np.isfinite(estimate.error) or estimate.error <= 0:
+            quality_failure = ("finiteCenterError", 0.0, 1.0)
+        elif abs(estimate.center) > cfg.peak_search_max_abs_residual:
+            quality_failure = (
+                "absoluteCenter", abs(estimate.center),
+                cfg.peak_search_max_abs_residual,
             )
-            quality_failure: tuple[str, float, float] | None = None
-            if estimate.entries < cfg.min_bin_entries:
-                quality_failure = (
-                    "coreEntries", float(estimate.entries), float(cfg.min_bin_entries)
-                )
-            elif not np.isfinite(estimate.center) or not np.isfinite(estimate.error) or estimate.error <= 0:
-                quality_failure = ("finiteCenterError", 0.0, 1.0)
-            elif abs(estimate.center) > cfg.peak_search_max_abs_residual:
-                quality_failure = (
-                    "absoluteCenter", abs(estimate.center),
-                    cfg.peak_search_max_abs_residual,
-                )
-            elif not np.isfinite(estimate.width) or estimate.width > cfg.max_core_width:
-                quality_failure = (
-                    "coreWidth", estimate.width, cfg.max_core_width
-                )
-            elif estimate.retained_fraction < cfg.min_core_fraction:
-                quality_failure = (
-                    "coreFraction", estimate.retained_fraction, cfg.min_core_fraction
-                )
-            elif estimate.peak_significance < cfg.min_peak_significance:
-                quality_failure = (
-                    "peakSignificance", estimate.peak_significance,
-                    cfg.min_peak_significance,
-                )
-            if quality_failure is not None:
-                reason, value, threshold = quality_failure
-                rejected_cells.append({
-                    **cell_id,
-                    "reason": reason,
-                    "value": float(value),
-                    "threshold": float(threshold),
-                    "rawEntries": cell_entries,
-                    "coreEntries": estimate.entries,
-                    "mode": estimate.mode if np.isfinite(estimate.mode) else None,
-                })
-                continue
-            cell_theta = theta[cell]
-            cell_phi = phi[cell]
-            theta_points.append(float(np.mean(cell_theta[estimate.mask])))
-            phi_points.append(float(np.mean(cell_phi[estimate.mask])))
-            residual_points.append(estimate.center)
-            errors.append(estimate.error)
-            widths.append(estimate.width)
-            entries.append(estimate.entries)
-            core_fractions.append(estimate.retained_fraction)
-            peak_significances.append(estimate.peak_significance)
-            support_cells.append(cell_id)
+        elif not np.isfinite(estimate.width) or estimate.width > cfg.max_core_width:
+            quality_failure = (
+                "coreWidth", estimate.width, cfg.max_core_width
+            )
+        elif estimate.retained_fraction < cfg.min_core_fraction:
+            quality_failure = (
+                "coreFraction", estimate.retained_fraction, cfg.min_core_fraction
+            )
+        elif estimate.peak_significance < cfg.min_peak_significance:
+            quality_failure = (
+                "peakSignificance", estimate.peak_significance,
+                cfg.min_peak_significance,
+            )
+        if quality_failure is not None:
+            reason, value, threshold = quality_failure
+            rejected_cells.append({
+                **cell_id,
+                "reason": reason,
+                "value": float(value),
+                "threshold": float(threshold),
+                "rawEntries": cell_entries,
+                "coreEntries": estimate.entries,
+                "mode": estimate.mode if np.isfinite(estimate.mode) else None,
+            })
+            continue
+        cell_theta = theta[cell]
+        cell_phi = phi[cell]
+        theta_points.append(float(np.mean(cell_theta[estimate.mask])))
+        phi_points.append(float(np.mean(cell_phi[estimate.mask])))
+        residual_points.append(estimate.center)
+        errors.append(estimate.error)
+        widths.append(estimate.width)
+        entries.append(estimate.entries)
+        total_entries.append(estimate.total_entries)
+        core_fractions.append(estimate.retained_fraction)
+        peak_significances.append(estimate.peak_significance)
+        support_cells.append(cell_id)
     return ProfileGrid(
         theta_deg=np.asarray(theta_points, dtype=float),
         phi_deg=np.asarray(phi_points, dtype=float),
@@ -453,6 +551,7 @@ def _profile_grid(
         error=np.asarray(errors, dtype=float),
         width=np.asarray(widths, dtype=float),
         entries=np.asarray(entries, dtype=int),
+        total_entries=np.asarray(total_entries, dtype=int),
         core_fraction=np.asarray(core_fractions, dtype=float),
         peak_significance=np.asarray(peak_significances, dtype=float),
         support_cells=support_cells,
@@ -578,18 +677,9 @@ def _accepted_cell_mask(
     theta_deg: np.ndarray,
     phi_deg: np.ndarray,
     cell: dict[str, object],
-    theta_grid_hi: float,
-    phi_grid_hi: float,
 ) -> np.ndarray:
-    """Use the same half-open intervals as the profile-grid extraction."""
-    theta_lo, theta_hi = (float(value) for value in cell["thetaRangeDeg"])
-    phi_lo, phi_hi = (float(value) for value in cell["phiRangeDeg"])
-    theta_upper = theta_deg <= theta_hi if theta_hi == theta_grid_hi else theta_deg < theta_hi
-    phi_upper = phi_deg <= phi_hi if phi_hi == phi_grid_hi else phi_deg < phi_hi
-    return (
-        (theta_deg >= theta_lo) & theta_upper &
-        (phi_deg >= phi_lo) & phi_upper
-    )
+    """Use the same half-open intervals as the profile-cell extraction."""
+    return _cell_mask(theta_deg, phi_deg, cell)
 
 
 def fit_region(
@@ -605,10 +695,26 @@ def fit_region(
 ) -> tuple[dict[str, object], RegionDiagnostics]:
     if cfg.theta_bins < 1 or cfg.phi_bins < 1:
         raise ValueError("theta_bins and phi_bins must be positive")
+    if cfg.profile_binning not in ("fixed", "adaptive"):
+        raise ValueError("profile_binning must be fixed or adaptive")
+    if (
+        cfg.max_theta_bin_width_deg is not None
+        and cfg.max_theta_bin_width_deg <= 0.0
+    ):
+        raise ValueError("maximum theta-bin width must be positive")
+    if cfg.target_cell_entries < 2:
+        raise ValueError("target cell entries must be at least two")
     if cfg.theta_order < 0 or cfg.phi_order < 0 or cfg.cd_fourier_harmonics < 0:
         raise ValueError("fit orders and Fourier harmonics must be nonnegative")
     if cfg.min_bin_entries < 2 or cfg.min_region_entries < 2:
         raise ValueError("minimum entry counts must be at least two")
+    if (
+        cfg.profile_binning == "adaptive"
+        and cfg.target_cell_entries < cfg.min_bin_entries
+    ):
+        raise ValueError(
+            "adaptive target cell entries must not be below min_bin_entries"
+        )
     if not 0.0 < cfg.missing_energy_max_gev:
         raise ValueError("missing-energy maximum must be positive")
     if not 0.0 < cfg.peak_search_max_abs_residual < 1.0:
@@ -659,10 +765,18 @@ def fit_region(
     if theta.size < cfg.min_region_entries:
         raise ValueError(f"region has only {theta.size} entries after trimming")
 
-    theta_edges = np.unique(np.quantile(theta, np.linspace(0.0, 1.0, cfg.theta_bins + 1)))
-    phi_edges = np.linspace(phi_range[0], phi_range[1], cfg.phi_bins + 1)
+    theta_edges = np.unique(np.quantile(
+        theta, np.linspace(0.0, 1.0, cfg.theta_bins + 1)
+    ))
+    if cfg.profile_binning == "adaptive":
+        theta_edges = _split_wide_bins(
+            theta_edges, cfg.max_theta_bin_width_deg
+        )
+    cell_plan = _profile_cell_plan(
+        theta, phi, theta_edges, phi_range, cfg
+    )
     profile = _profile_grid(
-        theta, phi, residual_values, theta_edges, phi_edges, cfg
+        theta, phi, residual_values, cell_plan.cells, cfg
     )
 
     theta_center = 0.5 * (theta_min + theta_max)
@@ -745,6 +859,11 @@ def fit_region(
             "weightedDesignConditionNumber": condition_number,
             "residualCoreRange": [float(residual_min), float(residual_max)],
             "peakSearchMaxAbsResidual": cfg.peak_search_max_abs_residual,
+            "profileBinning": {
+                **cell_plan.metadata,
+                "acceptedProfileCells": len(profile.support_cells),
+                "rejectedProfileCells": len(profile.rejected_cells),
+            },
             "acceptedProfileCells": [
                 {
                     **support,
@@ -754,6 +873,7 @@ def fit_region(
                     "centerError": float(profile.error[index]),
                     "coreWidth": float(profile.width[index]),
                     "coreEntries": int(profile.entries[index]),
+                    "rawEntries": int(profile.total_entries[index]),
                     "coreFraction": float(profile.core_fraction[index]),
                     "peakSignificance": float(profile.peak_significance[index]),
                 }
@@ -772,7 +892,7 @@ def fit_region(
     residual_after = (1.0 + residual_values) / (1.0 + fitted_correction) - 1.0
     for cell in region["fit"]["acceptedProfileCells"]:
         cell_mask = _accepted_cell_mask(
-            theta, phi, cell, float(theta_edges[-1]), float(phi_edges[-1])
+            theta, phi, cell
         )
         after_estimate = mode_seeded_core(
             residual_after[cell_mask],
@@ -949,6 +1069,9 @@ def derive_corrections(
             "residualTrimQuantile": cfg.residual_trim_quantile,
             "thetaBins": cfg.theta_bins,
             "phiBins": cfg.phi_bins,
+            "profileBinning": cfg.profile_binning,
+            "maxThetaBinWidthDeg": cfg.max_theta_bin_width_deg,
+            "targetCellEntries": cfg.target_cell_entries,
             "thetaOrder": cfg.theta_order,
             "fdPhiOrder": cfg.phi_order,
             "cdFourierHarmonics": cfg.cd_fourier_harmonics,
@@ -980,6 +1103,96 @@ def _accepted_theta_slices(
         (theta_range, sorted(slice_cells, key=lambda cell: cell["phiMeanDeg"]))
         for theta_range, slice_cells in sorted(slices.items())
     ]
+
+
+def _plot_profile_cell_map(
+    diagnostic: RegionDiagnostics,
+    output_dir: Path,
+    dataset_tag: str,
+    beam_energy: float,
+) -> None:
+    import matplotlib.pyplot as plt
+    from matplotlib.collections import PatchCollection
+    from matplotlib.patches import Patch, Rectangle
+
+    fit = diagnostic.region["fit"]
+    accepted = fit["acceptedProfileCells"]
+    rejected = fit["rejectedProfileCells"]
+    center_percent = 100.0 * np.asarray(
+        [cell["center"] for cell in accepted], dtype=float
+    )
+    core_entries = np.asarray(
+        [cell["coreEntries"] for cell in accepted], dtype=float
+    )
+
+    def rectangles(cells: list[dict[str, object]]) -> list[Rectangle]:
+        patches = []
+        for cell in cells:
+            theta_lo, theta_hi = (float(value) for value in cell["thetaRangeDeg"])
+            phi_lo, phi_hi = (float(value) for value in cell["phiRangeDeg"])
+            patches.append(Rectangle(
+                (theta_lo, phi_lo), theta_hi - theta_lo, phi_hi - phi_lo
+            ))
+        return patches
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.8), sharex=True, sharey=True)
+    center_limit = max(0.25, 1.15 * float(np.max(np.abs(center_percent))))
+    collections = (
+        PatchCollection(
+            rectangles(accepted), cmap="coolwarm", edgecolor="0.2",
+            linewidth=0.5,
+        ),
+        PatchCollection(
+            rectangles(accepted), cmap="viridis", edgecolor="0.2",
+            linewidth=0.5,
+        ),
+    )
+    collections[0].set_array(center_percent)
+    collections[0].set_clim(-center_limit, center_limit)
+    collections[1].set_array(core_entries)
+    for axis, collection in zip(axes, collections):
+        axis.add_collection(collection)
+        for patch in rectangles(rejected):
+            patch.set_facecolor("0.88")
+            patch.set_edgecolor("0.45")
+            patch.set_hatch("//")
+            patch.set_linewidth(0.6)
+            axis.add_patch(patch)
+        axis.set_xlim(*diagnostic.region["thetaRangeDeg"])
+        axis.set_ylim(*diagnostic.region["phiRangeDeg"])
+        axis.set_xlabel("$\\theta$ [deg]")
+        axis.set_ylabel(
+            "sector-local $\\phi$ [deg]"
+            if diagnostic.region["phiVariable"] == "sectorLocal"
+            else "global $\\phi$ [deg]"
+        )
+    fig.colorbar(
+        collections[0], ax=axes[0], label="elastic residual center [%]"
+    )
+    fig.colorbar(collections[1], ax=axes[1], label="retained core events")
+    axes[0].set_title("accepted-cell residual center")
+    axes[1].set_title("accepted-cell population")
+    binning = fit["profileBinning"]
+    axes[1].legend(
+        handles=[Patch(facecolor="0.88", edgecolor="0.45", hatch="//",
+                       label="rejected cell")],
+        loc="best", fontsize="small",
+    )
+    fig.text(
+        0.5, 0.01,
+        f"{binning['mode']} plan: {binning['plannedProfileCells']} cells; "
+        f"{binning['acceptedProfileCells']} accepted; "
+        f"{binning['rejectedProfileCells']} rejected",
+        ha="center", fontsize="small",
+    )
+    save_plot(
+        fig,
+        output_dir / f"{diagnostic.label}_profile_cell_map.png",
+        f"Elastic profile-cell geometry: {diagnostic.label}",
+        dataset_tag,
+        beam_energy,
+    )
+    plt.close(fig)
 
 
 def _plot_phi_profiles(
@@ -1298,6 +1511,7 @@ def plot_diagnostics(
             beam_energy,
         )
         plt.close(fig)
+        _plot_profile_cell_map(diagnostic, output_dir, dataset_tag, beam_energy)
         _plot_phi_profiles(diagnostic, output_dir, dataset_tag, beam_energy)
         _plot_cell_fit_discrepancies(diagnostic, output_dir, dataset_tag, beam_energy)
         _plot_slice_phi_coefficients(diagnostic, output_dir, dataset_tag, beam_energy)
@@ -1330,6 +1544,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--residual-trim-quantile", type=float, default=0.01)
     parser.add_argument("--theta-bins", type=int, default=7)
     parser.add_argument("--phi-bins", type=int, default=7)
+    parser.add_argument(
+        "--profile-binning", choices=("fixed", "adaptive"), default="fixed",
+        help=(
+            "fixed uses one global phi grid; adaptive uses occupancy-quantile phi "
+            "cells inside each theta slice"
+        ),
+    )
+    parser.add_argument(
+        "--max-theta-bin-width-deg", type=float,
+        help=(
+            "in adaptive mode, split quantile theta intervals wider than this "
+            "physical angle"
+        ),
+    )
+    parser.add_argument(
+        "--target-cell-entries", type=int, default=500,
+        help=(
+            "adaptive-mode target raw population; sparse theta slices use fewer "
+            "phi cells"
+        ),
+    )
     parser.add_argument("--theta-order", type=int, default=2)
     parser.add_argument("--fd-phi-order", type=int, default=2)
     parser.add_argument("--cd-fourier-harmonics", type=int, default=3)
@@ -1360,6 +1595,9 @@ def main() -> None:
         residual_trim_quantile=args.residual_trim_quantile,
         theta_bins=args.theta_bins,
         phi_bins=args.phi_bins,
+        profile_binning=args.profile_binning,
+        max_theta_bin_width_deg=args.max_theta_bin_width_deg,
+        target_cell_entries=args.target_cell_entries,
         theta_order=args.theta_order,
         phi_order=args.fd_phi_order,
         cd_fourier_harmonics=args.cd_fourier_harmonics,

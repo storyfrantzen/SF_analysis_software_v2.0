@@ -238,6 +238,23 @@ theta dependence. The secondary slice lines never set the exported correction.
 Post-correction core centers are re-extracted from the corrected events in
 each accepted cell, so their core membership need not match the before sample.
 
+The default `--profile-binning fixed` preserves the original grid: quantile
+theta slices crossed with one uniform phi grid. For high-statistics diagnostic
+studies, `--profile-binning adaptive` instead chooses occupancy-quantile phi
+edges independently inside each theta slice. `--phi-bins` is then a maximum,
+and sparse slices receive fewer phi cells according to
+`--target-cell-entries`. `--max-theta-bin-width-deg` additionally splits any
+quantile theta interval that is too wide in physical angle. This resolves
+rapidly changing low-theta behavior without leaving the sparse high-theta tail
+in one multi-degree cell. The JSON records all planned theta/phi edges and
+populations under `fit.profileBinning`, and `*_profile_cell_map.png` displays
+the actual rectangles, retained populations, and rejected cells.
+
+Adaptive binning is a diagnostic until the structure repeats in held-out runs.
+Finer cells can expose unresolved angular dependence, but should not be judged
+by a lower training chi-squared alone. Require stable cell centers, adequate
+population, and independent closure before using the exported surface.
+
 For RGK 6.535 GeV, derive a candidate sample and parameters with:
 
 ```bash
@@ -258,6 +275,26 @@ python3 scripts/derive_elastic_momentum.py \
   --plot-dir calibration_plots/momentum/6.535RGK \
   --dataset-tag 6.535RGK_elastic
 ```
+
+For an electron-only high-statistics adaptive diagnostic, a conservative
+starting point is:
+
+```bash
+python3 scripts/derive_elastic_momentum.py \
+  10.604_rga_fa18_torus+1_elastic_candidates_trial_v2_100M.root \
+  --beam-energy 10.604 --torus 1 --particle electron \
+  --missing-energy-max-gev 0.75 \
+  --profile-binning adaptive \
+  --theta-bins 10 --max-theta-bin-width-deg 0.75 \
+  --phi-bins 7 --target-cell-entries 600 --min-bin-entries 300 \
+  --theta-order 1 --fd-phi-order 1 \
+  --output parameters/momentum/10.604RGA_FA18_torus+1_elastic_adaptive_diag.json \
+  --plot-dir calibration_plots/momentum/rga_fa18_torus+1_adaptive_diag \
+  --dataset-tag 10.604RGA_FA18_torus+1_adaptive_diag
+```
+
+Keep that output disabled in production while comparing its cell maps and
+profiles with the fixed-grid baseline.
 
 RGA has matching `elastic_data_torus+1.json` / `elastic_data_torus-1.json`
 processing configs and `elastic_candidates_data_torus+1.json` /

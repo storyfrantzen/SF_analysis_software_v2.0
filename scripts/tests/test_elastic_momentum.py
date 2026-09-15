@@ -153,11 +153,52 @@ class ElasticSurfaceFitTests(unittest.TestCase):
             plot_diagnostics([diagnostic], output_dir, "plot-test", 6.535)
             for name in (
                 "pid11_det1_sector1.png",
+                "pid11_det1_sector1_profile_cell_map.png",
                 "pid11_det1_sector1_profile_vs_phi_by_theta.png",
                 "pid11_det1_sector1_cell_fit_discrepancy.png",
                 "pid11_det1_sector1_phi_coefficients_vs_theta.png",
             ):
                 self.assertTrue((output_dir / name).is_file(), name)
+
+    def test_adaptive_profile_cells_limit_theta_width_and_follow_acceptance(self) -> None:
+        rng = np.random.default_rng(37)
+        dense_theta = rng.uniform(5.6, 6.6, 12_000)
+        tail_theta = 6.6 + 4.0 * rng.beta(1.0, 4.0, 4_000)
+        theta = np.concatenate((dense_theta, tail_theta))
+        phi_half_width = np.where(theta < 6.6, 12.0, 24.0)
+        phi = rng.uniform(-phi_half_width, phi_half_width)
+        residual = (
+            0.004 + 0.002 * (theta - 7.0) / 3.0
+            + 0.001 * phi / 30.0 + rng.normal(0.0, 0.008, theta.size)
+        )
+        region, _ = fit_region(
+            pid=11, detector=1, sector=1, theta_deg=theta, phi_deg=phi,
+            residual=residual, basis="polynomial",
+            cfg=ElasticFitConfig(
+                beam_energy=10.604, torus=1, theta_bins=5, phi_bins=7,
+                profile_binning="adaptive", max_theta_bin_width_deg=0.5,
+                target_cell_entries=500, theta_order=1, phi_order=1,
+                min_bin_entries=100, min_region_entries=1000,
+            ),
+        )
+        binning = region["fit"]["profileBinning"]
+        theta_edges = np.asarray(binning["thetaEdgesDeg"], dtype=float)
+        self.assertEqual(binning["mode"], "adaptive")
+        self.assertGreater(binning["actualThetaBins"], 5)
+        self.assertLessEqual(float(np.max(np.diff(theta_edges))), 0.5 + 1.0e-12)
+        planned_phi_counts = {
+            item["plannedPhiCells"] for item in binning["thetaSlices"]
+        }
+        self.assertGreater(len(planned_phi_counts), 1)
+        self.assertTrue(all(
+            min(item["phiEdgesDeg"]) > -30.0
+            and max(item["phiEdgesDeg"]) < 30.0
+            for item in binning["thetaSlices"] if item["plannedPhiCells"]
+        ))
+        self.assertTrue(all(
+            cell["coreEntries"] >= 100
+            for cell in region["fit"]["acceptedProfileCells"]
+        ))
 
     def test_exported_fd_regions_are_finite_and_complete(self) -> None:
         rng = np.random.default_rng(61)
