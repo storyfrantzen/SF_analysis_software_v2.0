@@ -255,6 +255,18 @@ Finer cells can expose unresolved angular dependence, but should not be judged
 by a lower training chi-squared alone. Require stable cell centers, adequate
 population, and independent closure before using the exported surface.
 
+To split an existing candidate ROOT file into run-specific samples, use the
+argument-based helper instead of embedding a quoted C++ expression in
+`root -e`:
+
+```bash
+python3 scripts/filter_root_by_run.py \
+  elastic_candidates.root elastic_candidates_run5423.root 5423
+```
+
+The helper reads `sEvents` by default, refuses to replace an existing output,
+and accepts `--tree NAME` or an explicit `--overwrite` when needed.
+
 For RGK 6.535 GeV, derive a candidate sample and parameters with:
 
 ```bash
