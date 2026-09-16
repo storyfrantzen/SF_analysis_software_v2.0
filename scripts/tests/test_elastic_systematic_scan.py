@@ -12,6 +12,7 @@ from scripts.calibration.elastic_momentum import ElasticFitConfig
 from scripts.calibration.elastic_systematic_scan import (
     compare_parameter_surfaces,
     make_one_at_a_time_variations,
+    rebuild_existing_systematic_scan,
     run_systematic_scan,
 )
 
@@ -107,11 +108,29 @@ class ElasticSystematicScanTests(unittest.TestCase):
             coefficient = 0.004 + 0.001 * (
                 float(args[1].missing_energy_max_gev) - 0.75
             )
+            parameters = _parameters(coefficient)
             (output_dir / "recommended_mixed_parameters.json").write_text(
-                json.dumps(_parameters(coefficient))
+                json.dumps(parameters)
+            )
+            (output_dir / "constant").mkdir()
+            (output_dir / "constant" / "pooled_parameters.json").write_text(
+                json.dumps(parameters)
             )
             groups = run_groups or ((5423,), (5424,))
-            return {
+            region_summary = {
+                "pid": 11,
+                "detector": 1,
+                "sector": 1,
+                "region": "pid11_det1_sector1",
+                "medianCellCenterRmsAfter": 0.001,
+                "completeHeldOutBlockCoverage": True,
+                "heldoutFolds": {
+                    "A": {"medianCellCenterRmsAfter": 0.001},
+                    "B": {"medianCellCenterRmsAfter": 0.001},
+                },
+                "foldSurfaceAgreement": {"rms": 0.0001},
+            }
+            result = {
                 "selection": {"selectedCandidates": 10_000},
                 "runBlockDefinition": (
                     "fixed-from-nominal-systematic-scan"
@@ -129,6 +148,12 @@ class ElasticSystematicScanTests(unittest.TestCase):
                     }
                     for index, group in enumerate(groups)
                 ],
+                "models": {
+                    "constant": {
+                        "parameterFile": "constant/pooled_parameters.json",
+                    },
+                },
+                "regionModelComparison": {"constant": [region_summary]},
                 "recommendation": {
                     "model": "constant",
                     "status": "test",
@@ -139,12 +164,17 @@ class ElasticSystematicScanTests(unittest.TestCase):
                         "sector": 1,
                         "region": "pid11_det1_sector1",
                         "model": "constant",
+                        "eligibleModels": ["constant"],
                         "medianHeldOutCellRms": 0.001,
                         "heldoutFoldCellRms": {"A": 0.001, "B": 0.001},
                         "foldSurfaceAgreement": {"rms": 0.0001},
                     }],
                 },
             }
+            (output_dir / "run_validation_report.json").write_text(
+                json.dumps(result)
+            )
+            return result
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_dir = Path(temporary_directory)
@@ -167,8 +197,35 @@ class ElasticSystematicScanTests(unittest.TestCase):
             self.assertEqual(observed_run_groups[1], ((5423,), (5424,)))
             self.assertTrue(report["fixedRunPartitionAcrossVariations"])
             self.assertTrue(report["allRegionModelAssignmentsStable"])
+            self.assertEqual(
+                report["conservativeRecommendation"]["regions"][0]["model"],
+                "constant",
+            )
+            self.assertTrue(
+                report["fixedModelStability"][0]["models"][0][
+                    "eligibleEveryVariation"
+                ]
+            )
             self.assertTrue((output_dir / "systematic_scan_report.json").is_file())
             self.assertTrue((output_dir / "systematic_scan_summary.tsv").is_file())
+            self.assertTrue((output_dir / "fixed_model_systematics.tsv").is_file())
+            self.assertTrue((output_dir / "recommended_robust_parameters.json").is_file())
+
+            rebuilt = rebuild_existing_systematic_scan(
+                output_dir=output_dir,
+                variations=variations,
+                particle="electron",
+                dataset_tag="synthetic",
+                beam_energy=10.604,
+                torus=1,
+                models=["constant"],
+                make_summary_plots=False,
+            )
+            self.assertEqual(rebuilt["schema"], "elastic_momentum_systematic_scan/v2")
+            self.assertEqual(
+                rebuilt["conservativeRecommendation"]["parameterFile"],
+                "recommended_robust_parameters.json",
+            )
 
 
 if __name__ == "__main__":

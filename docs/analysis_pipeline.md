@@ -442,15 +442,41 @@ plots are omitted by default; add `--variation-plots` only when they are needed.
 The aggregate outputs are:
 
 - `systematic_scan_report.json`, containing every sector's model assignment,
-  held-out RMS, and fitted-surface displacement from nominal;
+  held-out RMS, fitted-surface displacement from nominal, and fixed-model
+  comparisons that never switch model family between variations;
 - `systematic_scan_summary.tsv`, a flat table suitable for quick inspection;
 - `systematic_scan_summary.png`, a model/RMS/surface-shift overview;
+- `fixed_model_systematics.tsv` and `fixed_model_surface_stability.png`, which
+  compare each model with the same model in the nominal fit and therefore
+  separate surface movement from changes made by the automatic selector;
+- `recommended_robust_parameters.json`, assembled from the nominal pooled
+  surfaces using the least-complex model selected across the nominal,
+  missing-energy, and cell-binning tests in each sector.  Lower-theta changes
+  are recorded as domain sensitivity rather than silently folded into the
+  model choice;
 - one subdirectory per variation containing its full validation JSON and
   candidate parameter files.
 
-This remains a diagnostic scan. A stable model label is not sufficient by
-itself: inspect the surface RMS changes and held-out behavior before promoting
-the nominal mixed parameter file.
+If a scan was produced with an earlier version of the driver, rebuild these
+aggregate diagnostics from its existing variation outputs without rereading
+the ROOT file or refitting any surface:
+
+```bash
+python3 scripts/scan_elastic_momentum_systematics.py \
+  --rebuild-existing-report \
+  --beam-energy 10.604 --torus 1 --particle electron \
+  --models constant theta-linear theta-phi \
+  --missing-energy-scan-gev 0.50 0.75 1.00 \
+  --theta-min-scan-deg 6.10 6.50 \
+  --target-cell-entries-scan 1500 2000 3000 \
+  --output-dir calibration_plots/momentum/rga_fa18_torus+1_systematics \
+  --dataset-tag 10.604RGA_FA18_torus+1_systematics
+```
+
+The robust file remains a calibration candidate rather than an automatically
+approved production correction.  Regions marked `domainSensitive` require a
+check that the physics channel occupies the same theta/phi support before the
+file is promoted.
 
 For RGK 6.535 GeV, derive a candidate sample and parameters with:
 

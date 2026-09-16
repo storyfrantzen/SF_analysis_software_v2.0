@@ -1173,6 +1173,7 @@ def run_validation(
         )
         region_summaries_by_model[model] = region_summaries
         model_report = {
+            "parameterFile": f"{model}/pooled_parameters.json",
             "orders": {
                 "theta": model_cfg.theta_order,
                 "fdPhi": model_cfg.phi_order,

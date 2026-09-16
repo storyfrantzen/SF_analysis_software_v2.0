@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 from dataclasses import asdict, dataclass, replace
@@ -23,6 +24,9 @@ from .elastic_run_validation import (
     subset_arrays,
 )
 from .plot_utils import save_plot
+
+
+DOMAIN_CHANGING_AXES = {"thetaMinDeg"}
 
 
 @dataclass(frozen=True)
@@ -134,6 +138,38 @@ def _recommendation_map(
     }
 
 
+def _model_region_map(
+    report: dict[str, object], model: str,
+) -> dict[tuple[int, int, int], dict[str, object]]:
+    return {
+        _region_key(region): region
+        for region in report.get("regionModelComparison", {}).get(model, [])
+    }
+
+
+def _read_json(path: Path) -> dict[str, object]:
+    return json.loads(path.read_text())
+
+
+def _load_model_parameters(
+    variation_dir: Path,
+    report: dict[str, object],
+    models: Iterable[str],
+) -> dict[str, dict[str, object]]:
+    parameters: dict[str, dict[str, object]] = {}
+    model_reports = report.get("models", {})
+    for model in models:
+        model_report = model_reports.get(model, {})
+        relative = model_report.get("parameterFile")
+        path = (
+            variation_dir / str(relative)
+            if relative else variation_dir / model / "pooled_parameters.json"
+        )
+        if path.is_file():
+            parameters[model] = _read_json(path)
+    return parameters
+
+
 def compare_parameter_surfaces(
     nominal: dict[str, object],
     variation: dict[str, object],
@@ -192,6 +228,320 @@ def _compact_recommendation(report: dict[str, object]) -> list[dict[str, object]
     return compact
 
 
+def _fixed_model_stability(
+    *,
+    records: list[dict[str, object]],
+    variations: list[ScanVariation],
+    keys: list[tuple[int, int, int]],
+    models: list[str],
+) -> list[dict[str, object]]:
+    nominal_record = next(
+        record for record in records if record["variation"].name == "nominal"
+    )
+    nominal_parameters_by_model = nominal_record.get("modelParameters", {})
+    comparisons: dict[
+        str,
+        dict[str, dict[tuple[int, int, int], dict[str, object]]],
+    ] = {}
+    for record in records:
+        if record["status"] != "completed":
+            continue
+        variation: ScanVariation = record["variation"]
+        by_model: dict[str, dict[tuple[int, int, int], dict[str, object]]] = {}
+        for model in models:
+            nominal = nominal_parameters_by_model.get(model)
+            varied = record.get("modelParameters", {}).get(model)
+            if nominal is None or varied is None:
+                continue
+            by_model[model] = {
+                _region_key(comparison): comparison
+                for comparison in compare_parameter_surfaces(nominal, varied)
+            }
+        comparisons[variation.name] = by_model
+
+    same_domain_names = {
+        variation.name for variation in variations
+        if variation.axis not in DOMAIN_CHANGING_AXES
+    }
+    stability: list[dict[str, object]] = []
+    for key in keys:
+        model_entries: list[dict[str, object]] = []
+        for model in models:
+            assignments: list[dict[str, object]] = []
+            nominal_summary = _model_region_map(
+                nominal_record["report"], model
+            ).get(key, {})
+            nominal_rms = nominal_summary.get("medianCellCenterRmsAfter")
+            for record in records:
+                variation: ScanVariation = record["variation"]
+                if record["status"] != "completed":
+                    assignments.append({
+                        "variation": variation.name,
+                        "status": "failed",
+                        "eligible": False,
+                    })
+                    continue
+                report = record["report"]
+                recommendation = _recommendation_map(report).get(key, {})
+                summary = _model_region_map(report, model).get(key, {})
+                comparison = (
+                    comparisons.get(variation.name, {})
+                    .get(model, {})
+                    .get(key)
+                )
+                ratio = None
+                if (
+                    comparison is not None
+                    and nominal_rms is not None
+                    and float(nominal_rms) > 0.0
+                ):
+                    ratio = (
+                        float(comparison["rmsDifference"])
+                        / float(nominal_rms)
+                    )
+                assignments.append({
+                    "variation": variation.name,
+                    "status": "completed",
+                    "eligible": model in recommendation.get("eligibleModels", []),
+                    "automaticallySelected": recommendation.get("model") == model,
+                    "medianHeldOutCellRms": summary.get(
+                        "medianCellCenterRmsAfter"
+                    ),
+                    "heldoutFolds": summary.get("heldoutFolds"),
+                    "foldSurfaceAgreement": summary.get("foldSurfaceAgreement"),
+                    "surfaceComparisonToNominalSameModel": comparison,
+                    "surfaceRmsToNominalHeldOutRmsRatio": ratio,
+                })
+            completed = [
+                entry for entry in assignments
+                if entry["status"] == "completed"
+            ]
+            same_domain = [
+                entry for entry in completed
+                if entry["variation"] in same_domain_names
+            ]
+
+            def _surface_values(
+                entries: list[dict[str, object]],
+            ) -> list[float]:
+                return [
+                    float(entry["surfaceComparisonToNominalSameModel"][
+                        "rmsDifference"
+                    ])
+                    for entry in entries
+                    if entry.get("surfaceComparisonToNominalSameModel") is not None
+                ]
+
+            same_domain_surface = _surface_values(same_domain)
+            all_surface = _surface_values(completed)
+            model_entries.append({
+                "model": model,
+                "nominalHeldOutCellRms": nominal_rms,
+                "completeEveryVariation": len(completed) == len(variations),
+                "eligibleEverySameDomainVariation": (
+                    len(same_domain) == len(same_domain_names)
+                    and bool(same_domain)
+                    and all(entry["eligible"] for entry in same_domain)
+                ),
+                "eligibleEveryVariation": (
+                    len(completed) == len(variations)
+                    and bool(completed)
+                    and all(entry["eligible"] for entry in completed)
+                ),
+                "maxSameDomainSurfaceRmsDifference": (
+                    max(same_domain_surface) if same_domain_surface else None
+                ),
+                "maxSurfaceRmsDifference": (
+                    max(all_surface) if all_surface else None
+                ),
+                "assignments": assignments,
+            })
+        stability.append({
+            "pid": key[0],
+            "detector": key[1],
+            "sector": key[2],
+            "region": _region_label(key),
+            "models": model_entries,
+        })
+    return stability
+
+
+def _conservative_recommendation(
+    *,
+    region_stability: list[dict[str, object]],
+    fixed_model_stability: list[dict[str, object]],
+    variations: list[ScanVariation],
+) -> dict[str, object]:
+    variation_by_name = {variation.name: variation for variation in variations}
+    fixed_by_key = {
+        _region_key(region): region for region in fixed_model_stability
+    }
+    regions: list[dict[str, object]] = []
+    for region in region_stability:
+        key = _region_key(region)
+        completed = [
+            assignment for assignment in region["assignments"]
+            if assignment["status"] == "completed"
+            and assignment.get("model") is not None
+        ]
+        same_domain = [
+            assignment for assignment in completed
+            if variation_by_name[assignment["variation"]].axis
+            not in DOMAIN_CHANGING_AXES
+        ]
+        same_domain_complete = len(same_domain) == sum(
+            variation.axis not in DOMAIN_CHANGING_AXES
+            for variation in variations
+        )
+        all_complete = len(completed) == len(variations)
+        same_models = sorted(
+            {str(entry["model"]) for entry in same_domain},
+            key=lambda model: MODEL_COMPLEXITY[model],
+        )
+        all_models = sorted(
+            {str(entry["model"]) for entry in completed},
+            key=lambda model: MODEL_COMPLEXITY[model],
+        )
+        same_domain_model = (
+            min(same_models, key=lambda model: MODEL_COMPLEXITY[model])
+            if same_domain_complete and same_models else None
+        )
+        full_scan_model = (
+            min(all_models, key=lambda model: MODEL_COMPLEXITY[model])
+            if all_complete and all_models else None
+        )
+        model_diagnostics = {
+            entry["model"]: entry
+            for entry in fixed_by_key.get(key, {}).get("models", [])
+        }
+        diagnostic = model_diagnostics.get(same_domain_model, {})
+        domain_sensitive = (
+            same_domain_model is not None
+            and full_scan_model is not None
+            and same_domain_model != full_scan_model
+        )
+        if same_domain_model is None:
+            status = "no complete domain-preserving systematic recommendation"
+        elif domain_sensitive:
+            status = (
+                "candidate is stable under selection/binning variations but "
+                "simplifies when the fitted theta domain is restricted"
+            )
+        else:
+            status = "candidate complexity is stable across the full scan"
+        regions.append({
+            "pid": key[0],
+            "detector": key[1],
+            "sector": key[2],
+            "region": _region_label(key),
+            "model": same_domain_model,
+            "fullScanConservativeModel": full_scan_model,
+            "domainSensitive": domain_sensitive,
+            "status": status,
+            "modelsObservedSameDomain": same_models,
+            "modelsObservedFullScan": all_models,
+            "eligibleEverySameDomainVariation": diagnostic.get(
+                "eligibleEverySameDomainVariation"
+            ),
+            "maxSameDomainSurfaceRmsDifference": diagnostic.get(
+                "maxSameDomainSurfaceRmsDifference"
+            ),
+            "maxSurfaceRmsDifference": diagnostic.get(
+                "maxSurfaceRmsDifference"
+            ),
+        })
+    complete = bool(regions) and all(region["model"] is not None for region in regions)
+    domain_sensitive_regions = [
+        region["region"] for region in regions if region["domainSensitive"]
+    ]
+    selected_models = {region["model"] for region in regions if region["model"]}
+    overall_model = (
+        None if not complete else
+        next(iter(selected_models)) if len(selected_models) == 1 else
+        "mixed"
+    )
+    return {
+        "model": overall_model,
+        "status": (
+            "conservative same-domain candidates available; theta-domain-sensitive "
+            "regions require analysis-phase-space review"
+            if complete and domain_sensitive_regions else
+            "conservative candidates are stable across the full scan"
+            if complete else
+            "one or more regions have no conservative systematic candidate"
+        ),
+        "strategy": (
+            "for each region, take the least complex automatically selected model "
+            "across nominal, missing-energy, and cell-binning variations"
+        ),
+        "domainChangingAxesExcludedFromModelChoice": sorted(DOMAIN_CHANGING_AXES),
+        "domainSensitiveRegions": domain_sensitive_regions,
+        "phaseSpaceReviewRequired": bool(domain_sensitive_regions),
+        "parameterFile": None,
+        "regions": regions,
+    }
+
+
+def _build_robust_parameters(
+    nominal_parameters_by_model: dict[str, dict[str, object]],
+    recommendation: dict[str, object],
+    dataset_tag: str,
+) -> dict[str, object] | None:
+    assignments = recommendation.get("regions", [])
+    if not assignments or any(entry.get("model") is None for entry in assignments):
+        return None
+    first_model = str(assignments[0]["model"])
+    if first_model not in nominal_parameters_by_model:
+        return None
+    robust = copy.deepcopy(nominal_parameters_by_model[first_model])
+    robust["datasetTag"] = f"{dataset_tag}_recommended_robust"
+    robust["calibrationRole"] = (
+        "pooledRobustCandidatePendingPhaseSpaceReview"
+        if recommendation.get("phaseSpaceReviewRequired") else
+        "pooledRobustCandidateAfterSystematicScan"
+    )
+    robust["regions"] = []
+    robust["skippedRegions"] = []
+    fit_configuration = copy.deepcopy(robust.get("fitConfiguration", {}))
+    for field in ("thetaOrder", "fdPhiOrder", "cdFourierHarmonics"):
+        fit_configuration.pop(field, None)
+    fit_configuration["regionSpecificModelOrders"] = True
+    robust["fitConfiguration"] = fit_configuration
+    robust["modelSelection"] = {
+        "strategy": recommendation["strategy"],
+        "systematicScanCompleted": True,
+        "phaseSpaceReviewRequired": recommendation["phaseSpaceReviewRequired"],
+        "domainChangingAxesExcludedFromModelChoice": recommendation[
+            "domainChangingAxesExcludedFromModelChoice"
+        ],
+        "assignments": [
+            {
+                "pid": entry["pid"],
+                "detector": entry["detector"],
+                "sector": entry["sector"],
+                "model": entry["model"],
+                "domainSensitive": entry["domainSensitive"],
+            }
+            for entry in assignments
+        ],
+    }
+    region_maps = {
+        model: _region_map(parameters)
+        for model, parameters in nominal_parameters_by_model.items()
+    }
+    for entry in assignments:
+        key = _region_key(entry)
+        model = str(entry["model"])
+        if model not in region_maps or key not in region_maps[model]:
+            return None
+        region = copy.deepcopy(region_maps[model][key])
+        region["validationModel"] = model
+        region["systematicDomainSensitive"] = bool(entry["domainSensitive"])
+        robust["regions"].append(region)
+    robust["regions"].sort(key=_region_key)
+    return robust
+
+
 def build_systematic_report(
     *,
     records: list[dict[str, object]],
@@ -245,6 +595,10 @@ def build_systematic_report(
                 f"{variation.name}/{recommendation['parameterFile']}"
                 if recommendation.get("parameterFile") else None
             ),
+            "fixedModelParameterFiles": {
+                model: f"{variation.name}/{model}/pooled_parameters.json"
+                for model in record.get("modelParameters", {})
+            },
             "selection": report["selection"],
             "runBlockDefinition": report.get("runBlockDefinition"),
             "runBlocks": report["runBlocks"],
@@ -334,6 +688,18 @@ def build_systematic_report(
             "assignments": assignments,
         })
 
+    fixed_model_stability = _fixed_model_stability(
+        records=records,
+        variations=variations,
+        keys=keys,
+        models=models,
+    )
+    conservative_recommendation = _conservative_recommendation(
+        region_stability=region_stability,
+        fixed_model_stability=fixed_model_stability,
+        variations=variations,
+    )
+
     failed_names = [
         variation.name for variation in variations
         if variation.name not in successful_names
@@ -344,12 +710,13 @@ def build_systematic_report(
         and all(region["stableModelAssignment"] for region in region_stability)
     )
     return {
-        "schema": "elastic_momentum_systematic_scan/v1",
+        "schema": "elastic_momentum_systematic_scan/v2",
         "datasetTag": dataset_tag,
         "particle": particle,
         "beamEnergyGeV": beam_energy,
         "torus": torus,
         "design": "one-at-a-time around nominal",
+        "domainChangingAxes": sorted(DOMAIN_CHANGING_AXES),
         "models": models,
         "nominalVariation": "nominal",
         "nominalParameterFile": "nominal/recommended_mixed_parameters.json",
@@ -365,6 +732,8 @@ def build_systematic_report(
         ),
         "variations": variation_summaries,
         "regionStability": region_stability,
+        "fixedModelStability": fixed_model_stability,
+        "conservativeRecommendation": conservative_recommendation,
     }
 
 
@@ -373,6 +742,10 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     with path.open("w") as output:
         json.dump(payload, output, indent=2, allow_nan=False)
         output.write("\n")
+
+
+def _tsv_value(value: object) -> object:
+    return "" if value is None else value
 
 
 def _write_tsv(path: Path, report: dict[str, object]) -> None:
@@ -399,11 +772,51 @@ def _write_tsv(path: Path, report: dict[str, object]) -> None:
                     selection.get("selectedCandidates", ""),
                     region["region"],
                     assignment.get("model") or "",
-                    assignment.get("medianHeldOutCellRms") or "",
-                    comparison.get("rmsDifference", ""),
-                    comparison.get("commonCells", ""),
-                    comparison.get("commonCellFraction", ""),
+                    _tsv_value(assignment.get("medianHeldOutCellRms")),
+                    _tsv_value(comparison.get("rmsDifference")),
+                    _tsv_value(comparison.get("commonCells")),
+                    _tsv_value(comparison.get("commonCellFraction")),
                 ])
+
+
+def _write_fixed_model_tsv(path: Path, report: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    variation_by_name = {
+        variation["name"]: variation for variation in report["variations"]
+    }
+    with path.open("w", newline="") as output:
+        writer = csv.writer(output, delimiter="\t", lineterminator="\n")
+        writer.writerow([
+            "variation", "axis", "value", "region", "model", "eligible",
+            "automaticallySelected", "heldoutCellRms",
+            "sameModelSurfaceRmsFromNominal", "surfaceRmsToHeldoutRms",
+            "commonCells", "commonCellFraction",
+        ])
+        for region in report["fixedModelStability"]:
+            for model in region["models"]:
+                for assignment in model["assignments"]:
+                    variation = variation_by_name[assignment["variation"]]
+                    comparison = assignment.get(
+                        "surfaceComparisonToNominalSameModel"
+                    ) or {}
+                    writer.writerow([
+                        assignment["variation"],
+                        variation["axis"],
+                        "" if variation["value"] is None else variation["value"],
+                        region["region"],
+                        model["model"],
+                        assignment.get("eligible", ""),
+                        assignment.get("automaticallySelected", ""),
+                        _tsv_value(assignment.get("medianHeldOutCellRms")),
+                        _tsv_value(comparison.get("rmsDifference")),
+                        _tsv_value(
+                            assignment.get(
+                                "surfaceRmsToNominalHeldOutRmsRatio"
+                            )
+                        ),
+                        _tsv_value(comparison.get("commonCells")),
+                        _tsv_value(comparison.get("commonCellFraction")),
+                    ])
 
 
 def _plot_scan_summary(
@@ -511,6 +924,232 @@ def _plot_scan_summary(
     plt.close(fig)
 
 
+def _plot_fixed_model_stability(
+    report: dict[str, object], output_path: Path,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    successful = [
+        variation for variation in report["variations"]
+        if variation["status"] == "completed"
+    ]
+    regions = report["fixedModelStability"]
+    models = list(report["models"])
+    if not successful or not regions or not models:
+        return
+    variation_names = [variation["name"] for variation in successful]
+    variation_labels: list[str] = []
+    for variation in successful:
+        if variation["axis"] == "nominal":
+            variation_labels.append("nominal")
+        elif variation["axis"] == "missingEnergyMaxGeV":
+            variation_labels.append(f"E_miss < {float(variation['value']):.2f}")
+        elif variation["axis"] == "thetaMinDeg":
+            variation_labels.append(f"theta >= {float(variation['value']):.2f}")
+        else:
+            variation_labels.append(f"cell target {int(variation['value'])}")
+    region_labels = [
+        f"s{region['sector']}" if region["sector"] else region["region"]
+        for region in regions
+    ]
+    shape = (len(successful), len(regions))
+    values_by_model: dict[str, np.ndarray] = {}
+    eligible_by_model: dict[str, np.ndarray] = {}
+    for model in models:
+        values = np.full(shape, np.nan)
+        eligible = np.zeros(shape, dtype=bool)
+        for column, region in enumerate(regions):
+            diagnostics = next(
+                (entry for entry in region["models"] if entry["model"] == model),
+                None,
+            )
+            if diagnostics is None:
+                continue
+            by_variation = {
+                assignment["variation"]: assignment
+                for assignment in diagnostics["assignments"]
+            }
+            for row, name in enumerate(variation_names):
+                assignment = by_variation.get(name, {})
+                comparison = assignment.get(
+                    "surfaceComparisonToNominalSameModel"
+                )
+                if comparison is not None:
+                    values[row, column] = 100.0 * float(
+                        comparison["rmsDifference"]
+                    )
+                eligible[row, column] = bool(assignment.get("eligible", False))
+        values_by_model[model] = values
+        eligible_by_model[model] = eligible
+
+    finite_parts = [
+        values[np.isfinite(values)] for values in values_by_model.values()
+        if np.any(np.isfinite(values))
+    ]
+    finite = np.concatenate(finite_parts) if finite_parts else np.asarray([])
+    vmax = float(np.max(finite)) if finite.size else 1.0
+    if vmax <= 0.0:
+        vmax = 1.0
+    width = max(5.0 * len(models), 8.0)
+    height = max(5.2, 0.58 * len(successful) + 2.7)
+    fig, axes_value = plt.subplots(
+        1, len(models), figsize=(width, height), squeeze=False,
+    )
+    axes = list(axes_value[0])
+    image = None
+    for model_index, (axis, model) in enumerate(zip(axes, models)):
+        values = values_by_model[model]
+        eligible = eligible_by_model[model]
+        image = axis.imshow(
+            values, aspect="auto", cmap="magma", vmin=0.0, vmax=vmax,
+        )
+        axis.set_title(model)
+        axis.set_xticks(
+            np.arange(len(regions)), labels=region_labels,
+            rotation=35, ha="right",
+        )
+        axis.set_yticks(np.arange(len(successful)))
+        axis.set_yticklabels(variation_labels if model_index == 0 else [])
+        for row in range(shape[0]):
+            for column in range(shape[1]):
+                if not np.isfinite(values[row, column]):
+                    continue
+                suffix = "*" if not eligible[row, column] else ""
+                color = "white" if values[row, column] < 0.45 * vmax else "black"
+                axis.text(
+                    column, row, f"{values[row, column]:.3f}{suffix}",
+                    ha="center", va="center", fontsize=7, color=color,
+                )
+        if image is not None:
+            colorbar = fig.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
+            if model_index == len(models) - 1:
+                colorbar.set_label(
+                    "same-model surface RMS shift from nominal [%]"
+                )
+    save_plot(
+        fig, output_path,
+        f"{report['particle']} fixed-model systematic stability",
+        str(report["datasetTag"]), float(report["beamEnergyGeV"]),
+        tight_layout=True,
+    )
+    plt.close(fig)
+
+
+def _finalize_systematic_scan(
+    *,
+    records: list[dict[str, object]],
+    variations: list[ScanVariation],
+    nominal_parameters: dict[str, object],
+    particle: str,
+    dataset_tag: str,
+    beam_energy: float,
+    torus: int,
+    models: list[str],
+    output_dir: Path,
+    make_summary_plots: bool,
+) -> dict[str, object]:
+    report = build_systematic_report(
+        records=records,
+        variations=variations,
+        nominal_parameters=nominal_parameters,
+        particle=particle,
+        dataset_tag=dataset_tag,
+        beam_energy=beam_energy,
+        torus=torus,
+        models=models,
+    )
+    nominal_record = next(
+        record for record in records if record["variation"].name == "nominal"
+    )
+    robust_parameters = _build_robust_parameters(
+        nominal_record.get("modelParameters", {}),
+        report["conservativeRecommendation"],
+        dataset_tag,
+    )
+    if robust_parameters is not None:
+        filename = "recommended_robust_parameters.json"
+        _write_json(output_dir / filename, robust_parameters)
+        report["conservativeRecommendation"]["parameterFile"] = filename
+    _write_json(output_dir / "systematic_scan_report.json", report)
+    _write_tsv(output_dir / "systematic_scan_summary.tsv", report)
+    _write_fixed_model_tsv(
+        output_dir / "fixed_model_systematics.tsv", report
+    )
+    if make_summary_plots:
+        _plot_scan_summary(report, output_dir / "systematic_scan_summary.png")
+        _plot_fixed_model_stability(
+            report, output_dir / "fixed_model_surface_stability.png"
+        )
+    return report
+
+
+def rebuild_existing_systematic_scan(
+    *,
+    output_dir: Path,
+    variations: list[ScanVariation],
+    particle: str,
+    dataset_tag: str,
+    beam_energy: float,
+    torus: int,
+    models: list[str],
+    make_summary_plots: bool = True,
+) -> dict[str, object]:
+    if not variations or variations[0].name != "nominal":
+        raise ValueError("systematic scan must begin with the nominal variation")
+    records: list[dict[str, object]] = []
+    nominal_parameters: dict[str, object] | None = None
+    for variation in variations:
+        variation_dir = output_dir / variation.name
+        report_path = variation_dir / "run_validation_report.json"
+        if not report_path.is_file():
+            if variation.name == "nominal":
+                raise ValueError(
+                    f"nominal validation report is unavailable: {report_path}"
+                )
+            records.append({
+                "variation": variation,
+                "status": "failed",
+                "reason": f"existing validation report is unavailable: {report_path}",
+            })
+            continue
+        report = _read_json(report_path)
+        parameter_file = report.get("recommendation", {}).get("parameterFile")
+        parameters = None
+        if parameter_file:
+            path = variation_dir / str(parameter_file)
+            if path.is_file():
+                parameters = _read_json(path)
+        if variation.name == "nominal":
+            if parameters is None:
+                raise ValueError(
+                    "nominal variation has no recommended mixed parameter file"
+                )
+            nominal_parameters = parameters
+        records.append({
+            "variation": variation,
+            "status": "completed",
+            "report": report,
+            "parameters": parameters,
+            "modelParameters": _load_model_parameters(
+                variation_dir, report, models
+            ),
+        })
+    if nominal_parameters is None:
+        raise ValueError("nominal systematic-scan parameters are unavailable")
+    return _finalize_systematic_scan(
+        records=records,
+        variations=variations,
+        nominal_parameters=nominal_parameters,
+        particle=particle,
+        dataset_tag=dataset_tag,
+        beam_energy=beam_energy,
+        torus=torus,
+        models=models,
+        output_dir=output_dir,
+        make_summary_plots=make_summary_plots,
+    )
+
+
 def run_systematic_scan(
     arrays: dict[str, np.ndarray],
     cfg: ElasticFitConfig,
@@ -587,6 +1226,9 @@ def run_systematic_scan(
             "status": "completed",
             "report": result,
             "parameters": parameters,
+            "modelParameters": _load_model_parameters(
+                variation_dir, result, models
+            ),
         })
         print(
             f"[SCAN] {variation.name} completed: "
@@ -597,7 +1239,7 @@ def run_systematic_scan(
 
     if nominal_parameters is None:
         raise ValueError("nominal systematic-scan parameters are unavailable")
-    report = build_systematic_report(
+    return _finalize_systematic_scan(
         records=records,
         variations=variations,
         nominal_parameters=nominal_parameters,
@@ -606,12 +1248,9 @@ def run_systematic_scan(
         beam_energy=cfg.beam_energy,
         torus=cfg.torus,
         models=models,
+        output_dir=output_dir,
+        make_summary_plots=make_summary_plots,
     )
-    _write_json(output_dir / "systematic_scan_report.json", report)
-    _write_tsv(output_dir / "systematic_scan_summary.tsv", report)
-    if make_summary_plots:
-        _plot_scan_summary(report, output_dir / "systematic_scan_summary.png")
-    return report
 
 
 def parse_args() -> argparse.Namespace:
@@ -621,7 +1260,7 @@ def parse_args() -> argparse.Namespace:
             "using a common nominal run partition and one aggregate report."
         )
     )
-    parser.add_argument("input_files", nargs="+", type=Path)
+    parser.add_argument("input_files", nargs="*", type=Path)
     parser.add_argument("--tree", default="sEvents")
     parser.add_argument("--beam-energy", type=float, required=True)
     parser.add_argument("--torus", type=int, choices=(-1, 1), required=True)
@@ -654,6 +1293,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--variation-plots", action="store_true")
     parser.add_argument("--no-summary-plots", action="store_true")
+    parser.add_argument(
+        "--rebuild-existing-report", action="store_true",
+        help=(
+            "rebuild aggregate diagnostics from existing variation reports and "
+            "pooled parameter files without reading candidate ROOT files"
+        ),
+    )
     parser.add_argument("--coplanarity-max-deg", type=float, default=3.0)
     parser.add_argument("--theta-balance-max-deg", type=float, default=2.0)
     parser.add_argument("--missing-energy-max-gev", type=float, default=0.75)
@@ -695,13 +1341,6 @@ def main() -> None:
         raise ValueError("minimum per-run core entries must be at least two")
     if not 0.0 <= args.minimum_model_improvement_fraction < 1.0:
         raise ValueError("minimum model improvement fraction must be in [0, 1)")
-    parts = [load_elastic_arrays(path, args.tree, None) for path in args.input_files]
-    arrays = concatenate_arrays(parts)
-    if args.max_rows is not None:
-        arrays = subset_arrays(
-            arrays,
-            np.arange(next(iter(arrays.values())).size) < args.max_rows,
-        )
     cfg = ElasticFitConfig(
         beam_energy=args.beam_energy,
         torus=args.torus,
@@ -736,29 +1375,58 @@ def main() -> None:
         theta_min_values=args.theta_min_scan_deg,
         target_cell_entry_values=args.target_cell_entries_scan,
     )
-    report = run_systematic_scan(
-        arrays,
-        cfg,
-        particle=args.particle,
-        models=args.models,
-        block_target=args.block_target_selected,
-        output_dir=args.output_dir,
-        dataset_tag=args.dataset_tag,
-        variations=variations,
-        minimum_per_run_core_entries=args.min_per_run_core_entries,
-        minimum_model_improvement_fraction=(
-            args.minimum_model_improvement_fraction
-        ),
-        make_summary_plots=not args.no_summary_plots,
-        make_variation_plots=args.variation_plots,
-    )
-    print(f"Wrote systematic scan to {args.output_dir}")
+    if args.rebuild_existing_report:
+        report = rebuild_existing_systematic_scan(
+            output_dir=args.output_dir,
+            variations=variations,
+            particle=args.particle,
+            dataset_tag=args.dataset_tag,
+            beam_energy=args.beam_energy,
+            torus=args.torus,
+            models=args.models,
+            make_summary_plots=not args.no_summary_plots,
+        )
+        print(f"Rebuilt systematic report in {args.output_dir}")
+    else:
+        if not args.input_files:
+            raise ValueError(
+                "at least one candidate ROOT input is required unless "
+                "--rebuild-existing-report is used"
+            )
+        parts = [
+            load_elastic_arrays(path, args.tree, None)
+            for path in args.input_files
+        ]
+        arrays = concatenate_arrays(parts)
+        if args.max_rows is not None:
+            arrays = subset_arrays(
+                arrays,
+                np.arange(next(iter(arrays.values())).size) < args.max_rows,
+            )
+        report = run_systematic_scan(
+            arrays,
+            cfg,
+            particle=args.particle,
+            models=args.models,
+            block_target=args.block_target_selected,
+            output_dir=args.output_dir,
+            dataset_tag=args.dataset_tag,
+            variations=variations,
+            minimum_per_run_core_entries=args.min_per_run_core_entries,
+            minimum_model_improvement_fraction=(
+                args.minimum_model_improvement_fraction
+            ),
+            make_summary_plots=not args.no_summary_plots,
+            make_variation_plots=args.variation_plots,
+        )
+        print(f"Wrote systematic scan to {args.output_dir}")
     print(report["status"])
-    for region in report["regionStability"]:
-        observed = ", ".join(region["modelsObserved"]) or "none"
+    for region in report["conservativeRecommendation"]["regions"]:
+        observed = ", ".join(region["modelsObservedSameDomain"]) or "none"
         print(
-            f"  {region['region']}: nominal={region['nominalModel']}; "
-            f"observed={observed}; stable={region['stableModelAssignment']}"
+            f"  {region['region']}: conservative={region['model']}; "
+            f"same-domain observed={observed}; "
+            f"domain-sensitive={region['domainSensitive']}"
         )
 
 
