@@ -138,6 +138,39 @@ def make_run_blocks(
     ]
 
 
+def make_fixed_run_blocks(
+    run_numbers: np.ndarray,
+    run_groups: Iterable[Iterable[int]],
+) -> list[RunBlock]:
+    """Reuse an existing run partition while updating selected-event counts."""
+    groups = [tuple(int(run) for run in group) for group in run_groups]
+    if len(groups) < 2 or any(not group for group in groups):
+        raise ValueError("fixed run partition requires at least two nonempty blocks")
+    flattened = [run for group in groups for run in group]
+    if len(flattened) != len(set(flattened)):
+        raise ValueError("fixed run partition contains a run in more than one block")
+    selected_runs = set(int(run) for run in np.unique(run_numbers))
+    uncovered = sorted(selected_runs - set(flattened))
+    if uncovered:
+        preview = ", ".join(str(run) for run in uncovered[:8])
+        suffix = "..." if len(uncovered) > 8 else ""
+        raise ValueError(
+            f"fixed run partition does not cover selected runs: {preview}{suffix}"
+        )
+    run_array = np.asarray(run_numbers, dtype=int)
+    blocks = [
+        RunBlock(
+            index=index,
+            runs=group,
+            selected_candidates=int(np.count_nonzero(np.isin(run_array, group))),
+        )
+        for index, group in enumerate(groups)
+    ]
+    if any(block.selected_candidates == 0 for block in blocks):
+        raise ValueError("fixed run partition produced an empty selected-event block")
+    return blocks
+
+
 def _model_config(cfg: ElasticFitConfig, model: str) -> ElasticFitConfig:
     theta_order, phi_order, harmonics = MODEL_ORDERS[model]
     return replace(
@@ -973,6 +1006,7 @@ def run_validation(
     make_plots: bool = True,
     minimum_per_run_core_entries: int = 200,
     minimum_model_improvement_fraction: float = 0.10,
+    run_groups: Iterable[Iterable[int]] | None = None,
 ) -> dict[str, object]:
     if not 0.0 <= minimum_model_improvement_fraction < 1.0:
         raise ValueError("minimum model improvement fraction must be in [0, 1)")
@@ -1001,7 +1035,11 @@ def run_validation(
         }
         if np.any(proton_detector == 2):
             expected_region_keys.add((2212, 2, 0))
-    blocks = make_run_blocks(selected["runNum"], block_target)
+    blocks = (
+        make_fixed_run_blocks(selected["runNum"], run_groups)
+        if run_groups is not None
+        else make_run_blocks(selected["runNum"], block_target)
+    )
     if len(blocks) < 2:
         raise ValueError("multi-run validation requires at least two run blocks")
     raw_runs = np.asarray(arrays["runNum"], dtype=int)
@@ -1017,6 +1055,10 @@ def run_validation(
         "beamEnergyGeV": cfg.beam_energy,
         "torus": cfg.torus,
         "selection": selection,
+        "runBlockDefinition": (
+            "fixed-from-nominal-systematic-scan"
+            if run_groups is not None else "selected-candidate-target"
+        ),
         "runBlocks": [block.to_json() for block in blocks],
         "models": {},
     }

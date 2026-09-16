@@ -348,6 +348,15 @@ each detector region. The output is a diagnostic: inspect run epochs, both
 held-out directions, and selection variations before promoting any pooled or
 mixed parameter file.
 
+Once the model family is fixed, use
+`scripts/scan_elastic_momentum_systematics.py` for the missing-energy,
+lower-theta, and adaptive-cell-occupancy variations. It performs a
+one-at-a-time scan, loads the candidate tree once, and preserves the nominal
+run-block membership in every variation. Its aggregate JSON, TSV, and PNG
+summaries compare both the selected model and the fitted surface displacement
+in each detector region. The nominal mixed file remains a candidate pending
+review of those systematic changes.
+
 ### Data sampling-fraction parameters
 
 Use the full representative Fall 2018 electron skims for each polarity. QADB,

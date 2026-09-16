@@ -16,6 +16,7 @@ from scripts.calibration.elastic_momentum import (
 from scripts.calibration.elastic_run_validation import (
     MODEL_ORDERS,
     _choose_region_models,
+    make_fixed_run_blocks,
     make_run_blocks,
     run_validation,
 )
@@ -106,6 +107,16 @@ class ElasticRunValidationTests(unittest.TestCase):
         runs = np.repeat([5423, 5424], [150, 250])
         blocks = make_run_blocks(runs, 1_000)
         self.assertEqual([block.runs for block in blocks], [(5423,), (5424,)])
+
+    def test_fixed_run_blocks_preserve_partition_and_update_counts(self) -> None:
+        runs = np.asarray([5423, 5423, 5424, 5425, 5425, 5425])
+        blocks = make_fixed_run_blocks(runs, [(5423, 5424), (5425,)])
+        self.assertEqual([block.runs for block in blocks], [(5423, 5424), (5425,)])
+        self.assertEqual([block.selected_candidates for block in blocks], [3, 3])
+
+    def test_fixed_run_blocks_reject_uncovered_selected_runs(self) -> None:
+        with self.assertRaisesRegex(ValueError, "does not cover selected runs"):
+            make_fixed_run_blocks(np.asarray([5423, 5424]), [(5423,), (5425,)])
 
     def test_pooled_models_are_evaluated_on_held_out_runs(self) -> None:
         rng = np.random.default_rng(101)

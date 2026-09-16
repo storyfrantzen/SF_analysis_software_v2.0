@@ -412,6 +412,46 @@ quadratic-theta/linear-phi form; the validator does not treat elastic data at a
 single beam energy as evidence that additive and fractional momentum scaling
 are interchangeable.
 
+After fixing the candidate model family, run the one-at-a-time systematic scan
+instead of launching independent validators by hand:
+
+```bash
+python3 scripts/scan_elastic_momentum_systematics.py \
+  10.604_rga_fa18_torus+1_elastic_candidates_run_spanning_5f.root \
+  --beam-energy 10.604 --torus 1 --particle electron \
+  --theta-min-deg 6.1 --missing-energy-max-gev 0.75 \
+  --profile-binning adaptive \
+  --theta-bins 10 --max-theta-bin-width-deg 0.75 \
+  --phi-bins 7 --target-cell-entries 2000 --min-bin-entries 300 \
+  --block-target-selected 100000 \
+  --models constant theta-linear theta-phi \
+  --minimum-model-improvement-fraction 0.10 \
+  --max-condition-number 100 --max-abs-surface-correction 0.05 \
+  --missing-energy-scan-gev 0.50 0.75 1.00 \
+  --theta-min-scan-deg 6.10 6.50 \
+  --target-cell-entries-scan 1500 2000 3000 \
+  --output-dir calibration_plots/momentum/rga_fa18_torus+1_systematics \
+  --dataset-tag 10.604RGA_FA18_torus+1_systematics
+```
+
+The scan loads the candidate tree once and varies one setting at a time around
+the nominal configuration. It defines the run blocks from the nominal sample
+and reuses the same run membership in every variation, preventing changing
+fold boundaries from masquerading as a selection effect. Individual variation
+plots are omitted by default; add `--variation-plots` only when they are needed.
+The aggregate outputs are:
+
+- `systematic_scan_report.json`, containing every sector's model assignment,
+  held-out RMS, and fitted-surface displacement from nominal;
+- `systematic_scan_summary.tsv`, a flat table suitable for quick inspection;
+- `systematic_scan_summary.png`, a model/RMS/surface-shift overview;
+- one subdirectory per variation containing its full validation JSON and
+  candidate parameter files.
+
+This remains a diagnostic scan. A stable model label is not sufficient by
+itself: inspect the surface RMS changes and held-out behavior before promoting
+the nominal mixed parameter file.
+
 For RGK 6.535 GeV, derive a candidate sample and parameters with:
 
 ```bash
