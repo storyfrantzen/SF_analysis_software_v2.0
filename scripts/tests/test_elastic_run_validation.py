@@ -14,12 +14,87 @@ from scripts.calibration.elastic_momentum import (
     elastic_proton_theta_from_electron,
 )
 from scripts.calibration.elastic_run_validation import (
+    MODEL_ORDERS,
+    _choose_region_models,
     make_run_blocks,
     run_validation,
 )
 
 
 class ElasticRunValidationTests(unittest.TestCase):
+    @staticmethod
+    def _region_summary(
+        sector: int, score: float, fold_a: float, fold_b: float,
+        surface_rms: float = 0.01,
+    ) -> dict[str, object]:
+        return {
+            "pid": 11,
+            "detector": 1,
+            "sector": sector,
+            "region": f"pid11_det1_sector{sector}",
+            "medianCellCenterRmsAfter": score,
+            "completeHeldOutBlockCoverage": True,
+            "heldoutFolds": {
+                "A": {"medianCellCenterRmsAfter": fold_a},
+                "B": {"medianCellCenterRmsAfter": fold_b},
+            },
+            "foldSurfaceAgreement": {
+                "commonPooledCellCenters": 20,
+                "rms": surface_rms,
+                "medianAbs": 0.5 * surface_rms,
+                "maxAbs": 2.0 * surface_rms,
+            },
+        }
+
+    def test_quadratic_theta_phi_model_matches_six_term_fd_surface(self) -> None:
+        self.assertEqual(MODEL_ORDERS["theta2-phi"], (2, 1, 1))
+
+    def test_models_are_selected_independently_by_sector(self) -> None:
+        key1 = (11, 1, 1)
+        key2 = (11, 1, 2)
+        summaries = {
+            "constant": {
+                key1: self._region_summary(1, 0.120, 0.125, 0.115),
+                key2: self._region_summary(2, 0.120, 0.125, 0.115),
+            },
+            "theta-linear": {
+                key1: self._region_summary(1, 0.090, 0.092, 0.088),
+                key2: self._region_summary(2, 0.112, 0.114, 0.110),
+            },
+            "theta-phi": {
+                key1: self._region_summary(1, 0.085, 0.086, 0.084),
+                key2: self._region_summary(2, 0.085, 0.087, 0.083),
+            },
+            "theta2-phi": {
+                key1: self._region_summary(1, 0.083, 0.084, 0.082),
+                key2: self._region_summary(2, 0.082, 0.084, 0.080),
+            },
+        }
+        recommendation = _choose_region_models(summaries, 0.10)
+        chosen = {
+            entry["sector"]: entry["model"]
+            for entry in recommendation["regions"]
+        }
+        self.assertEqual(recommendation["model"], "mixed")
+        self.assertEqual(chosen[1], "theta-linear")
+        self.assertEqual(chosen[2], "theta-phi")
+
+    def test_complex_model_must_improve_both_held_out_folds(self) -> None:
+        key = (11, 1, 1)
+        summaries = {
+            "theta-linear": {
+                key: self._region_summary(1, 0.100, 0.090, 0.110),
+            },
+            "theta-phi": {
+                key: self._region_summary(1, 0.080, 0.095, 0.070),
+            },
+        }
+        recommendation = _choose_region_models(summaries, 0.10)
+        self.assertEqual(recommendation["model"], "theta-linear")
+        comparison = recommendation["regions"][0]["selectionTrace"][0]
+        self.assertFalse(comparison["improvesEveryHeldOutFold"])
+        self.assertFalse(comparison["selected"])
+
     def test_run_blocks_are_contiguous_and_keep_small_tail(self) -> None:
         runs = np.repeat([100, 101, 102, 103], [40, 70, 20, 10])
         blocks = make_run_blocks(runs, 60)
@@ -74,14 +149,17 @@ class ElasticRunValidationTests(unittest.TestCase):
         }
         cfg = ElasticFitConfig(
             beam_energy=beam_energy, torus=1, theta_min_deg=6.1,
-            theta_bins=2, phi_bins=2, profile_binning="fixed",
+            theta_bins=3, phi_bins=4, profile_binning="fixed",
             min_bin_entries=20, min_region_entries=100,
             max_condition_number=100.0,
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             report = run_validation(
                 arrays, cfg, particle="electron",
-                models=["constant", "theta-linear"], block_target=1_000,
+                models=[
+                    "constant", "theta-linear", "theta-phi", "theta2-phi"
+                ],
+                block_target=1_000,
                 output_dir=Path(temporary_directory), dataset_tag="synthetic",
                 make_plots=False, minimum_per_run_core_entries=50,
             )
@@ -92,9 +170,17 @@ class ElasticRunValidationTests(unittest.TestCase):
             self.assertGreater(
                 report["modelComparison"]["constant"]["validatedCells"], 0
             )
+            self.assertEqual(
+                report["models"]["theta2-phi"]["orders"]["theta"], 2
+            )
             self.assertTrue(report["perRunRegionStability"])
             self.assertTrue(
                 (Path(temporary_directory) / "run_validation_report.json").is_file()
+            )
+            self.assertEqual(len(report["recommendation"]["regions"]), 6)
+            self.assertTrue(
+                (Path(temporary_directory) / "recommended_mixed_parameters.json")
+                .is_file()
             )
 
     def test_unavailable_pooled_models_are_recorded_without_crashing(self) -> None:

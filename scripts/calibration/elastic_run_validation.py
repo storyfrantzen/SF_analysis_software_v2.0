@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -30,6 +31,14 @@ MODEL_ORDERS = {
     "constant": (0, 0, 0),
     "theta-linear": (1, 0, 0),
     "theta-phi": (1, 1, 1),
+    "theta2-phi": (2, 1, 1),
+}
+
+MODEL_COMPLEXITY = {
+    "constant": 1,
+    "theta-linear": 2,
+    "theta-phi": 4,
+    "theta2-phi": 6,
 }
 
 
@@ -541,33 +550,415 @@ def _plot_common_cell_heatmaps(
         plt.close(fig)
 
 
-def _choose_model(model_summaries: dict[str, dict[str, object]]) -> dict[str, object]:
-    complexity = {"constant": 1, "theta-linear": 2, "theta-phi": 4}
-    eligible = [
-        name for name, summary in model_summaries.items()
-        if summary.get("medianCellCenterRmsAfter") is not None
-        and summary.get("completeFoldRegionCoverage", False)
-    ]
-    if not eligible:
-        return {
-            "model": None,
-            "status": "no model completed both held-out folds in every detector region",
-        }
-    eligible.sort(key=lambda name: complexity[name])
-    chosen = eligible[0]
-    for candidate in eligible[1:]:
-        chosen_score = float(model_summaries[chosen]["medianCellCenterRmsAfter"])
-        candidate_score = float(model_summaries[candidate]["medianCellCenterRmsAfter"])
-        if candidate_score < 0.90 * chosen_score:
-            chosen = candidate
+def _region_key(region: dict[str, object]) -> tuple[int, int, int]:
+    return (
+        int(region["pid"]),
+        int(region["detector"]),
+        int(region["sector"]),
+    )
+
+
+def _region_label(key: tuple[int, int, int]) -> str:
+    pid, detector, sector = key
+    suffix = f"sector{sector}" if sector else "all_phi"
+    return f"pid{pid}_det{detector}_{suffix}"
+
+
+def _correction_region_map(
+    correction: dict[str, object],
+) -> dict[tuple[int, int, int], dict[str, object]]:
     return {
-        "model": chosen,
-        "status": (
-            "diagnostic recommendation only; the more complex model is selected "
-            "only when its median held-out cell RMS is at least 10% smaller"
-        ),
-        "medianHeldOutCellRms": model_summaries[chosen]["medianCellCenterRmsAfter"],
+        _region_key(region): region
+        for region in correction.get("regions", [])
     }
+
+
+def _fold_surface_agreement(
+    pooled: dict[str, object],
+    fold_corrections: dict[int, dict[str, object]],
+) -> dict[tuple[int, int, int], dict[str, object]]:
+    if set(fold_corrections) != {0, 1}:
+        return {}
+    fold_a = _correction_region_map(fold_corrections[0])
+    fold_b = _correction_region_map(fold_corrections[1])
+    results: dict[tuple[int, int, int], dict[str, object]] = {}
+    for pooled_region in pooled.get("regions", []):
+        key = _region_key(pooled_region)
+        if key not in fold_a or key not in fold_b:
+            continue
+        cells = pooled_region["fit"]["acceptedProfileCells"]
+        if not cells:
+            continue
+        theta = np.asarray([cell["thetaMeanDeg"] for cell in cells], dtype=float)
+        phi = np.asarray([cell["phiMeanDeg"] for cell in cells], dtype=float)
+        common_support = (
+            region_support_mask(fold_a[key], theta, phi)
+            & region_support_mask(fold_b[key], theta, phi)
+        )
+        if not np.any(common_support):
+            continue
+        difference = (
+            evaluate_region(fold_a[key], theta[common_support], phi[common_support])
+            - evaluate_region(fold_b[key], theta[common_support], phi[common_support])
+        )
+        results[key] = {
+            "commonPooledCellCenters": int(np.count_nonzero(common_support)),
+            "rms": float(np.sqrt(np.mean(np.square(difference)))),
+            "medianAbs": float(np.median(np.abs(difference))),
+            "maxAbs": float(np.max(np.abs(difference))),
+        }
+    return results
+
+
+def _region_validation_summaries(
+    rows: list[dict[str, object]],
+    blocks: list[RunBlock],
+    surface_agreement: dict[tuple[int, int, int], dict[str, object]],
+    expected_region_keys: Iterable[tuple[int, int, int]] = (),
+) -> dict[tuple[int, int, int], dict[str, object]]:
+    expected_blocks = {block.index for block in blocks}
+    keys = sorted(
+        {_region_key(row) for row in rows}
+        | set(surface_agreement)
+        | set(expected_region_keys)
+    )
+    results: dict[tuple[int, int, int], dict[str, object]] = {}
+    for key in keys:
+        region_rows = [row for row in rows if _region_key(row) == key]
+        summary = _aggregate_validation(region_rows)
+        fold_summaries = {
+            fold: _aggregate_validation([
+                row for row in region_rows if row["fold"] == fold
+            ])
+            for fold in ("A", "B")
+        }
+        valid_blocks = {
+            int(row["block"])
+            for row in region_rows
+            if row["cellCenterRmsAfter"] is not None and row["after"] is not None
+        }
+        agreement = surface_agreement.get(key)
+        after_rms = summary["medianCellCenterRmsAfter"]
+        agreement_ratio = None
+        if agreement is not None and after_rms is not None and float(after_rms) > 0.0:
+            agreement_ratio = float(agreement["rms"]) / float(after_rms)
+        pid, detector, sector = key
+        summary.update({
+            "pid": pid,
+            "detector": detector,
+            "sector": sector,
+            "region": _region_label(key),
+            "completeHeldOutBlockCoverage": valid_blocks == expected_blocks,
+            "heldoutFolds": fold_summaries,
+            "foldSurfaceAgreement": agreement,
+            "foldSurfaceAgreementToHeldOutRmsRatio": agreement_ratio,
+        })
+        results[key] = summary
+    return results
+
+
+def _eligible_region_model(summary: dict[str, object]) -> bool:
+    score = summary.get("medianCellCenterRmsAfter")
+    agreement = summary.get("foldSurfaceAgreement")
+    if (
+        score is None
+        or not summary.get("completeHeldOutBlockCoverage", False)
+        or agreement is None
+    ):
+        return False
+    fold_summaries = summary.get("heldoutFolds", {})
+    if any(
+        fold_summaries.get(fold, {}).get("medianCellCenterRmsAfter") is None
+        for fold in ("A", "B")
+    ):
+        return False
+    return float(agreement["rms"]) <= float(score)
+
+
+def _choose_region_models(
+    region_summaries_by_model: dict[
+        str, dict[tuple[int, int, int], dict[str, object]]
+    ],
+    minimum_relative_improvement: float,
+) -> dict[str, object]:
+    keys = sorted({
+        key
+        for summaries in region_summaries_by_model.values()
+        for key in summaries
+    })
+    region_recommendations: list[dict[str, object]] = []
+    for key in keys:
+        eligible = sorted(
+            [
+                model for model, summaries in region_summaries_by_model.items()
+                if key in summaries and _eligible_region_model(summaries[key])
+            ],
+            key=lambda model: MODEL_COMPLEXITY[model],
+        )
+        pid, detector, sector = key
+        if not eligible:
+            region_recommendations.append({
+                "pid": pid,
+                "detector": detector,
+                "sector": sector,
+                "region": _region_label(key),
+                "model": None,
+                "eligibleModels": [],
+                "status": (
+                    "no model completed every held-out block with fold-to-fold "
+                    "surface RMS below its held-out cell RMS"
+                ),
+                "selectionTrace": [],
+            })
+            continue
+
+        chosen = eligible[0]
+        trace: list[dict[str, object]] = []
+        for candidate in eligible[1:]:
+            baseline_summary = region_summaries_by_model[chosen][key]
+            candidate_summary = region_summaries_by_model[candidate][key]
+            baseline_score = float(
+                baseline_summary["medianCellCenterRmsAfter"]
+            )
+            candidate_score = float(
+                candidate_summary["medianCellCenterRmsAfter"]
+            )
+            relative_improvement = (
+                (baseline_score - candidate_score) / baseline_score
+                if baseline_score > 0.0 else None
+            )
+            fold_improvements: dict[str, float | None] = {}
+            improves_every_fold = True
+            for fold in ("A", "B"):
+                baseline_fold = float(
+                    baseline_summary["heldoutFolds"][fold][
+                        "medianCellCenterRmsAfter"
+                    ]
+                )
+                candidate_fold = float(
+                    candidate_summary["heldoutFolds"][fold][
+                        "medianCellCenterRmsAfter"
+                    ]
+                )
+                improvement = (
+                    (baseline_fold - candidate_fold) / baseline_fold
+                    if baseline_fold > 0.0 else None
+                )
+                fold_improvements[fold] = improvement
+                improves_every_fold &= candidate_fold < baseline_fold
+            passes_margin = (
+                relative_improvement is not None
+                and relative_improvement >= minimum_relative_improvement
+            )
+            selected = improves_every_fold and passes_margin
+            trace.append({
+                "baseline": chosen,
+                "candidate": candidate,
+                "baselineMedianHeldOutCellRms": baseline_score,
+                "candidateMedianHeldOutCellRms": candidate_score,
+                "relativeImprovement": relative_improvement,
+                "relativeImprovementByHeldOutFold": fold_improvements,
+                "improvesEveryHeldOutFold": improves_every_fold,
+                "passesMinimumRelativeImprovement": passes_margin,
+                "selected": selected,
+            })
+            if selected:
+                chosen = candidate
+
+        chosen_summary = region_summaries_by_model[chosen][key]
+        region_recommendations.append({
+            "pid": pid,
+            "detector": detector,
+            "sector": sector,
+            "region": _region_label(key),
+            "model": chosen,
+            "eligibleModels": eligible,
+            "status": "diagnostic recommendation pending systematic variations",
+            "medianHeldOutCellRms": chosen_summary["medianCellCenterRmsAfter"],
+            "heldoutFoldCellRms": {
+                fold: chosen_summary["heldoutFolds"][fold][
+                    "medianCellCenterRmsAfter"
+                ]
+                for fold in ("A", "B")
+            },
+            "foldSurfaceAgreement": chosen_summary["foldSurfaceAgreement"],
+            "selectionTrace": trace,
+        })
+
+    selected_models = {
+        entry["model"] for entry in region_recommendations
+        if entry["model"] is not None
+    }
+    complete = bool(region_recommendations) and all(
+        entry["model"] is not None for entry in region_recommendations
+    )
+    if not complete:
+        overall_model = None
+        status = "one or more detector regions have no validated model"
+    elif len(selected_models) == 1:
+        overall_model = next(iter(selected_models))
+        status = "one independently selected model is recommended in every region"
+    else:
+        overall_model = "mixed"
+        status = "model complexity is selected independently in each detector region"
+    return {
+        "model": overall_model,
+        "status": status,
+        "minimumRelativeImprovementFraction": minimum_relative_improvement,
+        "requiresImprovementInEveryHeldOutFold": True,
+        "requiresFoldSurfaceRmsBelowHeldOutCellRms": True,
+        "systematicReviewRequired": True,
+        "regions": region_recommendations,
+    }
+
+
+def _build_mixed_parameters(
+    pooled_by_model: dict[str, dict[str, object]],
+    recommendation: dict[str, object],
+    dataset_tag: str,
+    raw_runs: np.ndarray,
+) -> dict[str, object] | None:
+    assignments = recommendation.get("regions", [])
+    if not assignments or any(entry.get("model") is None for entry in assignments):
+        return None
+    first_model = str(assignments[0]["model"])
+    if first_model not in pooled_by_model:
+        return None
+    mixed = copy.deepcopy(pooled_by_model[first_model])
+    mixed["datasetTag"] = f"{dataset_tag}_recommended_mixed"
+    mixed["calibrationRole"] = "pooledMixedCandidatePendingSystematicReview"
+    mixed["runCoverage"] = sorted(int(value) for value in np.unique(raw_runs))
+    mixed["regions"] = []
+    mixed["skippedRegions"] = []
+    fit_configuration = copy.deepcopy(mixed.get("fitConfiguration", {}))
+    for field in ("thetaOrder", "fdPhiOrder", "cdFourierHarmonics"):
+        fit_configuration.pop(field, None)
+    fit_configuration["regionSpecificModelOrders"] = True
+    mixed["fitConfiguration"] = fit_configuration
+    mixed["modelSelection"] = {
+        "strategy": (
+            "sector-specific nested held-out selection with improvement required "
+            "in both folds"
+        ),
+        "minimumRelativeImprovementFraction": recommendation[
+            "minimumRelativeImprovementFraction"
+        ],
+        "systematicReviewRequired": True,
+        "assignments": [
+            {
+                "pid": entry["pid"],
+                "detector": entry["detector"],
+                "sector": entry["sector"],
+                "model": entry["model"],
+            }
+            for entry in assignments
+        ],
+    }
+    region_maps = {
+        model: _correction_region_map(correction)
+        for model, correction in pooled_by_model.items()
+    }
+    for entry in assignments:
+        key = (
+            int(entry["pid"]),
+            int(entry["detector"]),
+            int(entry["sector"]),
+        )
+        model = str(entry["model"])
+        if model not in region_maps or key not in region_maps[model]:
+            return None
+        region = copy.deepcopy(region_maps[model][key])
+        region["validationModel"] = model
+        mixed["regions"].append(region)
+    mixed["regions"].sort(
+        key=lambda region: (
+            int(region["pid"]), int(region["detector"]), int(region["sector"])
+        )
+    )
+    return mixed
+
+
+def _plot_region_model_comparison(
+    region_summaries_by_model: dict[
+        str, dict[tuple[int, int, int], dict[str, object]]
+    ],
+    recommendation: dict[str, object],
+    output_path: Path,
+    particle: str,
+    dataset_tag: str,
+    beam_energy: float,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    keys = sorted({
+        key
+        for summaries in region_summaries_by_model.values()
+        for key in summaries
+    })
+    if not keys:
+        return
+    assignments = {
+        (int(entry["pid"]), int(entry["detector"]), int(entry["sector"])):
+        entry.get("model")
+        for entry in recommendation.get("regions", [])
+    }
+    models = sorted(region_summaries_by_model, key=lambda name: MODEL_COMPLEXITY[name])
+    columns = 3
+    rows_count = int(np.ceil(len(keys) / columns))
+    fig, axes = plt.subplots(
+        rows_count, columns, figsize=(5.2 * columns, 3.8 * rows_count)
+    )
+    flat_axes = list(np.atleast_1d(axes).flat)
+    x_values = np.arange(len(models))
+    for axis, key in zip(flat_axes, keys):
+        overall: list[float] = []
+        fold_a: list[float] = []
+        fold_b: list[float] = []
+        for model in models:
+            summary = region_summaries_by_model.get(model, {}).get(key, {})
+            overall.append(100.0 * float(summary["medianCellCenterRmsAfter"])
+                           if summary.get("medianCellCenterRmsAfter") is not None
+                           else np.nan)
+            heldout = summary.get("heldoutFolds", {})
+            fold_a.append(
+                100.0 * float(heldout["A"]["medianCellCenterRmsAfter"])
+                if heldout.get("A", {}).get("medianCellCenterRmsAfter") is not None
+                else np.nan
+            )
+            fold_b.append(
+                100.0 * float(heldout["B"]["medianCellCenterRmsAfter"])
+                if heldout.get("B", {}).get("medianCellCenterRmsAfter") is not None
+                else np.nan
+            )
+        axis.plot(x_values, overall, "o-", color="#21618c", label="combined")
+        axis.plot(x_values, fold_a, "^--", color="0.45", label="held-out A")
+        axis.plot(x_values, fold_b, "v--", color="#d95f02", label="held-out B")
+        selected = assignments.get(key)
+        if selected in models:
+            index = models.index(selected)
+            if np.isfinite(overall[index]):
+                axis.plot(
+                    index, overall[index], marker="*", color="black",
+                    markersize=12, linestyle="none", label="recommended",
+                )
+        axis.set_xticks(x_values, labels=models, rotation=20, ha="right")
+        axis.set_ylabel("held-out cell-center RMS [%]")
+        axis.set_title(_region_label(key))
+        axis.grid(axis="y", alpha=0.25)
+    for axis in flat_axes[len(keys):]:
+        axis.set_visible(False)
+    handles, labels = flat_axes[0].get_legend_handles_labels()
+    fig.legend(
+        handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.88),
+        ncol=min(4, len(labels)),
+    )
+    fig.subplots_adjust(hspace=0.65)
+    save_plot(
+        fig, output_path,
+        f"{particle} held-out model comparison by detector region",
+        dataset_tag, beam_energy, tight_layout=False,
+    )
+    plt.close(fig)
 
 
 def run_validation(
@@ -581,8 +972,14 @@ def run_validation(
     dataset_tag: str,
     make_plots: bool = True,
     minimum_per_run_core_entries: int = 200,
+    minimum_model_improvement_fraction: float = 0.10,
 ) -> dict[str, object]:
-    shared_phi_cells = 2 if "theta-phi" in models else 1
+    if not 0.0 <= minimum_model_improvement_fraction < 1.0:
+        raise ValueError("minimum model improvement fraction must be in [0, 1)")
+    shared_phi_cells = 2 if any(
+        MODEL_ORDERS[model][1] > 0 or MODEL_ORDERS[model][2] > 0
+        for model in models
+    ) else 1
     cfg = replace(
         cfg,
         min_phi_cells_per_theta=max(
@@ -592,6 +989,18 @@ def run_validation(
     selected, selection = select_elastic_events(arrays, cfg)
     if "runNum" not in selected:
         raise ValueError("candidate tree must contain runNum for multi-run validation")
+    if particle == "electron":
+        expected_region_keys = {(11, 1, sector) for sector in range(1, 7)}
+    else:
+        proton_detector = np.asarray(selected["protonDet"], dtype=int)
+        proton_sector = np.asarray(selected["protonSector"], dtype=int)
+        expected_region_keys = {
+            (2212, 1, int(sector))
+            for sector in np.unique(proton_sector[proton_detector == 1])
+            if 1 <= int(sector) <= 6
+        }
+        if np.any(proton_detector == 2):
+            expected_region_keys.add((2212, 2, 0))
     blocks = make_run_blocks(selected["runNum"], block_target)
     if len(blocks) < 2:
         raise ValueError("multi-run validation requires at least two run blocks")
@@ -602,7 +1011,7 @@ def run_validation(
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     report: dict[str, object] = {
-        "schema": "elastic_momentum_run_validation/v1",
+        "schema": "elastic_momentum_run_validation/v2",
         "datasetTag": dataset_tag,
         "particle": particle,
         "beamEnergyGeV": cfg.beam_energy,
@@ -621,8 +1030,10 @@ def run_validation(
             particle, dataset_tag, cfg.beam_energy,
         )
     model_summaries: dict[str, dict[str, object]] = {}
-    pooled_for_stability: dict[str, object] | None = None
-    pooled_stability_model: str | None = None
+    region_summaries_by_model: dict[
+        str, dict[tuple[int, int, int], dict[str, object]]
+    ] = {}
+    pooled_by_model: dict[str, dict[str, object]] = {}
     for model in models:
         model_cfg = _model_config(cfg, model)
         model_dir = output_dir / model
@@ -640,21 +1051,23 @@ def run_validation(
                 "completeFoldRegionCoverage": False,
                 "medianCellCenterRmsAfter": None,
             }
+            region_summaries_by_model[model] = _region_validation_summaries(
+                [], blocks, {}, expected_region_keys
+            )
             continue
         pooled["datasetTag"] = dataset_tag
         pooled["calibrationRole"] = "pooledCandidatePendingHeldOutReview"
         pooled["runCoverage"] = sorted(int(value) for value in np.unique(raw_runs))
+        pooled_by_model[model] = pooled
         _write_json(model_dir / "pooled_parameters.json", pooled)
         if make_plots:
             plot_diagnostics(
                 pooled_diagnostics, model_dir / "pooled_fit_plots",
                 f"{dataset_tag}_{model}_pooled", cfg.beam_energy,
             )
-        pooled_for_stability = pooled
-        pooled_stability_model = model
-
         validation_rows: list[dict[str, object]] = []
         fold_details: list[dict[str, object]] = []
+        fold_corrections: dict[int, dict[str, object]] = {}
         for training_fold in (0, 1):
             training_mask = np.isin(raw_runs, folds[training_fold])
             holdout_fold = 1 - training_fold
@@ -680,6 +1093,7 @@ def run_validation(
             )
             fold_correction["trainingRuns"] = list(folds[training_fold])
             fold_correction["holdoutRuns"] = list(folds[holdout_fold])
+            fold_corrections[training_fold] = fold_correction
             _write_json(
                 model_dir / f"train_{'A' if training_fold == 0 else 'B'}_parameters.json",
                 fold_correction,
@@ -710,6 +1124,12 @@ def run_validation(
             )
         aggregate["completeFoldRegionCoverage"] = complete
         model_summaries[model] = aggregate
+        surface_agreement = _fold_surface_agreement(pooled, fold_corrections)
+        region_summaries = _region_validation_summaries(
+            validation_rows, blocks, surface_agreement,
+            expected_region_keys,
+        )
+        region_summaries_by_model[model] = region_summaries
         model_report = {
             "orders": {
                 "theta": model_cfg.theta_order,
@@ -720,6 +1140,7 @@ def run_validation(
             "pooledSkippedRegions": pooled["skippedRegions"],
             "folds": fold_details,
             "validationSummary": aggregate,
+            "regionValidation": list(region_summaries.values()),
             "validationRows": validation_rows,
         }
         report["models"][model] = model_report
@@ -730,6 +1151,31 @@ def run_validation(
                 particle, dataset_tag, cfg.beam_energy,
             )
 
+    recommendation = _choose_region_models(
+        region_summaries_by_model, minimum_model_improvement_fraction
+    )
+    mixed_parameters = _build_mixed_parameters(
+        pooled_by_model, recommendation, dataset_tag, raw_runs
+    )
+    if mixed_parameters is not None:
+        mixed_filename = "recommended_mixed_parameters.json"
+        _write_json(output_dir / mixed_filename, mixed_parameters)
+        recommendation["parameterFile"] = mixed_filename
+
+    if make_plots:
+        _plot_region_model_comparison(
+            region_summaries_by_model, recommendation,
+            output_dir / "sector_model_comparison.png",
+            particle, dataset_tag, cfg.beam_energy,
+        )
+
+    pooled_for_stability = mixed_parameters
+    pooled_stability_model = "recommended-mixed" if mixed_parameters else None
+    if pooled_for_stability is None and pooled_by_model:
+        pooled_stability_model = max(
+            pooled_by_model, key=lambda model: MODEL_COMPLEXITY[model]
+        )
+        pooled_for_stability = pooled_by_model[pooled_stability_model]
     if pooled_for_stability is not None:
         stability = common_cell_stability(
             pooled_for_stability, selected, blocks, cfg, particle
@@ -742,7 +1188,11 @@ def run_validation(
                 dataset_tag, cfg.beam_energy,
             )
     report["modelComparison"] = model_summaries
-    report["recommendation"] = _choose_model(model_summaries)
+    report["regionModelComparison"] = {
+        model: list(summaries.values())
+        for model, summaries in region_summaries_by_model.items()
+    }
+    report["recommendation"] = recommendation
     _write_json(output_dir / "run_validation_report.json", report)
     return report
 
@@ -768,6 +1218,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-rows", type=int)
     parser.add_argument("--block-target-selected", type=int, default=100_000)
     parser.add_argument("--min-per-run-core-entries", type=int, default=200)
+    parser.add_argument(
+        "--minimum-model-improvement-fraction", type=float, default=0.10,
+        help=(
+            "minimum relative held-out cell-RMS improvement required before "
+            "selecting a more complex model in one detector region"
+        ),
+    )
     parser.add_argument("--coplanarity-max-deg", type=float, default=3.0)
     parser.add_argument("--theta-balance-max-deg", type=float, default=2.0)
     parser.add_argument("--missing-energy-max-gev", type=float, default=0.75)
@@ -806,6 +1263,8 @@ def main() -> None:
         raise ValueError("maximum rows must be positive")
     if args.min_per_run_core_entries < 2:
         raise ValueError("minimum per-run core entries must be at least two")
+    if not 0.0 <= args.minimum_model_improvement_fraction < 1.0:
+        raise ValueError("minimum model improvement fraction must be in [0, 1)")
     parts = [
         load_elastic_arrays(path, args.tree, None)
         for path in args.input_files
@@ -853,6 +1312,9 @@ def main() -> None:
         dataset_tag=args.dataset_tag,
         make_plots=not args.no_plots,
         minimum_per_run_core_entries=args.min_per_run_core_entries,
+        minimum_model_improvement_fraction=(
+            args.minimum_model_improvement_fraction
+        ),
     )
     print(f"Wrote multi-run validation to {args.output_dir}")
     recommendation = report["recommendation"]
@@ -860,6 +1322,11 @@ def main() -> None:
         "Diagnostic model recommendation: "
         f"{recommendation['model'] or 'none'} ({recommendation['status']})"
     )
+    for region in recommendation["regions"]:
+        print(
+            f"  {region['region']}: {region['model'] or 'none'} "
+            f"({region['status']})"
+        )
 
 
 if __name__ == "__main__":

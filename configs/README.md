@@ -338,11 +338,15 @@ momentum-scale bias in this method.
 
 For the held-out study, use `scripts/select_hipo_run_sample.py` to choose one or
 more files per run, process the resulting `@manifest` with a config that omits
-`maxEvents`, and run `scripts/validate_elastic_momentum_runs.py`. The validator uses contiguous
-run blocks, alternating two-fold train/holdout evaluation, a pooled common-cell
-stability map, and nested constant/theta-linear/theta-phi models. The output is
-a diagnostic: inspect run epochs and both held-out directions before promoting
-any pooled parameter file.
+`maxEvents`, and run `scripts/validate_elastic_momentum_runs.py`. The validator
+uses contiguous run blocks, alternating two-fold train/holdout evaluation, a
+pooled common-cell stability map, and nested
+constant/theta-linear/theta-phi/theta2-phi models. The last model is quadratic
+in theta and linear in sector-local phi, including theta-phi and
+theta-squared-phi interaction terms. Complexity is selected independently in
+each detector region. The output is a diagnostic: inspect run epochs, both
+held-out directions, and selection variations before promoting any pooled or
+mixed parameter file.
 
 ### Data sampling-fraction parameters
 

@@ -358,7 +358,8 @@ python3 scripts/validate_elastic_momentum_runs.py \
   --theta-bins 10 --max-theta-bin-width-deg 0.75 \
   --phi-bins 7 --target-cell-entries 2000 --min-bin-entries 300 \
   --block-target-selected 100000 \
-  --models constant theta-linear theta-phi \
+  --models constant theta-linear theta-phi theta2-phi \
+  --minimum-model-improvement-fraction 0.10 \
   --max-condition-number 100 --max-abs-surface-correction 0.05 \
   --output-dir calibration_plots/momentum/rga_fa18_torus+1_multi_run \
   --dataset-tag 10.604RGA_FA18_torus+1_multi_run
@@ -373,7 +374,14 @@ the direction so every block is held out once. The outputs include:
 - `common_cell_stability_*.png`, where every run block is evaluated in the
   pooled fit's same theta/phi cells;
 - one `heldout_closure.png` and JSON summary for the sector-constant,
-  theta-linear, and bilinear theta/local-phi models;
+  theta-linear, bilinear theta/local-phi, and quadratic-theta/linear-phi
+  models;
+- `sector_model_comparison.png`, which compares the combined and two
+  directional held-out cell RMS values and marks the independently recommended
+  model in every detector region;
+- `recommended_mixed_parameters.json`, assembled from the pooled region of each
+  independently recommended model and explicitly marked pending systematic
+  review;
 - `run_validation_report.json`, including all blocks, failed regions, held-out
   metrics, and a conservative diagnostic model recommendation.
 
@@ -384,11 +392,25 @@ look stable. A copied candidate file may also be passed as multiple positional
 inputs to the validator; their arrays are concatenated before forming run
 blocks.
 
-The recommendation favors the simpler model unless the next model reduces the
-median held-out cell-center RMS by at least 10%. Its pooled parameter file is
-still marked pending held-out review and must not be enabled automatically.
-First use the time plots to define stable run periods; then repeat the validator
-within each period and vary the missing-energy and lower-theta selections.
+Model selection is performed independently in every detector region. A more
+complex nested model is selected only when it reduces the median held-out
+cell-center RMS by the configured relative margin and improves both held-out
+fold directions. Its independently fitted fold surfaces must also agree at the
+pooled cell centers to better than the model's remaining held-out cell RMS. The
+default 10% margin is an explicit conservative policy, not a statistical
+confidence level, and can be changed with
+`--minimum-model-improvement-fraction`. All pooled and mixed parameter files
+remain marked pending review and must not be enabled automatically. First use
+the time plots to define stable run periods; then repeat the validator within
+each period and vary the missing-energy, lower-theta, topology, and binning
+selections.
+
+For an FD region the `theta2-phi` candidate has six terms: constant, theta,
+theta-squared, local phi, theta times local phi, and theta-squared times local
+phi. It is the fractional-correction analogue of the common additive
+quadratic-theta/linear-phi form; the validator does not treat elastic data at a
+single beam energy as evidence that additive and fractional momentum scaling
+are interchangeable.
 
 For RGK 6.535 GeV, derive a candidate sample and parameters with:
 

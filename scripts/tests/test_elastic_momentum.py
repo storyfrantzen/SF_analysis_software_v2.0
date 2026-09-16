@@ -114,6 +114,46 @@ class ElasticKinematicsTests(unittest.TestCase):
 
 
 class ElasticSurfaceFitTests(unittest.TestCase):
+    def test_quadratic_theta_linear_phi_surface_is_recovered(self) -> None:
+        rng = np.random.default_rng(23)
+        theta = rng.uniform(6.0, 10.0, 30_000)
+        phi = rng.uniform(-28.0, 28.0, theta.size)
+        theta_normalized = (theta - 8.0) / 2.0
+        phi_normalized = phi / 30.0
+        residual = (
+            0.004
+            + 0.0010 * theta_normalized
+            + 0.0005 * theta_normalized**2
+            + 0.0020 * phi_normalized
+            - 0.0007 * theta_normalized * phi_normalized
+            + 0.0004 * theta_normalized**2 * phi_normalized
+            + rng.normal(0.0, 0.003, theta.size)
+        )
+        region, _ = fit_region(
+            pid=11, detector=1, sector=1, theta_deg=theta, phi_deg=phi,
+            residual=residual, basis="polynomial",
+            cfg=ElasticFitConfig(
+                beam_energy=10.604, torus=1, theta_bins=8, phi_bins=5,
+                theta_order=2, phi_order=1, min_bin_entries=100,
+                min_region_entries=1_000,
+            ),
+        )
+        test_theta = np.repeat(np.linspace(6.3, 9.7, 7), 5)
+        test_phi = np.tile(np.linspace(-24.0, 24.0, 5), 7)
+        test_theta_normalized = (test_theta - 8.0) / 2.0
+        test_phi_normalized = test_phi / 30.0
+        expected = (
+            0.004
+            + 0.0010 * test_theta_normalized
+            + 0.0005 * test_theta_normalized**2
+            + 0.0020 * test_phi_normalized
+            - 0.0007 * test_theta_normalized * test_phi_normalized
+            + 0.0004 * test_theta_normalized**2 * test_phi_normalized
+        )
+        fitted = evaluate_region(region, test_theta, test_phi)
+        self.assertEqual(region["fit"]["parameters"], 6)
+        self.assertLess(float(np.sqrt(np.mean(np.square(fitted - expected)))), 3.0e-4)
+
     def test_secondary_slice_line_recovers_intercept_and_slope(self) -> None:
         cells = [
             {"phiMeanDeg": phi, "center": 0.004 + 0.002 * phi / 30.0,
