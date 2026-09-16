@@ -573,6 +573,146 @@ def _profile_grid(
     )
 
 
+def _adaptive_slice_cells(
+    theta: np.ndarray,
+    phi: np.ndarray,
+    *,
+    theta_bin: int,
+    theta_range: list[float],
+    theta_high_inclusive: bool,
+    requested_phi_cells: int,
+) -> tuple[list[dict[str, object]], np.ndarray]:
+    """Build quantile-phi cells for one adaptive theta slice."""
+    theta_lo, theta_hi = (float(value) for value in theta_range)
+    theta_upper = (
+        theta <= theta_hi if theta_high_inclusive else theta < theta_hi
+    )
+    theta_mask = (theta >= theta_lo) & theta_upper
+    if not np.any(theta_mask) or requested_phi_cells < 1:
+        return [], np.asarray([], dtype=float)
+    phi_edges = np.unique(np.quantile(
+        phi[theta_mask], np.linspace(0.0, 1.0, requested_phi_cells + 1)
+    ))
+    phi_pairs = list(zip(phi_edges[:-1], phi_edges[1:]))
+    cells = [
+        {
+            "thetaRangeDeg": [theta_lo, theta_hi],
+            "phiRangeDeg": [float(phi_lo), float(phi_hi)],
+            "thetaBin": theta_bin,
+            "phiBin": phi_index,
+            "thetaHighInclusive": theta_high_inclusive,
+            "phiHighInclusive": phi_index == len(phi_pairs) - 1,
+        }
+        for phi_index, (phi_lo, phi_hi) in enumerate(phi_pairs)
+    ]
+    return cells, phi_edges
+
+
+def _adaptive_population_fallback(
+    theta: np.ndarray,
+    phi: np.ndarray,
+    residual: np.ndarray,
+    cell_plan: ProfileCellPlan,
+    cfg: ElasticFitConfig,
+) -> ProfileCellPlan:
+    """Coarsen phi cells when quantile children fail population thresholds.
+
+    Planning uses raw occupancy, while acceptance uses the retained peak core.
+    A subdivision can therefore create a child just below the core-entry
+    threshold even though its parent is usable. Retry the whole theta slice
+    with fewer phi cells in that case. Failures of the peak-quality checks
+    remain explicit holes and never trigger merging.
+    """
+    if cfg.profile_binning != "adaptive":
+        return cell_plan
+
+    initial_cells_by_theta: dict[int, list[dict[str, object]]] = {}
+    for cell in cell_plan.cells:
+        initial_cells_by_theta.setdefault(int(cell["thetaBin"]), []).append(cell)
+
+    slices = list(cell_plan.metadata["thetaSlices"])
+    final_cells: list[dict[str, object]] = []
+    final_slices: list[dict[str, object]] = []
+    fallback_slices = 0
+    fallback_steps = 0
+    population_reasons = {"rawEntries", "coreEntries"}
+
+    for slice_index, slice_metadata in enumerate(slices):
+        theta_bin = int(slice_metadata["thetaBin"])
+        initial_cells = initial_cells_by_theta.get(theta_bin, [])
+        requested_phi_cells = max(len(initial_cells), 1)
+        theta_high_inclusive = slice_index == len(slices) - 1
+        candidate_cells = initial_cells
+        candidate_edges = np.asarray(slice_metadata["phiEdgesDeg"], dtype=float)
+        attempts: list[dict[str, object]] = []
+
+        while candidate_cells:
+            candidate_grid = _profile_grid(
+                theta, phi, residual, candidate_cells, cfg
+            )
+            rejection_counts: dict[str, int] = {}
+            for rejected in candidate_grid.rejected_cells:
+                reason = str(rejected["reason"])
+                rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+            population_failures = sum(
+                count for reason, count in rejection_counts.items()
+                if reason in population_reasons
+            )
+            quality_failures = sum(
+                count for reason, count in rejection_counts.items()
+                if reason not in population_reasons
+            )
+            attempts.append({
+                "requestedPhiCells": requested_phi_cells,
+                "plannedPhiCells": len(candidate_cells),
+                "phiEdgesDeg": [float(value) for value in candidate_edges],
+                "acceptedPhiCells": len(candidate_grid.support_cells),
+                "rejectedPhiCells": len(candidate_grid.rejected_cells),
+                "rejectionCounts": rejection_counts,
+            })
+            if (
+                population_failures == 0
+                or quality_failures > 0
+                or requested_phi_cells <= 1
+            ):
+                break
+            requested_phi_cells -= 1
+            candidate_cells, candidate_edges = _adaptive_slice_cells(
+                theta,
+                phi,
+                theta_bin=theta_bin,
+                theta_range=list(slice_metadata["thetaRangeDeg"]),
+                theta_high_inclusive=theta_high_inclusive,
+                requested_phi_cells=requested_phi_cells,
+            )
+
+        applied = len(attempts) > 1
+        if applied:
+            fallback_slices += 1
+            fallback_steps += len(attempts) - 1
+        final_cells.extend(candidate_cells)
+        final_slices.append({
+            **slice_metadata,
+            "initialPlannedPhiCells": len(initial_cells),
+            "phiEdgesDeg": [float(value) for value in candidate_edges],
+            "plannedPhiCells": len(candidate_cells),
+            "populationFallbackApplied": applied,
+            "populationFallbackAttempts": attempts,
+        })
+
+    return ProfileCellPlan(
+        cells=final_cells,
+        metadata={
+            **cell_plan.metadata,
+            "initialPlannedProfileCells": len(cell_plan.cells),
+            "plannedProfileCells": len(final_cells),
+            "populationFallbackThetaSlices": fallback_slices,
+            "populationFallbackSteps": fallback_steps,
+            "thetaSlices": final_slices,
+        },
+    )
+
+
 def _polynomial_matrix(
     theta_normalized: np.ndarray,
     phi_normalized: np.ndarray,
@@ -812,6 +952,9 @@ def fit_region(
     minimum_phi_cells = max(minimum_phi_cells, cfg.min_phi_cells_per_theta)
     cell_plan = _profile_cell_plan(
         theta, phi, theta_edges, phi_range, cfg, minimum_phi_cells
+    )
+    cell_plan = _adaptive_population_fallback(
+        theta, phi, residual_values, cell_plan, cfg
     )
     profile = _profile_grid(
         theta, phi, residual_values, cell_plan.cells, cfg
@@ -1265,9 +1408,20 @@ def _plot_profile_cell_map(
                        label="rejected cell")],
         loc="best", fontsize="small",
     )
+    initial_planned = int(binning.get(
+        "initialPlannedProfileCells", binning["plannedProfileCells"]
+    ))
+    final_planned = int(binning["plannedProfileCells"])
+    fallback_slices = int(binning.get("populationFallbackThetaSlices", 0))
+    plan_summary = f"{final_planned} cells"
+    if fallback_slices:
+        plan_summary = (
+            f"{initial_planned} -> {final_planned} cells after population "
+            f"fallback in {fallback_slices} theta slices"
+        )
     fig.text(
         0.5, 0.01,
-        f"{binning['mode']} plan: {binning['plannedProfileCells']} cells; "
+        f"{binning['mode']} plan: {plan_summary}; "
         f"{binning['acceptedProfileCells']} accepted; "
         f"{binning['rejectedProfileCells']} rejected",
         ha="center", fontsize="small",

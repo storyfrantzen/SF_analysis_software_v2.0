@@ -11,6 +11,9 @@ import numpy as np
 from scripts.calibration.elastic_momentum import (
     ElasticFitConfig,
     PROTON_MASS_GEV,
+    _adaptive_population_fallback,
+    _profile_cell_plan,
+    _profile_grid,
     elastic_electron_momentum,
     elastic_proton_momentum,
     elastic_proton_theta_from_electron,
@@ -114,6 +117,110 @@ class ElasticKinematicsTests(unittest.TestCase):
 
 
 class ElasticSurfaceFitTests(unittest.TestCase):
+    @staticmethod
+    def _population_fallback_sample() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        rng = np.random.default_rng(19)
+        theta = rng.uniform(10.0, 12.0, 580)
+        phi = np.linspace(-24.0, 24.0, theta.size, endpoint=False)
+        residual = np.empty(theta.size)
+        residual[:248] = rng.normal(0.006, 0.004, 248)
+        residual[248:290] = 0.09
+        residual[290:561] = rng.normal(0.007, 0.004, 271)
+        residual[561:] = 0.09
+        return theta, phi, residual
+
+    def test_adaptive_population_fallback_merges_marginal_phi_children(self) -> None:
+        theta, phi, residual = self._population_fallback_sample()
+        cfg = ElasticFitConfig(
+            beam_energy=10.604,
+            profile_binning="adaptive",
+            theta_bins=1,
+            phi_bins=7,
+            target_cell_entries=250,
+            min_bin_entries=250,
+        )
+        plan = _profile_cell_plan(
+            theta, phi, np.array([10.0, 12.0]), (-30.0, 30.0), cfg, 2
+        )
+        initial_grid = _profile_grid(theta, phi, residual, plan.cells, cfg)
+        self.assertEqual(len(plan.cells), 2)
+        self.assertTrue(any(
+            cell["reason"] == "coreEntries"
+            for cell in initial_grid.rejected_cells
+        ))
+
+        final_plan = _adaptive_population_fallback(
+            theta, phi, residual, plan, cfg
+        )
+        final_grid = _profile_grid(
+            theta, phi, residual, final_plan.cells, cfg
+        )
+        theta_slice = final_plan.metadata["thetaSlices"][0]
+        self.assertEqual(len(final_plan.cells), 1)
+        self.assertEqual(len(final_grid.support_cells), 1)
+        self.assertFalse(final_grid.rejected_cells)
+        self.assertTrue(theta_slice["populationFallbackApplied"])
+        self.assertEqual(theta_slice["initialPlannedPhiCells"], 2)
+        self.assertEqual(theta_slice["plannedPhiCells"], 1)
+        self.assertEqual(len(theta_slice["populationFallbackAttempts"]), 2)
+
+    def test_adaptive_population_fallback_does_not_merge_quality_failures(self) -> None:
+        theta, phi, residual = self._population_fallback_sample()
+        cfg = ElasticFitConfig(
+            beam_energy=10.604,
+            profile_binning="adaptive",
+            theta_bins=1,
+            phi_bins=7,
+            target_cell_entries=250,
+            min_bin_entries=200,
+            max_core_width=0.001,
+        )
+        plan = _profile_cell_plan(
+            theta, phi, np.array([10.0, 12.0]), (-30.0, 30.0), cfg, 2
+        )
+        final_plan = _adaptive_population_fallback(
+            theta, phi, residual, plan, cfg
+        )
+        final_grid = _profile_grid(
+            theta, phi, residual, final_plan.cells, cfg
+        )
+        theta_slice = final_plan.metadata["thetaSlices"][0]
+        self.assertEqual(len(final_plan.cells), 2)
+        self.assertTrue(any(
+            cell["reason"] == "coreWidth"
+            for cell in final_grid.rejected_cells
+        ))
+        self.assertFalse(theta_slice["populationFallbackApplied"])
+
+    def test_lower_adaptive_threshold_does_not_create_population_hole(self) -> None:
+        theta, phi, residual = self._population_fallback_sample()
+        accepted_ranges: dict[int, list[tuple[float, float]]] = {}
+        for threshold in (300, 250):
+            cfg = ElasticFitConfig(
+                beam_energy=10.604,
+                profile_binning="adaptive",
+                theta_bins=1,
+                phi_bins=7,
+                target_cell_entries=250,
+                min_bin_entries=threshold,
+            )
+            plan = _profile_cell_plan(
+                theta, phi, np.array([10.0, 12.0]), (-30.0, 30.0), cfg, 2
+            )
+            final_plan = _adaptive_population_fallback(
+                theta, phi, residual, plan, cfg
+            )
+            final_grid = _profile_grid(
+                theta, phi, residual, final_plan.cells, cfg
+            )
+            self.assertFalse(final_grid.rejected_cells)
+            accepted_ranges[threshold] = [
+                tuple(float(value) for value in cell["phiRangeDeg"])
+                for cell in final_grid.support_cells
+            ]
+
+        self.assertEqual(accepted_ranges[250], accepted_ranges[300])
+
     def test_quadratic_theta_linear_phi_surface_is_recovered(self) -> None:
         rng = np.random.default_rng(23)
         theta = rng.uniform(6.0, 10.0, 30_000)

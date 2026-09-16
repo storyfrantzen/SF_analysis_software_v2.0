@@ -310,6 +310,16 @@ Finer cells can expose unresolved angular dependence, but should not be judged
 by a lower training chi-squared alone. Require stable cell centers, adequate
 population, and independent closure before using the exported surface.
 
+The adaptive planner validates the retained peak population after proposing
+the occupancy-based local-phi subdivision. If a proposed child fails only the
+raw- or retained-entry threshold, the complete theta slice is retried with one
+fewer phi cell until the children pass or one phi cell remains. Peak-quality
+failures such as an excessive core width or insufficient peak significance are
+not merged away. The parameter JSON records the initial and final subdivisions
+plus every retry under `fit.profileBinning.thetaSlices[].populationFallbackAttempts`.
+This prevents a lower population threshold from paradoxically reducing exact
+support by creating a marginal child cell and then discarding it.
+
 To split an existing candidate ROOT file into run-specific samples, use the
 argument-based helper instead of embedding a quoted C++ expression in
 `root -e`:
