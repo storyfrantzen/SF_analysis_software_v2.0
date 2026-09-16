@@ -492,14 +492,40 @@ python3 scripts/check_elastic_momentum_coverage.py \
   --dataset-tag 10.604RGA_FA18_torus+1_eppi0_pre_exclusivity
 ```
 
-The JSON and TSV outputs partition every unsupported electron into four
-exclusive categories: below or above the elastic theta range, outside its
-local-phi range, or inside the broad rectangle but between accepted adaptive
-cells.  `elastic_support_overlay.png` shows the physics-channel population and
-the exact cell outlines in every sector.  The red 6.5-degree line is drawn only
-where the systematic scan marked the selected model as theta-domain sensitive.
-Repeat the same diagnostic on the final strict-exclusive tree before enabling
-the correction in production.
+For a strict exclusivity mask derived from the same selected ROOT tree, apply
+the mask directly and record its cut table as provenance:
+
+```bash
+python3 scripts/check_elastic_momentum_coverage.py \
+  10.604_rga_fa18_torus+1_eppi0_data_selected.root \
+  --parameters calibration_plots/momentum/rga_fa18_torus+1_systematics/recommended_robust_parameters.json \
+  --selection-mask data_exclusivity.npy \
+  --exclusivity-cuts data_exclusivity.npz \
+  --tree sEvents \
+  --min-electron-p 2.0 --min-q2 1.0 --min-w 2.0 \
+  --theta-split-deg 6.5 \
+  --output-dir calibration_plots/momentum/rga_fa18_torus+1_eppi0_elastic_coverage_strict \
+  --dataset-tag 10.604RGA_FA18_torus+1_eppi0_strict
+```
+
+The mask must contain one entry per input-tree row; the command rejects a
+shape mismatch instead of silently misaligning events.  `--exclusivity-cuts`
+records the variables, estimator, containment, and group counts from the NPZ
+table but does not rederive the mask.  It therefore requires
+`--selection-mask`.
+
+The JSON and TSV outputs distinguish the broad trimmed parameter range from
+the theta envelope of the accepted adaptive support cells.  Every electron is
+partitioned into exact support, below or above the accepted-cell theta
+envelope, outside the broad local-phi range while inside that theta envelope,
+or inside the envelope but outside every accepted cell.  This prevents a
+sparse high-theta tail from being mislabeled as an internal cell gap.
+`elastic_support_overlay.png` shows the physics-channel population, exact cell
+outlines, and an orange dotted line at the largest accepted-cell theta in each
+sector.  The red 6.5-degree line is drawn only where the systematic scan marked
+the selected model as theta-domain sensitive.  Requested branch selections
+that reject zero entries produce a warning; a post-processing
+`passExclusivity` flag is not a substitute for the downstream strict mask.
 
 For RGK 6.535 GeV, derive a candidate sample and parameters with:
 

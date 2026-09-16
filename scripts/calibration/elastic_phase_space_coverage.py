@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 from pathlib import Path
 from typing import Iterable
 
@@ -41,6 +42,82 @@ def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text())
 
 
+def load_selection_mask(
+    path: Path,
+    expected_entries: int,
+    key: str = "mask",
+) -> np.ndarray:
+    loaded = np.load(path, allow_pickle=False)
+    if isinstance(loaded, np.lib.npyio.NpzFile):
+        try:
+            if key in loaded.files:
+                values = loaded[key]
+            elif len(loaded.files) == 1:
+                values = loaded[loaded.files[0]]
+            else:
+                raise ValueError(
+                    f"selection-mask NPZ has no '{key}' array; "
+                    f"available arrays: {loaded.files}"
+                )
+        finally:
+            loaded.close()
+    else:
+        values = loaded
+    mask = np.asarray(values)
+    if mask.ndim != 1 or mask.size != expected_entries:
+        raise ValueError(
+            f"selection mask has shape {mask.shape}; "
+            f"expected ({expected_entries},)"
+        )
+    if mask.dtype != np.bool_:
+        if not np.all(np.isin(mask, [0, 1])):
+            raise ValueError(
+                "selection mask must contain only booleans or 0/1 values"
+            )
+        mask = mask.astype(bool)
+    return mask
+
+
+def summarize_exclusivity_cuts(path: Path) -> dict[str, object]:
+    with np.load(path, allow_pickle=False) as saved:
+        def scalar(key: str) -> object | None:
+            if key not in saved.files:
+                return None
+            value = np.asarray(saved[key])
+            return value.item() if value.size == 1 else None
+
+        variables = (
+            [str(value) for value in np.asarray(saved["variables"]).tolist()]
+            if "variables" in saved.files else []
+        )
+        result: dict[str, object] = {
+            "variables": variables,
+            "retainedGroups": (
+                int(np.asarray(saved["group_ids"]).size)
+                if "group_ids" in saved.files else None
+            ),
+            "populatedGroups": (
+                int(np.asarray(saved["populated_group_ids"]).size)
+                if "populated_group_ids" in saved.files else None
+            ),
+            "droppedGroups": (
+                int(np.asarray(saved["dropped_group_ids"]).size)
+                if "dropped_group_ids" in saved.files else None
+            ),
+        }
+        for source, destination in (
+            ("grouping", "grouping"),
+            ("estimator", "estimator"),
+            ("n_sigma", "nSigma"),
+            ("signal_containment", "signalContainment"),
+            ("global_mode", "globalMode"),
+        ):
+            value = scalar(source)
+            if value is not None:
+                result[destination] = value
+    return result
+
+
 def load_eppi0_electron_arrays(
     input_file: Path,
     tree: str,
@@ -66,6 +143,7 @@ def _analysis_mask(
     minimum_w: float | None,
     require_pass_fiducial: bool,
     require_pass_exclusivity: bool,
+    external_selection_mask: np.ndarray | None,
 ) -> tuple[np.ndarray, dict[str, object]]:
     entries = int(np.asarray(arrays["electronP"]).size)
     mask = np.ones(entries, dtype=bool)
@@ -76,6 +154,23 @@ def _analysis_mask(
     sectors = np.asarray(arrays["electronSector"], dtype=int)
     mask &= (sectors >= 1) & (sectors <= 6)
     valid_fd = mask.copy()
+
+    external_selected = entries
+    if external_selection_mask is not None:
+        external = np.asarray(external_selection_mask)
+        if external.ndim != 1 or external.size != entries:
+            raise ValueError(
+                f"external selection mask has shape {external.shape}; "
+                f"expected ({entries},)"
+            )
+        if external.dtype != np.bool_:
+            if not np.all(np.isin(external, [0, 1])):
+                raise ValueError(
+                    "external selection mask must contain only booleans or 0/1 values"
+                )
+            external = external.astype(bool)
+        external_selected = int(np.count_nonzero(external))
+        mask &= external
 
     def apply_minimum(column: str, threshold: float | None) -> None:
         nonlocal mask
@@ -91,18 +186,39 @@ def _analysis_mask(
     apply_minimum("electronP", minimum_electron_p)
     apply_minimum("Q2", minimum_q2)
     apply_minimum("W", minimum_w)
-    if require_pass_fiducial:
-        if "passFiducial" not in arrays:
-            raise RuntimeError(
-                "--require-pass-fiducial needs the passFiducial branch"
-            )
-        mask &= np.asarray(arrays["passFiducial"], dtype=int) != 0
-    if require_pass_exclusivity:
-        if "passExclusivity" not in arrays:
-            raise RuntimeError(
-                "--require-pass-exclusivity needs the passExclusivity branch"
-            )
-        mask &= np.asarray(arrays["passExclusivity"], dtype=int) != 0
+
+    branch_selection: dict[str, dict[str, object]] = {}
+
+    def apply_required_branch(column: str, requested: bool, option: str) -> None:
+        nonlocal mask
+        if not requested:
+            branch_selection[column] = {
+                "requested": False,
+                "eligibleEntries": int(np.count_nonzero(mask)),
+                "rejectedEntries": 0,
+                "noEffect": None,
+            }
+            return
+        if column not in arrays:
+            raise RuntimeError(f"{option} needs the {column} branch")
+        eligible = int(np.count_nonzero(mask))
+        mask &= np.asarray(arrays[column], dtype=int) != 0
+        rejected = eligible - int(np.count_nonzero(mask))
+        branch_selection[column] = {
+            "requested": True,
+            "eligibleEntries": eligible,
+            "rejectedEntries": rejected,
+            "noEffect": rejected == 0,
+        }
+
+    apply_required_branch(
+        "passFiducial", require_pass_fiducial, "--require-pass-fiducial"
+    )
+    apply_required_branch(
+        "passExclusivity",
+        require_pass_exclusivity,
+        "--require-pass-exclusivity",
+    )
 
     return mask, {
         "inputEntries": entries,
@@ -114,6 +230,13 @@ def _analysis_mask(
         "minimumWGeV": minimum_w,
         "requirePassFiducial": require_pass_fiducial,
         "requirePassExclusivity": require_pass_exclusivity,
+        "externalSelectionMaskProvided": external_selection_mask is not None,
+        "externalSelectionMaskEntries": entries,
+        "externalSelectionMaskSelectedEntries": external_selected,
+        "externalSelectionMaskSelectedFraction": _fraction(
+            external_selected, entries
+        ),
+        "requestedBranchSelections": branch_selection,
     }
 
 
@@ -132,6 +255,24 @@ def _quantiles(values: np.ndarray) -> dict[str, float] | None:
     }
 
 
+def _support_cell_theta_range(region: dict[str, object]) -> list[float]:
+    parameter_range = [float(value) for value in region["thetaRangeDeg"]]
+    support_cells = list(region.get("supportCells", []))
+    if not support_cells:
+        return parameter_range
+    lower = max(
+        parameter_range[0],
+        min(float(cell["thetaRangeDeg"][0]) for cell in support_cells),
+    )
+    upper = min(
+        parameter_range[1],
+        max(float(cell["thetaRangeDeg"][1]) for cell in support_cells),
+    )
+    if upper < lower:
+        raise ValueError("support cells do not overlap the parameter theta range")
+    return [lower, upper]
+
+
 def analyze_phase_space_coverage(
     arrays: dict[str, np.ndarray],
     parameters: dict[str, object],
@@ -141,6 +282,7 @@ def analyze_phase_space_coverage(
     minimum_w: float | None = 2.0,
     require_pass_fiducial: bool = False,
     require_pass_exclusivity: bool = False,
+    external_selection_mask: np.ndarray | None = None,
     theta_split_deg: float = 6.5,
 ) -> tuple[dict[str, object], dict[int, dict[str, np.ndarray]]]:
     mask, selection = _analysis_mask(
@@ -150,6 +292,7 @@ def analyze_phase_space_coverage(
         minimum_w=minimum_w,
         require_pass_fiducial=require_pass_fiducial,
         require_pass_exclusivity=require_pass_exclusivity,
+        external_selection_mask=external_selection_mask,
     )
     selected = subset_arrays(arrays, mask)
     theta_deg = np.asarray(selected["electronTheta"], dtype=float) * RAD_TO_DEG
@@ -172,6 +315,13 @@ def analyze_phase_space_coverage(
     plot_data: dict[int, dict[str, np.ndarray]] = {}
     total_supported = 0
     total_selected = 0
+    total_categories: dict[str, int] = {
+        "supported": 0,
+        "belowSupportCellThetaRange": 0,
+        "aboveSupportCellThetaRange": 0,
+        "outsidePhiRangeWithinSupportCellThetaRange": 0,
+        "insideSupportCellThetaRangeOutsideSupportCells": 0,
+    }
     missing_parameter_regions: list[str] = []
     for sector in range(1, 7):
         key = (11, 1, sector)
@@ -185,28 +335,58 @@ def analyze_phase_space_coverage(
             missing_parameter_regions.append(f"pid11_det1_sector{sector}")
             continue
         theta_range = [float(value) for value in region["thetaRangeDeg"]]
+        support_theta_range = _support_cell_theta_range(region)
         phi_range = [float(value) for value in region["phiRangeDeg"]]
-        below_theta = theta < theta_range[0]
-        above_theta = theta > theta_range[1]
-        theta_inside = ~(below_theta | above_theta)
-        phi_outside = theta_inside & (
+        below_support_theta = theta < support_theta_range[0]
+        above_support_theta = theta > support_theta_range[1]
+        support_theta_inside = ~(below_support_theta | above_support_theta)
+        phi_outside = support_theta_inside & (
             (phi < phi_range[0]) | (phi > phi_range[1])
         )
-        rectangle = theta_inside & ~phi_outside
+        support_envelope = support_theta_inside & ~phi_outside
         supported = region_support_mask(region, theta, phi)
-        between_cells = rectangle & ~supported
+        between_cells = support_envelope & ~supported
         counts = {
             "supported": int(np.count_nonzero(supported)),
-            "belowThetaRange": int(np.count_nonzero(below_theta)),
-            "aboveThetaRange": int(np.count_nonzero(above_theta)),
-            "outsidePhiRange": int(np.count_nonzero(phi_outside)),
-            "insideRangeOutsideSupportCells": int(np.count_nonzero(between_cells)),
+            "belowSupportCellThetaRange": int(
+                np.count_nonzero(below_support_theta)
+            ),
+            "aboveSupportCellThetaRange": int(
+                np.count_nonzero(above_support_theta)
+            ),
+            "outsidePhiRangeWithinSupportCellThetaRange": int(
+                np.count_nonzero(phi_outside)
+            ),
+            "insideSupportCellThetaRangeOutsideSupportCells": int(
+                np.count_nonzero(between_cells)
+            ),
         }
         classified = sum(counts.values())
         if classified != entries:
             raise RuntimeError(
                 f"coverage categories do not partition sector {sector}: "
                 f"{classified} != {entries}"
+            )
+        parameter_below = theta < theta_range[0]
+        parameter_above = theta > theta_range[1]
+        parameter_theta_inside = ~(parameter_below | parameter_above)
+        parameter_phi_outside = parameter_theta_inside & (
+            (phi < phi_range[0]) | (phi > phi_range[1])
+        )
+        parameter_rectangle = parameter_theta_inside & ~parameter_phi_outside
+        parameter_counts = {
+            "belowThetaRange": int(np.count_nonzero(parameter_below)),
+            "aboveThetaRange": int(np.count_nonzero(parameter_above)),
+            "outsidePhiRangeWithinThetaRange": int(
+                np.count_nonzero(parameter_phi_outside)
+            ),
+            "insideParameterRectangle": int(
+                np.count_nonzero(parameter_rectangle)
+            ),
+        }
+        if sum(parameter_counts.values()) != entries:
+            raise RuntimeError(
+                f"parameter-envelope categories do not partition sector {sector}"
             )
         correction = (
             evaluate_region(region, theta[supported], phi[supported])
@@ -215,6 +395,8 @@ def analyze_phase_space_coverage(
         assignment = assignment_map.get(key, {})
         model = assignment.get("model") or region.get("validationModel")
         total_supported += counts["supported"]
+        for name, count in counts.items():
+            total_categories[name] += count
         regions.append({
             "pid": 11,
             "detector": 1,
@@ -229,6 +411,9 @@ def analyze_phase_space_coverage(
             "entries": entries,
             "thetaRangeDeg": theta_range,
             "phiRangeDeg": phi_range,
+            "parameterThetaRangeDeg": theta_range,
+            "parameterPhiRangeDeg": phi_range,
+            "supportCellThetaRangeDeg": support_theta_range,
             "supportCells": len(region.get("supportCells", [])),
             "supportedEntries": counts["supported"],
             "supportFraction": _fraction(counts["supported"], entries),
@@ -242,6 +427,13 @@ def analyze_phase_space_coverage(
                     "fraction": _fraction(count, entries),
                 }
                 for name, count in counts.items()
+            },
+            "parameterEnvelopeCategories": {
+                name: {
+                    "entries": count,
+                    "fraction": _fraction(count, entries),
+                }
+                for name, count in parameter_counts.items()
             },
             "thetaBelowSplitDeg": theta_split_deg,
             "thetaBelowSplitEntries": int(np.count_nonzero(theta < theta_split_deg)),
@@ -273,6 +465,13 @@ def analyze_phase_space_coverage(
             "unsupportedFraction": _fraction(
                 total_selected - total_supported, total_selected
             ),
+            "coverageCategories": {
+                name: {
+                    "entries": count,
+                    "fraction": _fraction(count, total_selected),
+                }
+                for name, count in total_categories.items()
+            },
         },
         "regions": regions,
     }, plot_data
@@ -291,10 +490,14 @@ def _write_tsv(path: Path, report: dict[str, object]) -> None:
         writer = csv.writer(output, delimiter="\t", lineterminator="\n")
         writer.writerow([
             "sector", "model", "domainSensitive", "entries",
-            "supportedEntries", "supportFraction", "belowThetaRangeFraction",
-            "aboveThetaRangeFraction", "outsidePhiRangeFraction",
-            "insideRangeOutsideSupportCellsFraction", "thetaBelowSplitFraction",
-            "thetaMinDeg", "thetaMaxDeg", "supportCells",
+            "supportedEntries", "supportFraction",
+            "belowSupportCellThetaRangeFraction",
+            "aboveSupportCellThetaRangeFraction",
+            "outsidePhiRangeWithinSupportCellThetaRangeFraction",
+            "insideSupportCellThetaRangeOutsideSupportCellsFraction",
+            "thetaBelowSplitFraction", "supportCellThetaMinDeg",
+            "supportCellThetaMaxDeg", "parameterThetaMinDeg",
+            "parameterThetaMaxDeg", "supportCells",
         ])
         for region in report["regions"]:
             categories = region["coverageCategories"]
@@ -305,13 +508,19 @@ def _write_tsv(path: Path, report: dict[str, object]) -> None:
                 region["entries"],
                 region["supportedEntries"],
                 region["supportFraction"],
-                categories["belowThetaRange"]["fraction"],
-                categories["aboveThetaRange"]["fraction"],
-                categories["outsidePhiRange"]["fraction"],
-                categories["insideRangeOutsideSupportCells"]["fraction"],
+                categories["belowSupportCellThetaRange"]["fraction"],
+                categories["aboveSupportCellThetaRange"]["fraction"],
+                categories[
+                    "outsidePhiRangeWithinSupportCellThetaRange"
+                ]["fraction"],
+                categories[
+                    "insideSupportCellThetaRangeOutsideSupportCells"
+                ]["fraction"],
                 region["thetaBelowSplitFraction"],
-                region["thetaRangeDeg"][0],
-                region["thetaRangeDeg"][1],
+                region["supportCellThetaRangeDeg"][0],
+                region["supportCellThetaRangeDeg"][1],
+                region["parameterThetaRangeDeg"][0],
+                region["parameterThetaRangeDeg"][1],
                 region["supportCells"],
             ])
 
@@ -402,6 +611,11 @@ def _plot_support_overlay(
                 alpha=0.9,
             ))
         summary = report_map[sector]
+        support_theta_range = summary["supportCellThetaRangeDeg"]
+        axis.axvline(
+            float(support_theta_range[1]), color="#ffb000",
+            linestyle=":", linewidth=1.35,
+        )
         if summary["domainSensitive"]:
             axis.axvline(
                 float(report["thetaSplitDeg"]), color="#ff5a5f",
@@ -410,8 +624,9 @@ def _plot_support_overlay(
         axis.set_title(
             f"sector {sector}: {summary['model']}\n"
             f"exact support {100.0 * summary['supportFraction']:.1f}% | "
-            f"theta < {report['thetaSplitDeg']:g}: "
-            f"{100.0 * summary['thetaBelowSplitFraction']:.1f}%",
+            f"cell theta <= {support_theta_range[1]:.2f} deg | "
+            f"above cells "
+            f"{100.0 * summary['coverageCategories']['aboveSupportCellThetaRange']['fraction']:.1f}%",
             fontsize=10,
         )
         axis.set_xlabel("electron theta [deg]")
@@ -446,6 +661,9 @@ def run_coverage_diagnostic(
     minimum_w: float | None = 2.0,
     require_pass_fiducial: bool = False,
     require_pass_exclusivity: bool = False,
+    external_selection_mask: np.ndarray | None = None,
+    selection_mask_file: Path | None = None,
+    exclusivity_cuts_file: Path | None = None,
     theta_split_deg: float = 6.5,
     make_plot: bool = True,
 ) -> dict[str, object]:
@@ -457,16 +675,30 @@ def run_coverage_diagnostic(
         minimum_w=minimum_w,
         require_pass_fiducial=require_pass_fiducial,
         require_pass_exclusivity=require_pass_exclusivity,
+        external_selection_mask=external_selection_mask,
         theta_split_deg=theta_split_deg,
     )
     report = {
-        "schema": "elastic_momentum_phase_space_coverage/v1",
+        "schema": "elastic_momentum_phase_space_coverage/v2",
         "datasetTag": dataset_tag,
         "inputFiles": [str(path) for path in input_files],
         "tree": tree,
         "parameterFile": str(parameter_file),
         "parameterDatasetTag": parameters.get("datasetTag"),
         "parameterCalibrationRole": parameters.get("calibrationRole"),
+        "strictSelection": {
+            "maskFile": (
+                str(selection_mask_file) if selection_mask_file is not None else None
+            ),
+            "exclusivityCutsFile": (
+                str(exclusivity_cuts_file)
+                if exclusivity_cuts_file is not None else None
+            ),
+            "exclusivityCutsSummary": (
+                summarize_exclusivity_cuts(exclusivity_cuts_file)
+                if exclusivity_cuts_file is not None else None
+            ),
+        },
         **coverage,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -503,6 +735,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-w", type=float, default=2.0)
     parser.add_argument("--require-pass-fiducial", action="store_true")
     parser.add_argument("--require-pass-exclusivity", action="store_true")
+    parser.add_argument(
+        "--selection-mask", type=Path,
+        help=(
+            "External one-dimensional NPY/NPZ boolean mask aligned one-to-one "
+            "with the concatenated input tree entries"
+        ),
+    )
+    parser.add_argument(
+        "--selection-mask-key", default="mask",
+        help="Array name when --selection-mask is an NPZ (default: mask)",
+    )
+    parser.add_argument(
+        "--exclusivity-cuts", type=Path,
+        help=(
+            "NPZ cut table recorded for provenance; the precomputed "
+            "--selection-mask supplies the actual event selection"
+        ),
+    )
     parser.add_argument("--theta-split-deg", type=float, default=6.5)
     parser.add_argument("--no-plot", action="store_true")
     return parser.parse_args()
@@ -512,6 +762,13 @@ def main() -> None:
     args = parse_args()
     if args.max_rows is not None and args.max_rows < 1:
         raise ValueError("maximum rows must be positive")
+    if args.selection_mask is not None and args.max_rows is not None:
+        raise ValueError(
+            "--selection-mask cannot be combined with --max-rows because the "
+            "mask must align with the complete input tree"
+        )
+    if args.exclusivity_cuts is not None and args.selection_mask is None:
+        raise ValueError("--exclusivity-cuts requires --selection-mask")
     parts = [
         load_eppi0_electron_arrays(path, args.tree, args.max_rows)
         for path in args.input_files
@@ -522,6 +779,13 @@ def main() -> None:
             arrays,
             np.arange(next(iter(arrays.values())).size) < args.max_rows,
         )
+    entries = int(np.asarray(arrays["electronP"]).size)
+    external_selection_mask = (
+        load_selection_mask(
+            args.selection_mask, entries, key=args.selection_mask_key
+        )
+        if args.selection_mask is not None else None
+    )
     parameters = _read_json(args.parameters)
     report = run_coverage_diagnostic(
         arrays,
@@ -536,6 +800,9 @@ def main() -> None:
         minimum_w=args.min_w,
         require_pass_fiducial=args.require_pass_fiducial,
         require_pass_exclusivity=args.require_pass_exclusivity,
+        external_selection_mask=external_selection_mask,
+        selection_mask_file=args.selection_mask,
+        exclusivity_cuts_file=args.exclusivity_cuts,
         theta_split_deg=args.theta_split_deg,
         make_plot=not args.no_plot,
     )
@@ -544,12 +811,48 @@ def main() -> None:
         f"overall exact support = "
         f"{100.0 * report['overall']['supportFraction']:.2f}%"
     )
+    overall_categories = report["overall"]["coverageCategories"]
+    above_cells = overall_categories["aboveSupportCellThetaRange"]["fraction"]
+    between_cells = overall_categories[
+        "insideSupportCellThetaRangeOutsideSupportCells"
+    ]["fraction"]
+    print(
+        "  unsupported breakdown: "
+        f"above accepted-cell theta={100.0 * above_cells:.2f}%; "
+        f"within theta envelope but outside cells={100.0 * between_cells:.2f}%"
+    )
+    if external_selection_mask is not None:
+        selected = int(np.count_nonzero(external_selection_mask))
+        print(
+            f"  external selection mask: {selected}/{entries} "
+            f"({100.0 * _fraction(selected, entries):.2f}%)"
+        )
+        if selected == entries:
+            print(
+                "Warning: --selection-mask rejected zero entries; verify that "
+                "it represents an additional strict selection",
+                file=sys.stderr,
+            )
+    branch_selection = report["selection"]["requestedBranchSelections"]
+    for branch, option in (
+        ("passFiducial", "--require-pass-fiducial"),
+        ("passExclusivity", "--require-pass-exclusivity"),
+    ):
+        effect = branch_selection[branch]
+        if effect["requested"] and effect["noEffect"]:
+            print(
+                f"Warning: {option} rejected zero of "
+                f"{effect['eligibleEntries']} eligible entries; the branch "
+                "does not impose an additional selection on this input",
+                file=sys.stderr,
+            )
     for region in report["regions"]:
         print(
             f"  sector {region['sector']}: model={region['model']}; "
             f"support={100.0 * region['supportFraction']:.2f}%; "
-            f"theta<{report['thetaSplitDeg']:g}="
-            f"{100.0 * region['thetaBelowSplitFraction']:.2f}%"
+            f"cell theta max={region['supportCellThetaRangeDeg'][1]:.3f} deg; "
+            f"above cells="
+            f"{100.0 * region['coverageCategories']['aboveSupportCellThetaRange']['fraction']:.2f}%"
         )
 
 

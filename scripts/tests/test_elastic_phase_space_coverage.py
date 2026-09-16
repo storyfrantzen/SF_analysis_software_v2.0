@@ -8,7 +8,9 @@ import numpy as np
 
 from scripts.calibration.elastic_phase_space_coverage import (
     analyze_phase_space_coverage,
+    load_selection_mask,
     run_coverage_diagnostic,
+    summarize_exclusivity_cuts,
 )
 
 
@@ -20,7 +22,7 @@ def _parameters() -> dict[str, object]:
             "pid": 11,
             "detector": 1,
             "sector": sector,
-            "thetaRangeDeg": [6.0, 8.0],
+            "thetaRangeDeg": [5.0, 9.0],
             "phiRangeDeg": [-20.0, 20.0],
             "thetaCenterDeg": 7.0,
             "thetaScaleDeg": 1.0,
@@ -89,12 +91,28 @@ class ElasticPhaseSpaceCoverageTests(unittest.TestCase):
             self.assertEqual(region["entries"], 6)
             self.assertEqual(region["supportedEntries"], 2)
             categories = region["coverageCategories"]
-            self.assertEqual(categories["belowThetaRange"]["entries"], 1)
-            self.assertEqual(categories["aboveThetaRange"]["entries"], 1)
-            self.assertEqual(categories["outsidePhiRange"]["entries"], 1)
             self.assertEqual(
-                categories["insideRangeOutsideSupportCells"]["entries"], 1
+                categories["belowSupportCellThetaRange"]["entries"], 1
             )
+            self.assertEqual(
+                categories["aboveSupportCellThetaRange"]["entries"], 1
+            )
+            self.assertEqual(
+                categories[
+                    "outsidePhiRangeWithinSupportCellThetaRange"
+                ]["entries"],
+                1,
+            )
+            self.assertEqual(
+                categories[
+                    "insideSupportCellThetaRangeOutsideSupportCells"
+                ]["entries"],
+                1,
+            )
+            self.assertEqual(region["supportCellThetaRangeDeg"], [6.0, 8.0])
+            envelope = region["parameterEnvelopeCategories"]
+            self.assertEqual(envelope["belowThetaRange"]["entries"], 0)
+            self.assertEqual(envelope["aboveThetaRange"]["entries"], 0)
             self.assertAlmostEqual(region["thetaBelowSplitFraction"], 1.0 / 6.0)
 
     def test_analysis_thresholds_are_applied_before_coverage(self) -> None:
@@ -104,6 +122,62 @@ class ElasticPhaseSpaceCoverageTests(unittest.TestCase):
         self.assertEqual(report["selection"]["selectedEntries"], 30)
         self.assertEqual(report["regions"][0]["entries"], 0)
         self.assertEqual(report["regions"][1]["entries"], 6)
+
+    def test_external_selection_mask_is_applied_and_reported(self) -> None:
+        external = np.zeros(36, dtype=bool)
+        external[:6] = True
+        report, _ = analyze_phase_space_coverage(
+            _arrays(), _parameters(), external_selection_mask=external
+        )
+        self.assertEqual(report["selection"]["inputEntries"], 36)
+        self.assertEqual(
+            report["selection"]["externalSelectionMaskSelectedEntries"], 6
+        )
+        self.assertEqual(report["selection"]["selectedEntries"], 6)
+        self.assertEqual(report["overall"]["entries"], 6)
+
+    def test_requested_branch_selection_records_no_effect(self) -> None:
+        arrays = _arrays()
+        arrays["passFiducial"] = np.ones(36, dtype=int)
+        arrays["passExclusivity"] = np.ones(36, dtype=int)
+        report, _ = analyze_phase_space_coverage(
+            arrays,
+            _parameters(),
+            require_pass_fiducial=True,
+            require_pass_exclusivity=True,
+        )
+        effects = report["selection"]["requestedBranchSelections"]
+        self.assertTrue(effects["passFiducial"]["noEffect"])
+        self.assertTrue(effects["passExclusivity"]["noEffect"])
+        self.assertEqual(effects["passFiducial"]["rejectedEntries"], 0)
+
+    def test_selection_mask_loader_and_cut_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            mask_path = directory / "mask.npy"
+            np.save(mask_path, np.asarray([1, 0, 1], dtype=np.int8))
+            loaded = load_selection_mask(mask_path, 3)
+            np.testing.assert_array_equal(
+                loaded, np.asarray([True, False, True])
+            )
+
+            cuts_path = directory / "cuts.npz"
+            np.savez(
+                cuts_path,
+                variables=np.asarray(["rec_m_gg", "rec_m2_epX"]),
+                group_ids=np.asarray([1, 2]),
+                populated_group_ids=np.asarray([1, 2, 3]),
+                dropped_group_ids=np.asarray([3]),
+                grouping=np.asarray("topology"),
+                estimator=np.asarray("test"),
+                n_sigma=np.asarray(3.0),
+                signal_containment=np.asarray(0.9973),
+            )
+            summary = summarize_exclusivity_cuts(cuts_path)
+            self.assertEqual(summary["variables"], ["rec_m_gg", "rec_m2_epX"])
+            self.assertEqual(summary["retainedGroups"], 2)
+            self.assertEqual(summary["droppedGroups"], 1)
+            self.assertEqual(summary["nSigma"], 3.0)
 
     def test_diagnostic_writes_machine_readable_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -119,7 +193,7 @@ class ElasticPhaseSpaceCoverageTests(unittest.TestCase):
                 make_plot=False,
             )
             self.assertEqual(
-                report["schema"], "elastic_momentum_phase_space_coverage/v1"
+                report["schema"], "elastic_momentum_phase_space_coverage/v2"
             )
             self.assertTrue((output_dir / "elastic_support_coverage.json").is_file())
             self.assertTrue((output_dir / "elastic_support_coverage.tsv").is_file())
