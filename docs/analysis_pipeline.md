@@ -478,6 +478,29 @@ approved production correction.  Regions marked `domainSensitive` require a
 check that the physics channel occupies the same theta/phi support before the
 file is promoted.
 
+For an `ep pi0` candidate tree, measure that overlap with the exact adaptive
+elastic support cells rather than only comparing the broad theta limits:
+
+```bash
+python3 scripts/check_elastic_momentum_coverage.py \
+  10.604_rga_fa18_torus+1_eppi0_data_selected.root \
+  --parameters calibration_plots/momentum/rga_fa18_torus+1_systematics/recommended_robust_parameters.json \
+  --tree sEvents \
+  --min-electron-p 2.0 --min-q2 1.0 --min-w 2.0 \
+  --theta-split-deg 6.5 \
+  --output-dir calibration_plots/momentum/rga_fa18_torus+1_eppi0_elastic_coverage \
+  --dataset-tag 10.604RGA_FA18_torus+1_eppi0_pre_exclusivity
+```
+
+The JSON and TSV outputs partition every unsupported electron into four
+exclusive categories: below or above the elastic theta range, outside its
+local-phi range, or inside the broad rectangle but between accepted adaptive
+cells.  `elastic_support_overlay.png` shows the physics-channel population and
+the exact cell outlines in every sector.  The red 6.5-degree line is drawn only
+where the systematic scan marked the selected model as theta-domain sensitive.
+Repeat the same diagnostic on the final strict-exclusive tree before enabling
+the correction in production.
+
 For RGK 6.535 GeV, derive a candidate sample and parameters with:
 
 ```bash
