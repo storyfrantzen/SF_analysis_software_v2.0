@@ -57,9 +57,11 @@ The active RGK 6.535 GeV files are:
 - `processing/rgk/6.535/calibration/sidis_electrons_mc.json`;
 - `processing/rgk/6.535/calibration/proton_energy_loss_mc.json`;
 - `processing/rgk/6.535/calibration/elastic_data.json`;
+- `processing/rgk/6.535/calibration/elastic_data_run_spanning.json`;
 - `post/rgk/6.535/calibration/electron_sf_candidates.json`;
 - `post/rgk/6.535/calibration/electron_sf_candidates_mc.json`;
 - `post/rgk/6.535/calibration/elastic_candidates_data.json`;
+- `post/rgk/6.535/calibration/elastic_candidates_data_run_spanning.json`;
 - `post/rgk/6.535/calibration/proton_energy_loss_fiducial.json`;
 - `post/rgk/6.535/calibration/electron_sf_selected.json`;
 - `efficiency/rgk/6.535/run_currents.json`;

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -31,6 +32,7 @@ def select_sample(
     run_min: int | None = None,
     run_max: int | None = None,
     max_runs: int | None = None,
+    allowed_runs: set[int] | None = None,
 ) -> dict[int, list[Path]]:
     if files_per_run < 1:
         raise ValueError("files per run must be positive")
@@ -42,6 +44,8 @@ def select_sample(
         if run_min is not None and run < run_min:
             continue
         if run_max is not None and run > run_max:
+            continue
+        if allowed_runs is not None and run not in allowed_runs:
             continue
         by_run[run].append(path.resolve())
     runs = sorted(by_run)
@@ -55,9 +59,29 @@ def select_sample(
             ]
             runs = [runs[index] for index in indices]
     return {
-        run: evenly_spaced(sorted(by_run[run]), files_per_run)
-        for run in runs
+        run: evenly_spaced(sorted(by_run[run]), files_per_run) for run in runs
     }
+
+
+def catalog_runs(path: Path, include_classes: set[str] | None) -> set[int]:
+    payload = json.loads(path.read_text())
+    entries = payload.get("runs")
+    if not isinstance(entries, dict):
+        raise ValueError(f"run catalog has no object-valued 'runs' field: {path}")
+    selected: set[int] = set()
+    for raw_run, metadata in entries.items():
+        run = int(raw_run)
+        if include_classes is not None:
+            run_class = metadata.get("run_class") if isinstance(metadata, dict) else None
+            if run_class not in include_classes:
+                continue
+        selected.add(run)
+    if not selected:
+        qualifier = (
+            f" for classes {sorted(include_classes)}" if include_classes else ""
+        )
+        raise ValueError(f"run catalog selected no runs{qualifier}: {path}")
+    return selected
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,6 +97,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-min", type=int)
     parser.add_argument("--run-max", type=int)
     parser.add_argument("--max-runs", type=int)
+    parser.add_argument(
+        "--run-catalog",
+        type=Path,
+        help="JSON file with a top-level runs object; only listed runs are eligible",
+    )
+    parser.add_argument(
+        "--include-run-classes",
+        nargs="+",
+        help="with --run-catalog, retain only runs whose run_class is listed",
+    )
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
@@ -85,12 +119,23 @@ def main() -> None:
         raise FileExistsError(
             f"output manifest already exists: {args.output_manifest}; use --overwrite"
         )
+    if args.include_run_classes and args.run_catalog is None:
+        raise ValueError("--include-run-classes requires --run-catalog")
+    allowed_runs = (
+        catalog_runs(
+            args.run_catalog,
+            set(args.include_run_classes) if args.include_run_classes else None,
+        )
+        if args.run_catalog is not None
+        else None
+    )
     selected = select_sample(
         args.input_directory,
         files_per_run=args.files_per_run,
         run_min=args.run_min,
         run_max=args.run_max,
         max_runs=args.max_runs,
+        allowed_runs=allowed_runs,
     )
     if not selected:
         raise ValueError("no HIPO files with rec_clas_RUN filenames were found")
@@ -105,6 +150,14 @@ def main() -> None:
         f"Wrote {file_count} files spanning {len(selected)} runs "
         f"({min(selected)}-{max(selected)}) to {args.output_manifest}"
     )
+    if allowed_runs is not None:
+        missing_runs = sorted(allowed_runs.difference(selected))
+        print(f"Catalog-eligible runs: {len(allowed_runs)}")
+        if missing_runs:
+            print(
+                "Warning: no matching HIPO files were found for catalog runs: "
+                + ", ".join(str(run) for run in missing_runs)
+            )
 
 
 if __name__ == "__main__":
