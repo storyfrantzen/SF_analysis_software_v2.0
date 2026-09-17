@@ -575,11 +575,15 @@ deliberately different comparisons:
 
 `paired_eppi0_momentum_validation.json` is the complete report.
 `paired_observable_summary.tsv` contains centers, widths, paired shifts, and
-RMS distance from the physical center for the exclusivity variables.
+RMS distance from the physical center for the exclusivity variables, both
+globally and by electron sector.  It also reports
+`deltaT = (-t)_(e pi0) - (-t)_p`, which should approach zero for an exclusive
+event even though proton-side `t` itself is invariant under this correction.
 `selection_migration.tsv` contains the overall, base-threshold, individual-cut,
 support, and sector migration counts.  The PNGs compare the fixed supported
 cohort, show paired differences, summarize selection migration, and map the
-applied correction over theta and sector-local phi.
+applied correction over theta and sector-local phi.  A separate sector-closure
+plot checks that a global improvement is not hiding a degraded sector.
 
 The validator also enforces two implementation invariants.  Quantities that do
 not depend on the electron momentum magnitude (for example `m_gg`, proton-side

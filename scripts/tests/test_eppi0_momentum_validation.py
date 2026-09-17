@@ -119,6 +119,7 @@ class Eppi0MomentumValidationTests(unittest.TestCase):
         )
         self.assertTrue(report["invariants"]["passed"])
         self.assertTrue(report["referenceRecomputationAudit"]["passed"])
+        self.assertEqual(set(report["fixedSupportedBySector"]), set("123456"))
         self.assertEqual(report["selection"]["fixedEntries"], 6)
         self.assertEqual(report["selection"]["fixedSupportedEntries"], 5)
         self.assertGreater(
@@ -132,6 +133,10 @@ class Eppi0MomentumValidationTests(unittest.TestCase):
         self.assertEqual(
             report["cohorts"]["fixedAll"]["quantities"]["mGG"]["delta"]["std"],
             0.0,
+        )
+        np.testing.assert_allclose(
+            diagnostics["before_deltaT"],
+            diagnostics["before_tPi0"] - diagnostics["before_t"],
         )
 
     def test_individual_cut_migration_is_not_confounded_by_base_thresholds(self) -> None:

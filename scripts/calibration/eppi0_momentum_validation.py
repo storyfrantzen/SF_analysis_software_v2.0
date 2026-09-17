@@ -113,18 +113,21 @@ EXPECTED_CENTERS = {
     "mEggX": PROTON_MASS_GEV,
     "missingEnergy": 0.0,
     "m2Miss": 0.0,
+    "pi0DeltaPhi": 0.0,
+    "pi0ThetaX": 0.0,
+    "deltaT": 0.0,
 }
 
 SUMMARY_QUANTITIES = (
     "electronP", "electronEnergy", "Q2", "nu", "xB", "y", "W", "t",
-    "tPi0", "trentoPhi", "pi0P", "pi0Theta", "mGG", "missingP",
+    "tPi0", "deltaT", "trentoPhi", "pi0P", "pi0Theta", "mGG", "missingP",
     "missingPt", "missingEnergy", "m2Miss", "m2EpX", "m2EPi0X", "mEggX",
     "pi0DeltaPhi", "pi0ThetaX", "thetaEGamma1", "thetaEGamma2",
     "thetaGamma1Gamma2",
 )
 
 PLOT_QUANTITIES = (
-    "Q2", "W", "xB", "tPi0", "mGG", "missingPt", "missingEnergy",
+    "Q2", "W", "xB", "deltaT", "mGG", "missingPt", "missingEnergy",
     "m2Miss", "m2EpX", "mEggX", "pi0DeltaPhi", "pi0ThetaX",
 )
 
@@ -133,6 +136,7 @@ PLOT_LABELS = {
     "W": r"$W$ [GeV]",
     "xB": r"$x_B$",
     "tPi0": r"$-t_{e\pi^0}$ [GeV$^2$]",
+    "deltaT": r"$(-t)_{e\pi^0}-(-t)_p$ [GeV$^2$]",
     "mGG": r"$m_{\gamma\gamma}$ [GeV]",
     "missingPt": r"$p_T^{miss}$ [GeV]",
     "missingEnergy": r"$E_{miss}$ [GeV]",
@@ -291,6 +295,8 @@ def compute_eppi0_observables(
     w = np.sqrt(np.maximum(0.0, _m2(target + q)))
     pi0_m2 = _m2(pi0)
     epi0_m2 = _m2(epi0_x)
+    proton_t = -_m2(target - proton)
+    pi0_t = -_m2(beam - electron - pi0)
 
     electron_unit = _unit_vectors(arrays["electronTheta"], arrays["electronPhi"])
     gamma1_unit = _unit_vectors(arrays["gamma1Theta"], arrays["gamma1Phi"])
@@ -316,8 +322,9 @@ def compute_eppi0_observables(
         "xB": xb,
         "y": nu / beam_energy,
         "W": w,
-        "t": -_m2(target - proton),
-        "tPi0": -_m2(beam - electron - pi0),
+        "t": proton_t,
+        "tPi0": pi0_t,
+        "deltaT": pi0_t - proton_t,
         "trentoPhi": _trento_phi(electron, proton, beam_energy),
         "pi0P": pi0_p,
         "pi0Theta": _vector_theta(pi0),
@@ -842,6 +849,12 @@ def run_paired_validation(
             before, after, selected_before & selected_after
         ),
     }
+    sector_cohorts = {
+        str(sector): _cohort_summary(
+            before, after, fixed_supported & (sectors == sector)
+        )
+        for sector in range(1, 7)
+    }
     support_count = int(np.count_nonzero(support))
     fixed_count = int(np.count_nonzero(fixed))
     correction_by_sector: dict[str, object] = {}
@@ -885,6 +898,7 @@ def run_paired_validation(
             "sectors": correction_by_sector,
         },
         "cohorts": cohorts,
+        "fixedSupportedBySector": sector_cohorts,
         "invariants": invariants,
         "referenceRecomputationAudit": reference_audit,
     }
@@ -918,6 +932,25 @@ def _write_observable_tsv(report: dict[str, object], path: Path) -> None:
             for name, item in cohort["quantities"].items():
                 writer.writerow({
                     "cohort": cohort_name,
+                    "quantity": name,
+                    "entries": item["before"]["entries"],
+                    "beforeMean": item["before"]["mean"],
+                    "afterMean": item["after"]["mean"],
+                    "deltaMean": item["delta"]["mean"],
+                    "beforeStd": item["before"]["std"],
+                    "afterStd": item["after"]["std"],
+                    "beforeMedian": item["before"]["median"],
+                    "afterMedian": item["after"]["median"],
+                    "beforeRobustWidth": item["before"]["robustWidth"],
+                    "afterRobustWidth": item["after"]["robustWidth"],
+                    "expectedCenter": item.get("expectedCenter"),
+                    "rmsFromExpectedBefore": item.get("rmsFromExpectedBefore"),
+                    "rmsFromExpectedAfter": item.get("rmsFromExpectedAfter"),
+                })
+        for sector, cohort in report["fixedSupportedBySector"].items():
+            for name, item in cohort["quantities"].items():
+                writer.writerow({
+                    "cohort": f"fixedSupportedSector{sector}",
                     "quantity": name,
                     "entries": item["before"]["entries"],
                     "beforeMean": item["before"]["mean"],
@@ -1059,6 +1092,38 @@ def _make_plots(
     save_plot(
         fig, output_dir / "selection_migration.png",
         "Strict-exclusivity migrations under electron correction",
+        dataset_tag, beam_energy,
+    )
+    plt.close(fig)
+
+    sector_closure_quantities = (
+        "missingEnergy", "missingPt", "m2Miss", "m2EpX", "mEggX", "deltaT"
+    )
+    fig, axes = plt.subplots(2, 3, figsize=(15, 9))
+    for axis, name in zip(axes.flat, sector_closure_quantities):
+        before_rms = np.asarray([
+            report["fixedSupportedBySector"][str(sector)]["quantities"][name][
+                "rmsFromExpectedBefore"
+            ]
+            for sector in sectors
+        ], dtype=float)
+        after_rms = np.asarray([
+            report["fixedSupportedBySector"][str(sector)]["quantities"][name][
+                "rmsFromExpectedAfter"
+            ]
+            for sector in sectors
+        ], dtype=float)
+        axis.plot(sectors, before_rms, marker="o", label="before")
+        axis.plot(sectors, after_rms, marker="o", label="after")
+        axis.set_title(PLOT_LABELS.get(name, name))
+        axis.set_xlabel("electron sector")
+        axis.set_ylabel("RMS from physical center")
+        axis.set_xticks(sectors)
+        axis.grid(alpha=0.25)
+    axes.flat[0].legend()
+    save_plot(
+        fig, output_dir / "sector_closure_rms.png",
+        "Fixed supported ep-pi0 cohort: closure RMS by electron sector",
         dataset_tag, beam_energy,
     )
     plt.close(fig)
