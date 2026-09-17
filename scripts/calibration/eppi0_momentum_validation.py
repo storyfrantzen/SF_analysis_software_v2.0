@@ -477,6 +477,28 @@ def _base_analysis_mask(
     return mask
 
 
+def _individual_base_threshold_masks(
+    arrays: dict[str, np.ndarray],
+    observables: dict[str, np.ndarray],
+    *,
+    minimum_electron_p: float,
+    minimum_q2: float,
+    minimum_w: float,
+) -> dict[str, np.ndarray]:
+    valid = _base_analysis_mask(
+        arrays,
+        observables,
+        minimum_electron_p=-np.inf,
+        minimum_q2=-np.inf,
+        minimum_w=-np.inf,
+    )
+    return {
+        "electronP": valid & (observables["electronP"] >= minimum_electron_p),
+        "Q2": valid & (observables["Q2"] >= minimum_q2),
+        "W": valid & (observables["W"] >= minimum_w),
+    }
+
+
 def _exclusivity_values(observables: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     return {
         persisted: np.asarray(observables[internal], dtype=float)
@@ -736,6 +758,20 @@ def run_paired_validation(
         arrays, after, minimum_electron_p=minimum_electron_p,
         minimum_q2=minimum_q2, minimum_w=minimum_w,
     )
+    base_thresholds_before = _individual_base_threshold_masks(
+        arrays,
+        before,
+        minimum_electron_p=minimum_electron_p,
+        minimum_q2=minimum_q2,
+        minimum_w=minimum_w,
+    )
+    base_thresholds_after = _individual_base_threshold_masks(
+        arrays,
+        after,
+        minimum_electron_p=minimum_electron_p,
+        minimum_q2=minimum_q2,
+        minimum_w=minimum_w,
+    )
     cuts_before = _apply_persisted_exclusivity(cuts, binning, arrays, before)
     cuts_after = _apply_persisted_exclusivity(cuts, binning, arrays, after)
     selected_before = base_before & cuts_before
@@ -770,6 +806,12 @@ def run_paired_validation(
             for sector in range(1, 7)
         },
         "individualCuts": {},
+        "individualBaseThresholds": {
+            name: _migration_summary(
+                base_thresholds_before[name], base_thresholds_after[name]
+            )
+            for name in base_thresholds_before
+        },
     }
     for variable in cuts.variables:
         pass_before = _apply_persisted_exclusivity(
@@ -779,7 +821,7 @@ def run_paired_validation(
             cuts, binning, arrays, after, only_variable=variable
         )
         migration["individualCuts"][variable] = _migration_summary(
-            base_before & pass_before, base_after & pass_after
+            pass_before, pass_after
         )
     invariants = _audit_invariants(before, after, support, invariant_tolerance)
     if not invariants["passed"]:
@@ -904,6 +946,10 @@ def _write_migration_tsv(report: dict[str, object], path: Path) -> None:
     rows.extend(
         (f"sector{sector}", report["migration"]["sectors"][str(sector)])
         for sector in range(1, 7)
+    )
+    rows.extend(
+        (f"base:{name}", values)
+        for name, values in report["migration"]["individualBaseThresholds"].items()
     )
     rows.extend(
         (f"cut:{name}", values)
@@ -1087,7 +1133,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset-tag", default="")
     parser.add_argument("--event-output", type=Path)
     parser.add_argument("--invariant-tolerance", type=float, default=1.0e-10)
-    parser.add_argument("--reference-tolerance", type=float, default=1.0e-7)
+    parser.add_argument("--reference-tolerance", type=float, default=1.0e-4)
     parser.add_argument("--no-plots", action="store_true")
     return parser
 

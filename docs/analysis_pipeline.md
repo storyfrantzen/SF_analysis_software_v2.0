@@ -569,8 +569,9 @@ deliberately different comparisons:
 - The **reselected cohort** independently recomputes the base `p_e`, `Q2`, and
   `W` requirements and applies the same persisted exclusivity windows to the
   before- and after-correction quantities.  Its lost/gained counts measure
-  actual cut migration.  Per-window rows identify which exclusivity variable
-  caused that migration.
+  actual cut migration.  Separate base-threshold rows and per-window rows
+  identify which requirement caused that migration; the per-window rows do not
+  include the changing base mask.
 
 `paired_eppi0_momentum_validation.json` is the complete report.
 `paired_observable_summary.tsv` contains centers, widths, paired shifts, and
@@ -586,7 +587,10 @@ not depend on the electron momentum magnitude (for example `m_gg`, proton-side
 quantity must remain unchanged for events outside exact elastic support.  An
 independent NumPy recomputation is additionally compared with the existing C++
 post-process branches; this parity audit is reported as `PASS` or `CHECK`
-without being confused with the exact mathematical invariants.  Use
+without being confused with the exact mathematical invariants.  Its default
+maximum tolerance is `1e-4`, accommodating the harmless loss of precision from
+reconstructing four-vectors from stored `(p, theta, phi)` rather than the
+original Cartesian components.  Use
 `--event-output validation_events.npz` only when event-level follow-up is
 needed, since that optional file is substantially larger than the normal
 reports.

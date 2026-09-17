@@ -134,6 +134,33 @@ class Eppi0MomentumValidationTests(unittest.TestCase):
             0.0,
         )
 
+    def test_individual_cut_migration_is_not_confounded_by_base_thresholds(self) -> None:
+        arrays = _arrays()
+        parameters = _parameters()
+        corrected, _, _, _ = apply_supported_electron_correction(arrays, parameters)
+        before = compute_eppi0_observables(arrays, arrays["electronP"], 10.604)
+        after = compute_eppi0_observables(arrays, corrected, 10.604)
+        threshold = 0.5 * (before["W"][0] + after["W"][0])
+        report, _ = run_paired_validation(
+            arrays,
+            parameters,
+            _broad_cuts(),
+            legacy_binning(),
+            external_selection_mask=np.ones(6, dtype=bool),
+            minimum_electron_p=0.0,
+            minimum_q2=0.0,
+            minimum_w=float(threshold),
+        )
+        self.assertGreater(
+            report["migration"]["individualBaseThresholds"]["W"][
+                "lostAfterCorrection"
+            ],
+            0,
+        )
+        invariant_cut = report["migration"]["individualCuts"]["rec_m_gg"]
+        self.assertEqual(invariant_cut["lostAfterCorrection"], 0)
+        self.assertEqual(invariant_cut["gainedAfterCorrection"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
