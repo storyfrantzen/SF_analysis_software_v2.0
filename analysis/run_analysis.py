@@ -665,8 +665,11 @@ def parser() -> argparse.ArgumentParser:
     acceptance.add_argument(
         "--quilt-scale-mode",
         choices=("global", "panel"),
-        default="global",
-        help="Use one y scale per -t quilt or independently scale every panel (default: global)",
+        default="panel",
+        help=(
+            "Use one y scale per -t quilt or independently scale every panel so an "
+            "isolated outlier does not compress the full quilt (default: panel)"
+        ),
     )
     response_plots = commands.add_parser(
         "response-plots",
