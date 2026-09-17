@@ -537,6 +537,60 @@ the selected model as theta-domain sensitive.  Requested branch selections
 that reject zero entries produce a warning; a post-processing
 `passExclusivity` flag is not a substitute for the downstream strict mask.
 
+### Paired `ep pi0` validation before production use
+
+Coverage is necessary but does not show what the correction does to the
+physics sample.  Validate a candidate electron correction against the existing
+pre-exclusivity `sEvents` tree with the exact persisted strict-selection mask
+and cut table:
+
+```bash
+python3 scripts/validate_eppi0_electron_momentum.py \
+  10.604_rga_fa18_torus+1_eppi0_data_selected.root \
+  --parameters calibration_plots/momentum/rga_fa18_torus+1_systematics/recommended_robust_parameters.json \
+  --exclusivity-cuts data_exclusivity.npz \
+  --analysis-config configs/analysis/rga/10.604.json \
+  --selection-mask data_exclusivity.npy \
+  --tree sEvents \
+  --min-electron-p 2.0 --min-q2 1.0 --min-w 2.0 \
+  --output-dir calibration_plots/momentum/rga_fa18_torus+1_eppi0_paired_validation \
+  --dataset-tag 10.604RGA_FA18_torus+1_eppi0_paired_validation
+```
+
+The tool is read-only with respect to the ROOT file.  It applies
+`p_after = p_before * (1 + f(theta, phi))` in memory and only inside the exact
+adaptive support cells stored in the parameter file.  It then performs two
+deliberately different comparisons:
+
+- The **fixed cohort** is the same external strict-mask event set before and
+  after correction.  Its histograms and paired differences measure movement
+  of the distributions without accepting a changing event population as an
+  apparent improvement.
+- The **reselected cohort** independently recomputes the base `p_e`, `Q2`, and
+  `W` requirements and applies the same persisted exclusivity windows to the
+  before- and after-correction quantities.  Its lost/gained counts measure
+  actual cut migration.  Per-window rows identify which exclusivity variable
+  caused that migration.
+
+`paired_eppi0_momentum_validation.json` is the complete report.
+`paired_observable_summary.tsv` contains centers, widths, paired shifts, and
+RMS distance from the physical center for the exclusivity variables.
+`selection_migration.tsv` contains the overall, base-threshold, individual-cut,
+support, and sector migration counts.  The PNGs compare the fixed supported
+cohort, show paired differences, summarize selection migration, and map the
+applied correction over theta and sector-local phi.
+
+The validator also enforces two implementation invariants.  Quantities that do
+not depend on the electron momentum magnitude (for example `m_gg`, proton-side
+`t`, pi0 kinematics, and particle opening angles) must not change.  Every
+quantity must remain unchanged for events outside exact elastic support.  An
+independent NumPy recomputation is additionally compared with the existing C++
+post-process branches; this parity audit is reported as `PASS` or `CHECK`
+without being confused with the exact mathematical invariants.  Use
+`--event-output validation_events.npz` only when event-level follow-up is
+needed, since that optional file is substantially larger than the normal
+reports.
+
 For RGK 6.535 GeV, derive a candidate sample and parameters with:
 
 ```bash
