@@ -67,7 +67,7 @@ from eppi0.radiative_correction import (
 )
 from eppi0.root_response import _truth_inside_mask
 from eppi0.phase_space import AnalysisPhaseSpace
-from eppi0.topology import INVALID_TOPOLOGY, ft_photon_count
+from eppi0.topology import INVALID_TOPOLOGY, detector_topology_id, ft_photon_count
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
 from run_analysis import (
     command_radiative_correction,
@@ -80,6 +80,8 @@ from run_analysis import (
     _normalization_npz_fields,
     _read_generator_integrated_cross_section,
     _read_generator_normalization_summary,
+    _response_topology_composition,
+    _topology_alpha,
 )
 from derive_exclusivity import derivation_settings, render_diagnostics_isolated
 from build_event_sample import (
@@ -116,6 +118,40 @@ class BinningTests(unittest.TestCase):
         bins = legacy_binning()
         values = np.arange(bins.size)
         np.testing.assert_array_equal(bins.flatten_values(bins.unflatten(values)), values)
+
+
+class ResponseTopologyTests(unittest.TestCase):
+    def test_detector_topology_id_validates_detector_combinations(self) -> None:
+        result = detector_topology_id(
+            np.array([1, 1, 2, 2, 0]),
+            np.array([0, 2, 1, 2, 0]),
+        )
+        np.testing.assert_array_equal(result, [4, 6, 9, 10, INVALID_TOPOLOGY])
+
+    def test_response_topology_composition_finds_dominant_fraction(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "response_meta.npz"
+            np.savez_compressed(
+                path,
+                reconstructed_topology_ids=np.array([4, 8]),
+                reconstructed_topology_counts=np.array(
+                    [[3.0, 2.0, 0.0], [1.0, 2.0, 0.0]]
+                ),
+            )
+            with np.load(path, allow_pickle=False) as metadata:
+                ids, dominant, dominance = _response_topology_composition(
+                    metadata,
+                    (1, 1, 1, 3),
+                    np.array([4.0, 4.0, 0.0]),
+                )
+
+        np.testing.assert_array_equal(ids, [4, 8])
+        np.testing.assert_array_equal(
+            dominant[0, 0, 0], [4, 4, INVALID_TOPOLOGY]
+        )
+        np.testing.assert_allclose(dominance[0, 0, 0], [0.75, 0.5, 0.0])
+        self.assertLess(_topology_alpha(0.5), _topology_alpha(0.75))
+        self.assertLess(_topology_alpha(1.0), 1.0)
 
 
 class ResponseTests(unittest.TestCase):

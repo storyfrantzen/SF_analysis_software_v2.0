@@ -70,10 +70,21 @@ from eppi0.structure_functions import (
     harmonic_reference_coordinates,
     harmonic_to_structure_functions,
 )
+from eppi0.topology import INVALID_TOPOLOGY
 from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes, subtract_feed_in
 
 
 C_RAD_DIAGNOSTIC_PLOT_RANGE = (0.0, 2.0)
+
+TOPOLOGY_COLORS = {
+    4: "#4e79a7",
+    5: "#59a14f",
+    6: "#76b7b2",
+    8: "#f28e2b",
+    9: "#e15759",
+    10: "#b07aa1",
+    INVALID_TOPOLOGY: "#9d9d9d",
+}
 
 CURRENT_EFFICIENCY_PROVENANCE_FIELDS = (
     "current_efficiency_applied",
@@ -766,6 +777,19 @@ def command_response_root(args: argparse.Namespace) -> None:
         beam_energy=float(config["beam_energy"]),
     )
     response = summary.response
+    topology_fields = {}
+    if summary.reconstructed_topology_ids.size:
+        topology_fields = {
+            "reconstructed_topology_ids": summary.reconstructed_topology_ids,
+            "reconstructed_topology_counts": summary.reconstructed_topology_counts,
+            "reconstructed_topology_definition": (
+                "4 * reconstructed proton detector ID + reconstructed FT photon count"
+            ),
+            "reconstructed_topology_count_definition": (
+                "generated-event-weighted selected REC events by reconstructed 4D bin "
+                "after the response selection mask and generated-event match"
+            ),
+        }
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     matrix_path = args.output_dir / "response_matrix.npz"
@@ -791,6 +815,7 @@ def command_response_root(args: argparse.Namespace) -> None:
             if not phase_space.enabled
             else f"4D bin and {phase_space.description()}"
         ),
+        **topology_fields,
         **phase_space.as_npz_fields(),
     )
     print(f"Generated rows scanned: {summary.generated_rows}")
@@ -798,6 +823,11 @@ def command_response_root(args: argparse.Namespace) -> None:
     print(f"Matched selected rows: {summary.matched_selected_rows}")
     print(f"Truth events in range: {response.truth_total.sum():.0f}")
     print(f"Selected REC events in range: {response.reconstructed_total.sum():.0f}")
+    if summary.reconstructed_topology_ids.size:
+        print(
+            "Reconstructed topology IDs: "
+            + ", ".join(str(int(item)) for item in summary.reconstructed_topology_ids)
+        )
     print(f"Feed-in fraction: {response.feed_in_fraction:.6f}")
     if phase_space.enabled:
         print(f"Analysis phase space: 4D bin and {phase_space.description()}")
@@ -4011,6 +4041,9 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
         out=np.zeros_like(rec4),
         where=truth4 > 0,
     )
+    topology_composition = _response_topology_composition(
+        metadata, shape, reconstructed
+    )
     same_bin4 = (
         _unflatten_response(same_bin_efficiency, shape)
         if same_bin_efficiency is not None else None
@@ -4106,6 +4139,7 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
         args.output_dir / "acceptance_vs_phi_by_3d_bin.csv",
         include_quilt=args.quilt,
         quilt_scale_mode=args.quilt_scale_mode,
+        topology_composition=topology_composition,
     )
 
     print(f"Truth-populated bins: {int(populated.sum())}")
@@ -4119,6 +4153,16 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
             print("Purity overlay: disabled; pass --include-purity to show P_i")
     else:
         print("Migration diagnostic source: unavailable; pass --response-matrix to include E_i/P_i")
+    if topology_composition is None:
+        print(
+            "Topology background: unavailable; rebuild with the current response-root "
+            "to store topology-resolved numerator counts"
+        )
+    else:
+        print(
+            "Topology background: color identifies the dominant reconstructed topology; "
+            "opacity increases with its fraction"
+        )
     print(f"Wrote acceptance plots under {args.output_dir}")
 
 
@@ -4210,6 +4254,102 @@ def _load_mask(path: Path, expected: int) -> np.ndarray:
 def _unflatten_response(values: np.ndarray, shape: tuple[int, int, int, int]) -> np.ndarray:
     nq2, nxb, nt, nphi = shape
     return values.reshape(nxb, nq2, nphi, nt).transpose(1, 0, 3, 2)
+
+
+def _response_topology_composition(
+    metadata,
+    shape: tuple[int, int, int, int],
+    reconstructed_total: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    id_key = "reconstructed_topology_ids"
+    count_key = "reconstructed_topology_counts"
+    present = (id_key in metadata.files, count_key in metadata.files)
+    if present == (False, False):
+        return None
+    if present != (True, True):
+        raise ValueError(
+            "response metadata must contain both reconstructed topology IDs and counts"
+        )
+
+    topology_ids = np.asarray(metadata[id_key], dtype=np.int64)
+    counts = np.asarray(metadata[count_key], dtype=float)
+    expected_bins = int(np.prod(shape))
+    if topology_ids.ndim != 1 or np.unique(topology_ids).size != topology_ids.size:
+        raise ValueError("reconstructed topology IDs must be a unique 1D array")
+    if counts.shape != (topology_ids.size, expected_bins):
+        raise ValueError(
+            "reconstructed topology counts do not match topology IDs and response bins"
+        )
+    if not np.all(np.isfinite(counts)) or np.any(counts < 0.0):
+        raise ValueError("reconstructed topology counts must be finite and nonnegative")
+    if not np.allclose(
+        counts.sum(axis=0),
+        np.asarray(reconstructed_total, dtype=float),
+        rtol=1.0e-10,
+        atol=1.0e-10,
+    ):
+        raise ValueError(
+            "reconstructed topology counts do not sum to reconstructed_total"
+        )
+
+    total = counts.sum(axis=0)
+    dominant = np.full(expected_bins, INVALID_TOPOLOGY, dtype=np.int64)
+    dominance = np.zeros(expected_bins, dtype=float)
+    if topology_ids.size:
+        positions = np.argmax(counts, axis=0)
+        populated = total > 0.0
+        dominant[populated] = topology_ids[positions[populated]]
+        dominance[populated] = counts[positions[populated], np.flatnonzero(populated)] / total[
+            populated
+        ]
+    return (
+        topology_ids,
+        _unflatten_response(dominant, shape),
+        _unflatten_response(dominance, shape),
+    )
+
+
+def _topology_label(topology_id: int) -> str:
+    if topology_id == INVALID_TOPOLOGY:
+        return "unsupported topology"
+    proton = {1: "FD", 2: "CD"}.get(topology_id // 4, "other")
+    photons = {0: "FD/FD", 1: "FD/FT", 2: "FT/FT"}.get(
+        topology_id % 4, f"FT count {topology_id % 4}"
+    )
+    return f"p {proton}; gamma gamma {photons}"
+
+
+def _topology_color(topology_id: int) -> str:
+    if topology_id in TOPOLOGY_COLORS:
+        return TOPOLOGY_COLORS[topology_id]
+    fallback = ("#af7aa1", "#ff9da7", "#9c755f", "#bab0ac")
+    return fallback[abs(int(topology_id)) % len(fallback)]
+
+
+def _topology_alpha(dominance: float) -> float:
+    """Keep the background translucent while preserving dominance ordering."""
+    return 0.08 + 0.42 * float(np.clip(dominance, 0.0, 1.0))
+
+
+def _draw_topology_background(
+    ax,
+    phi_edges: np.ndarray,
+    dominant_topology: np.ndarray,
+    dominance: np.ndarray,
+) -> None:
+    for index, (topology_id, fraction) in enumerate(
+        zip(dominant_topology, dominance, strict=True)
+    ):
+        if topology_id == INVALID_TOPOLOGY or fraction <= 0.0:
+            continue
+        ax.axvspan(
+            float(phi_edges[index]),
+            float(phi_edges[index + 1]),
+            color=_topology_color(int(topology_id)),
+            alpha=_topology_alpha(float(fraction)),
+            linewidth=0.0,
+            zorder=0,
+        )
 
 
 def _response_diagonal(response_matrix: Path, number_of_bins: int) -> np.ndarray:
@@ -5376,6 +5516,7 @@ def _plot_quantity_quilts_vs_phi(
     scale_mode: str,
     reference_lines: tuple[float, ...] = (),
     include_zero: bool = False,
+    topology_background: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
 ) -> int:
     """Draw one cross-section-style Q2-by-xB quilt per -t bin."""
     import matplotlib.pyplot as plt
@@ -5392,6 +5533,13 @@ def _plot_quantity_quilts_vs_phi(
             raise ValueError(f"quilt quantity {label} does not match the common 4D shape")
         if errors is not None and errors.shape != expected_shape:
             raise ValueError(f"quilt uncertainty {label} does not match the common 4D shape")
+    if topology_background is not None:
+        _, dominant_topology, topology_dominance = topology_background
+        if (
+            dominant_topology.shape != expected_shape
+            or topology_dominance.shape != expected_shape
+        ):
+            raise ValueError("topology background does not match the quilt shape")
 
     colors = (
         "#4c78a8", "#7b3294", "#f58518", "#222222", "#1b9e77",
@@ -5442,6 +5590,13 @@ def _plot_quantity_quilts_vs_phi(
         for (iq2, ixb), series in panels.items():
             row, column = positions[(iq2, ixb)]
             ax = axes[row, column]
+            if topology_background is not None:
+                _draw_topology_background(
+                    ax,
+                    phi_edges,
+                    dominant_topology[iq2, ixb, it, :],
+                    topology_dominance[iq2, ixb, it, :],
+                )
             local_low: list[float] = []
             local_high: list[float] = []
             for label, y, yerr, valid in series:
@@ -5485,16 +5640,48 @@ def _plot_quantity_quilts_vs_phi(
                        linewidth=1.1, markersize=3, label=label)
             for index, label in enumerate(label_order)
         ]
-        fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.995),
-                   ncol=min(4, len(handles)), fontsize="small")
+        if topology_background is not None:
+            from matplotlib.patches import Patch
+
+            page_dominant = dominant_topology[:, :, it, :]
+            page_dominance = topology_dominance[:, :, it, :]
+            page_topologies = sorted(
+                int(item)
+                for item in np.unique(page_dominant[page_dominance > 0.0])
+                if int(item) != INVALID_TOPOLOGY
+            )
+            handles.extend(
+                Patch(
+                    facecolor=_topology_color(topology_id),
+                    alpha=_topology_alpha(0.65),
+                    label=_topology_label(topology_id),
+                )
+                for topology_id in page_topologies
+            )
+        legend_y = 0.90 if topology_background is not None else 0.995
+        fig.legend(
+            handles=handles,
+            loc="upper center",
+            bbox_to_anchor=(0.5, legend_y),
+            ncol=min(4, len(handles)),
+            fontsize="x-small" if topology_background is not None else "small",
+        )
+        topology_note = (
+            "\nbar color = dominant REC topology; opacity increases with dominance"
+            if topology_background is not None
+            else ""
+        )
         fig.suptitle(
             f"{title}\n-t {t_edges[it]:g}-{t_edges[it + 1]:g} GeV^2; "
             "Q2 increases bottom to top; xB increases left to right; "
-            + ("independent panel scales" if scale_mode == "panel" else "shared page scale"),
-            y=0.955,
+            + ("independent panel scales" if scale_mode == "panel" else "shared page scale")
+            + topology_note,
+            y=0.99 if topology_background is not None else 0.955,
+            fontsize=10 if topology_background is not None else None,
         )
         fig.text(0.012, 0.5, ylabel, rotation="vertical", va="center", fontsize=9)
-        fig.subplots_adjust(left=0.052, right=0.995, bottom=0.045, top=0.89,
+        fig.subplots_adjust(left=0.052, right=0.995, bottom=0.045,
+                            top=0.80 if topology_background is not None else 0.89,
                             wspace=0.16, hspace=0.18)
         pdf.savefig(fig)
         plt.close(fig)
@@ -5585,7 +5772,8 @@ def _plot_acceptance_vs_phi(
     pdf_path: Path,
     csv_path: Path,
     include_quilt: bool = False,
-    quilt_scale_mode: str = "global",
+    quilt_scale_mode: str = "panel",
+    topology_composition: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
 ) -> int:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
@@ -5624,6 +5812,7 @@ def _plot_acceptance_vs_phi(
                 scale_mode=quilt_scale_mode,
                 reference_lines=(minimum_acceptance,),
                 include_zero=True,
+                topology_background=topology_composition,
             )
         for iq2 in range(efficiency.shape[0]):
             for ixb in range(efficiency.shape[1]):
@@ -5709,6 +5898,16 @@ def _plot_acceptance_vs_phi(
                     )
 
                     fig, ax = plt.subplots(figsize=(8, 5))
+                    if topology_composition is not None:
+                        _, dominant_topology4, topology_dominance4 = topology_composition
+                        dominant_topology_phi = dominant_topology4[iq2, ixb, it, :]
+                        topology_dominance_phi = topology_dominance4[iq2, ixb, it, :]
+                        _draw_topology_background(
+                            ax,
+                            phi_edges,
+                            dominant_topology_phi,
+                            topology_dominance_phi,
+                        )
                     if np.any(zero):
                         ax.errorbar(
                             phi_centers[zero],
@@ -5800,9 +5999,33 @@ def _plot_acceptance_vs_phi(
                         f"Q2 {q2_edges[iq2]:g}-{q2_edges[iq2 + 1]:g}, "
                         f"xB {xb_edges[ixb]:g}-{xb_edges[ixb + 1]:g}, "
                         f"-t {t_edges[it]:g}-{t_edges[it + 1]:g}"
+                        + (
+                            "\nbar color = dominant REC topology; opacity increases with dominance"
+                            if topology_composition is not None
+                            else ""
+                        )
                     )
                     ax.grid(True, alpha=0.25)
-                    ax.legend(loc="best", fontsize="small")
+                    handles, labels = ax.get_legend_handles_labels()
+                    if topology_composition is not None:
+                        from matplotlib.patches import Patch
+
+                        page_topologies = sorted(
+                            int(item)
+                            for item in np.unique(
+                                dominant_topology_phi[topology_dominance_phi > 0.0]
+                            )
+                            if int(item) != INVALID_TOPOLOGY
+                        )
+                        for topology_id in page_topologies:
+                            handles.append(
+                                Patch(
+                                    facecolor=_topology_color(topology_id),
+                                    alpha=_topology_alpha(0.65),
+                                )
+                            )
+                            labels.append(_topology_label(topology_id))
+                    ax.legend(handles, labels, loc="best", fontsize="small")
                     fig.tight_layout()
                     pdf.savefig(fig)
                     plt.close(fig)

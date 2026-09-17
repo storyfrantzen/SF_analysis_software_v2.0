@@ -262,6 +262,11 @@ python3 analysis/run_analysis.py response-root \
 This command histograms the `gEvents` denominator in chunks, joins only
 selected REC candidates by `(sourceFileId, sourceEventIndex)`, and writes the
 same `response_matrix.npz` and `response_meta.npz` consumed by `unfold`.
+When the selected tree contains `pDet`, `g1Det`, and `g2Det`, `response-root`
+also stores weighted reconstructed counts by detector topology and REC bin.
+Those counts use the same selection mask, generated-event weights, reconstructed
+bin assignment, and generated-event match as `reconstructed_total`; their sum
+is checked against that numerator before the response is written.
 `build_event_sample.py` remains useful for compact debug samples and for
 backward compatibility with older particle-level matched files. New files join
 on `(sourceFileId, sourceEventIndex)`, because GEMC files can all have run 11
@@ -648,8 +653,15 @@ with `N_same,i = N(rec i and gen i)`, they are:
 The default phi overlay includes `A_i`, `E_i`, and `epsilon_i`. Add
 `--include-purity` to include `P_i`, whose scale can differ substantially from
 the other three diagnostics. Add `--quilt` to prepend one stitched `Q2`-by-`xB`
-page per `-t` bin to the phi PDF. Quilts share a page-wide y scale by default;
-use `--quilt-scale-mode panel` for independent panel scales.
+page per `-t` bin to the phi PDF. Quilts use independent panel scales by
+default; pass `--quilt-scale-mode global` for one page-wide scale.
+
+For metadata written by the current `response-root`, every phi bin in the quilt
+and detailed pages has a translucent background bar. Its color identifies the
+dominant reconstructed proton/photon topology and its opacity increases with
+that topology's fraction of the response numerator. Older response metadata
+without topology-resolved counts remains readable and produces the original
+unadorned plots.
 
 The full unfolding still uses the migration matrix `R[j,i]`, not any one of
 these scalar diagnostics alone.

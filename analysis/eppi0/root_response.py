@@ -8,6 +8,7 @@ import numpy as np
 from .binning import AnalysisBinning
 from .phase_space import AnalysisPhaseSpace
 from .response import ResponseResult, build_response_from_counts
+from .topology import detector_topology_id, ft_photon_count
 
 
 GENERATED_COLUMNS = [
@@ -30,6 +31,12 @@ SELECTED_COLUMNS = [
     "trentoPhi",
 ]
 
+SELECTED_TOPOLOGY_COLUMNS = [
+    "pDet",
+    "g1Det",
+    "g2Det",
+]
+
 
 @dataclass(frozen=True)
 class RootResponseSummary:
@@ -37,6 +44,8 @@ class RootResponseSummary:
     generated_rows: int
     selected_rows: int
     matched_selected_rows: int
+    reconstructed_topology_ids: np.ndarray
+    reconstructed_topology_counts: np.ndarray
 
 
 def build_response_from_root(
@@ -67,8 +76,14 @@ def build_response_from_root(
     _require_tree(ROOT, converter_path, generated_tree, GENERATED_COLUMNS)
     tree = _resolve_selected_tree(ROOT, selected_path, tree)
     selected_entries = _require_tree(ROOT, selected_path, tree, SELECTED_COLUMNS)
+    topology_columns_available = _tree_has_columns(
+        ROOT, selected_path, tree, SELECTED_TOPOLOGY_COLUMNS
+    )
+    selected_columns = SELECTED_COLUMNS + (
+        SELECTED_TOPOLOGY_COLUMNS if topology_columns_available else []
+    )
 
-    selected = ROOT.RDataFrame(tree, selected_path).AsNumpy(SELECTED_COLUMNS)
+    selected = ROOT.RDataFrame(tree, selected_path).AsNumpy(selected_columns)
     selected_count = np.asarray(selected["sourceFileId"]).size
     if selected_count != selected_entries:
         raise RuntimeError("selected tree read returned an unexpected number of rows")
@@ -91,17 +106,36 @@ def build_response_from_root(
         selected["t"][selection_mask],
         selected["trentoPhi"][selection_mask],
     )
+    if topology_columns_available:
+        selected_topology = detector_topology_id(
+            selected["pDet"][selection_mask],
+            ft_photon_count(
+                selected["g1Det"][selection_mask],
+                selected["g2Det"][selection_mask],
+            ),
+        )
+        topology_ids = np.unique(selected_topology)
+    else:
+        print(
+            "Warning: selected ROOT tree lacks pDet/g1Det/g2Det; "
+            "topology-resolved response metadata will be omitted"
+        )
+        selected_topology = np.empty(0, dtype=np.int64)
+        topology_ids = np.empty(0, dtype=np.int64)
     if np.unique(selected_keys).size != selected_keys.size:
         raise ValueError("selected ROOT sample contains duplicate source keys")
     order = np.argsort(selected_keys, order=selected_keys.dtype.names)
     selected_keys = selected_keys[order]
     selected_rec_flat = selected_rec_flat[order]
+    if topology_columns_available:
+        selected_topology = selected_topology[order]
 
     generated_entries = _tree_entries(ROOT, converter_path, generated_tree)
     number_of_bins = binning.size
     truth_total = np.zeros(number_of_bins, dtype=float)
     reconstructed_total = np.zeros(number_of_bins, dtype=float)
     feed_counts = np.zeros(number_of_bins, dtype=float)
+    topology_counts = np.zeros((topology_ids.size, number_of_bins), dtype=float)
     migration_rows: list[np.ndarray] = []
     migration_cols: list[np.ndarray] = []
     migration_weights: list[np.ndarray] = []
@@ -152,11 +186,22 @@ def build_response_from_root(
         matched_weights = weights[matched]
         matched_truth_flat = truth_flat[matched]
         matched_truth_inside = truth_inside[matched]
+        if topology_columns_available:
+            matched_topology = selected_topology[matched_positions]
         matched_selected_rows += int(np.count_nonzero(rec_inside))
 
         reconstructed_total += np.bincount(
             rec_flat[rec_inside], weights=matched_weights[rec_inside], minlength=number_of_bins
         )
+        if topology_columns_available:
+            for topology_index, topology_id in enumerate(topology_ids):
+                topology_rows = rec_inside & (matched_topology == topology_id)
+                if np.any(topology_rows):
+                    topology_counts[topology_index] += np.bincount(
+                        rec_flat[topology_rows],
+                        weights=matched_weights[topology_rows],
+                        minlength=number_of_bins,
+                    )
 
         migrated = rec_inside & matched_truth_inside
         if np.any(migrated):
@@ -178,11 +223,19 @@ def build_response_from_root(
         _concat_or_empty(migration_weights, dtype=float),
         feed_counts,
     )
+    if topology_columns_available and not np.allclose(
+        topology_counts.sum(axis=0), reconstructed_total, rtol=1.0e-10, atol=1.0e-10
+    ):
+        raise RuntimeError(
+            "topology-resolved reconstructed counts do not sum to reconstructed_total"
+        )
     return RootResponseSummary(
         response=response,
         generated_rows=generated_entries,
         selected_rows=selected_count,
         matched_selected_rows=matched_selected_rows,
+        reconstructed_topology_ids=topology_ids,
+        reconstructed_topology_counts=topology_counts,
     )
 
 
@@ -200,6 +253,19 @@ def _require_tree(ROOT, path: str, tree_name: str, columns: list[str]) -> int:
     if missing:
         raise RuntimeError(f"Tree {tree_name} in {path} is missing branches: {missing}")
     return entries
+
+
+def _tree_has_columns(ROOT, path: str, tree_name: str, columns: list[str]) -> bool:
+    root_file = ROOT.TFile.Open(path, "READ")
+    if not root_file or root_file.IsZombie():
+        raise RuntimeError(f"Could not open ROOT file: {path}")
+    tree = root_file.Get(tree_name)
+    if not tree:
+        root_file.Close()
+        raise RuntimeError(f"Could not find tree {tree_name} in {path}")
+    available = all(tree.GetBranch(name) for name in columns)
+    root_file.Close()
+    return available
 
 
 def _resolve_selected_tree(ROOT, path: str, tree_name: str) -> str:
