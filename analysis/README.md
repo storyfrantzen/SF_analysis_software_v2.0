@@ -659,9 +659,13 @@ default; pass `--quilt-scale-mode global` for one page-wide scale.
 For metadata written by the current `response-root`, every phi bin in the quilt
 and detailed pages has a translucent background bar. Its color identifies the
 dominant reconstructed proton/photon topology and its opacity increases with
-that topology's fraction of the response numerator. Older response metadata
-without topology-resolved counts remains readable and produces the original
-unadorned plots.
+that topology's fraction of the response numerator. Pass
+`--topology-display stacked` to replace those backgrounds with a normalized
+stacked strip in every panel. Each strip has one bar per phi bin, and its colored
+segments show all reconstructed topologies in proportion to their contribution
+to that bin's response numerator. `--topology-display none` suppresses either
+annotation. Older response metadata without topology-resolved counts remains
+readable and produces the original unadorned plots.
 
 The full unfolding still uses the migration matrix `R[j,i]`, not any one of
 these scalar diagnostics alone.

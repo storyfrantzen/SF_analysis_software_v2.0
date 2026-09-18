@@ -139,17 +139,25 @@ class ResponseTopologyTests(unittest.TestCase):
                 ),
             )
             with np.load(path, allow_pickle=False) as metadata:
-                ids, dominant, dominance = _response_topology_composition(
+                composition = _response_topology_composition(
                     metadata,
                     (1, 1, 1, 3),
                     np.array([4.0, 4.0, 0.0]),
                 )
 
-        np.testing.assert_array_equal(ids, [4, 8])
+        self.assertIsNotNone(composition)
+        np.testing.assert_array_equal(composition.topology_ids, [4, 8])
         np.testing.assert_array_equal(
-            dominant[0, 0, 0], [4, 4, INVALID_TOPOLOGY]
+            composition.dominant_topology[0, 0, 0],
+            [4, 4, INVALID_TOPOLOGY],
         )
-        np.testing.assert_allclose(dominance[0, 0, 0], [0.75, 0.5, 0.0])
+        np.testing.assert_allclose(
+            composition.dominance[0, 0, 0], [0.75, 0.5, 0.0]
+        )
+        np.testing.assert_allclose(
+            composition.fractions[:, 0, 0, 0, :],
+            [[0.75, 0.5, 0.0], [0.25, 0.5, 0.0]],
+        )
         self.assertLess(_topology_alpha(0.5), _topology_alpha(0.75))
         self.assertLess(_topology_alpha(1.0), 1.0)
 

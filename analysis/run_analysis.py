@@ -86,6 +86,14 @@ TOPOLOGY_COLORS = {
     INVALID_TOPOLOGY: "#9d9d9d",
 }
 
+
+@dataclass(frozen=True)
+class ResponseTopologyComposition:
+    topology_ids: np.ndarray
+    fractions: np.ndarray
+    dominant_topology: np.ndarray
+    dominance: np.ndarray
+
 CURRENT_EFFICIENCY_PROVENANCE_FIELDS = (
     "current_efficiency_applied",
     "current_efficiency_artifact",
@@ -680,6 +688,16 @@ def parser() -> argparse.ArgumentParser:
         help=(
             "Use one y scale per -t quilt or independently scale every panel so an "
             "isolated outlier does not compress the full quilt (default: panel)"
+        ),
+    )
+    acceptance.add_argument(
+        "--topology-display",
+        choices=("dominant", "stacked", "none"),
+        default="dominant",
+        help=(
+            "Show the dominant topology as translucent bin backgrounds, a normalized "
+            "stacked topology-composition strip, or no topology annotation "
+            "(default: dominant)"
         ),
     )
     response_plots = commands.add_parser(
@@ -4140,6 +4158,7 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
         include_quilt=args.quilt,
         quilt_scale_mode=args.quilt_scale_mode,
         topology_composition=topology_composition,
+        topology_display=args.topology_display,
     )
 
     print(f"Truth-populated bins: {int(populated.sum())}")
@@ -4158,11 +4177,18 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
             "Topology background: unavailable; rebuild with the current response-root "
             "to store topology-resolved numerator counts"
         )
-    else:
+    elif args.topology_display == "dominant":
         print(
             "Topology background: color identifies the dominant reconstructed topology; "
             "opacity increases with its fraction"
         )
+    elif args.topology_display == "stacked":
+        print(
+            "Topology strip: each phi-bin bar is normalized to the reconstructed "
+            "numerator and stacked by topology fraction"
+        )
+    else:
+        print("Topology annotation: disabled")
     print(f"Wrote acceptance plots under {args.output_dir}")
 
 
@@ -4260,7 +4286,7 @@ def _response_topology_composition(
     metadata,
     shape: tuple[int, int, int, int],
     reconstructed_total: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+) -> ResponseTopologyComposition | None:
     id_key = "reconstructed_topology_ids"
     count_key = "reconstructed_topology_counts"
     present = (id_key in metadata.files, count_key in metadata.files)
@@ -4293,6 +4319,12 @@ def _response_topology_composition(
         )
 
     total = counts.sum(axis=0)
+    fractions = np.divide(
+        counts,
+        total[np.newaxis, :],
+        out=np.zeros_like(counts),
+        where=total[np.newaxis, :] > 0.0,
+    )
     dominant = np.full(expected_bins, INVALID_TOPOLOGY, dtype=np.int64)
     dominance = np.zeros(expected_bins, dtype=float)
     if topology_ids.size:
@@ -4302,10 +4334,16 @@ def _response_topology_composition(
         dominance[populated] = counts[positions[populated], np.flatnonzero(populated)] / total[
             populated
         ]
-    return (
-        topology_ids,
-        _unflatten_response(dominant, shape),
-        _unflatten_response(dominance, shape),
+    fraction4 = (
+        np.stack([_unflatten_response(row, shape) for row in fractions])
+        if topology_ids.size
+        else np.empty((0, *shape), dtype=float)
+    )
+    return ResponseTopologyComposition(
+        topology_ids=topology_ids,
+        fractions=fraction4,
+        dominant_topology=_unflatten_response(dominant, shape),
+        dominance=_unflatten_response(dominance, shape),
     )
 
 
@@ -4350,6 +4388,80 @@ def _draw_topology_background(
             linewidth=0.0,
             zorder=0,
         )
+
+
+def _draw_topology_stacked_strip(
+    ax,
+    phi_edges: np.ndarray,
+    topology_ids: np.ndarray,
+    fractions: np.ndarray,
+    *,
+    bottom: float = 0.82,
+    height: float = 0.15,
+    label: bool = True,
+) -> None:
+    from matplotlib.patches import Rectangle
+    from matplotlib.transforms import blended_transform_factory
+
+    expected_shape = (topology_ids.size, phi_edges.size - 1)
+    if fractions.shape != expected_shape:
+        raise ValueError(
+            f"topology fractions have shape {fractions.shape}; expected {expected_shape}"
+        )
+    transform = blended_transform_factory(ax.transData, ax.transAxes)
+    ax.add_patch(
+        Rectangle(
+            (float(phi_edges[0]), bottom),
+            float(phi_edges[-1] - phi_edges[0]),
+            height,
+            transform=transform,
+            facecolor="white",
+            edgecolor="#555555",
+            linewidth=0.45,
+            alpha=0.88,
+            zorder=1.0,
+        )
+    )
+    for phi_index in range(phi_edges.size - 1):
+        cumulative = 0.0
+        for topology_index, topology_id in enumerate(topology_ids):
+            fraction = float(fractions[topology_index, phi_index])
+            if fraction <= 0.0:
+                continue
+            ax.add_patch(
+                Rectangle(
+                    (float(phi_edges[phi_index]), bottom + height * cumulative),
+                    float(phi_edges[phi_index + 1] - phi_edges[phi_index]),
+                    height * fraction,
+                    transform=transform,
+                    facecolor=_topology_color(int(topology_id)),
+                    edgecolor="white",
+                    linewidth=0.25,
+                    alpha=0.84,
+                    zorder=1.2,
+                )
+            )
+            cumulative += fraction
+    if label:
+        ax.text(
+            float(phi_edges[0]),
+            bottom + height + 0.008,
+            "REC topology mix",
+            transform=transform,
+            ha="left",
+            va="bottom",
+            fontsize=5.5,
+            color="#444444",
+            zorder=1.4,
+        )
+
+
+def _topology_strip_plot_limits(limits: tuple[float, float]) -> tuple[float, float]:
+    lower, upper = limits
+    span = upper - lower
+    if span <= 0.0:
+        span = max(abs(lower), abs(upper), 1.0)
+    return lower, upper + 0.24 * span
 
 
 def _response_diagonal(response_matrix: Path, number_of_bins: int) -> np.ndarray:
@@ -5516,13 +5628,16 @@ def _plot_quantity_quilts_vs_phi(
     scale_mode: str,
     reference_lines: tuple[float, ...] = (),
     include_zero: bool = False,
-    topology_background: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+    topology_composition: ResponseTopologyComposition | None = None,
+    topology_display: str = "dominant",
 ) -> int:
     """Draw one cross-section-style Q2-by-xB quilt per -t bin."""
     import matplotlib.pyplot as plt
 
     if scale_mode not in ("global", "panel"):
         raise ValueError("--quilt-scale-mode must be global or panel")
+    if topology_display not in ("dominant", "stacked", "none"):
+        raise ValueError("--topology-display must be dominant, stacked, or none")
     if not quantities:
         return 0
     first_values = next(iter(quantities.values()))[0]
@@ -5533,13 +5648,20 @@ def _plot_quantity_quilts_vs_phi(
             raise ValueError(f"quilt quantity {label} does not match the common 4D shape")
         if errors is not None and errors.shape != expected_shape:
             raise ValueError(f"quilt uncertainty {label} does not match the common 4D shape")
-    if topology_background is not None:
-        _, dominant_topology, topology_dominance = topology_background
+    topology_enabled = topology_composition is not None and topology_display != "none"
+    if topology_enabled:
+        dominant_topology = topology_composition.dominant_topology
+        topology_dominance = topology_composition.dominance
         if (
             dominant_topology.shape != expected_shape
             or topology_dominance.shape != expected_shape
         ):
-            raise ValueError("topology background does not match the quilt shape")
+            raise ValueError("topology composition does not match the quilt shape")
+        if topology_composition.fractions.shape != (
+            topology_composition.topology_ids.size,
+            *expected_shape,
+        ):
+            raise ValueError("topology fractions do not match the quilt shape")
 
     colors = (
         "#4c78a8", "#7b3294", "#f58518", "#222222", "#1b9e77",
@@ -5577,6 +5699,8 @@ def _plot_quantity_quilts_vs_phi(
             continue
 
         global_ylim = _padded_plot_limits(global_low, global_high, include_zero=include_zero)
+        if topology_enabled and topology_display == "stacked":
+            global_ylim = _topology_strip_plot_limits(global_ylim)
         active_q2, active_xb, positions = _ordered_quilt_axes(sorted(panels))
         fig, axes = plt.subplots(
             len(active_q2),
@@ -5590,7 +5714,7 @@ def _plot_quantity_quilts_vs_phi(
         for (iq2, ixb), series in panels.items():
             row, column = positions[(iq2, ixb)]
             ax = axes[row, column]
-            if topology_background is not None:
+            if topology_enabled and topology_display == "dominant":
                 _draw_topology_background(
                     ax,
                     phi_edges,
@@ -5621,8 +5745,20 @@ def _plot_quantity_quilts_vs_phi(
                 ax.axhline(value, color="red" if value != 1.0 else "black",
                            linestyle="--", linewidth=0.65, alpha=0.65)
             ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
-            ax.set_ylim(*(global_ylim if scale_mode == "global" else
-                          _padded_plot_limits(local_low, local_high, include_zero=include_zero)))
+            local_ylim = _padded_plot_limits(
+                local_low, local_high, include_zero=include_zero
+            )
+            if topology_enabled and topology_display == "stacked":
+                local_ylim = _topology_strip_plot_limits(local_ylim)
+            ax.set_ylim(*(global_ylim if scale_mode == "global" else local_ylim))
+            if topology_enabled and topology_display == "stacked":
+                _draw_topology_stacked_strip(
+                    ax,
+                    phi_edges,
+                    topology_composition.topology_ids,
+                    topology_composition.fractions[:, iq2, ixb, it, :],
+                    label=False,
+                )
             ax.grid(True, alpha=0.16, linewidth=0.45)
             ax.tick_params(axis="both", labelsize=6, length=2, labelleft=True)
             if iq2 == active_q2[0]:
@@ -5640,48 +5776,65 @@ def _plot_quantity_quilts_vs_phi(
                        linewidth=1.1, markersize=3, label=label)
             for index, label in enumerate(label_order)
         ]
-        if topology_background is not None:
+        if topology_enabled:
             from matplotlib.patches import Patch
 
-            page_dominant = dominant_topology[:, :, it, :]
-            page_dominance = topology_dominance[:, :, it, :]
-            page_topologies = sorted(
-                int(item)
-                for item in np.unique(page_dominant[page_dominance > 0.0])
-                if int(item) != INVALID_TOPOLOGY
-            )
+            if topology_display == "dominant":
+                page_dominant = dominant_topology[:, :, it, :]
+                page_dominance = topology_dominance[:, :, it, :]
+                page_topologies = sorted(
+                    int(item)
+                    for item in np.unique(page_dominant[page_dominance > 0.0])
+                )
+            else:
+                page_fraction = topology_composition.fractions[:, :, :, it, :]
+                page_topologies = [
+                    int(topology_id)
+                    for topology_id, fraction in zip(
+                        topology_composition.topology_ids,
+                        page_fraction,
+                        strict=True,
+                    )
+                    if np.any(fraction > 0.0)
+                ]
             handles.extend(
                 Patch(
                     facecolor=_topology_color(topology_id),
-                    alpha=_topology_alpha(0.65),
+                    alpha=(
+                        _topology_alpha(0.65)
+                        if topology_display == "dominant"
+                        else 0.84
+                    ),
                     label=_topology_label(topology_id),
                 )
                 for topology_id in page_topologies
             )
-        legend_y = 0.90 if topology_background is not None else 0.995
+        legend_y = 0.90 if topology_enabled else 0.995
         fig.legend(
             handles=handles,
             loc="upper center",
             bbox_to_anchor=(0.5, legend_y),
             ncol=min(4, len(handles)),
-            fontsize="x-small" if topology_background is not None else "small",
+            fontsize="x-small" if topology_enabled else "small",
         )
-        topology_note = (
-            "\nbar color = dominant REC topology; opacity increases with dominance"
-            if topology_background is not None
-            else ""
-        )
+        topology_note = ""
+        if topology_enabled and topology_display == "dominant":
+            topology_note = (
+                "\nbar color = dominant REC topology; opacity increases with dominance"
+            )
+        elif topology_enabled and topology_display == "stacked":
+            topology_note = "\nstacked strip = normalized REC topology composition"
         fig.suptitle(
             f"{title}\n-t {t_edges[it]:g}-{t_edges[it + 1]:g} GeV^2; "
             "Q2 increases bottom to top; xB increases left to right; "
             + ("independent panel scales" if scale_mode == "panel" else "shared page scale")
             + topology_note,
-            y=0.99 if topology_background is not None else 0.955,
-            fontsize=10 if topology_background is not None else None,
+            y=0.99 if topology_enabled else 0.955,
+            fontsize=10 if topology_enabled else None,
         )
         fig.text(0.012, 0.5, ylabel, rotation="vertical", va="center", fontsize=9)
         fig.subplots_adjust(left=0.052, right=0.995, bottom=0.045,
-                            top=0.80 if topology_background is not None else 0.89,
+                            top=0.80 if topology_enabled else 0.89,
                             wspace=0.16, hspace=0.18)
         pdf.savefig(fig)
         plt.close(fig)
@@ -5773,11 +5926,14 @@ def _plot_acceptance_vs_phi(
     csv_path: Path,
     include_quilt: bool = False,
     quilt_scale_mode: str = "panel",
-    topology_composition: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+    topology_composition: ResponseTopologyComposition | None = None,
+    topology_display: str = "dominant",
 ) -> int:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
 
+    if topology_display not in ("dominant", "stacked", "none"):
+        raise ValueError("--topology-display must be dominant, stacked, or none")
     phi_centers = 0.5 * (phi_edges[:-1] + phi_edges[1:])
     pages = 0
     csv_lines = [
@@ -5812,7 +5968,8 @@ def _plot_acceptance_vs_phi(
                 scale_mode=quilt_scale_mode,
                 reference_lines=(minimum_acceptance,),
                 include_zero=True,
-                topology_background=topology_composition,
+                topology_composition=topology_composition,
+                topology_display=topology_display,
             )
         for iq2 in range(efficiency.shape[0]):
             for ixb in range(efficiency.shape[1]):
@@ -5898,8 +6055,13 @@ def _plot_acceptance_vs_phi(
                     )
 
                     fig, ax = plt.subplots(figsize=(8, 5))
-                    if topology_composition is not None:
-                        _, dominant_topology4, topology_dominance4 = topology_composition
+                    topology_enabled = (
+                        topology_composition is not None
+                        and topology_display != "none"
+                    )
+                    if topology_enabled and topology_display == "dominant":
+                        dominant_topology4 = topology_composition.dominant_topology
+                        topology_dominance4 = topology_composition.dominance
                         dominant_topology_phi = dominant_topology4[iq2, ixb, it, :]
                         topology_dominance_phi = topology_dominance4[iq2, ixb, it, :]
                         _draw_topology_background(
@@ -5992,6 +6154,16 @@ def _plot_acceptance_vs_phi(
                     )
                     ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
                     ax.set_ylim(bottom=0.0)
+                    if topology_enabled and topology_display == "stacked":
+                        ax.set_ylim(*_topology_strip_plot_limits(ax.get_ylim()))
+                        _draw_topology_stacked_strip(
+                            ax,
+                            phi_edges,
+                            topology_composition.topology_ids,
+                            topology_composition.fractions[:, iq2, ixb, it, :],
+                            bottom=0.80,
+                            height=0.16,
+                        )
                     ax.set_xlabel("phi bin center [deg]")
                     ax.set_ylabel("Migration/acceptance diagnostic")
                     ax.set_title(
@@ -6001,27 +6173,46 @@ def _plot_acceptance_vs_phi(
                         f"-t {t_edges[it]:g}-{t_edges[it + 1]:g}"
                         + (
                             "\nbar color = dominant REC topology; opacity increases with dominance"
-                            if topology_composition is not None
+                            if topology_enabled and topology_display == "dominant"
+                            else "\nstacked strip = normalized REC topology composition"
+                            if topology_enabled and topology_display == "stacked"
                             else ""
                         )
                     )
                     ax.grid(True, alpha=0.25)
                     handles, labels = ax.get_legend_handles_labels()
-                    if topology_composition is not None:
+                    if topology_enabled:
                         from matplotlib.patches import Patch
 
-                        page_topologies = sorted(
-                            int(item)
-                            for item in np.unique(
-                                dominant_topology_phi[topology_dominance_phi > 0.0]
+                        if topology_display == "dominant":
+                            page_topologies = sorted(
+                                int(item)
+                                for item in np.unique(
+                                    dominant_topology_phi[topology_dominance_phi > 0.0]
+                                )
                             )
-                            if int(item) != INVALID_TOPOLOGY
-                        )
+                        else:
+                            fraction_phi = topology_composition.fractions[
+                                :, iq2, ixb, it, :
+                            ]
+                            page_topologies = [
+                                int(topology_id)
+                                for topology_id, fraction in zip(
+                                    topology_composition.topology_ids,
+                                    fraction_phi,
+                                    strict=True,
+                                )
+                                if np.any(fraction > 0.0)
+                            ]
                         for topology_id in page_topologies:
                             handles.append(
                                 Patch(
                                     facecolor=_topology_color(topology_id),
-                                    alpha=_topology_alpha(0.65),
+                                    alpha=(
+                                        _topology_alpha(0.65)
+                                        if topology_display == "dominant"
+                                        else 0.84
+                                    ),
                                 )
                             )
                             labels.append(_topology_label(topology_id))
