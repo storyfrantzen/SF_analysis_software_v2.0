@@ -800,12 +800,18 @@ def command_response_root(args: argparse.Namespace) -> None:
         topology_fields = {
             "reconstructed_topology_ids": summary.reconstructed_topology_ids,
             "reconstructed_topology_counts": summary.reconstructed_topology_counts,
+            "accepted_topology_counts": summary.accepted_topology_counts,
             "reconstructed_topology_definition": (
                 "4 * reconstructed proton detector ID + reconstructed FT photon count"
             ),
             "reconstructed_topology_count_definition": (
                 "generated-event-weighted selected REC events by reconstructed 4D bin "
                 "after the response selection mask and generated-event match"
+            ),
+            "accepted_topology_count_definition": (
+                "generated-event-weighted selected REC events by generated 4D truth "
+                "bin and reconstructed topology, restricted to generated events in "
+                "the analysis phase space and excluding feed-in"
             ),
         }
 

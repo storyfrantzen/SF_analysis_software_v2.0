@@ -357,10 +357,15 @@ groups in both the signal-window and sideband contributions. This makes the
 topology slopes directly comparable to the integrated result without refitting
 the sideband transfer factors on smaller samples.
 
-Topology-group mode is a data diagnostic. It does not accept GEMC efficiency
-inputs or write a topology-dependent correction because the current correction
-artifact presently stores one scalar event weight per run. Continue to use the
-topology-integrated nominal study when producing the downstream correction.
+When GEMC inputs are supplied, topology-group mode performs the complete
+double-slope study. It reads `reconstructed_topology_ids` and
+`accepted_topology_counts` from each response metadata file, keeps the common
+generated truth denominator, and forms the truth-matched, feed-in-excluded
+accepted numerator from the requested reconstructed topology groups. The
+resulting `current_efficiency_correction.json` is scoped to those groups. Its
+scalar event weights must not be applied to the topology-integrated physics
+sample; use it for the topology comparison or for a sample explicitly
+restricted to the same reconstructed topology.
 
 Include L5 only after confirming that its physics trigger and prescale are
 compatible with P3/P4. L4 trigger tests, mixed/random-trigger L6 runs, the E2

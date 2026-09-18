@@ -94,11 +94,13 @@ def parse_args() -> argparse.Namespace:
         choices=SUPPORTED_TOPOLOGY_GROUP_IDS,
         default=[],
         help=(
-            "Restrict the fitted data yield to one reconstructed detector-topology "
-            "group; repeat to combine groups. IDs are pFD/fdfd=4, pFD/fdft=5, "
+            "Restrict the fitted data yield and, when supplied, the GEMC accepted "
+            "numerator to one reconstructed detector-topology group; repeat to "
+            "combine groups. IDs are pFD/fdfd=4, pFD/fdft=5, "
             "pFD/ftft=6, pCD/fdfd=8, pCD/fdft=9, and pCD/ftft=10. With "
             "--background-cuts, both signal and sideband contributions are filtered "
-            "after the common topology-specific transfer factors are fitted."
+            "after the common topology-specific transfer factors are fitted. GEMC "
+            "response metadata must contain truth-matched accepted topology counts."
         ),
     )
     parser.add_argument(
@@ -272,14 +274,6 @@ def data_relative_model(
 
 def main() -> int:
     args = parse_args()
-    if args.topology_group and (
-        args.gemc_manifest is not None or args.gemc_sample is not None
-    ):
-        raise ValueError(
-            "--topology-group is currently a data-only diagnostic and cannot be "
-            "combined with GEMC efficiency inputs; the scalar correction artifact "
-            "does not encode reconstructed-topology-dependent event weights"
-        )
     shared_slope_periods = parse_shared_slope_periods(args.shared_slope_period)
     records, validation = build_run_yields(
         args.sample,
@@ -314,8 +308,15 @@ def main() -> int:
     gemc_validation = None
     gemc_source = None
     if args.gemc_manifest is not None:
-        gemc_points, gemc_validation = load_gemc_efficiencies(args.gemc_manifest)
-        gemc_source = {"manifest": str(args.gemc_manifest.resolve())}
+        gemc_points, gemc_validation = load_gemc_efficiencies(
+            args.gemc_manifest,
+            topology_group_ids=args.topology_group,
+        )
+        gemc_source = {
+            "manifest": str(args.gemc_manifest.resolve()),
+            "topology_group_ids": validation["topology_group_ids"],
+            "topology_group_labels": validation["topology_group_labels"],
+        }
     elif args.gemc_sample is not None:
         sample_entries = [
             {
@@ -326,9 +327,15 @@ def main() -> int:
             for label, current, response_meta in args.gemc_sample
         ]
         gemc_points, gemc_validation = load_gemc_efficiency_samples(
-            sample_entries, base_directory=Path.cwd()
+            sample_entries,
+            base_directory=Path.cwd(),
+            topology_group_ids=args.topology_group,
         )
-        gemc_source = {"command_line_samples": sample_entries}
+        gemc_source = {
+            "command_line_samples": sample_entries,
+            "topology_group_ids": validation["topology_group_ids"],
+            "topology_group_labels": validation["topology_group_labels"],
+        }
     if gemc_points is not None:
         gemc_fit = fit_linear_efficiency(gemc_points)
         attach_relative_gemc_efficiencies(gemc_points, gemc_fit)
@@ -393,6 +400,13 @@ def main() -> int:
                     else None
                 ),
                 "background_subtraction": validation["background_subtraction"],
+                "topology_group_ids": validation["topology_group_ids"],
+                "topology_group_labels": validation["topology_group_labels"],
+                "scope": (
+                    "reconstructed_topology_groups"
+                    if validation["topology_group_ids"]
+                    else "topology_integrated"
+                ),
                 "data_fit": asdict(fit),
                 "gemc": gemc_source,
             },
@@ -459,9 +473,13 @@ def main() -> int:
         "selection": {
             "mode": validation["yield_mode"],
             "scope": (
-                "topology_group_diagnostic"
-                if validation["topology_group_ids"]
-                else "topology_integrated"
+                "topology_group_double_slope"
+                if validation["topology_group_ids"] and gemc_points is not None
+                else (
+                    "topology_group_data_only"
+                    if validation["topology_group_ids"]
+                    else "topology_integrated"
+                )
             ),
             "topology_group_ids": validation["topology_group_ids"],
             "topology_group_labels": validation["topology_group_labels"],
@@ -497,7 +515,7 @@ def main() -> int:
             "automatic_low_yield_excluded_runs_downstream": validation[
                 "runs_below_group_yield_threshold"
             ]
-            if not args.topology_group
+            if not args.topology_group or gemc_points is not None
             else [],
         },
         "validation": validation,
@@ -730,10 +748,17 @@ def study_warnings(
             "added independently to the current-fit point uncertainties."
         )
     if args.topology_group:
-        warnings.append(
-            "This is a reconstructed-topology diagnostic. Its fitted slope is not a "
-            "standalone correction for the topology-integrated physics sample."
-        )
+        if gemc_points is None:
+            warnings.append(
+                "This is a reconstructed-topology data-only diagnostic; no GEMC "
+                "current slope or double-slope correction was supplied."
+            )
+        else:
+            warnings.append(
+                "This double-slope correction is scoped to the selected reconstructed "
+                "topology groups. Do not apply its scalar event weights to the "
+                "topology-integrated physics sample."
+            )
     if "L5" in args.include_classes:
         warnings.append(
             "L5 is included; confirm its physics trigger and prescale are compatible with P3/P4."
@@ -785,12 +810,19 @@ def study_warnings(
         )
     if validation.get("runs_below_group_yield_threshold"):
         if args.topology_group:
-            warnings.append(
-                "Runs more than the configured number of statistical standard deviations "
-                "below their leave-one-out topology-group mean were excluded from this "
-                "diagnostic fit; these exclusions are not applied to the "
-                "topology-integrated correction."
-            )
+            if gemc_points is None:
+                warnings.append(
+                    "Runs more than the configured number of statistical standard "
+                    "deviations below their leave-one-out topology-group mean were "
+                    "excluded from this data-only diagnostic fit."
+                )
+            else:
+                warnings.append(
+                    "Runs more than the configured number of statistical standard "
+                    "deviations below their leave-one-out topology-group mean receive "
+                    "zero weight in this topology-scoped correction artifact; these "
+                    "exclusions do not alter the topology-integrated correction."
+                )
         else:
             warnings.append(
                 "Runs more than the configured number of statistical standard deviations "

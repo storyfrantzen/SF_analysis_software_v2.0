@@ -46,6 +46,7 @@ class RootResponseSummary:
     matched_selected_rows: int
     reconstructed_topology_ids: np.ndarray
     reconstructed_topology_counts: np.ndarray
+    accepted_topology_counts: np.ndarray
 
 
 def build_response_from_root(
@@ -136,6 +137,9 @@ def build_response_from_root(
     reconstructed_total = np.zeros(number_of_bins, dtype=float)
     feed_counts = np.zeros(number_of_bins, dtype=float)
     topology_counts = np.zeros((topology_ids.size, number_of_bins), dtype=float)
+    topology_accepted_counts = np.zeros(
+        (topology_ids.size, number_of_bins), dtype=float
+    )
     migration_rows: list[np.ndarray] = []
     migration_cols: list[np.ndarray] = []
     migration_weights: list[np.ndarray] = []
@@ -208,6 +212,15 @@ def build_response_from_root(
             migration_rows.append(rec_flat[migrated])
             migration_cols.append(matched_truth_flat[migrated])
             migration_weights.append(matched_weights[migrated])
+            if topology_columns_available:
+                for topology_index, topology_id in enumerate(topology_ids):
+                    topology_rows = migrated & (matched_topology == topology_id)
+                    if np.any(topology_rows):
+                        topology_accepted_counts[topology_index] += np.bincount(
+                            matched_truth_flat[topology_rows],
+                            weights=matched_weights[topology_rows],
+                            minlength=number_of_bins,
+                        )
 
         feed_in = rec_inside & ~matched_truth_inside
         if np.any(feed_in):
@@ -229,6 +242,16 @@ def build_response_from_root(
         raise RuntimeError(
             "topology-resolved reconstructed counts do not sum to reconstructed_total"
         )
+    accepted_by_truth = response.efficiency * response.truth_total
+    if topology_columns_available and not np.allclose(
+        topology_accepted_counts.sum(axis=0),
+        accepted_by_truth,
+        rtol=1.0e-10,
+        atol=1.0e-10,
+    ):
+        raise RuntimeError(
+            "topology-resolved accepted counts do not sum to the response numerator"
+        )
     return RootResponseSummary(
         response=response,
         generated_rows=generated_entries,
@@ -236,6 +259,7 @@ def build_response_from_root(
         matched_selected_rows=matched_selected_rows,
         reconstructed_topology_ids=topology_ids,
         reconstructed_topology_counts=topology_counts,
+        accepted_topology_counts=topology_accepted_counts,
     )
 
 

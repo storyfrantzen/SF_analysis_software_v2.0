@@ -57,17 +57,26 @@ class LinearEfficiencyFit:
 
 def load_gemc_efficiencies(
     manifest_path: Path,
+    *,
+    topology_group_ids: tuple[int, ...] | list[int] = (),
 ) -> tuple[list[GEMCEfficiencyPoint], dict]:
     with manifest_path.open(encoding="utf-8") as stream:
         manifest = json.load(stream)
     samples = manifest.get("samples")
     if not isinstance(samples, list) or not samples:
         raise ValueError("GEMC efficiency manifest must contain a nonempty samples array")
-    return load_gemc_efficiency_samples(samples, base_directory=manifest_path.parent)
+    return load_gemc_efficiency_samples(
+        samples,
+        base_directory=manifest_path.parent,
+        topology_group_ids=topology_group_ids,
+    )
 
 
 def load_gemc_efficiency_samples(
-    samples: list[dict], *, base_directory: Path
+    samples: list[dict],
+    *,
+    base_directory: Path,
+    topology_group_ids: tuple[int, ...] | list[int] = (),
 ) -> tuple[list[GEMCEfficiencyPoint], dict]:
     if not samples:
         raise ValueError("at least one GEMC efficiency sample is required")
@@ -79,6 +88,9 @@ def load_gemc_efficiency_samples(
     edge_keys = ("q2_edges", "xb_edges", "t_edges", "phi_edges")
     truth_matches_reference: list[bool] = []
     maximum_truth_difference = 0.0
+    selected_topology_groups = tuple(
+        sorted({int(group_id) for group_id in topology_group_ids})
+    )
 
     for index, sample in enumerate(samples):
         if not isinstance(sample, dict):
@@ -96,12 +108,26 @@ def load_gemc_efficiency_samples(
         meta_path = meta_path.resolve()
         with np.load(meta_path, allow_pickle=False) as metadata:
             required = {"truth_total", "efficiency", *edge_keys}
+            if selected_topology_groups:
+                required.update(
+                    {
+                        "reconstructed_topology_ids",
+                        "accepted_topology_counts",
+                    }
+                )
             missing = sorted(required.difference(metadata.files))
             if missing:
                 raise ValueError(f"{meta_path} is missing response arrays: {missing}")
             truth = np.asarray(metadata["truth_total"], dtype=float)
             efficiency_by_bin = np.asarray(metadata["efficiency"], dtype=float)
             edges = {key: np.asarray(metadata[key], dtype=float) for key in edge_keys}
+            if selected_topology_groups:
+                topology_ids = np.asarray(
+                    metadata["reconstructed_topology_ids"], dtype=np.int64
+                )
+                topology_counts = np.asarray(
+                    metadata["accepted_topology_counts"], dtype=float
+                )
 
         if truth.ndim != 1 or efficiency_by_bin.shape != truth.shape:
             raise ValueError(f"response arrays have incompatible shapes in {meta_path}")
@@ -109,8 +135,45 @@ def load_gemc_efficiency_samples(
             raise ValueError(f"invalid truth totals in {meta_path}")
         if not np.all(np.isfinite(efficiency_by_bin)) or np.any(efficiency_by_bin < 0.0):
             raise ValueError(f"invalid efficiencies in {meta_path}")
+        if selected_topology_groups:
+            if topology_ids.ndim != 1 or topology_counts.shape != (
+                topology_ids.size,
+                truth.size,
+            ):
+                raise ValueError(
+                    f"topology response arrays have incompatible shapes in {meta_path}"
+                )
+            if not np.all(np.isfinite(topology_counts)) or np.any(topology_counts < 0.0):
+                raise ValueError(f"invalid topology response counts in {meta_path}")
+            integrated_accepted_by_bin = truth * efficiency_by_bin
+            if not np.allclose(
+                topology_counts.sum(axis=0),
+                integrated_accepted_by_bin,
+                rtol=1.0e-10,
+                atol=1.0e-8,
+            ):
+                raise ValueError(
+                    "accepted topology counts do not reconstruct the integrated "
+                    f"efficiency numerator in {meta_path}"
+                )
+            missing_topologies = sorted(
+                set(selected_topology_groups).difference(
+                    int(value) for value in topology_ids
+                )
+            )
+            if missing_topologies:
+                raise ValueError(
+                    f"{meta_path} is missing reconstructed topology IDs: "
+                    + ", ".join(str(value) for value in missing_topologies)
+                )
+            topology_rows = np.isin(
+                topology_ids, np.asarray(selected_topology_groups, dtype=np.int64)
+            )
+            accepted_by_bin = topology_counts[topology_rows].sum(axis=0)
+        else:
+            accepted_by_bin = truth * efficiency_by_bin
         generated = float(truth.sum())
-        accepted = float(np.sum(truth * efficiency_by_bin))
+        accepted = float(accepted_by_bin.sum())
         if generated <= 0.0:
             raise ValueError(f"GEMC sample {label} has no generated weight in range")
         efficiency = accepted / generated
@@ -170,6 +233,14 @@ def load_gemc_efficiency_samples(
         "binning_identical": True,
         "truth_totals_match_reference": all(truth_matches_reference),
         "maximum_relative_truth_total_difference": maximum_truth_difference,
+        "topology_group_ids": list(selected_topology_groups),
+        "accepted_weight_definition": (
+            "sum of generated-event-weighted accepted_topology_counts for the selected "
+            "reconstructed topology groups, restricted to generated events in the "
+            "analysis phase space and excluding feed-in"
+            if selected_topology_groups
+            else "sum of truth_total times integrated response efficiency"
+        ),
     }
     return points, validation
 

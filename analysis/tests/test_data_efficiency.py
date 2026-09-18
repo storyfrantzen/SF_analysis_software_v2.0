@@ -441,12 +441,20 @@ class DataEfficiencyTests(unittest.TestCase):
                 no_background,
                 truth_total=truth,
                 efficiency=np.asarray([0.8, 0.8]),
+                reconstructed_topology_ids=np.asarray([4, 8]),
+                accepted_topology_counts=np.asarray(
+                    [[50.0, 40.0], [30.0, 40.0]]
+                ),
                 **edges,
             )
             np.savez_compressed(
                 merged,
                 truth_total=truth,
                 efficiency=np.asarray([0.68, 0.68]),
+                reconstructed_topology_ids=np.asarray([4, 8]),
+                accepted_topology_counts=np.asarray(
+                    [[40.0, 35.0], [28.0, 33.0]]
+                ),
                 **edges,
             )
             manifest = directory / "gemc.json"
@@ -472,12 +480,23 @@ class DataEfficiencyTests(unittest.TestCase):
             points, validation = load_gemc_efficiencies(manifest)
             fit = fit_linear_efficiency(points)
             attach_relative_gemc_efficiencies(points, fit)
+            topology_points, topology_validation = load_gemc_efficiencies(
+                manifest, topology_group_ids=(8,)
+            )
+            topology_fit = fit_linear_efficiency(topology_points)
 
         self.assertTrue(validation["truth_totals_match_reference"])
         self.assertAlmostEqual(fit.intercept, 0.8)
         self.assertAlmostEqual(fit.slope_per_nA, -0.002)
         self.assertAlmostEqual(points[1].relative_efficiency, 0.85)
         self.assertEqual(fit.ndf, 0)
+        self.assertEqual(topology_validation["topology_group_ids"], [8])
+        self.assertAlmostEqual(topology_points[0].generated_weight, 200.0)
+        self.assertAlmostEqual(topology_points[0].accepted_weight, 70.0)
+        self.assertAlmostEqual(topology_points[0].efficiency, 0.35)
+        self.assertAlmostEqual(topology_points[1].accepted_weight, 61.0)
+        self.assertAlmostEqual(topology_points[1].efficiency, 0.305)
+        self.assertAlmostEqual(topology_fit.slope_per_nA, -0.00075)
 
     def test_missing_current_run_must_be_excluded_downstream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -725,12 +744,16 @@ class DataEfficiencyTests(unittest.TestCase):
                 response_0,
                 truth_total=np.asarray([1000.0]),
                 efficiency=np.asarray([0.8]),
+                reconstructed_topology_ids=np.asarray([4]),
+                accepted_topology_counts=np.asarray([[800.0]]),
                 **edges,
             )
             np.savez_compressed(
                 response_60,
                 truth_total=np.asarray([1000.0]),
                 efficiency=np.asarray([0.68]),
+                reconstructed_topology_ids=np.asarray([4]),
+                accepted_topology_counts=np.asarray([[680.0]]),
                 **edges,
             )
             gemc_manifest = directory / "gemc.json"
@@ -770,6 +793,8 @@ class DataEfficiencyTests(unittest.TestCase):
                 "1002",
                 "--minimum-group-charge-fraction",
                 "0.001",
+                "--topology-group",
+                "4",
                 "--gemc-manifest",
                 str(gemc_manifest),
                 "--output-dir",
@@ -791,6 +816,10 @@ class DataEfficiencyTests(unittest.TestCase):
                 summary["fit"]["fit_model"],
                 "shared_fractional_slope_separate_intercepts",
             )
+            self.assertEqual(
+                summary["selection"]["scope"], "topology_group_double_slope"
+            )
+            self.assertEqual(summary["gemc"]["validation"]["topology_group_ids"], [4])
             self.assertAlmostEqual(
                 summary["fit"]["period_intercepts_events_per_nC"]["early"],
                 100.0,
