@@ -498,12 +498,17 @@ python3 analysis/study_data_efficiency.py data_events.npz \
   --output-dir results/data_efficiency/rgk_6.535
 ```
 
-The GEMC numerator is `sum_i(truth_total_i * efficiency_i)`, which counts selected
-events generated and reconstructed inside the analysis phase space without
-including feed-in. The denominator is `sum_i(truth_total_i)`. Relative data
-and GEMC efficiencies are both normalized to their fitted zero-current
-intercepts on the overlay. `gemc_efficiency_points.csv` and the complete GEMC
-fit are also written.
+For every GEMC sample, the native numerator is
+`sum_i(truth_total_i * efficiency_i)`, which counts selected events generated
+and reconstructed inside the analysis phase space without including feed-in.
+Before fitting the current dependence, all samples are standardized to the
+lowest-current sample's generated-truth distribution over bins supported by
+every sample. This prevents different generated kinematic mixtures from being
+misidentified as detector-current dependence. Native totals, standardized
+efficiencies, common-support fractions, and the uncertainty model are retained
+in `gemc_efficiency_points.csv` and the correction provenance. Relative data
+and standardized GEMC efficiencies are normalized to their fitted zero-current
+intercepts on the overlay.
 
 The scalar correction consumed by `unfold` is
 

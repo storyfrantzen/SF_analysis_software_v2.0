@@ -337,6 +337,9 @@ def main() -> int:
             "topology_group_labels": validation["topology_group_labels"],
         }
     if gemc_points is not None:
+        assert gemc_source is not None
+        assert gemc_validation is not None
+        gemc_source["validation"] = gemc_validation
         gemc_fit = fit_linear_efficiency(gemc_points)
         attach_relative_gemc_efficiencies(gemc_points, gemc_fit)
     elif args.reference_current_na is not None:
@@ -838,11 +841,12 @@ def study_warnings(
         "truth_totals_match_reference", False
     ):
         warnings.append(
-            "GEMC truth totals differ among current samples; use matched generated events "
-            "or validate that generator-distribution differences do not bias the global efficiency."
+            "GEMC truth totals differ among current samples; fitted efficiencies were "
+            "standardized to the lowest-current generated-truth distribution on their "
+            "common support."
         )
     if gemc_points is not None and any(
-        point.uncertainty_model == "binomial_effective_weight_approximation"
+        "effective_weight_approximation" in point.uncertainty_model
         for point in gemc_points
     ):
         warnings.append(

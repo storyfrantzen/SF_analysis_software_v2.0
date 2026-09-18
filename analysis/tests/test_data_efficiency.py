@@ -498,6 +498,66 @@ class DataEfficiencyTests(unittest.TestCase):
         self.assertAlmostEqual(topology_points[1].efficiency, 0.305)
         self.assertAlmostEqual(topology_fit.slope_per_nA, -0.00075)
 
+    def test_gemc_efficiencies_use_common_lowest_current_truth_mixture(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            edges = {
+                "q2_edges": np.asarray([1.0, 2.0, 3.0]),
+                "xb_edges": np.asarray([0.1, 0.2]),
+                "t_edges": np.asarray([0.1, 0.2]),
+                "phi_edges": np.asarray([0.0, 180.0]),
+            }
+            no_background = directory / "response_0.npz"
+            merged = directory / "response_40.npz"
+            np.savez_compressed(
+                no_background,
+                truth_total=np.asarray([100.0, 10.0]),
+                efficiency=np.asarray([0.1, 0.9]),
+                **edges,
+            )
+            np.savez_compressed(
+                merged,
+                truth_total=np.asarray([10.0, 100.0]),
+                efficiency=np.asarray([0.05, 0.45]),
+                **edges,
+            )
+            manifest = directory / "gemc.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "samples": [
+                            {
+                                "label": "no_background",
+                                "current_nA": 0.0,
+                                "response_meta": no_background.name,
+                            },
+                            {
+                                "label": "merged_40nA",
+                                "current_nA": 40.0,
+                                "response_meta": merged.name,
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            points, validation = load_gemc_efficiencies(manifest)
+            fit = fit_linear_efficiency(points)
+
+        self.assertFalse(validation["truth_totals_match_reference"])
+        self.assertEqual(
+            validation["truth_standardization"],
+            "lowest_current_truth_distribution_on_common_support",
+        )
+        self.assertEqual(
+            validation["truth_standardization_reference_label"], "no_background"
+        )
+        self.assertAlmostEqual(points[0].native_efficiency, 19.0 / 110.0)
+        self.assertAlmostEqual(points[1].native_efficiency, 45.5 / 110.0)
+        self.assertAlmostEqual(points[0].efficiency, 19.0 / 110.0)
+        self.assertAlmostEqual(points[1].efficiency, 9.5 / 110.0)
+        self.assertAlmostEqual(fit.slope_per_nA / fit.intercept, -0.0125)
+
     def test_missing_current_run_must_be_excluded_downstream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -820,6 +880,12 @@ class DataEfficiencyTests(unittest.TestCase):
                 summary["selection"]["scope"], "topology_group_double_slope"
             )
             self.assertEqual(summary["gemc"]["validation"]["topology_group_ids"], [4])
+            self.assertEqual(
+                correction.payload["sources"]["gemc"]["validation"][
+                    "truth_standardization"
+                ],
+                "lowest_current_truth_distribution_on_common_support",
+            )
             self.assertAlmostEqual(
                 summary["fit"]["period_intercepts_events_per_nC"]["early"],
                 100.0,

@@ -120,15 +120,11 @@ def common_truth_weights(samples: list[ResponseSample]) -> tuple[np.ndarray, np.
     support = np.logical_and.reduce([sample.truth > 0.0 for sample in samples])
     if not np.any(support):
         raise ValueError("response samples have no common truth support")
-    normalized = []
-    for sample in samples:
-        common_truth = np.where(support, sample.truth, 0.0)
-        total = float(common_truth.sum())
-        if total <= 0.0:
-            raise ValueError(f"{sample.label} has no truth on common support")
-        normalized.append(common_truth / total)
-    weights = np.mean(np.stack(normalized), axis=0)
-    weights /= weights.sum()
+    reference_truth = np.where(support, samples[0].truth, 0.0)
+    reference_total = float(reference_truth.sum())
+    if reference_total <= 0.0:
+        raise ValueError(f"{samples[0].label} has no truth on common support")
+    weights = reference_truth / reference_total
     return support, weights
 
 
@@ -210,6 +206,7 @@ def main() -> int:
             f"path={sample.path}"
         )
     print("Common supported bins =", int(np.count_nonzero(support)), "/", support.size)
+    print("Truth standardization reference =", samples[0].label)
 
     print_comparison(
         "topology integrated",
