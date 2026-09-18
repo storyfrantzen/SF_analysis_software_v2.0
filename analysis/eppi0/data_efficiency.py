@@ -12,7 +12,19 @@ import numpy as np
 
 from .background_subtraction import METHOD as BACKGROUND_METHOD
 from .background_subtraction import estimate_mgg_background
-from .exclusivity import load_cuts
+from .exclusivity import load_cuts, topology_ids_from_groups
+from .topology import detector_topology_id
+
+
+SUPPORTED_TOPOLOGY_GROUP_IDS = (4, 5, 6, 8, 9, 10)
+TOPOLOGY_GROUP_LABELS = {
+    4: "pFD_fdfd",
+    5: "pFD_fdft",
+    6: "pFD_ftft",
+    8: "pCD_fdfd",
+    9: "pCD_fdft",
+    10: "pCD_ftft",
+}
 
 
 @dataclass
@@ -254,6 +266,7 @@ def build_run_yields(
     background_cuts_path: Path | None = None,
     background_alpha_bootstrap: int = 200,
     background_seed: int | None = 12345,
+    topology_group_ids: Iterable[int] = (),
 ) -> tuple[list[RunYield], dict]:
     include_class_set = set(include_classes)
     include_quality_set = set(include_qualities)
@@ -267,6 +280,17 @@ def build_run_yields(
         raise ValueError("low_yield_sigma_threshold must be finite and nonnegative")
     if not include_class_set and not include_run_set:
         raise ValueError("at least one included run class or explicit run is required")
+    selected_topology_groups = tuple(
+        sorted({int(group_id) for group_id in topology_group_ids})
+    )
+    unsupported_topology_groups = sorted(
+        set(selected_topology_groups).difference(SUPPORTED_TOPOLOGY_GROUP_IDS)
+    )
+    if unsupported_topology_groups:
+        raise ValueError(
+            "unsupported topology-group IDs: "
+            + ", ".join(str(value) for value in unsupported_topology_groups)
+        )
 
     manifest, manifest_runs = load_current_manifest(manifest_path)
     with np.load(sample_path, allow_pickle=False) as sample:
@@ -277,6 +301,24 @@ def build_run_yields(
         event_runs = np.asarray(sample["run"], dtype=np.int64)
         if event_runs.ndim != 1:
             raise ValueError("sample run array must be one-dimensional")
+        topology_mask = np.ones(event_runs.size, dtype=bool)
+        if selected_topology_groups:
+            topology_required = {"rec_proton_detector", "rec_ft_photon_count"}
+            topology_missing = sorted(topology_required.difference(sample.files))
+            if topology_missing:
+                raise ValueError(
+                    "topology-group selection requires compact-data arrays: "
+                    + ", ".join(topology_missing)
+                )
+            event_topology_groups = detector_topology_id(
+                np.asarray(sample["rec_proton_detector"]),
+                np.asarray(sample["rec_ft_photon_count"]),
+            )
+            if event_topology_groups.shape != event_runs.shape:
+                raise ValueError("sample topology arrays must match the run array")
+            topology_mask = np.isin(
+                event_topology_groups, np.asarray(selected_topology_groups)
+            )
         fixed_mask = (
             load_selection_mask(selection_mask_path, event_runs.size, selection_mask_key)
             if selection_mask_path is not None
@@ -285,6 +327,21 @@ def build_run_yields(
         background_metadata = None
         if background_cuts_path is not None:
             cuts = load_cuts(str(background_cuts_path))
+            if selected_topology_groups:
+                cut_topology_groups = topology_ids_from_groups(
+                    cuts.group_ids, cuts.global_mode
+                )
+                missing_cut_groups = sorted(
+                    set(selected_topology_groups).difference(
+                        int(value) for value in cut_topology_groups
+                    )
+                )
+                if missing_cut_groups:
+                    raise ValueError(
+                        "requested topology groups are absent from the retained "
+                        "background-cut table: "
+                        + ", ".join(str(value) for value in missing_cut_groups)
+                    )
             background_required = {
                 *cuts.variables,
                 "rec_proton_detector",
@@ -331,9 +388,11 @@ def build_run_yields(
                     "--selection-mask disagrees with the signal region derived from "
                     f"--background-cuts for {disagreement} events"
                 )
-            signal_region_mask = background.signal_region_mask
-            sideband_mask = background.sideband_mask
-            signal_event_weights = background.net_event_weights
+            signal_region_mask = background.signal_region_mask & topology_mask
+            sideband_mask = background.sideband_mask & topology_mask
+            signal_event_weights = np.where(
+                topology_mask, background.net_event_weights, 0.0
+            )
             signal_variance_weights = signal_event_weights**2
             yield_mode = "mgg_sideband_subtracted"
             background_metadata = {
@@ -341,6 +400,11 @@ def build_run_yields(
                 "cuts": str(Path(background_cuts_path).resolve()),
                 "alpha_bootstrap": int(background_alpha_bootstrap),
                 "seed": background_seed,
+                "selected_group_ids": list(selected_topology_groups),
+                "selected_group_labels": [
+                    TOPOLOGY_GROUP_LABELS[value]
+                    for value in selected_topology_groups
+                ],
                 "group_ids": background.group_ids.tolist(),
                 "signal_lower": background.signal_lower.tolist(),
                 "signal_upper": background.signal_upper.tolist(),
@@ -357,7 +421,7 @@ def build_run_yields(
                 ),
             }
         else:
-            signal_region_mask = fixed_mask
+            signal_region_mask = fixed_mask & topology_mask
             sideband_mask = np.zeros(event_runs.size, dtype=bool)
             signal_event_weights = signal_region_mask.astype(float)
             signal_variance_weights = signal_region_mask.astype(float)
@@ -477,6 +541,11 @@ def build_run_yields(
     )
     validation = {
         "candidate_events": int(event_runs.size),
+        "topology_candidate_events": int(np.count_nonzero(topology_mask)),
+        "topology_group_ids": list(selected_topology_groups),
+        "topology_group_labels": [
+            TOPOLOGY_GROUP_LABELS[value] for value in selected_topology_groups
+        ],
         "yield_mode": yield_mode,
         "signal_events": float(signal_event_weights.sum()),
         "signal_statistical_variance": float(signal_variance_weights.sum()),

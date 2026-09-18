@@ -335,6 +335,33 @@ bootstrap uncertainty of each common `alpha_g` is recorded in
 `fit_summary.json` as a correlated systematic and is deliberately not treated
 as an independent statistical error for every run or run class.
 
+To diagnose the current dependence of one reconstructed proton/photon topology,
+add a repeatable `--topology-group` selector to the same background-subtracted
+command:
+
+```bash
+python3 analysis/study_data_efficiency.py \
+  results/data/rgk_6.535_data_events.npz \
+  --background-cuts results/cuts/data_exclusivity.npz \
+  --selection-mask results/data_exclusivity.npy \
+  --topology-group 8 \
+  --include-classes L4 L5 P3 P4 \
+  --output-dir results/data_efficiency/rgk_6.535_pCD_fdfd
+```
+
+The topology IDs are `4=pFD_fdfd`, `5=pFD_fdft`, `6=pFD_ftft`,
+`8=pCD_fdfd`, `9=pCD_fdft`, and `10=pCD_ftft`. Repeating the option combines
+the requested groups. The command first performs the same common
+global-by-topology mass fits as the integrated study, then retains the selected
+groups in both the signal-window and sideband contributions. This makes the
+topology slopes directly comparable to the integrated result without refitting
+the sideband transfer factors on smaller samples.
+
+Topology-group mode is a data diagnostic. It does not accept GEMC efficiency
+inputs or write a topology-dependent correction because the current correction
+artifact presently stores one scalar event weight per run. Continue to use the
+topology-integrated nominal study when producing the downstream correction.
+
 Include L5 only after confirming that its physics trigger and prescale are
 compatible with P3/P4. L4 trigger tests, mixed/random-trigger L6 runs, the E2
 empty-target run, and half-torus T runs are excluded unless explicitly admitted

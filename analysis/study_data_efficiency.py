@@ -13,6 +13,7 @@ import tempfile
 import numpy as np
 
 from eppi0.data_efficiency import (
+    SUPPORTED_TOPOLOGY_GROUP_IDS,
     LinearYieldFit,
     SharedFractionalYieldFit,
     aggregate_current_groups,
@@ -85,6 +86,20 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=12345,
         help="Random seed for the sideband transfer-factor bootstrap",
+    )
+    parser.add_argument(
+        "--topology-group",
+        action="append",
+        type=int,
+        choices=SUPPORTED_TOPOLOGY_GROUP_IDS,
+        default=[],
+        help=(
+            "Restrict the fitted data yield to one reconstructed detector-topology "
+            "group; repeat to combine groups. IDs are pFD/fdfd=4, pFD/fdft=5, "
+            "pFD/ftft=6, pCD/fdfd=8, pCD/fdft=9, and pCD/ftft=10. With "
+            "--background-cuts, both signal and sideband contributions are filtered "
+            "after the common topology-specific transfer factors are fitted."
+        ),
     )
     parser.add_argument(
         "--include-classes",
@@ -257,6 +272,14 @@ def data_relative_model(
 
 def main() -> int:
     args = parse_args()
+    if args.topology_group and (
+        args.gemc_manifest is not None or args.gemc_sample is not None
+    ):
+        raise ValueError(
+            "--topology-group is currently a data-only diagnostic and cannot be "
+            "combined with GEMC efficiency inputs; the scalar correction artifact "
+            "does not encode reconstructed-topology-dependent event weights"
+        )
     shared_slope_periods = parse_shared_slope_periods(args.shared_slope_period)
     records, validation = build_run_yields(
         args.sample,
@@ -272,6 +295,7 @@ def main() -> int:
         background_cuts_path=args.background_cuts,
         background_alpha_bootstrap=args.background_alpha_bootstrap,
         background_seed=args.background_seed,
+        topology_group_ids=args.topology_group,
     )
     groups = aggregate_current_groups(records)
     if shared_slope_periods:
@@ -419,7 +443,7 @@ def main() -> int:
         write_csv(gemc_csv, [asdict(point) for point in gemc_points])
 
     summary = {
-        "schema_version": 3,
+        "schema_version": 4,
         "study": (
             f"{validation['dataset'].get('run_group')} charge-normalized data yield "
             "versus beam current"
@@ -434,6 +458,14 @@ def main() -> int:
         "manifest": str(args.manifest.resolve()),
         "selection": {
             "mode": validation["yield_mode"],
+            "scope": (
+                "topology_group_diagnostic"
+                if validation["topology_group_ids"]
+                else "topology_integrated"
+            ),
+            "topology_group_ids": validation["topology_group_ids"],
+            "topology_group_labels": validation["topology_group_labels"],
+            "topology_candidate_events": validation["topology_candidate_events"],
             "mask": str(args.selection_mask.resolve()) if args.selection_mask else None,
             "mask_key": args.selection_mask_key if args.selection_mask else None,
             "background_cuts": (
@@ -459,9 +491,14 @@ def main() -> int:
             "shared_slope_periods": shared_slope_periods,
             "exclude_classes_downstream": args.exclude_class_downstream,
             "exclude_runs_downstream": args.exclude_run_downstream,
-            "automatic_low_yield_excluded_runs_downstream": validation[
+            "low_yield_excluded_runs": validation[
                 "runs_below_group_yield_threshold"
             ],
+            "automatic_low_yield_excluded_runs_downstream": validation[
+                "runs_below_group_yield_threshold"
+            ]
+            if not args.topology_group
+            else [],
         },
         "validation": validation,
         "fit": asdict(fit),
@@ -528,12 +565,27 @@ def main() -> int:
         fit,
         validation["yield_mode"],
         run_group=validation["dataset"].get("run_group"),
+        topology_labels=validation["topology_group_labels"],
         gemc_points=gemc_points,
         gemc_fit=gemc_fit,
         correction=correction,
     )
 
     print(f"Candidate events: {validation['candidate_events']}")
+    if validation["topology_group_ids"]:
+        selected_groups = ", ".join(
+            f"{group_id} ({label})"
+            for group_id, label in zip(
+                validation["topology_group_ids"],
+                validation["topology_group_labels"],
+                strict=True,
+            )
+        )
+        print(f"Selected topology groups: {selected_groups}")
+        print(
+            "Topology candidate events: "
+            f"{validation['topology_candidate_events']}"
+        )
     print(f"Signal yield: {validation['signal_events']:.8g}")
     if args.background_cuts is not None:
         print(
@@ -677,6 +729,11 @@ def study_warnings(
             "uncertainties are recorded as correlated systematic information and are not "
             "added independently to the current-fit point uncertainties."
         )
+    if args.topology_group:
+        warnings.append(
+            "This is a reconstructed-topology diagnostic. Its fitted slope is not a "
+            "standalone correction for the topology-integrated physics sample."
+        )
     if "L5" in args.include_classes:
         warnings.append(
             "L5 is included; confirm its physics trigger and prescale are compatible with P3/P4."
@@ -727,11 +784,19 @@ def study_warnings(
             "ordinary run filters."
         )
     if validation.get("runs_below_group_yield_threshold"):
-        warnings.append(
-            "Runs more than the configured number of statistical standard deviations "
-            "below their leave-one-out group mean were excluded from the current fit and "
-            "will receive zero downstream weight in the correction artifact."
-        )
+        if args.topology_group:
+            warnings.append(
+                "Runs more than the configured number of statistical standard deviations "
+                "below their leave-one-out topology-group mean were excluded from this "
+                "diagnostic fit; these exclusions are not applied to the "
+                "topology-integrated correction."
+            )
+        else:
+            warnings.append(
+                "Runs more than the configured number of statistical standard deviations "
+                "below their leave-one-out group mean were excluded from the current fit "
+                "and will receive zero downstream weight in the correction artifact."
+            )
     if gemc_fit is not None and gemc_fit.points < 3:
         warnings.append(
             "The GEMC current fit has only two points; it implements the assumed linear "
@@ -832,6 +897,7 @@ def write_plots(
     yield_mode: str,
     *,
     run_group=None,
+    topology_labels=(),
     gemc_points=None,
     gemc_fit=None,
     correction=None,
@@ -872,7 +938,14 @@ def write_plots(
         raise ValueError("data zero-current intercept must be positive for a GEMC overlay")
     if show_relative and correction is None:
         raise ValueError("a current-efficiency correction model is required for a GEMC overlay")
-    study_prefix = f"{str(run_group).strip()} " if run_group else ""
+    study_parts = []
+    if run_group:
+        study_parts.append(str(run_group).strip())
+    if topology_labels:
+        study_parts.append(" + ".join(str(value) for value in topology_labels))
+    study_prefix = " / ".join(study_parts)
+    if study_prefix:
+        study_prefix += " "
 
     with PdfPages(path) as pdf:
         fig, (axis, residual_axis) = plt.subplots(

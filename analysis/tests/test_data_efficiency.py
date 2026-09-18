@@ -310,6 +310,121 @@ class DataEfficiencyTests(unittest.TestCase):
         self.assertAlmostEqual(l5.signal_events, 9.0)
         self.assertAlmostEqual(l5.signal_statistical_variance, 10.25)
 
+    def test_topology_group_filters_fixed_selection_yield(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            sample, manifest = self.write_inputs(directory)
+            with np.load(sample) as data:
+                arrays = {key: data[key] for key in data.files}
+            proton = np.asarray(arrays["rec_proton_detector"]).copy()
+            proton[::2] = 2
+            arrays["rec_proton_detector"] = proton
+            np.savez_compressed(sample, **arrays)
+
+            records, validation = build_run_yields(
+                sample,
+                manifest,
+                include_classes=("L5", "P4", "P3"),
+                low_yield_sigma_threshold=0.0,
+                topology_group_ids=(8,),
+            )
+
+        self.assertEqual(validation["candidate_events"], proton.size)
+        topology_events = int(np.count_nonzero(proton == 2))
+        self.assertEqual(validation["topology_candidate_events"], topology_events)
+        self.assertEqual(validation["topology_group_ids"], [8])
+        self.assertEqual(validation["topology_group_labels"], ["pCD_fdfd"])
+        self.assertEqual(
+            sum(record.signal_events for record in records), topology_events
+        )
+
+    def test_topology_group_filters_signal_and_sideband_contributions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            sample, manifest = self.write_inputs(directory)
+            with np.load(sample) as data:
+                arrays = {key: data[key] for key in data.files}
+                event_runs = np.asarray(data["run"])
+            proton = np.asarray(arrays["rec_proton_detector"]).copy()
+            proton[::2] = 2
+            arrays["rec_proton_detector"] = proton
+            np.savez_compressed(sample, **arrays)
+
+            signal = np.zeros(event_runs.size, dtype=bool)
+            sideband = np.zeros(event_runs.size, dtype=bool)
+            group_eight = np.flatnonzero(proton == 2)
+            group_four = np.flatnonzero(proton == 1)
+            signal[group_eight[:12]] = True
+            sideband[group_eight[12:16]] = True
+            signal[group_four[:20]] = True
+            sideband[group_four[20:28]] = True
+            net_weights = signal.astype(float) - 0.25 * sideband.astype(float)
+            background = SimpleNamespace(
+                signal_region_mask=signal,
+                sideband_mask=sideband,
+                net_event_weights=net_weights,
+                group_ids=np.asarray([4, 8]),
+                signal_lower=np.asarray([0.11, 0.11]),
+                signal_upper=np.asarray([0.16, 0.16]),
+                fit_lower=np.asarray([0.08, 0.08]),
+                fit_upper=np.asarray([0.20, 0.20]),
+                alpha=np.asarray([0.25, 0.25]),
+                alpha_uncertainty=np.asarray([0.02, 0.02]),
+                fit_model=np.asarray(
+                    ["gaussian+sideband-linear", "gaussian+sideband-linear"]
+                ),
+                fit_entries=np.asarray([event_runs.size, event_runs.size]),
+            )
+            cuts = SimpleNamespace(
+                variables=("rec_m_gg",),
+                group_ids=np.asarray([4, 8]),
+                global_mode=True,
+            )
+            with (
+                patch("eppi0.data_efficiency.load_cuts", return_value=cuts),
+                patch(
+                    "eppi0.data_efficiency.estimate_mgg_background",
+                    return_value=background,
+                ),
+            ):
+                records, validation = build_run_yields(
+                    sample,
+                    manifest,
+                    include_classes=("L5", "P4", "P3"),
+                    low_yield_sigma_threshold=0.0,
+                    background_cuts_path=directory / "cuts.npz",
+                    topology_group_ids=(8,),
+                )
+
+        self.assertEqual(validation["signal_region_events"], 12)
+        self.assertEqual(validation["sideband_events"], 4)
+        self.assertAlmostEqual(validation["estimated_background_events"], 1.0)
+        self.assertAlmostEqual(validation["signal_events"], 11.0)
+        self.assertEqual(
+            validation["background_subtraction"]["selected_group_ids"], [8]
+        )
+        self.assertAlmostEqual(sum(record.signal_events for record in records), 11.0)
+
+    def test_topology_group_must_be_retained_by_background_cuts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            sample, manifest = self.write_inputs(directory)
+            cuts = SimpleNamespace(
+                variables=("rec_m_gg",),
+                group_ids=np.asarray([4]),
+                global_mode=True,
+            )
+            with patch("eppi0.data_efficiency.load_cuts", return_value=cuts):
+                with self.assertRaisesRegex(ValueError, "absent from the retained"):
+                    build_run_yields(
+                        sample,
+                        manifest,
+                        include_classes=("L5", "P4", "P3"),
+                        low_yield_sigma_threshold=0.0,
+                        background_cuts_path=directory / "cuts.npz",
+                        topology_group_ids=(8,),
+                    )
+
     def test_gemc_response_metadata_fit_and_relative_efficiency(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
