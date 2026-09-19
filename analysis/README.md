@@ -172,6 +172,24 @@ multinomial response-probability uncertainty.  The automated triage is explicitl
 diagnostic: it identifies where losses occur but does not select a binning or
 declare a physics result valid.
 
+For a two-campaign comparison, construct paired cross-section artifacts whose
+`final_validity_mask` is the exact intersection of both campaigns in matching
+four-dimensional bins:
+
+```bash
+python3 analysis/make_common_validity_cross_sections.py \
+  results/rgk/cross_section.npz results/rga/cross_section.npz \
+  --left-output results/comparison/rgk_common.npz \
+  --right-output results/comparison/rga_common.npz
+```
+
+The command matches Q2 bins by their complete lower and upper edges, requires
+identical xB, -t, and phi edges, records both source paths and checksums, and
+sets bins outside the intersection to `NaN`. Run `fit-harmonics` and
+`structure-functions` on the paired outputs to prevent different phi coverage
+from masquerading as a campaign-dependent harmonic difference. Original
+cross-section artifacts are not modified.
+
 The cross-section artifact carries an explicit four-dimensional
 `final_validity_mask`.  It is the intersection of acceptance above the configured
 minimum, radiative reliability, bin-centering reliability, finite nonnegative
