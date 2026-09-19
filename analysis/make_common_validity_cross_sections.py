@@ -134,7 +134,7 @@ def main() -> int:
         ", ".join(
             f"left[{left_index}]=right[{right_index}]"
             for left_index, right_index in zip(
-                masks.left_q2_indices, masks.right_q2_indices, strict=True
+                masks.left_q2_indices, masks.right_q2_indices
             )
         ),
     )

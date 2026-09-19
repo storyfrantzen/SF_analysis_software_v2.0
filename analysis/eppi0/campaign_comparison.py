@@ -94,9 +94,7 @@ def common_validity_masks(
     )
     left_common = np.zeros_like(left_mask)
     right_common = np.zeros_like(right_mask)
-    for left_index, right_index in zip(
-        left_q2_indices, right_q2_indices, strict=True
-    ):
+    for left_index, right_index in zip(left_q2_indices, right_q2_indices):
         common = left_mask[left_index] & right_mask[right_index]
         left_common[left_index] = common
         right_common[right_index] = common
