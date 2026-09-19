@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,14 @@ from .structure_functions import (
 
 
 Array = np.ndarray
+
+
+def _finite_quantiles(values: list[float]) -> list[float | None]:
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if not finite.size:
+        return [None, None, None]
+    return np.quantile(finite, [0.1, 0.5, 0.9]).tolist()
 
 
 def _text(data, name: str, fallback: str) -> str:
@@ -57,7 +66,7 @@ def render_model_comparison(
     beam_energy: float,
     output_dir: str | Path,
     include_quality_rejected: bool = False,
-) -> tuple[int, int, Path]:
+) -> tuple[int, int, Path, Path]:
     """Render phi and structure-function comparisons plus a numerical CSV."""
     import matplotlib
 
@@ -179,6 +188,7 @@ def render_model_comparison(
     phi_pdf = output_dir / "model_comparison_vs_phi.pdf"
     structure_pdf = output_dir / "model_comparison_structure_functions.pdf"
     csv_path = output_dir / "model_comparison_summary.csv"
+    json_path = output_dir / "model_comparison_summary.json"
     colors = ("#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00")
     phi_centers = 0.5 * (phi_edges[:-1] + phi_edges[1:])
     phi_curve = np.linspace(float(phi_edges[0]), float(phi_edges[-1]), 721)
@@ -387,4 +397,78 @@ def render_model_comparison(
             csv_rows.append(row)
     with csv_path.open("w", newline="", encoding="utf-8") as output:
         csv.writer(output).writerows(csv_rows)
-    return phi_pages, structure_pages, csv_path
+
+    header = csv_rows[0]
+    positions = {name: index for index, name in enumerate(header)}
+    summary_models = {}
+    for record in model_records:
+        rows = [row for row in csv_rows[1:] if row[0] == record["name"]]
+        harmonic_chi2 = [float(row[positions["harmonic_chi2"]]) for row in rows]
+        structure_summary = {}
+        for name in STRUCTURE_FUNCTION_NAMES:
+            label = str(name)
+            data = np.asarray(
+                [float(row[positions[f"{label}_data"]]) for row in rows],
+                dtype=float,
+            )
+            model = np.asarray(
+                [float(row[positions[f"{label}_model"]]) for row in rows],
+                dtype=float,
+            )
+            pulls = np.asarray(
+                [float(row[positions[f"{label}_pull"]]) for row in rows],
+                dtype=float,
+            )
+            finite = np.isfinite(data) & np.isfinite(model) & np.isfinite(pulls)
+            nonzero = finite & (data != 0.0) & (model != 0.0)
+            item = {
+                "matched_bins": int(np.count_nonzero(finite)),
+                "data_above_model": int(np.count_nonzero(finite & (data > model))),
+                "data_below_model": int(np.count_nonzero(finite & (data < model))),
+                "pull_q10_median_q90": _finite_quantiles(pulls[finite].tolist()),
+                "absolute_pull_gt_2": int(
+                    np.count_nonzero(finite & (np.abs(pulls) > 2.0))
+                ),
+                "absolute_pull_gt_3": int(
+                    np.count_nonzero(finite & (np.abs(pulls) > 3.0))
+                ),
+                "same_sign_nonzero": int(
+                    np.count_nonzero(nonzero & (np.sign(data) == np.sign(model)))
+                ),
+                "opposite_sign": int(
+                    np.count_nonzero(nonzero & (np.sign(data) != np.sign(model)))
+                ),
+            }
+            if label == "sigma_U":
+                positive = finite & (data > 0.0) & (model > 0.0)
+                ratios = np.divide(
+                    data,
+                    model,
+                    out=np.full_like(data, np.nan),
+                    where=positive,
+                )
+                item["data_over_model_q10_median_q90"] = _finite_quantiles(
+                    ratios[positive].tolist()
+                )
+            structure_summary[label] = item
+        summary_models[record["name"]] = {
+            "matched_harmonic_bins": len(rows),
+            "harmonic_chi2_q10_median_q90": _finite_quantiles(harmonic_chi2),
+            "structure_functions": structure_summary,
+        }
+    summary = {
+        "data_cross_section": str(Path(cross_section_path).resolve()),
+        "data_harmonics": str(Path(harmonics_path).resolve()),
+        "model_artifacts": [str(Path(path).resolve()) for path in model_paths],
+        "comparison_definition": (
+            "data and finite-bin extraction-matched deterministic model use the "
+            "same harmonic convention"
+        ),
+        "uncertainty_limitation": (
+            "pulls and harmonic chi2 use experimental covariance only; model theory "
+            "uncertainty and pending campaign systematic covariance are not included"
+        ),
+        "models": summary_models,
+    }
+    json_path.write_text(json.dumps(summary, indent=2) + "\n")
+    return phi_pages, structure_pages, csv_path, json_path

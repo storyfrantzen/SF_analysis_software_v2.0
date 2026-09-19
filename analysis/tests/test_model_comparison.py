@@ -359,6 +359,7 @@ class ModelCommandIntegrationTests(unittest.TestCase):
             self.assertTrue(
                 (plot_dir / "model_comparison_structure_functions.pdf").is_file()
             )
+            self.assertTrue((plot_dir / "model_comparison_summary.json").is_file())
             self.assertTrue((plot_dir / "model_comparison_summary.csv").is_file())
 
     def test_plots_reject_legacy_unconverted_aao_artifact(self) -> None:

@@ -3874,7 +3874,7 @@ def command_model_prediction_merge(args: argparse.Namespace) -> None:
 
 def command_model_comparison_plots(args: argparse.Namespace) -> None:
     config = load_config(args.config)
-    phi_pages, structure_pages, csv_path = render_model_comparison(
+    phi_pages, structure_pages, csv_path, json_path = render_model_comparison(
         args.cross_section,
         args.harmonics,
         args.models,
@@ -3885,6 +3885,7 @@ def command_model_comparison_plots(args: argparse.Namespace) -> None:
     print(f"Model-comparison phi pages: {phi_pages}")
     print(f"Model-comparison structure-function pages: {structure_pages}")
     print(f"Wrote {csv_path}")
+    print(f"Wrote {json_path}")
     print(f"Wrote model-comparison plots under {args.output_dir}")
 
 

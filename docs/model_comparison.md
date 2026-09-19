@@ -188,7 +188,10 @@ The output directory contains:
 - `model_comparison_summary.csv`: data/model harmonics, structure functions,
   structure-function pulls, and
   `(h_data-h_model)^T C_data^-1 (h_data-h_model)` using the full data harmonic
-  covariance.
+  covariance;
+- `model_comparison_summary.json`: matched-bin counts, harmonic-residual
+  quantiles, structure-function pull and sign summaries, and the positive
+  `sigma_U` data/model ratio quantiles.
 
 The per-bin amplitude scales stored in `model_fit_uncertainty` are numerical
 weights used to run the same harmonic fitter, not theory errors. Model
