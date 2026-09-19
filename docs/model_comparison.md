@@ -234,7 +234,9 @@ python3 analysis/compare_structure_functions_to_reference.py \
 The command assigns the published points to the configured `Q2`, `xB`, and
 `-t` bins without interpolation. The table and the RGA configuration have 96
 one-to-one same-bin matches. It writes a multipage overlay PDF, a row-level CSV,
-and a JSON summary. CLAS6 statistical and systematic uncertainties remain
+and a JSON summary. The summary includes coordinate and epsilon offsets plus
+per-structure-function available-error residuals. CLAS6 statistical and
+systematic uncertainties remain
 separate in the CSV and are combined in quadrature only for the plotted total
 error and the explicitly named available-uncertainty residual.
 

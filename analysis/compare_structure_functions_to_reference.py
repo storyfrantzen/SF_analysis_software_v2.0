@@ -52,6 +52,14 @@ def _require_shape(name: str, values: np.ndarray, expected: tuple[int, ...]) -> 
         raise ValueError(f"{name} has shape {values.shape}; expected {expected}")
 
 
+def _quantiles(values: np.ndarray) -> list[float | None]:
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if not finite.size:
+        return [None, None, None]
+    return np.quantile(finite, [0.1, 0.5, 0.9]).tolist()
+
+
 def main() -> int:
     args = parse_args()
     artifact = np.load(args.structure_functions, allow_pickle=False)
@@ -180,6 +188,25 @@ def main() -> int:
             writer.writerow(output)
 
     valid_ratio = sigma_u_ratio[np.isfinite(sigma_u_ratio) & (sigma_u_ratio > 0.0)]
+    component_summary = {}
+    for component, name in enumerate(STRUCTURE_FUNCTIONS):
+        selected = campaign_valid & np.isfinite(campaign_values[:, component])
+        selected_residual = standardized_residual[selected, component]
+        component_summary[name] = {
+            "valid_matched_bins": int(np.count_nonzero(selected)),
+            "campaign_above_reference": int(
+                np.count_nonzero(selected & (residual[:, component] > 0.0))
+            ),
+            "campaign_below_reference": int(
+                np.count_nonzero(selected & (residual[:, component] < 0.0))
+            ),
+            "residual_over_available_uncertainty_q10_median_q90": _quantiles(
+                selected_residual
+            ),
+            "absolute_residual_over_available_uncertainty_gt_2": int(
+                np.count_nonzero(np.abs(selected_residual) > 2.0)
+            ),
+        }
     summary = {
         "campaign_structure_functions": str(args.structure_functions.resolve()),
         "reference_table": str(args.reference.resolve()),
@@ -190,6 +217,7 @@ def main() -> int:
         "reference_rows": int(table.q2.size),
         "unique_reference_analysis_bins": int(table.q2.size),
         "campaign_valid_matched_bins": int(np.count_nonzero(campaign_valid)),
+        "valid_bin_coverage_fraction": float(np.mean(campaign_valid)),
         "comparison_definition": (
             "same configured Q2, xB, and -t bin; no interpolation or bin-center "
             "translation between experiments"
@@ -204,10 +232,23 @@ def main() -> int:
             "energy and is not an identical observable without an L/T model or separation"
         ),
         "sigma_U_campaign_over_reference_quantiles": (
-            np.quantile(valid_ratio, [0.1, 0.5, 0.9]).tolist()
-            if valid_ratio.size
-            else [None, None, None]
+            _quantiles(valid_ratio)
         ),
+        "valid_bin_coordinate_offsets_q10_median_q90": {
+            "campaign_minus_reference_Q2_GeV2": _quantiles(
+                (campaign_q2 - table.q2)[campaign_valid]
+            ),
+            "campaign_minus_reference_xB": _quantiles(
+                (campaign_xb - table.xb)[campaign_valid]
+            ),
+            "campaign_minus_reference_minus_t_GeV2": _quantiles(
+                (campaign_t - table.minus_t)[campaign_valid]
+            ),
+            "campaign_minus_reference_epsilon": _quantiles(
+                (campaign_epsilon - reference_epsilon)[campaign_valid]
+            ),
+        },
+        "structure_function_comparison": component_summary,
     }
     summary_path = args.output_dir / "reference_comparison_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2) + "\n")
