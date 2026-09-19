@@ -452,6 +452,62 @@ def correction_artifact(
     }
 
 
+def unit_weight_selection_artifact(
+    *,
+    reference_current_nA: float,
+    reference_label: str,
+    reference_response_meta: Path,
+    run_records: Iterable,
+    sources: Mapping,
+    analysis_excluded_classes: Iterable[str] = (),
+    analysis_excluded_runs: Iterable[int] = (),
+    original_beam_charge_c: float | None = None,
+) -> dict:
+    """Build an explicit unit-current-weight artifact with audited run selection.
+
+    This is useful when the run exclusions and corresponding analysis charge are
+    known, but the GEMC samples needed to measure a current-dependent correction
+    are unavailable.  The resulting artifact is accepted by the ordinary
+    unfolding path, assigns one to every retained run and zero to every explicit
+    downstream exclusion, and records ``D(I_reference) = 1``.
+    """
+
+    flat_model = RelativeLinearEfficiency(
+        intercept=1.0,
+        slope_per_nA=0.0,
+        covariance=((0.0, 0.0), (0.0, 0.0)),
+    )
+    payload = correction_artifact(
+        data_model=flat_model,
+        gemc_model=flat_model,
+        reference_current_nA=reference_current_nA,
+        reference_label=reference_label,
+        reference_response_meta=reference_response_meta,
+        run_records=run_records,
+        sources=sources,
+        analysis_excluded_classes=analysis_excluded_classes,
+        analysis_excluded_runs=analysis_excluded_runs,
+        original_beam_charge_c=original_beam_charge_c,
+        data_quantity="unit relative data efficiency (current dependence disabled)",
+    )
+    payload["method"] = "unit_current_weights_same_run_selection"
+    payload["definitions"] = {
+        "D(I)": "1; data/GEMC current-efficiency correction disabled",
+        "event_weight": (
+            "one for analysis-included runs; zero for explicit downstream exclusions"
+        ),
+    }
+    payload["normalization"] = (
+        "Apply the stored unit-or-zero event weights before unfolding and divide "
+        "the final corrected yield by analysis_selection.analysis_beam_charge_c, "
+        "which removes the charge of zero-weight downstream exclusions."
+    )
+    payload["gemc_model"]["quantity"] = (
+        "unit relative GEMC efficiency (current dependence unavailable)"
+    )
+    return payload
+
+
 def load_current_efficiency_correction(
     path: str | Path,
 ) -> CurrentEfficiencyCorrection:

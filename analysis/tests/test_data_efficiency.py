@@ -27,6 +27,7 @@ from eppi0.current_efficiency import (
     RelativeLinearEfficiency,
     correction_artifact,
     load_current_efficiency_correction,
+    unit_weight_selection_artifact,
 )
 from eppi0.gemc_efficiency import (
     attach_relative_gemc_efficiencies,
@@ -105,6 +106,61 @@ class DataEfficiencyTests(unittest.TestCase):
         self.assertAlmostEqual(fit.slope_events_per_nC_per_nA, -1.0)
         self.assertEqual(fit.ndf, 1)
         self.assertAlmostEqual(groups[0].relative_efficiency, 0.95)
+
+    def test_unit_weight_artifact_preserves_run_selection_and_charge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            response_meta = directory / "response_meta.npz"
+            np.savez_compressed(response_meta, marker=np.asarray(1))
+            records = [
+                SimpleNamespace(
+                    run=1001,
+                    run_class="physics",
+                    current_nA=40.0,
+                    current_quality="unflagged",
+                    nominal_current_nA=40.0,
+                    candidate_events=100,
+                    signal_events=50.0,
+                    charge_c=2.0,
+                    included=True,
+                    exclusion_reason="",
+                ),
+                SimpleNamespace(
+                    run=1002,
+                    run_class="EXCLUDE_bad",
+                    current_nA=None,
+                    current_quality="missing",
+                    nominal_current_nA=None,
+                    candidate_events=10,
+                    signal_events=1.0,
+                    charge_c=0.5,
+                    included=False,
+                    exclusion_reason="run_class_not_included",
+                ),
+            ]
+            payload = unit_weight_selection_artifact(
+                reference_current_nA=40.0,
+                reference_label="test_40nA",
+                reference_response_meta=response_meta,
+                run_records=records,
+                sources={"test": True},
+                analysis_excluded_classes=["EXCLUDE_bad"],
+                original_beam_charge_c=2.5,
+            )
+            artifact = directory / "unit.json"
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            loaded = load_current_efficiency_correction(artifact)
+
+        self.assertEqual(payload["method"], "unit_current_weights_same_run_selection")
+        self.assertEqual(payload["runs"]["1001"]["event_weight"], 1.0)
+        self.assertEqual(payload["runs"]["1002"]["event_weight"], 0.0)
+        self.assertEqual(payload["reference"]["D"], 1.0)
+        self.assertEqual(payload["analysis_selection"]["analysis_beam_charge_c"], 2.0)
+        self.assertEqual(loaded.excluded_runs, (1002,))
+        np.testing.assert_array_equal(
+            loaded.event_weights(np.asarray([1001, 1002])),
+            np.asarray([1.0, 0.0]),
+        )
 
     def test_shared_fractional_slope_has_separate_period_intercepts(self) -> None:
         beta = -0.0025
