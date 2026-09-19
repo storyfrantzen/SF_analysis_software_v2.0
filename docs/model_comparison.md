@@ -216,3 +216,32 @@ affected by the factor of 1000 because it cancels in the ratio. The
 it varies over `Q2` and `xB`; assess that separately with a cheap corrected
 low-`N` bin-centering comparison before deciding whether a production `C_BC`
 rerun is warranted.
+
+## Published CLAS6 structure functions
+
+The repository includes the 96 structure-function rows from Table VIII of
+Bedlinskiy et al., Physical Review C **90**, 025205 (2014), in
+`data/reference/clas6_bedlinskiy_2014_structure_functions.csv`. Compare a
+campaign `structure_functions.npz` artifact with that table using:
+
+```bash
+python3 analysis/compare_structure_functions_to_reference.py \
+  results/rga/structure_functions.npz \
+  --campaign-label "RGA torus+1, 10.604 GeV" \
+  --output-dir results/rga/clas6_comparison
+```
+
+The command assigns the published points to the configured `Q2`, `xB`, and
+`-t` bins without interpolation. The table and the RGA configuration have 96
+one-to-one same-bin matches. It writes a multipage overlay PDF, a row-level CSV,
+and a JSON summary. CLAS6 statistical and systematic uncertainties remain
+separate in the CSV and are combined in quadrature only for the plotted total
+error and the explicitly named available-uncertainty residual.
+
+This is a same-bin comparison rather than an exact common-kinematics result.
+The campaign coordinates and published CLAS6 coordinates are both recorded.
+In addition, `sigma_U = sigma_T + epsilon sigma_L` has a different `epsilon`
+at 5.75 and 10.604 GeV. The raw `sigma_U` ratio is therefore diagnostic until
+an L/T model or separation translates the measurements to a common epsilon.
+The campaign uncertainty currently lacks the full campaign systematic
+covariance, so the residual is not a final statistical pull.
