@@ -16,6 +16,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from eppi0.polarity_combination import combine_polarity_measurements
+from eppi0.binning import AnalysisBinning
 
 
 EDGE_NAMES = ("q2_edges", "xb_edges", "t_edges", "phi_edges")
@@ -117,6 +118,21 @@ def quantiles(values: np.ndarray) -> list[float] | None:
     return [float(value) for value in np.quantile(finite, [0.1, 0.5, 0.9])]
 
 
+def coordinate_validity_mask(
+    binning: AnalysisBinning,
+    validity_mask: np.ndarray,
+    coordinate_shape: tuple[int, ...],
+) -> np.ndarray:
+    if coordinate_shape == binning.shape:
+        return validity_mask
+    if coordinate_shape == (binning.size,):
+        return binning.flatten_values(validity_mask)
+    raise ValueError(
+        f"coordinate array has shape {coordinate_shape}; expected "
+        f"{binning.shape} or {(binning.size,)}"
+    )
+
+
 def main() -> int:
     args = parse_args()
     left_path = args.left.resolve()
@@ -137,8 +153,13 @@ def main() -> int:
     left_mask = final_mask(left, left_path)
     right_mask = final_mask(right, right_path)
     union_mask = left_mask | right_mask
+    binning = AnalysisBinning(*(left[name] for name in EDGE_NAMES))
     for name in COORDINATE_FIELDS:
-        require_matching(left, right, name, mask=union_mask)
+        coordinate_shape = np.asarray(left[name]).shape
+        coordinate_mask = coordinate_validity_mask(
+            binning, union_mask, coordinate_shape
+        )
+        require_matching(left, right, name, mask=coordinate_mask)
     radiative = np.load(radiative_path, allow_pickle=False)
     c_rad = np.asarray(radiative["C_rad"], dtype=float)
     delta_c = np.asarray(radiative["delta_C"], dtype=float)
