@@ -19,9 +19,11 @@ from eppi0.polarity_combination import combine_polarity_measurements
 
 
 EDGE_NAMES = ("q2_edges", "xb_edges", "t_edges", "phi_edges")
-SHARED_FIELDS = (
+COORDINATE_FIELDS = (
     "flux_q2_coordinate",
     "flux_xb_coordinate",
+)
+SHARED_FIELDS = (
     "bin_volume",
     "bin_centering_C_BC",
     "bin_centering_reliable",
@@ -81,7 +83,7 @@ def final_mask(artifact, path: Path) -> np.ndarray:
     return mask & np.isfinite(values) & np.isfinite(uncertainty) & (uncertainty > 0.0)
 
 
-def require_matching(left, right, name: str) -> None:
+def require_matching(left, right, name: str, *, mask: np.ndarray | None = None) -> None:
     if name not in left.files or name not in right.files:
         if name in left.files or name in right.files:
             raise ValueError(f"only one polarity contains {name}")
@@ -90,8 +92,15 @@ def require_matching(left, right, name: str) -> None:
     second = np.asarray(right[name])
     if first.shape != second.shape:
         raise ValueError(f"polarity artifacts have incompatible {name} shapes")
+    if mask is not None:
+        if mask.shape != first.shape:
+            raise ValueError(f"comparison mask does not match {name}")
+        first = first[mask]
+        second = second[mask]
     if np.issubdtype(first.dtype, np.number):
-        matches = np.allclose(first, second, rtol=1.0e-12, atol=1.0e-12, equal_nan=True)
+        matches = np.allclose(
+            first, second, rtol=1.0e-12, atol=1.0e-12, equal_nan=True
+        )
     else:
         matches = np.array_equal(first, second)
     if not matches:
@@ -123,6 +132,11 @@ def main() -> int:
 
     left_values = np.asarray(left["reduced_cross_section"], dtype=float)
     right_values = np.asarray(right["reduced_cross_section"], dtype=float)
+    left_mask = final_mask(left, left_path)
+    right_mask = final_mask(right, right_path)
+    union_mask = left_mask | right_mask
+    for name in COORDINATE_FIELDS:
+        require_matching(left, right, name, mask=union_mask)
     radiative = np.load(radiative_path, allow_pickle=False)
     c_rad = np.asarray(radiative["C_rad"], dtype=float)
     delta_c = np.asarray(radiative["delta_C"], dtype=float)
@@ -137,10 +151,10 @@ def main() -> int:
     result = combine_polarity_measurements(
         left_values,
         left["uncertainty"],
-        final_mask(left, left_path),
+        left_mask,
         right_values,
         right["uncertainty"],
-        final_mask(right, right_path),
+        right_mask,
         shared_relative_uncertainty=shared_relative,
     )
 
@@ -175,7 +189,7 @@ def main() -> int:
             "other pending systematic covariance is not included"
         ),
     }
-    for name in (*EDGE_NAMES, *SHARED_FIELDS):
+    for name in (*EDGE_NAMES, *COORDINATE_FIELDS, *SHARED_FIELDS):
         if name in left.files:
             payload[name] = left[name]
     for name in (
@@ -229,8 +243,8 @@ def main() -> int:
             "sha256": payload["combination_radiative_sha256"].item(),
         },
         "valid_bins": {
-            "left": int(np.count_nonzero(final_mask(left, left_path))),
-            "right": int(np.count_nonzero(final_mask(right, right_path))),
+            "left": int(np.count_nonzero(left_mask)),
+            "right": int(np.count_nonzero(right_mask)),
             "both": int(np.count_nonzero(both)),
             "left_only": int(np.count_nonzero(only_left)),
             "right_only": int(np.count_nonzero(only_right)),
