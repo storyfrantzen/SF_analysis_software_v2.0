@@ -94,7 +94,9 @@ def require_matching(left, right, name: str, *, mask: np.ndarray | None = None) 
         raise ValueError(f"polarity artifacts have incompatible {name} shapes")
     if mask is not None:
         if mask.shape != first.shape:
-            raise ValueError(f"comparison mask does not match {name}")
+            if mask.size != first.size:
+                raise ValueError(f"comparison mask does not match {name}")
+            mask = mask.reshape(first.shape)
         first = first[mask]
         second = second[mask]
     if np.issubdtype(first.dtype, np.number):
