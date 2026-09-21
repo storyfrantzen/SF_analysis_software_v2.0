@@ -23,6 +23,7 @@ from eppi0.beam_spin import (
     fit_sine_amplitudes,
     load_helicity_audit,
     load_polarization_manifest,
+    sine_bin_averages,
 )
 from eppi0.binning import from_config
 from eppi0.current_efficiency import load_current_efficiency_correction
@@ -254,6 +255,7 @@ def main() -> int:
         statistical,
         valid,
         phi_centers,
+        phi_edges_deg=binning.phi_edges,
         polarization_shifts=binning.unflatten(
             result.polarization_asymmetry_shifts
         ),
@@ -265,9 +267,12 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     artifact_path = args.output_dir / "beam_spin_asymmetry.npz"
     payload = dict(
-        schema_version=np.asarray(1),
+        schema_version=np.asarray(2),
         method=np.asarray("charge-balanced QADB-corrected helicity asymmetry"),
-        fit_model=np.asarray("A_LU(phi) = A_sin_phi * sin(phi)"),
+        fit_model=np.asarray(
+            "A_LU(phi bin) = A_sin_phi * <sin(phi)>_bin"
+        ),
+        sin_phi_bin_average=sine_bin_averages(binning.phi_edges),
         beam_spin_asymmetry=bsa,
         beam_spin_statistical_uncertainty=statistical,
         beam_spin_polarization_uncertainty=polarization_uncertainty,
@@ -347,11 +352,15 @@ def main() -> int:
 
     pages, coefficient_pages = render_plots(payload, args.output_dir / "diagnostics")
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "observable": "A_LU and its sin(phi) amplitude",
         "definition": (
             "charge-balanced background-subtracted yields with physical helicity "
             "h = raw helicity * QADB CorrectHelicitySign and positive polarization magnitude"
+        ),
+        "fit_basis": (
+            "the exact uniform-in-phi average of sin(phi) between each pair of "
+            "stored phi edges"
         ),
         "data": {"path": str(data_path), "sha256": sha256(data_path)},
         "analysis_config": {

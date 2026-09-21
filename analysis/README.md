@@ -1306,7 +1306,8 @@ convention:
 
 Every retained run must occur in exactly one manifest period. Then extract the
 four-dimensional asymmetry and fit each populated `(Q2,xB,-t)` bin to
-`A_LU(phi)=A_sin_phi sin(phi)`:
+`A_LU(phi bin)=A_sin_phi <sin(phi)>_bin`. The harmonic basis is integrated
+exactly between the stored phi edges; the bin center is used only for plotting.
 
 ```bash
 python3 analysis/beam_spin_asymmetry.py data_events.npz \
@@ -1322,6 +1323,35 @@ python3 analysis/beam_spin_asymmetry.py data_events.npz \
 Runs whose QADB helicity sign is unknown can be removed explicitly with a
 repeatable `--exclude-run RUN` option. These exclusions are stored in both the
 NPZ artifact and JSON summary.
+
+Before fixing a production BSA grid, scan coarsenings of the configured
+`Q2`, `xB`, and `-t` axes together with uniform 8, 12, 16, and 20-bin phi
+schemes. The scan never uses the measured helicity difference. It scores
+charge-balanced, sideband-subtracted effective statistics, phi coverage,
+the null-asymmetry projected sine-amplitude uncertainty, background fraction,
+and optional GEMC generated/reconstructed response support. Repeat `--sample`
+to require the same grid
+to pass in both RGA polarities:
+
+```bash
+python3 analysis/optimize_beam_spin_binning.py \
+  --config configs/analysis/rga/10.604.json \
+  --sample t1 data_t1.npz data_t1_mask.npy data_t1_cuts.npz \
+    audit_t1 beam_polarization.json current_selection_t1.json \
+  --sample tn1 data_tn1.npz data_tn1_mask.npy data_tn1_cuts.npz \
+    audit_tn1 beam_polarization.json current_selection_tn1.json \
+  --exclude-run t1:5565 --exclude-run tn1:5137 --exclude-run tn1:5377 \
+  --response-meta t1=response_t1_meta.npz \
+  --response-meta tn1=response_tn1_meta.npz \
+  --output-dir results/bsa_binning_scan
+```
+
+The output contains `binning_scan.csv`, `binning_scan.pdf`, per-cell metrics,
+and `recommended_analysis_config.json`. The recommendation maximizes the
+number of 3D cells passing every supplied sample, excludes schemes with fewer
+than 12 phi bins by default, and breaks ties using projected precision and
+artifact size. Response metadata checks generated and reconstructed support; it
+does not replace a subsequent migration-purity or split-sample validation.
 
 The run-selection artifact contributes only its zero-weight run exclusions; its
 current-dependent event weights are deliberately not applied. The estimator

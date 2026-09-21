@@ -18,6 +18,7 @@ from eppi0.beam_spin import (
     extract_beam_spin,
     fit_sine_amplitudes,
     load_polarization_manifest,
+    sine_bin_averages,
 )
 
 
@@ -75,18 +76,21 @@ class BeamSpinTest(unittest.TestCase):
         self.assertAlmostEqual(result.polarization_uncertainty[0], 0.00625)
 
     def test_sine_fit_recovers_amplitude(self) -> None:
-        phi = np.arange(9.0, 360.0, 18.0)
+        edges = np.arange(0.0, 360.0 + 18.0, 18.0)
+        phi = 0.5 * (edges[:-1] + edges[1:])
         amplitude = 0.31
-        values = (amplitude * np.sin(np.deg2rad(phi)))[None, None, None, :]
+        basis = sine_bin_averages(edges)
+        values = (amplitude * basis)[None, None, None, :]
         errors = np.full(values.shape, 0.02)
         polarization_shifts = (
-            0.01 * np.sin(np.deg2rad(phi))
+            0.01 * basis
         )[None, None, None, None, :]
         fit = fit_sine_amplitudes(
             values,
             errors,
             np.ones(values.shape, dtype=bool),
             phi,
+            phi_edges_deg=edges,
             polarization_shifts=polarization_shifts,
         )
         self.assertAlmostEqual(fit.amplitude.item(), amplitude, places=12)
@@ -94,6 +98,12 @@ class BeamSpinTest(unittest.TestCase):
         self.assertTrue(fit.quality.item())
         self.assertAlmostEqual(fit.chi2.item(), 0.0, places=12)
         self.assertAlmostEqual(fit.polarization_uncertainty.item(), 0.01, places=12)
+
+    def test_sine_bin_average_differs_from_center_for_wide_bins(self) -> None:
+        edges = np.linspace(0.0, 360.0, 9)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        expected = np.sin(np.deg2rad(centers)) * np.sinc(1.0 / 8.0)
+        np.testing.assert_allclose(sine_bin_averages(edges), expected, atol=1.0e-14)
 
     def test_polarization_manifest_rejects_overlap(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

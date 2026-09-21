@@ -375,6 +375,7 @@ def fit_sine_amplitudes(
     valid: Array,
     phi_centers_deg: Array,
     *,
+    phi_edges_deg: Array | None = None,
     polarization_shifts: Array | None = None,
     minimum_points: int = 8,
     maximum_chi2_ndf: float = 5.0,
@@ -397,7 +398,13 @@ def fit_sine_amplitudes(
     points = np.zeros(output_shape, dtype=np.int64)
     fit_valid = np.zeros(output_shape, dtype=bool)
     quality = np.zeros(output_shape, dtype=bool)
-    sine = np.sin(np.deg2rad(phi))
+    sine = (
+        sine_bin_averages(phi_edges_deg)
+        if phi_edges_deg is not None
+        else np.sin(np.deg2rad(phi))
+    )
+    if sine.shape != (values.shape[-1],):
+        raise ValueError("phi edges do not match asymmetry phi dimension")
     if polarization_shifts is not None:
         polarization_shifts = np.asarray(polarization_shifts, dtype=float)
         if polarization_shifts.ndim != 5 or polarization_shifts.shape[1:] != values.shape:
@@ -449,4 +456,21 @@ def fit_sine_amplitudes(
         point_count=points,
         valid=fit_valid,
         quality=quality,
+    )
+
+
+def sine_bin_averages(phi_edges_deg: Array) -> Array:
+    """Return the exact uniform-in-phi average of ``sin(phi)`` in each bin."""
+    edges = np.asarray(phi_edges_deg, dtype=float)
+    if (
+        edges.ndim != 1
+        or edges.size < 2
+        or np.any(~np.isfinite(edges))
+        or np.any(np.diff(edges) <= 0.0)
+    ):
+        raise ValueError("phi edges must be a finite, strictly increasing 1D array")
+    radians = np.deg2rad(edges)
+    return np.divide(
+        np.cos(radians[:-1]) - np.cos(radians[1:]),
+        np.diff(radians),
     )
