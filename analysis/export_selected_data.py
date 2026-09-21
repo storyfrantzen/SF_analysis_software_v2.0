@@ -12,7 +12,7 @@ from eppi0.topology import ft_photon_count
 
 
 COLUMNS = [
-    "runNum", "eventNum", "Q2", "xB", "t", "trentoPhi",
+    "runNum", "eventNum", "helicity", "Q2", "xB", "t", "trentoPhi",
     "eDet", "pDet", "g1Det", "g2Det",
     "m_gg", "m2_miss", "m2_epX", "m_eggX", "E_miss", "pT_miss",
 ]
@@ -84,12 +84,13 @@ def main() -> int:
         "processing_root": str(args.processing_root.resolve()),
         "selected_events": int(len(arrays["Q2"])),
         "run_charge_metadata": has_run_charge,
-        "schema_version": 4,
+        "schema_version": 5,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     output = dict(
         run=arrays["runNum"],
         event=arrays["eventNum"],
+        helicity_raw=np.asarray(arrays["helicity"], dtype=np.int8),
         rec_Q2=arrays["Q2"],
         rec_xB=arrays["xB"],
         rec_minus_t=arrays["t"],

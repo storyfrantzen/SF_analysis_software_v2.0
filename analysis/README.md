@@ -1196,6 +1196,87 @@ Files are discovered with `C_BC*.npz`, labeled using their stored
 Only reliable, computed phi bins are drawn. The PDF also contains detailed phi
 pages for the primary positional artifact unless `--quilts-only` is passed.
 
+## Beam-spin asymmetry
+
+The beam-spin layer reuses the nominal selected-data sample, topology-dependent
+exclusivity cuts, and the audited downstream run selection. It does not apply
+acceptance, luminosity, radiative, bin-centering, or current-efficiency weights:
+those factors cancel to first order between the two rapidly alternating beam
+helicities. It does retain the same nonpeaking `m_gg` sideband subtraction in
+each helicity state.
+
+First audit QADB's helicity sign and helicity-latched Faraday-cup charge for the
+observed data runs:
+
+```bash
+qadb_helicity_audit \
+  --config configs/processing/rga/10.604/eppi0_data_torus+1.json \
+  --run-list data_runs.txt \
+  --output-dir results/helicity_audit
+```
+
+The audit applies the processing configuration's exact QADB database, rejected
+defects, and allowed `Misc` runs. It writes `helicity_sign_intervals.tsv`,
+`run_helicity_charge.tsv`, and `audit_summary.json`. Physical event helicity is
+defined as `raw helicity * QADB CorrectHelicitySign(run,event)`. The plus and
+minus charge columns are swapped for a run when QADB reports a `BSAWrong` sign.
+Unknown or mixed-sign runs are unusable and make the audit exit nonzero. The
+audited charge covers every accepted QADB bin in each listed run, so its total
+should be compared with, but need not equal, charge accumulated while scanning
+a channel-specific skim.
+
+Re-export the existing selected ROOT file with the current adapter. Schema 5
+adds `helicity_raw`; no HIPO conversion or post-processing rerun is needed:
+
+```bash
+python3 analysis/export_selected_data.py selected_data.root processing_data.root \
+  data_events.npz --dictionary build/libROOTBranchesDict.so
+```
+
+Beam polarization is a positive magnitude in a reviewed JSON manifest. QADB,
+not the polarization sign, handles the half-wave-plate and exceptional-run sign
+convention:
+
+```json
+{
+  "schema_version": 1,
+  "source": "Moller analysis note or run-period table and version",
+  "periods": [
+    {
+      "label": "documented period",
+      "runs": "5032-5419",
+      "polarization": 0.89,
+      "uncertainty": 0.02
+    }
+  ]
+}
+```
+
+Every retained run must occur in exactly one manifest period. Then extract the
+four-dimensional asymmetry and fit each populated `(Q2,xB,-t)` bin to
+`A_LU(phi)=A_sin_phi sin(phi)`:
+
+```bash
+python3 analysis/beam_spin_asymmetry.py data_events.npz \
+  --config configs/analysis/rga/10.604.json \
+  --selection-mask data_exclusivity.npy \
+  --background-cuts data_exclusivity.npz \
+  --helicity-audit-dir results/helicity_audit \
+  --polarization beam_polarization.json \
+  --run-selection-artifact current_efficiency_correction.json \
+  --output-dir results/beam_spin_asymmetry
+```
+
+The run-selection artifact contributes only its zero-weight run exclusions; its
+current-dependent event weights are deliberately not applied. The estimator
+balances unequal plus/minus charge separately for every run before combining
+runs. `beam_spin_asymmetry.npz` stores the asymmetry, statistical uncertainty,
+separate polarization uncertainty, signed yields, sine amplitudes, and full
+input provenance. Diagnostics are written as
+`beam_spin_asymmetry_vs_phi.pdf` and `sin_phi_amplitude_vs_t.pdf`. The
+sideband-transfer uncertainty and remaining campaign systematic covariance are
+recorded as pending rather than folded into the statistical error.
+
 ## Legacy behavior intentionally corrected
 
 - reconstructed failures never remove generated events from the denominator;

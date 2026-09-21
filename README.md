@@ -21,6 +21,7 @@ See `docs/jlab-module-setup.csh` for the JLab environment setup.
 ```bash
 hipo2root <config.json> <hipo_file_or_directory>... [max_files] [progress_events]
 post_process <post_config.json> <input.root> [progress_rows]
+qadb_helicity_audit --config <config.json> --run-list <runs.txt> --output-dir <directory>
 ```
 
 Processing configs live in `configs/processing/<run-group>/<energy>/`, so an

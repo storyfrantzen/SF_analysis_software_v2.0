@@ -102,9 +102,25 @@ target_link_libraries(
   pthread
 )
 if(QADB_INCLUDE_DIR)
-  target_include_directories(hipo2root PRIVATE ${QADB_INCLUDE_DIR})
+  target_include_directories(
+    hipo2root PRIVATE
+    ${QADB_INCLUDE_DIR}
+    ${QADB_INCLUDE_DIR}/../rapidjson/include
+  )
   target_compile_definitions(hipo2root PRIVATE HAVE_QADB=1)
   message(STATUS "QADB support enabled: ${QADB_INCLUDE_DIR}")
+
+  # Audit the exact QADB helicity-sign convention and helicity-latched
+  # Faraday-cup charge used by beam-spin-asymmetry extractions.
+  add_executable(
+    qadb_helicity_audit
+    ${PROJECT_SOURCE_DIR}/src/apps/qadb_helicity_audit.cpp
+  )
+  target_include_directories(
+    qadb_helicity_audit PRIVATE
+    ${QADB_INCLUDE_DIR}
+    ${QADB_INCLUDE_DIR}/../rapidjson/include
+  )
 else()
   message(STATUS "QADB support disabled (QADB.h not found)")
 endif()
