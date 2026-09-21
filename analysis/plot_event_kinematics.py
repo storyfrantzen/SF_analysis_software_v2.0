@@ -71,7 +71,7 @@ def main() -> int:
             "beam_energy_GeV": float(config["beam_energy"]),
             "topology_definition": "group_id = 4 * proton_detector + FT_photon_count",
             "angle_conventions": {
-                "trentoPhi": "stored and plotted in degrees",
+                "trentoPhi": "stored in radians, wrapped and plotted in degrees",
                 "particle_theta_phi": "stored in radians and plotted in degrees",
             },
             "display_range_policy": (

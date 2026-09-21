@@ -28,6 +28,25 @@ The selected ROOT file is not hashed by default because campaign files can be
 large; use `--hash-inputs` when a full content hash is required.  The final
 selection mask and analysis configuration are always hashed.
 
+`compare_event_kinematics.py` applies the final data and GEMC masks separately,
+then compares their unit-normalized reconstructed-candidate shapes.  Every 1D
+panel contains a data/GEMC ratio, Jensen-Shannon divergence, and total-variation
+distance.  The 2D pages show data and GEMC density maps beside their density
+ratio.  The report repeats these comparisons for the integrated sample and each
+reconstructed topology and writes the numerical metrics to CSV.
+
+```bash
+python3 analysis/compare_event_kinematics.py selected_data.root selected_gemc.root \
+  --data-mask data_exclusivity.npy --gemc-mask gemc_selected_exclusivity.npy \
+  --config configs/analysis/rga/10.604.json \
+  --label "RGA Fall 2018 torus+1: data vs GEMC" \
+  --output results/data_vs_gemc_event_kinematics.pdf
+```
+
+This diagnostic does not reweight GEMC to the data's `Q2`, `xB`, `-t`, and phi
+population.  Differences in those coordinates can therefore contain generator
+model effects as well as detector and reconstruction mismodeling.
+
 ## Event-sample contract
 
 An acceptance sample must contain one row per generated event, including events
