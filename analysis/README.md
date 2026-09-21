@@ -1215,6 +1215,14 @@ qadb_helicity_audit \
   --output-dir results/helicity_audit
 ```
 
+Some older QADB datasets contain accepted total Faraday-cup charge but no
+helicity-latched charge. After confirming that condition from the audit, an
+explicit `--equal-split-total-charge` rerun assigns half of each run's accepted
+total charge to each helicity. The run table labels those rows
+`equal_split_total_charge`, and the summary records their count. This assumes
+negligible helicity-correlated beam-charge asymmetry and must be retained as a
+beam-charge systematic; it is never enabled automatically.
+
 The audit applies the processing configuration's exact QADB database, rejected
 defects, and allowed `Misc` runs. It writes `helicity_sign_intervals.tsv`,
 `run_helicity_charge.tsv`, and `audit_summary.json`. Physical event helicity is
@@ -1266,6 +1274,10 @@ python3 analysis/beam_spin_asymmetry.py data_events.npz \
   --run-selection-artifact current_efficiency_correction.json \
   --output-dir results/beam_spin_asymmetry
 ```
+
+Runs whose QADB helicity sign is unknown can be removed explicitly with a
+repeatable `--exclude-run RUN` option. These exclusions are stored in both the
+NPZ artifact and JSON summary.
 
 The run-selection artifact contributes only its zero-weight run exclusions; its
 current-dependent event weights are deliberately not applied. The estimator

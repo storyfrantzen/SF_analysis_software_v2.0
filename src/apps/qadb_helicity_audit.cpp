@@ -20,6 +20,7 @@ struct Options {
     fs::path config;
     fs::path runList;
     fs::path outputDir;
+    bool equalSplitTotalCharge = false;
 };
 
 Options parseOptions(int argc, char** argv) {
@@ -32,6 +33,8 @@ Options parseOptions(int argc, char** argv) {
             options.runList = argv[++index];
         } else if (argument == "--output-dir" && index + 1 < argc) {
             options.outputDir = argv[++index];
+        } else if (argument == "--equal-split-total-charge") {
+            options.equalSplitTotalCharge = true;
         } else {
             throw std::runtime_error("unknown or incomplete argument: " + argument);
         }
@@ -39,7 +42,7 @@ Options parseOptions(int argc, char** argv) {
     if (options.config.empty() || options.runList.empty() || options.outputDir.empty()) {
         throw std::runtime_error(
             "usage: qadb_helicity_audit --config CONFIG --run-list RUNS "
-            "--output-dir DIRECTORY"
+            "--output-dir DIRECTORY [--equal-split-total-charge]"
         );
     }
     return options;
@@ -97,12 +100,15 @@ int main(int argc, char** argv) {
             << "raw_plus_charge_nC\traw_minus_charge_nC\traw_zero_charge_nC\t"
             << "sign_plus_bins\tsign_minus_bins\tsign_unknown_bins\trun_sign\t"
             << "physical_plus_charge_nC\tphysical_minus_charge_nC\t"
-            << "physical_zero_charge_nC\n";
+            << "physical_zero_charge_nC\tcharge_source\n";
         intervals << std::setprecision(17);
         summaries << std::setprecision(17);
 
         int missingRuns = 0;
         int usableRuns = 0;
+        int qadbHelicityChargeRuns = 0;
+        int equalSplitChargeRuns = 0;
+        int unusableChargeRuns = 0;
         int unknownSignRuns = 0;
         double physicalPlusTotal = 0.0;
         double physicalMinusTotal = 0.0;
@@ -112,7 +118,7 @@ int main(int argc, char** argv) {
             const std::string runKey = std::to_string(run);
             if (!qadb.GetQaTree()->HasMember(runKey.c_str())) {
                 ++missingRuns;
-                summaries << run << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\tnan\tnan\tnan\n";
+                summaries << run << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\tnan\tnan\tnan\tmissing_qadb\n";
                 continue;
             }
             const double chargeBefore = qadb.GetAccumulatedCharge();
@@ -152,27 +158,45 @@ int main(int argc, char** argv) {
             double physicalPlus = std::numeric_limits<double>::quiet_NaN();
             double physicalMinus = std::numeric_limits<double>::quiet_NaN();
             double physicalZero = std::numeric_limits<double>::quiet_NaN();
-            if (runSign != 0 && rawPlus >= 0.0 && rawMinus >= 0.0 && rawZero >= 0.0) {
+            std::string chargeSource = "unusable";
+            if (runSign != 0 && rawPlus > 0.0 && rawMinus > 0.0 && rawZero >= 0.0) {
                 physicalPlus = runSign > 0 ? rawPlus : rawMinus;
                 physicalMinus = runSign > 0 ? rawMinus : rawPlus;
                 physicalZero = rawZero;
+                chargeSource = "qadb_helicity_latched";
+                ++qadbHelicityChargeRuns;
                 ++usableRuns;
                 physicalPlusTotal += physicalPlus;
                 physicalMinusTotal += physicalMinus;
                 acceptedChargeTotal += totalCharge;
-            } else {
+            } else if (runSign != 0 && options.equalSplitTotalCharge && totalCharge > 0.0) {
+                // Older QADB datasets can contain total FC charge but no HEL::scaler
+                // charge. This explicit fallback assumes negligible helicity-correlated
+                // beam-charge asymmetry and assigns half the accepted charge to each state.
+                physicalPlus = 0.5 * totalCharge;
+                physicalMinus = 0.5 * totalCharge;
+                physicalZero = 0.0;
+                chargeSource = "equal_split_total_charge";
+                ++equalSplitChargeRuns;
+                ++usableRuns;
+                physicalPlusTotal += physicalPlus;
+                physicalMinusTotal += physicalMinus;
+                acceptedChargeTotal += totalCharge;
+            } else if (runSign == 0) {
                 ++unknownSignRuns;
+            } else {
+                ++unusableChargeRuns;
             }
             summaries << run << '\t' << bins << '\t' << acceptedBins << '\t'
                       << totalCharge << '\t' << rawPlus << '\t' << rawMinus << '\t'
                       << rawZero << '\t' << signPlusBins << '\t' << signMinusBins << '\t'
                       << signUnknownBins << '\t' << runSign << '\t' << physicalPlus << '\t'
-                      << physicalMinus << '\t' << physicalZero << '\n';
+                      << physicalMinus << '\t' << physicalZero << '\t' << chargeSource << '\n';
         }
 
         nlohmann::json summary = {
             {"schema_version", 1},
-            {"method", "QADB accepted-bin helicity-sign and helicity-latched charge audit"},
+            {"method", "QADB accepted-bin helicity-sign and beam-charge audit"},
             {"processing_config", fs::absolute(options.config).lexically_normal().string()},
             {"run_list", fs::absolute(options.runList).lexically_normal().string()},
             {"qadb_database", config.qadb.database},
@@ -181,7 +205,11 @@ int main(int argc, char** argv) {
             {"runs_requested", runs.size()},
             {"runs_missing_from_qadb", missingRuns},
             {"runs_with_usable_physical_helicity_charge", usableRuns},
+            {"runs_with_qadb_helicity_latched_charge", qadbHelicityChargeRuns},
+            {"runs_with_equal_split_total_charge", equalSplitChargeRuns},
+            {"runs_with_unusable_helicity_charge", unusableChargeRuns},
             {"runs_with_unknown_or_mixed_sign", unknownSignRuns},
+            {"equal_split_total_charge_enabled", options.equalSplitTotalCharge},
             {"physical_plus_charge_nC", physicalPlusTotal},
             {"physical_minus_charge_nC", physicalMinusTotal},
             {"accepted_total_charge_nC", acceptedChargeTotal},
@@ -192,10 +220,14 @@ int main(int argc, char** argv) {
         std::cout << "Usable runs: " << usableRuns << '\n';
         std::cout << "Missing QADB runs: " << missingRuns << '\n';
         std::cout << "Unknown/mixed-sign runs: " << unknownSignRuns << '\n';
+        std::cout << "QADB helicity-charge runs: " << qadbHelicityChargeRuns << '\n';
+        std::cout << "Equal-split fallback runs: " << equalSplitChargeRuns << '\n';
+        std::cout << "Unusable-charge runs: " << unusableChargeRuns << '\n';
         std::cout << "Physical + charge: " << physicalPlusTotal << " nC\n";
         std::cout << "Physical - charge: " << physicalMinusTotal << " nC\n";
         std::cout << "Wrote " << fs::absolute(options.outputDir) << '\n';
-        return (missingRuns == 0 && unknownSignRuns == 0) ? 0 : 2;
+        return (missingRuns == 0 && unknownSignRuns == 0 && unusableChargeRuns == 0)
+            ? 0 : 2;
     } catch (const std::exception& error) {
         std::cerr << "ERROR: " << error.what() << '\n';
         return 1;

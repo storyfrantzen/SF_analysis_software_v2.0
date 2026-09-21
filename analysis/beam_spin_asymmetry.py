@@ -43,6 +43,13 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="current-efficiency artifact used only for its zero-weight run selection",
     )
+    parser.add_argument(
+        "--exclude-run",
+        type=int,
+        action="append",
+        default=[],
+        help="run to exclude from this extraction (repeatable; recorded in output)",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--background-alpha-bootstrap", type=int, default=200)
     parser.add_argument("--minimum-fit-points", type=int, default=8)
@@ -192,6 +199,9 @@ def main() -> int:
     event_runs = np.asarray(data["run"], dtype=np.int64)
     run_weights = run_selection.event_weights(event_runs)
     base &= run_weights > 0.0
+    explicit_excluded_runs = np.asarray(sorted(set(args.exclude_run)), dtype=np.int64)
+    if explicit_excluded_runs.size:
+        base &= ~np.isin(event_runs, explicit_excluded_runs)
     selection_mask = load_mask(selection_mask_path, base.size)
     iq2, ixb, it, _ = binning.indices(
         data["rec_Q2"], data["rec_xB"], data["rec_minus_t"], data["rec_trento_phi"]
@@ -220,6 +230,8 @@ def main() -> int:
         )
     active = background.signal_region_mask | background.sideband_mask
     audit = load_helicity_audit(audit_dir)
+    with (audit_dir / "audit_summary.json").open(encoding="utf-8") as source:
+        audit_summary = json.load(source)
     polarization = load_polarization_manifest(polarization_path)
     result = extract_beam_spin(
         flat_bins=rec_flat,
@@ -285,7 +297,11 @@ def main() -> int:
         xb_edges=binning.xb_edges,
         t_edges=binning.t_edges,
         phi_edges=binning.phi_edges,
-        excluded_runs=np.asarray(run_selection.excluded_runs, dtype=np.int64),
+        excluded_runs=np.asarray(
+            sorted(set(run_selection.excluded_runs).union(args.exclude_run)),
+            dtype=np.int64,
+        ),
+        explicitly_excluded_runs=explicit_excluded_runs,
         background_group_ids=background.group_ids,
         background_alpha=background.alpha,
         background_alpha_uncertainty=background.alpha_uncertainty,
@@ -295,6 +311,9 @@ def main() -> int:
         selection_mask_artifact=np.asarray(str(selection_mask_path)),
         background_cuts_artifact=np.asarray(str(cuts_path)),
         helicity_audit_directory=np.asarray(str(audit_dir)),
+        helicity_audit_summary_json=np.asarray(
+            json.dumps(audit_summary, sort_keys=True)
+        ),
         polarization_manifest=np.asarray(str(polarization_path)),
         run_selection_artifact=np.asarray(str(run_selection_path)),
         polarization_manifest_json=np.asarray(json.dumps(polarization.payload, sort_keys=True)),
@@ -349,6 +368,7 @@ def main() -> int:
                 audit_dir / "helicity_sign_intervals.tsv"
             ),
             "summary_sha256": sha256(audit_dir / "audit_summary.json"),
+            "summary": audit_summary,
         },
         "polarization": {
             "path": str(polarization_path), "sha256": sha256(polarization_path)
@@ -356,6 +376,7 @@ def main() -> int:
         "run_selection": {
             "path": str(run_selection_path), "sha256": sha256(run_selection_path),
             "excluded_runs": list(run_selection.excluded_runs),
+            "explicitly_excluded_runs": explicit_excluded_runs.tolist(),
         },
         "used_signal_or_sideband_events": result.used_event_count,
         "rejected_unknown_helicity_events": result.rejected_helicity_event_count,
