@@ -207,25 +207,31 @@ def render_report(
     )
 
     output.parent.mkdir(parents=True, exist_ok=True)
+    temporary_output = output.with_name(f".{output.name}.tmp")
+    temporary_output.unlink(missing_ok=True)
     pages = 0
-    with PdfPages(output) as pdf:
-        _title_page(pdf, label, selected, topology, topologies, provenance_lines)
-        pages += 1
-        if topologies:
-            pages += _topology_overlays(
-                pdf, label, arrays, selected, topology, topologies, variables, ranges
-            )
-        for scope_name, scope_mask in scopes:
-            pages += _scope_pages(
-                pdf,
-                label,
-                scope_name,
-                arrays,
-                scope_mask,
-                variables,
-                variable_by_name,
-                ranges,
-            )
+    try:
+        with PdfPages(temporary_output) as pdf:
+            _title_page(pdf, label, selected, topology, topologies, provenance_lines)
+            pages += 1
+            if topologies:
+                pages += _topology_overlays(
+                    pdf, label, arrays, selected, topology, topologies, variables, ranges
+                )
+            for scope_name, scope_mask in scopes:
+                pages += _scope_pages(
+                    pdf,
+                    label,
+                    scope_name,
+                    arrays,
+                    scope_mask,
+                    variables,
+                    variable_by_name,
+                    ranges,
+                )
+        temporary_output.replace(output)
+    finally:
+        temporary_output.unlink(missing_ok=True)
     return pages
 
 

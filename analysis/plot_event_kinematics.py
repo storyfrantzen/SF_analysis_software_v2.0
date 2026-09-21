@@ -105,7 +105,9 @@ def main() -> int:
         f"{args.output.stem}_summary.json"
     )
     summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    temporary_summary = summary_path.with_name(f".{summary_path.name}.tmp")
+    temporary_summary.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    temporary_summary.replace(summary_path)
     print(f"Input rows: {input_rows}")
     print(f"Final selected rows: {summary['selected_rows']}")
     print(f"Topology counts: {summary['topology_counts']}")
