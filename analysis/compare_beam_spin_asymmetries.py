@@ -8,8 +8,14 @@ import argparse
 import csv
 import json
 from pathlib import Path
+import sys
 
 import numpy as np
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from eppi0.beam_spin import sine_bin_averages
 
 
 EDGE_NAMES = ("q2_edges", "xb_edges", "t_edges", "phi_edges")
@@ -23,6 +29,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--right-label", default="right")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--minimum-null-fit-points", type=int, default=8)
+    parser.add_argument(
+        "--shared-events",
+        action="store_true",
+        help=(
+            "inputs reuse the same events; label the quadrature-normalized "
+            "difference as descriptive because its covariance is unavailable"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -38,7 +52,7 @@ def fit_extended_harmonics(
     asymmetry: np.ndarray,
     uncertainty: np.ndarray,
     valid: np.ndarray,
-    phi_centers_deg: np.ndarray,
+    phi_edges_deg: np.ndarray,
     *,
     minimum_points: int = 8,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -49,9 +63,18 @@ def fit_extended_harmonics(
     errors = np.full(shape + (4,), np.nan)
     chi2 = np.full(shape, np.nan)
     ndof = np.zeros(shape, dtype=np.int16)
-    radians = np.deg2rad(np.asarray(phi_centers_deg, dtype=float))
+    radians = np.deg2rad(np.asarray(phi_edges_deg, dtype=float))
+    if radians.shape != (asymmetry.shape[-1] + 1,):
+        raise ValueError("phi edges do not match asymmetry phi dimension")
+    widths = np.diff(radians)
     design = np.column_stack(
-        [np.ones(radians.size), np.sin(radians), np.cos(radians), np.sin(2.0 * radians)]
+        [
+            np.ones(widths.size),
+            sine_bin_averages(phi_edges_deg),
+            (np.sin(radians[1:]) - np.sin(radians[:-1])) / widths,
+            (np.cos(2.0 * radians[:-1]) - np.cos(2.0 * radians[1:]))
+            / (2.0 * widths),
+        ]
     )
     for index in np.ndindex(shape):
         keep = np.asarray(valid[index], dtype=bool)
@@ -116,13 +139,49 @@ def null_summary(
     return output
 
 
+def compare_phi_points(
+    left: dict[str, np.ndarray], right: dict[str, np.ndarray]
+) -> dict[str, object]:
+    left_bsa = np.asarray(left["beam_spin_asymmetry"], dtype=float)
+    right_bsa = np.asarray(right["beam_spin_asymmetry"], dtype=float)
+    if not np.array_equal(left["phi_edges"], right["phi_edges"]):
+        return {
+            "available": False,
+            "reason": "phi-bin edges differ; fitted 3D amplitudes remain comparable",
+            "left_phi_bins": int(left_bsa.shape[-1]),
+            "right_phi_bins": int(right_bsa.shape[-1]),
+        }
+    left_error = np.asarray(left["beam_spin_statistical_uncertainty"], dtype=float)
+    right_error = np.asarray(right["beam_spin_statistical_uncertainty"], dtype=float)
+    common = np.asarray(left["beam_spin_valid"], dtype=bool)
+    common &= np.asarray(right["beam_spin_valid"], dtype=bool)
+    sigma = np.sqrt(left_error**2 + right_error**2)
+    pull = np.divide(
+        right_bsa - left_bsa,
+        sigma,
+        out=np.full(left_bsa.shape, np.nan),
+        where=common & (sigma > 0.0),
+    )
+    return {
+        "available": True,
+        "common_points": int(np.count_nonzero(common & np.isfinite(pull))),
+        "statistical_pull_q10_median_q90": finite_quantiles(pull[common]),
+        "statistical_absolute_pull_gt_2": int(
+            np.count_nonzero(np.abs(pull[common]) > 2.0)
+        ),
+        "statistical_absolute_pull_gt_3": int(
+            np.count_nonzero(np.abs(pull[common]) > 3.0)
+        ),
+    }
+
+
 def main() -> int:
     args = parse_args()
     left_path = args.left.resolve()
     right_path = args.right.resolve()
     left = load_artifact(left_path)
     right = load_artifact(right_path)
-    for name in EDGE_NAMES:
+    for name in EDGE_NAMES[:3]:
         if not np.array_equal(left[name], right[name]):
             raise ValueError(f"beam-spin artifacts have incompatible {name}")
 
@@ -147,6 +206,12 @@ def main() -> int:
         left_error**2 + right_error**2 + left_pol**2 + right_pol**2
     )
     difference = right_amplitude - left_amplitude
+    fractional_difference = np.divide(
+        difference,
+        left_amplitude,
+        out=np.full(difference.shape, np.nan),
+        where=common & (left_amplitude != 0.0),
+    )
     statistical_pull = np.divide(
         difference,
         statistical_sigma,
@@ -164,23 +229,14 @@ def main() -> int:
     right_bsa = np.asarray(right["beam_spin_asymmetry"], dtype=float)
     left_bsa_error = np.asarray(left["beam_spin_statistical_uncertainty"], dtype=float)
     right_bsa_error = np.asarray(right["beam_spin_statistical_uncertainty"], dtype=float)
-    common_phi = np.asarray(left["beam_spin_valid"], dtype=bool)
-    common_phi &= np.asarray(right["beam_spin_valid"], dtype=bool)
-    phi_sigma = np.sqrt(left_bsa_error**2 + right_bsa_error**2)
-    phi_pull = np.divide(
-        right_bsa - left_bsa,
-        phi_sigma,
-        out=np.full(left_bsa.shape, np.nan),
-        where=common_phi & (phi_sigma > 0.0),
-    )
+    phi_point_summary = compare_phi_points(left, right)
 
-    phi_centers = 0.5 * (left["phi_edges"][:-1] + left["phi_edges"][1:])
     left_null = fit_extended_harmonics(
-        left_bsa, left_bsa_error, left["beam_spin_valid"], phi_centers,
+        left_bsa, left_bsa_error, left["beam_spin_valid"], left["phi_edges"],
         minimum_points=args.minimum_null_fit_points,
     )
     right_null = fit_extended_harmonics(
-        right_bsa, right_bsa_error, right["beam_spin_valid"], phi_centers,
+        right_bsa, right_bsa_error, right["beam_spin_valid"], right["phi_edges"],
         minimum_points=args.minimum_null_fit_points,
     )
 
@@ -193,7 +249,8 @@ def main() -> int:
         )
     summary = {
         "schema_version": 1,
-        "comparison": "independent beam-spin polarity consistency",
+        "comparison": "beam-spin extraction consistency",
+        "event_relationship": "shared" if args.shared_events else "independent",
         "left": {"label": args.left_label, "artifact": str(left_path)},
         "right": {"label": args.right_label, "artifact": str(right_path)},
         "amplitude_comparison": {
@@ -201,6 +258,9 @@ def main() -> int:
             "right_production_bins": int(np.count_nonzero(right_quality)),
             "common_production_bins": n_common,
             "right_minus_left_q10_median_q90": finite_quantiles(difference[finite_common]),
+            "fractional_right_minus_left_q10_median_q90": finite_quantiles(
+                fractional_difference[finite_common]
+            ),
             "statistical_pull_q10_median_q90": finite_quantiles(
                 statistical_pull[finite_common]
             ),
@@ -217,24 +277,21 @@ def main() -> int:
             "statistical_chi2": float(np.nansum(statistical_pull[finite_common] ** 2)),
             "statistical_ndof": n_common,
         },
-        "phi_point_comparison": {
-            "common_points": int(np.count_nonzero(common_phi & np.isfinite(phi_pull))),
-            "statistical_pull_q10_median_q90": finite_quantiles(phi_pull[common_phi]),
-            "statistical_absolute_pull_gt_2": int(
-                np.count_nonzero(np.abs(phi_pull[common_phi]) > 2.0)
-            ),
-            "statistical_absolute_pull_gt_3": int(
-                np.count_nonzero(np.abs(phi_pull[common_phi]) > 3.0)
-            ),
-        },
+        "phi_point_comparison": phi_point_summary,
         "null_harmonics": {
             args.left_label: null_summary(left_null[0], left_null[1], left_null[3]),
             args.right_label: null_summary(right_null[0], right_null[1], right_null[3]),
         },
         "interpretation_limits": (
-            "pulls use statistical errors; the conservative amplitude pull also treats "
-            "the two polarization errors as independent, while detector, selection, "
-            "sideband-transfer, and other systematic covariance is pending"
+            (
+                "the two artifacts reuse events, so their covariance is unavailable and "
+                "difference-over-quadrature-error values are descriptive rather than pulls"
+                if args.shared_events
+                else "pulls use statistical errors; the conservative amplitude pull also "
+                "treats the two polarization errors as independent"
+            )
+            + "; detector, selection, sideband-transfer, and other systematic covariance "
+            "is pending"
         ),
     }
 
@@ -287,7 +344,11 @@ def main() -> int:
         pulls = statistical_pull[finite_common]
         axes[1].hist(pulls, bins=np.linspace(-6.0, 6.0, 31), histtype="step", linewidth=1.5)
         axes[1].axvline(0.0, color="0.4", linewidth=0.8)
-        axes[1].set_xlabel("polarity-difference pull (statistical)")
+        axes[1].set_xlabel(
+            "difference / quadrature statistical uncertainty"
+            if args.shared_events
+            else "extraction-difference pull (statistical)"
+        )
         axes[1].set_ylabel("bins")
         axes[1].grid(alpha=0.2)
         pdf.savefig(figure)
@@ -357,9 +418,18 @@ def main() -> int:
     print(f"Left production bins: {int(np.count_nonzero(left_quality))}")
     print(f"Right production bins: {int(np.count_nonzero(right_quality))}")
     print(f"Common production bins: {n_common}")
-    print(f"Statistical pull q10/median/q90: {finite_quantiles(statistical_pull[finite_common])}")
-    print(f"|statistical pull| > 2: {int(np.count_nonzero(np.abs(statistical_pull[finite_common]) > 2.0))}")
-    print(f"Phi comparison points: {int(np.count_nonzero(common_phi & np.isfinite(phi_pull)))}")
+    difference_label = (
+        "Difference/quadrature-error" if args.shared_events else "Statistical pull"
+    )
+    print(
+        f"{difference_label} q10/median/q90: "
+        f"{finite_quantiles(statistical_pull[finite_common])}"
+    )
+    print(
+        f"|{difference_label}| > 2: "
+        f"{int(np.count_nonzero(np.abs(statistical_pull[finite_common]) > 2.0))}"
+    )
+    print(f"Phi comparison points: {phi_point_summary.get('common_points', 0)}")
     print(f"Amplitude overlay pages: {pages}")
     print(f"Wrote {summary_path}")
     print(f"Wrote {diagnostic_path}")

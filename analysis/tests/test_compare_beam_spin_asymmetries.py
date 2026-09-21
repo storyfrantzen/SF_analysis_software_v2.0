@@ -16,24 +16,41 @@ SPEC.loader.exec_module(MODULE)
 
 class CompareBeamSpinTest(unittest.TestCase):
     def test_extended_fit_recovers_signal_and_null_harmonics(self) -> None:
-        phi = np.arange(9.0, 360.0, 18.0)
-        radians = np.deg2rad(phi)
+        edges = np.arange(0.0, 360.0 + 18.0, 18.0)
+        radians = np.deg2rad(edges)
+        widths = np.diff(radians)
         expected = np.array([0.03, 0.24, -0.02, 0.01])
+        design = np.column_stack(
+            [
+                np.ones(widths.size),
+                (np.cos(radians[:-1]) - np.cos(radians[1:])) / widths,
+                (np.sin(radians[1:]) - np.sin(radians[:-1])) / widths,
+                (np.cos(2.0 * radians[:-1]) - np.cos(2.0 * radians[1:]))
+                / (2.0 * widths),
+            ]
+        )
         values = (
-            expected[0]
-            + expected[1] * np.sin(radians)
-            + expected[2] * np.cos(radians)
-            + expected[3] * np.sin(2.0 * radians)
+            design @ expected
         )[None, None, None, :]
         errors = np.full(values.shape, 0.02)
         coefficients, uncertainties, chi2, ndof = MODULE.fit_extended_harmonics(
             values, np.ones(values.shape) * 0.02,
-            np.ones(values.shape, dtype=bool), phi,
+            np.ones(values.shape, dtype=bool), edges,
         )
         np.testing.assert_allclose(coefficients.reshape(-1, 4)[0], expected, atol=1e-12)
         self.assertTrue(np.all(uncertainties > 0.0))
         self.assertAlmostEqual(float(chi2.item()), 0.0, places=12)
         self.assertEqual(int(ndof.item()), 16)
+
+    def test_shared_event_comparison_accepts_different_phi_grids(self) -> None:
+        left = {"phi_edges": np.linspace(0.0, 360.0, 21)}
+        right = {"phi_edges": np.linspace(0.0, 360.0, 13)}
+        left["beam_spin_asymmetry"] = np.zeros((1, 1, 1, 20))
+        right["beam_spin_asymmetry"] = np.zeros((1, 1, 1, 12))
+        summary = MODULE.compare_phi_points(left, right)
+        self.assertFalse(summary["available"])
+        self.assertEqual(summary["left_phi_bins"], 20)
+        self.assertEqual(summary["right_phi_bins"], 12)
 
 
 if __name__ == "__main__":
