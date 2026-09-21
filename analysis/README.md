@@ -5,6 +5,29 @@ This directory is the maintained replacement for the legacy
 from ROOT I/O so response construction, unfolding, and normalization can be
 unit-tested with ordinary NumPy arrays.
 
+## Final selected-event kinematics
+
+`plot_event_kinematics.py` writes one canonical multipage PDF for a completed
+data selection.  It reads the post-processed `sEvents` tree, applies the final
+exclusivity mask, and repeats the DIS, reconstructed-particle, exclusivity, and
+two-dimensional correlation pages for the topology-integrated sample and every
+retained reconstructed topology.  Topology-overlay pages make shape differences
+visible without allowing the largest group to set the normalization.  A JSON
+sidecar records the source paths, input sizes, mask and configuration hashes,
+topology populations, plotted branches, angle conventions, and page count.
+
+```bash
+python3 analysis/plot_event_kinematics.py selected_data.root \
+  --selection-mask data_selected_exclusivity.npy \
+  --config configs/analysis/rga/10.604.json \
+  --label "RGA Fall 2018 torus+1, final exclusive data" \
+  --output results/event_kinematics.pdf
+```
+
+The selected ROOT file is not hashed by default because campaign files can be
+large; use `--hash-inputs` when a full content hash is required.  The final
+selection mask and analysis configuration are always hashed.
+
 ## Event-sample contract
 
 An acceptance sample must contain one row per generated event, including events
