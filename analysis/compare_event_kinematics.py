@@ -109,7 +109,8 @@ def main() -> int:
         ),
         "interpretation_limitation": (
             "physics-coordinate differences may contain generator-population effects "
-            "in addition to detector and reconstruction mismodeling"
+            "in addition to detector and reconstruction mismodeling; data contain "
+            "signal-region candidates without sideband subtraction"
         ),
         "beam_energy_GeV": float(config["beam_energy"]),
         "minimum_ratio_count": int(args.minimum_ratio_count),

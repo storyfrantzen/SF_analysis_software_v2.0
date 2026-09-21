@@ -45,7 +45,9 @@ python3 analysis/compare_event_kinematics.py selected_data.root selected_gemc.ro
 
 This diagnostic does not reweight GEMC to the data's `Q2`, `xB`, `-t`, and phi
 population.  Differences in those coordinates can therefore contain generator
-model effects as well as detector and reconstruction mismodeling.
+model effects as well as detector and reconstruction mismodeling.  The data
+histograms contain final signal-region candidates; this shape diagnostic does
+not perform sideband subtraction.
 
 ## Event-sample contract
 

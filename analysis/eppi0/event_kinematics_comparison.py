@@ -242,8 +242,9 @@ def _title_page(
         "Histograms compare unit-normalized reconstructed-candidate shapes after each sample's "
         "own final exclusivity mask. GEMC is not reweighted to the data distribution. Differences "
         "in Q2, xB, -t, or phi can therefore reflect the event generator as well as detector and "
-        "reconstruction modeling. Ratios are displayed only where both histograms contain the "
-        "configured minimum number of candidates."
+        "reconstruction modeling. Data are signal-region candidates; residual background is not "
+        "sideband-subtracted in this shape diagnostic. Ratios are displayed only where both "
+        "histograms contain the configured minimum number of candidates."
     )
     for wrapped in _wrap(interpretation, 112):
         figure.text(0.09, y, wrapped, fontsize=9.2, color="#4b5563")
