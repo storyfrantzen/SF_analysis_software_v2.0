@@ -85,7 +85,12 @@ int main(int argc, char** argv) {
         const auto runs = readRuns(options.runList);
         fs::create_directories(options.outputDir);
 
-        QA::QADB qadb(config.qadb.database.c_str());
+        // Limit QADB loading to the requested run range. The "latest" cook spans
+        // many run groups and three concurrent campaign audits otherwise duplicate
+        // a large amount of irrelevant JSON in memory.
+        QA::QADB qadb(
+            config.qadb.database.c_str(), runs.front(), runs.back()
+        );
         for (const auto& defect : config.qadb.rejectDefects) {
             qadb.CheckForDefect(defect.c_str());
         }
