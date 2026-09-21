@@ -13,13 +13,14 @@ import numpy as np
 from .elastic_momentum import (
     ElasticFitConfig,
     evaluate_region,
-    load_elastic_arrays,
     region_support_mask,
 )
 from .elastic_run_validation import (
     MODEL_COMPLEXITY,
     MODEL_ORDERS,
-    concatenate_arrays,
+    filter_arrays_by_run_classes,
+    load_candidate_inputs,
+    load_run_catalog,
     run_validation,
     subset_arrays,
 )
@@ -720,6 +721,8 @@ def build_systematic_report(
         "models": models,
         "nominalVariation": "nominal",
         "nominalParameterFile": "nominal/recommended_mixed_parameters.json",
+        "runSelection": nominal_report.get("runSelection"),
+        "runBlockDefinition": nominal_report.get("runBlockDefinition"),
         "fixedRunPartitionAcrossVariations": True,
         "variationsRequested": len(variations),
         "variationsCompleted": len(successful_names),
@@ -1164,6 +1167,10 @@ def run_systematic_scan(
     minimum_model_improvement_fraction: float = 0.10,
     make_summary_plots: bool = True,
     make_variation_plots: bool = False,
+    run_class_by_run: dict[int, str] | None = None,
+    run_block_mode: str = "candidate-target",
+    run_class_order: Iterable[str] = (),
+    run_selection: dict[str, object] | None = None,
 ) -> dict[str, object]:
     if not variations or variations[0].name != "nominal":
         raise ValueError("systematic scan must begin with the nominal variation")
@@ -1193,6 +1200,10 @@ def run_systematic_scan(
                     minimum_model_improvement_fraction
                 ),
                 run_groups=fixed_run_groups,
+                run_class_by_run=run_class_by_run,
+                run_block_mode=run_block_mode,
+                run_class_order=run_class_order,
+                run_selection=run_selection,
             )
         except ValueError as error:
             if variation.name == "nominal":
@@ -1274,6 +1285,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--dataset-tag", default="")
     parser.add_argument("--max-rows", type=int)
+    parser.add_argument(
+        "--run-catalog", type=Path,
+        help="JSON run catalog with a top-level runs object and run_class fields",
+    )
+    parser.add_argument(
+        "--include-run-classes", nargs="+",
+        help="retain only these run classes; requires --run-catalog",
+    )
+    block_group = parser.add_mutually_exclusive_group()
+    block_group.add_argument(
+        "--block-by-run-class", action="store_true",
+        help=(
+            "form candidate-target blocks within, never across, contiguous "
+            "run-class periods"
+        ),
+    )
+    block_group.add_argument(
+        "--fold-by-run-class", action="store_true",
+        help=(
+            "with exactly two included classes, train on each class and hold out "
+            "the other"
+        ),
+    )
     parser.add_argument("--block-target-selected", type=int, default=100_000)
     parser.add_argument("--min-per-run-core-entries", type=int, default=200)
     parser.add_argument(
@@ -1341,6 +1375,14 @@ def main() -> None:
         raise ValueError("minimum per-run core entries must be at least two")
     if not 0.0 <= args.minimum_model_improvement_fraction < 1.0:
         raise ValueError("minimum model improvement fraction must be in [0, 1)")
+    if args.include_run_classes and args.run_catalog is None:
+        raise ValueError("--include-run-classes requires --run-catalog")
+    if (args.block_by_run_class or args.fold_by_run_class) and args.run_catalog is None:
+        raise ValueError("run-class block modes require --run-catalog")
+    if args.fold_by_run_class and len(args.include_run_classes or ()) != 2:
+        raise ValueError(
+            "--fold-by-run-class requires exactly two --include-run-classes"
+        )
     cfg = ElasticFitConfig(
         beam_energy=args.beam_energy,
         torus=args.torus,
@@ -1393,16 +1435,26 @@ def main() -> None:
                 "at least one candidate ROOT input is required unless "
                 "--rebuild-existing-report is used"
             )
-        parts = [
-            load_elastic_arrays(path, args.tree, None)
-            for path in args.input_files
-        ]
-        arrays = concatenate_arrays(parts)
+        arrays = load_candidate_inputs(args.input_files, args.tree)
         if args.max_rows is not None:
             arrays = subset_arrays(
                 arrays,
                 np.arange(next(iter(arrays.values())).size) < args.max_rows,
             )
+        run_class_by_run: dict[int, str] | None = None
+        run_selection: dict[str, object] | None = None
+        if args.run_catalog is not None:
+            arrays, run_class_by_run, run_selection = filter_arrays_by_run_classes(
+                arrays,
+                load_run_catalog(args.run_catalog),
+                args.include_run_classes,
+                catalog_path=args.run_catalog,
+            )
+        run_block_mode = (
+            "class-fold" if args.fold_by_run_class else
+            "class-boundary" if args.block_by_run_class else
+            "candidate-target"
+        )
         report = run_systematic_scan(
             arrays,
             cfg,
@@ -1418,6 +1470,10 @@ def main() -> None:
             ),
             make_summary_plots=not args.no_summary_plots,
             make_variation_plots=args.variation_plots,
+            run_class_by_run=run_class_by_run,
+            run_block_mode=run_block_mode,
+            run_class_order=args.include_run_classes or (),
+            run_selection=run_selection,
         )
         print(f"Wrote systematic scan to {args.output_dir}")
     print(report["status"])

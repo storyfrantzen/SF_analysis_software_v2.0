@@ -16,8 +16,10 @@ from scripts.calibration.elastic_momentum import (
 from scripts.calibration.elastic_run_validation import (
     MODEL_ORDERS,
     _choose_region_models,
+    filter_arrays_by_run_classes,
     make_fixed_run_blocks,
     make_run_blocks,
+    make_run_class_fold_blocks,
     run_validation,
 )
 
@@ -107,6 +109,55 @@ class ElasticRunValidationTests(unittest.TestCase):
         runs = np.repeat([5423, 5424], [150, 250])
         blocks = make_run_blocks(runs, 1_000)
         self.assertEqual([block.runs for block in blocks], [(5423,), (5424,)])
+
+    def test_class_aware_run_blocks_never_cross_class_boundaries(self) -> None:
+        runs = np.repeat(
+            [100, 101, 102, 103, 200, 201, 202],
+            [40, 40, 40, 40, 50, 50, 50],
+        )
+        classes = {
+            100: "P3", 101: "P3", 102: "P3", 103: "P3",
+            200: "P4", 201: "P4", 202: "P4",
+        }
+        blocks = make_run_blocks(runs, 60, classes)
+        self.assertEqual(
+            [(block.run_class, block.runs) for block in blocks],
+            [
+                ("P3", (100, 101)),
+                ("P3", (102, 103)),
+                ("P4", (200, 201)),
+                ("P4", (202,)),
+            ],
+        )
+
+    def test_run_class_fold_blocks_make_two_class_holdouts(self) -> None:
+        runs = np.repeat([100, 101, 200, 201], [20, 30, 40, 50])
+        classes = {100: "P3", 101: "P3", 200: "P4", 201: "P4"}
+        blocks = make_run_class_fold_blocks(runs, classes, ["P3", "P4"])
+        self.assertEqual(
+            [(block.run_class, block.runs) for block in blocks],
+            [("P3", (100, 101)), ("P4", (200, 201))],
+        )
+        self.assertEqual(
+            [block.selected_candidates for block in blocks], [50, 90]
+        )
+
+    def test_run_catalog_filter_records_class_provenance(self) -> None:
+        arrays = {
+            "runNum": np.asarray([100, 100, 200, 300]),
+            "value": np.asarray([1.0, 2.0, 3.0, 4.0]),
+        }
+        filtered, mapping, metadata = filter_arrays_by_run_classes(
+            arrays,
+            {100: "P3", 200: "P4", 300: "L5"},
+            ["P3", "P4"],
+            catalog_path=Path("catalog.json"),
+        )
+        np.testing.assert_array_equal(filtered["runNum"], [100, 100, 200])
+        self.assertEqual(mapping, {100: "P3", 200: "P4"})
+        self.assertEqual(metadata["selectedCandidateRows"], 3)
+        self.assertEqual(metadata["excludedCandidateRows"], 1)
+        self.assertEqual(metadata["includedRunClasses"], ["P3", "P4"])
 
     def test_fixed_run_blocks_preserve_partition_and_update_counts(self) -> None:
         runs = np.asarray([5423, 5423, 5424, 5425, 5425, 5425])

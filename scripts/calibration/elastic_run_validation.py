@@ -47,6 +47,7 @@ class RunBlock:
     index: int
     runs: tuple[int, ...]
     selected_candidates: int
+    run_class: str | None = None
 
     @property
     def run_min(self) -> int:
@@ -61,7 +62,7 @@ class RunBlock:
         return float(np.mean(self.runs))
 
     def to_json(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "index": self.index,
             "fold": "A" if self.index % 2 == 0 else "B",
             "runs": list(self.runs),
@@ -70,6 +71,9 @@ class RunBlock:
             "runCenter": self.run_center,
             "selectedCandidates": self.selected_candidates,
         }
+        if self.run_class is not None:
+            result["runClass"] = self.run_class
+        return result
 
 
 def concatenate_arrays(parts: Iterable[dict[str, np.ndarray]]) -> dict[str, np.ndarray]:
@@ -93,54 +97,240 @@ def subset_arrays(
     return {name: np.asarray(values)[mask] for name, values in arrays.items()}
 
 
-def make_run_blocks(
-    run_numbers: np.ndarray,
+def load_candidate_inputs(
+    input_files: Iterable[Path], tree: str,
+) -> dict[str, np.ndarray]:
+    parts: list[dict[str, np.ndarray]] = []
+    for path in input_files:
+        print(f"[LOAD] {path}", flush=True)
+        part = load_elastic_arrays(path, tree, None)
+        entries = next(iter(part.values())).size if part else 0
+        print(f"[LOAD] {path}: {entries} candidate rows", flush=True)
+        parts.append(part)
+    arrays = concatenate_arrays(parts)
+    entries = next(iter(arrays.values())).size
+    print(f"[LOAD] combined candidate rows: {entries}", flush=True)
+    return arrays
+
+
+def load_run_catalog(path: Path) -> dict[int, str]:
+    payload = json.loads(path.read_text())
+    runs = payload.get("runs")
+    if not isinstance(runs, dict):
+        raise ValueError(f"run catalog has no top-level runs object: {path}")
+    result: dict[int, str] = {}
+    for run_text, entry in runs.items():
+        if not isinstance(entry, dict) or not entry.get("run_class"):
+            raise ValueError(f"run catalog entry {run_text} has no run_class")
+        result[int(run_text)] = str(entry["run_class"])
+    if not result:
+        raise ValueError(f"run catalog contains no runs: {path}")
+    return result
+
+
+def filter_arrays_by_run_classes(
+    arrays: dict[str, np.ndarray],
+    run_class_by_run: dict[int, str],
+    include_run_classes: Iterable[str] | None,
+    *,
+    catalog_path: Path,
+) -> tuple[dict[str, np.ndarray], dict[int, str], dict[str, object]]:
+    """Consume and filter an array collection while limiting peak memory."""
+    if "runNum" not in arrays:
+        raise ValueError("candidate inputs have no runNum branch")
+    run_numbers = np.asarray(arrays["runNum"], dtype=int)
+    input_runs = sorted(int(run) for run in np.unique(run_numbers))
+    missing = [run for run in input_runs if run not in run_class_by_run]
+    if missing:
+        preview = ", ".join(str(run) for run in missing[:8])
+        suffix = "..." if len(missing) > 8 else ""
+        raise ValueError(
+            f"candidate runs are absent from run catalog: {preview}{suffix}"
+        )
+    requested_classes = tuple(dict.fromkeys(
+        str(value) for value in (include_run_classes or ())
+    ))
+    allowed_classes = (
+        set(requested_classes)
+        if requested_classes else set(run_class_by_run.values())
+    )
+    unknown_classes = sorted(allowed_classes - set(run_class_by_run.values()))
+    if unknown_classes:
+        raise ValueError(
+            "run catalog contains no requested classes: "
+            + ", ".join(unknown_classes)
+        )
+    allowed_runs = np.asarray([
+        run for run in input_runs if run_class_by_run[run] in allowed_classes
+    ], dtype=int)
+    mask = np.isin(run_numbers, allowed_runs)
+    if not np.any(mask):
+        raise ValueError("run-class selection retained no candidate rows")
+    filtered = arrays
+    for name in tuple(filtered):
+        filtered[name] = np.asarray(filtered[name])[mask]
+    selected_runs = sorted(int(run) for run in np.unique(filtered["runNum"]))
+    selected_mapping = {run: run_class_by_run[run] for run in selected_runs}
+    class_summary = []
+    for run_class in sorted(allowed_classes):
+        class_runs = [
+            run for run in selected_runs if selected_mapping[run] == run_class
+        ]
+        if not class_runs:
+            continue
+        class_entries = int(np.count_nonzero(np.isin(run_numbers, class_runs)))
+        class_summary.append({
+            "runClass": run_class,
+            "runs": class_runs,
+            "runCount": len(class_runs),
+            "candidateRows": class_entries,
+        })
+    metadata: dict[str, object] = {
+        "catalog": str(catalog_path),
+        "includedRunClasses": (
+            list(requested_classes) if requested_classes
+            else sorted(allowed_classes)
+        ),
+        "inputCandidateRows": int(run_numbers.size),
+        "selectedCandidateRows": int(np.count_nonzero(mask)),
+        "excludedCandidateRows": int(np.count_nonzero(~mask)),
+        "inputRuns": input_runs,
+        "selectedRuns": selected_runs,
+        "classes": class_summary,
+    }
+    print(
+        "[RUN FILTER] retained "
+        f"{metadata['selectedCandidateRows']}/{metadata['inputCandidateRows']} rows "
+        f"from {len(selected_runs)} runs in classes "
+        + ", ".join(str(value) for value in metadata["includedRunClasses"]),
+        flush=True,
+    )
+    return filtered, selected_mapping, metadata
+
+
+def _group_run_segment(
+    runs: np.ndarray,
+    counts: np.ndarray,
     target_selected_candidates: int,
-) -> list[RunBlock]:
-    if target_selected_candidates < 1:
-        raise ValueError("run-block target must be positive")
-    runs, counts = np.unique(np.asarray(run_numbers, dtype=int), return_counts=True)
-    if runs.size < 2:
-        raise ValueError("multi-run validation requires at least two runs")
-    grouped: list[tuple[tuple[int, ...], int]] = []
+    run_class: str | None,
+) -> list[tuple[tuple[int, ...], int, str | None]]:
+    grouped: list[tuple[tuple[int, ...], int, str | None]] = []
     current_runs: list[int] = []
     current_count = 0
     for run, count in zip(runs, counts):
         current_runs.append(int(run))
         current_count += int(count)
         if current_count >= target_selected_candidates:
-            grouped.append((tuple(current_runs), current_count))
+            grouped.append((tuple(current_runs), current_count, run_class))
             current_runs = []
             current_count = 0
     if current_runs:
         if grouped and current_count < 0.5 * target_selected_candidates:
-            previous_runs, previous_count = grouped[-1]
+            previous_runs, previous_count, previous_class = grouped[-1]
             grouped[-1] = (
-                previous_runs + tuple(current_runs), previous_count + current_count
+                previous_runs + tuple(current_runs),
+                previous_count + current_count,
+                previous_class,
             )
         else:
-            grouped.append((tuple(current_runs), current_count))
+            grouped.append((tuple(current_runs), current_count, run_class))
+    return grouped
+
+
+def make_run_blocks(
+    run_numbers: np.ndarray,
+    target_selected_candidates: int,
+    run_class_by_run: dict[int, str] | None = None,
+) -> list[RunBlock]:
+    if target_selected_candidates < 1:
+        raise ValueError("run-block target must be positive")
+    runs, counts = np.unique(np.asarray(run_numbers, dtype=int), return_counts=True)
+    if runs.size < 2:
+        raise ValueError("multi-run validation requires at least two runs")
+    grouped: list[tuple[tuple[int, ...], int, str | None]] = []
+    if run_class_by_run is None:
+        grouped.extend(_group_run_segment(
+            runs, counts, target_selected_candidates, None
+        ))
+    else:
+        missing = [int(run) for run in runs if int(run) not in run_class_by_run]
+        if missing:
+            raise ValueError(
+                "selected runs have no run-class assignment: "
+                + ", ".join(str(run) for run in missing[:8])
+            )
+        segment_start = 0
+        while segment_start < runs.size:
+            run_class = run_class_by_run[int(runs[segment_start])]
+            segment_stop = segment_start + 1
+            while (
+                segment_stop < runs.size
+                and run_class_by_run[int(runs[segment_stop])] == run_class
+            ):
+                segment_stop += 1
+            grouped.extend(_group_run_segment(
+                runs[segment_start:segment_stop],
+                counts[segment_start:segment_stop],
+                target_selected_candidates,
+                run_class,
+            ))
+            segment_start = segment_stop
     if len(grouped) < 2:
         midpoint = max(1, runs.size // 2)
+        run_class = (
+            run_class_by_run[int(runs[0])] if run_class_by_run is not None else None
+        )
         grouped = [
             (
                 tuple(int(value) for value in runs[:midpoint]),
                 int(np.sum(counts[:midpoint])),
+                run_class,
             ),
             (
                 tuple(int(value) for value in runs[midpoint:]),
                 int(np.sum(counts[midpoint:])),
+                run_class,
             ),
         ]
     return [
-        RunBlock(index, block_runs, count)
-        for index, (block_runs, count) in enumerate(grouped)
+        RunBlock(index, block_runs, count, run_class)
+        for index, (block_runs, count, run_class) in enumerate(grouped)
     ]
+
+
+def make_run_class_fold_blocks(
+    run_numbers: np.ndarray,
+    run_class_by_run: dict[int, str],
+    run_class_order: Iterable[str],
+) -> list[RunBlock]:
+    classes = tuple(dict.fromkeys(str(value) for value in run_class_order))
+    if len(classes) != 2:
+        raise ValueError("class-fold validation requires exactly two run classes")
+    run_array = np.asarray(run_numbers, dtype=int)
+    selected_runs = sorted(int(run) for run in np.unique(run_array))
+    missing = [run for run in selected_runs if run not in run_class_by_run]
+    if missing:
+        raise ValueError("class-fold validation found runs without a class")
+    observed_classes = {run_class_by_run[run] for run in selected_runs}
+    if observed_classes != set(classes):
+        raise ValueError(
+            "class-fold validation requires selected runs from exactly: "
+            + ", ".join(classes)
+        )
+    blocks: list[RunBlock] = []
+    for index, run_class in enumerate(classes):
+        class_runs = tuple(
+            run for run in selected_runs if run_class_by_run[run] == run_class
+        )
+        count = int(np.count_nonzero(np.isin(run_array, class_runs)))
+        blocks.append(RunBlock(index, class_runs, count, run_class))
+    return blocks
 
 
 def make_fixed_run_blocks(
     run_numbers: np.ndarray,
     run_groups: Iterable[Iterable[int]],
+    run_class_by_run: dict[int, str] | None = None,
 ) -> list[RunBlock]:
     """Reuse an existing run partition while updating selected-event counts."""
     groups = [tuple(int(run) for run in group) for group in run_groups]
@@ -158,14 +348,22 @@ def make_fixed_run_blocks(
             f"fixed run partition does not cover selected runs: {preview}{suffix}"
         )
     run_array = np.asarray(run_numbers, dtype=int)
-    blocks = [
-        RunBlock(
+    blocks: list[RunBlock] = []
+    for index, group in enumerate(groups):
+        run_class = None
+        if run_class_by_run is not None:
+            classes = {run_class_by_run.get(run) for run in group}
+            if None in classes:
+                raise ValueError("fixed run partition contains an unclassified run")
+            if len(classes) != 1:
+                raise ValueError("fixed run block crosses a run-class boundary")
+            run_class = str(next(iter(classes)))
+        blocks.append(RunBlock(
             index=index,
             runs=group,
             selected_candidates=int(np.count_nonzero(np.isin(run_array, group))),
-        )
-        for index, group in enumerate(groups)
-    ]
+            run_class=run_class,
+        ))
     if any(block.selected_candidates == 0 for block in blocks):
         raise ValueError("fixed run partition produced an empty selected-event block")
     return blocks
@@ -1007,6 +1205,10 @@ def run_validation(
     minimum_per_run_core_entries: int = 200,
     minimum_model_improvement_fraction: float = 0.10,
     run_groups: Iterable[Iterable[int]] | None = None,
+    run_class_by_run: dict[int, str] | None = None,
+    run_block_mode: str = "candidate-target",
+    run_class_order: Iterable[str] = (),
+    run_selection: dict[str, object] | None = None,
 ) -> dict[str, object]:
     if not 0.0 <= minimum_model_improvement_fraction < 1.0:
         raise ValueError("minimum model improvement fraction must be in [0, 1)")
@@ -1035,11 +1237,27 @@ def run_validation(
         }
         if np.any(proton_detector == 2):
             expected_region_keys.add((2212, 2, 0))
-    blocks = (
-        make_fixed_run_blocks(selected["runNum"], run_groups)
-        if run_groups is not None
-        else make_run_blocks(selected["runNum"], block_target)
+    if run_block_mode not in {
+        "candidate-target", "class-boundary", "class-fold",
+    }:
+        raise ValueError(f"unknown run-block mode: {run_block_mode}")
+    if run_block_mode != "candidate-target" and run_class_by_run is None:
+        raise ValueError(f"{run_block_mode} requires run-class assignments")
+    block_class_mapping = (
+        run_class_by_run if run_block_mode != "candidate-target" else None
     )
+    if run_groups is not None:
+        blocks = make_fixed_run_blocks(
+            selected["runNum"], run_groups, block_class_mapping
+        )
+    elif run_block_mode == "class-fold":
+        blocks = make_run_class_fold_blocks(
+            selected["runNum"], run_class_by_run or {}, run_class_order
+        )
+    else:
+        blocks = make_run_blocks(
+            selected["runNum"], block_target, block_class_mapping
+        )
     if len(blocks) < 2:
         raise ValueError("multi-run validation requires at least two run blocks")
     raw_runs = np.asarray(arrays["runNum"], dtype=int)
@@ -1057,11 +1275,18 @@ def run_validation(
         "selection": selection,
         "runBlockDefinition": (
             "fixed-from-nominal-systematic-scan"
-            if run_groups is not None else "selected-candidate-target"
+            if run_groups is not None else
+            "selected-candidate-target"
+            if run_block_mode == "candidate-target" else
+            "selected-candidate-target-with-class-boundaries"
+            if run_block_mode == "class-boundary" else
+            "two-run-class-cross-validation"
         ),
         "runBlocks": [block.to_json() for block in blocks],
         "models": {},
     }
+    if run_selection is not None:
+        report["runSelection"] = copy.deepcopy(run_selection)
     per_run = per_run_region_stability(
         selected, cfg, particle, minimum_per_run_core_entries
     )
@@ -1100,6 +1325,9 @@ def run_validation(
         pooled["datasetTag"] = dataset_tag
         pooled["calibrationRole"] = "pooledCandidatePendingHeldOutReview"
         pooled["runCoverage"] = sorted(int(value) for value in np.unique(raw_runs))
+        pooled["runBlockMode"] = run_block_mode
+        if run_selection is not None:
+            pooled["runSelection"] = copy.deepcopy(run_selection)
         pooled_by_model[model] = pooled
         _write_json(model_dir / "pooled_parameters.json", pooled)
         if make_plots:
@@ -1259,6 +1487,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--dataset-tag", default="")
     parser.add_argument("--max-rows", type=int)
+    parser.add_argument(
+        "--run-catalog", type=Path,
+        help="JSON run catalog with a top-level runs object and run_class fields",
+    )
+    parser.add_argument(
+        "--include-run-classes", nargs="+",
+        help="retain only these run classes; requires --run-catalog",
+    )
+    block_group = parser.add_mutually_exclusive_group()
+    block_group.add_argument(
+        "--block-by-run-class", action="store_true",
+        help=(
+            "form candidate-target blocks within, never across, contiguous "
+            "run-class periods"
+        ),
+    )
+    block_group.add_argument(
+        "--fold-by-run-class", action="store_true",
+        help=(
+            "with exactly two included classes, train on each class and hold out "
+            "the other"
+        ),
+    )
     parser.add_argument("--block-target-selected", type=int, default=100_000)
     parser.add_argument("--min-per-run-core-entries", type=int, default=200)
     parser.add_argument(
@@ -1308,16 +1559,34 @@ def main() -> None:
         raise ValueError("minimum per-run core entries must be at least two")
     if not 0.0 <= args.minimum_model_improvement_fraction < 1.0:
         raise ValueError("minimum model improvement fraction must be in [0, 1)")
-    parts = [
-        load_elastic_arrays(path, args.tree, None)
-        for path in args.input_files
-    ]
-    arrays = concatenate_arrays(parts)
+    if args.include_run_classes and args.run_catalog is None:
+        raise ValueError("--include-run-classes requires --run-catalog")
+    if (args.block_by_run_class or args.fold_by_run_class) and args.run_catalog is None:
+        raise ValueError("run-class block modes require --run-catalog")
+    if args.fold_by_run_class and len(args.include_run_classes or ()) != 2:
+        raise ValueError(
+            "--fold-by-run-class requires exactly two --include-run-classes"
+        )
+    arrays = load_candidate_inputs(args.input_files, args.tree)
     if args.max_rows is not None:
         arrays = subset_arrays(
             arrays,
             np.arange(next(iter(arrays.values())).size) < args.max_rows,
         )
+    run_class_by_run: dict[int, str] | None = None
+    run_selection: dict[str, object] | None = None
+    if args.run_catalog is not None:
+        arrays, run_class_by_run, run_selection = filter_arrays_by_run_classes(
+            arrays,
+            load_run_catalog(args.run_catalog),
+            args.include_run_classes,
+            catalog_path=args.run_catalog,
+        )
+    run_block_mode = (
+        "class-fold" if args.fold_by_run_class else
+        "class-boundary" if args.block_by_run_class else
+        "candidate-target"
+    )
     cfg = ElasticFitConfig(
         beam_energy=args.beam_energy,
         torus=args.torus,
@@ -1358,6 +1627,10 @@ def main() -> None:
         minimum_model_improvement_fraction=(
             args.minimum_model_improvement_fraction
         ),
+        run_class_by_run=run_class_by_run,
+        run_block_mode=run_block_mode,
+        run_class_order=args.include_run_classes or (),
+        run_selection=run_selection,
     )
     print(f"Wrote multi-run validation to {args.output_dir}")
     recommendation = report["recommendation"]

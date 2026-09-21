@@ -350,6 +350,14 @@ each detector region. The output is a diagnostic: inspect run epochs, both
 held-out directions, and selection variations before promoting any pooled or
 mixed parameter file.
 
+The validator and systematic-scan driver can reuse a combined candidate ROOT
+file while selecting analysis-relevant periods with `--run-catalog` and
+`--include-run-classes`. Use `--block-by-run-class` to keep ordinary
+candidate-target blocks from crossing class boundaries. Use
+`--fold-by-run-class` with exactly two classes for the stronger test that fits
+each class and evaluates it exclusively on the other. Run-selection provenance
+is stored in the reports and parameter files.
+
 Once the model family is fixed, use
 `scripts/scan_elastic_momentum_systematics.py` for the missing-energy,
 lower-theta, and adaptive-cell-occupancy variations. It performs a

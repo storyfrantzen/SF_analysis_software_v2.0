@@ -99,12 +99,14 @@ class ElasticSystematicScanTests(unittest.TestCase):
             target_cell_entry_values=[2_000],
         )
         observed_run_groups: list[object] = []
+        observed_block_modes: list[object] = []
 
         def fake_validation(*args: object, **kwargs: object) -> dict[str, object]:
             output_dir = Path(kwargs["output_dir"])
             output_dir.mkdir(parents=True, exist_ok=True)
             run_groups = kwargs.get("run_groups")
             observed_run_groups.append(run_groups)
+            observed_block_modes.append(kwargs.get("run_block_mode"))
             coefficient = 0.004 + 0.001 * (
                 float(args[1].missing_energy_max_gev) - 0.75
             )
@@ -192,9 +194,16 @@ class ElasticSystematicScanTests(unittest.TestCase):
                     dataset_tag="synthetic",
                     variations=variations,
                     make_summary_plots=False,
+                    run_class_by_run={5423: "P3", 5424: "P4"},
+                    run_block_mode="class-boundary",
+                    run_class_order=("P3", "P4"),
+                    run_selection={"includedRunClasses": ["P3", "P4"]},
                 )
             self.assertIsNone(observed_run_groups[0])
             self.assertEqual(observed_run_groups[1], ((5423,), (5424,)))
+            self.assertEqual(
+                observed_block_modes, ["class-boundary", "class-boundary"]
+            )
             self.assertTrue(report["fixedRunPartitionAcrossVariations"])
             self.assertTrue(report["allRegionModelAssignmentsStable"])
             self.assertEqual(

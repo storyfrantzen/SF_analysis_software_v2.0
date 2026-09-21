@@ -415,6 +415,30 @@ the time plots to define stable run periods; then repeat the validator within
 each period and vary the missing-energy, lower-theta, topology, and binning
 selections.
 
+Candidate ROOT files can be filtered by the same run catalog used to build the
+HIPO manifest, without copying or rewriting the ROOT file. For example, an RGK
+production-only validation uses:
+
+```bash
+python3 scripts/validate_elastic_momentum_runs.py \
+  6.535_rgk_elastic_candidates_run_spanning.root \
+  --beam-energy 6.535 --torus 1 --particle electron \
+  --run-catalog configs/efficiency/rgk/6.535/run_currents.json \
+  --include-run-classes P3 P4 --block-by-run-class \
+  --block-target-selected 500000 \
+  --models constant theta-linear theta-phi theta2-phi \
+  --output-dir calibration_plots/momentum/rgk_6p535_production_validation
+```
+
+`--block-by-run-class` retains candidate-target blocks but prevents a block
+from crossing a class boundary. The report and every generated parameter file
+record the catalog, included classes, retained runs, and row counts. To test
+whether two periods support a common surface, replace that option with
+`--fold-by-run-class`; exactly two `--include-run-classes` must then be given.
+The first fold is trained on the first class and tested on the second, and the
+direction is reversed for the other fold. This is a deliberately stronger
+test than alternating mixed-period blocks.
+
 For an FD region the `theta2-phi` candidate has six terms: constant, theta,
 theta-squared, local phi, theta times local phi, and theta-squared times local
 phi. It is the fractional-correction analogue of the common additive
@@ -443,6 +467,11 @@ python3 scripts/scan_elastic_momentum_systematics.py \
   --output-dir calibration_plots/momentum/rga_fa18_torus+1_systematics \
   --dataset-tag 10.604RGA_FA18_torus+1_systematics
 ```
+
+The systematic driver accepts the same `--run-catalog`,
+`--include-run-classes`, `--block-by-run-class`, and `--fold-by-run-class`
+options. It applies the run filter before the nominal fit and preserves the
+resulting class-respecting nominal partition in every variation.
 
 The scan loads the candidate tree once and varies one setting at a time around
 the nominal configuration. It defines the run blocks from the nominal sample
