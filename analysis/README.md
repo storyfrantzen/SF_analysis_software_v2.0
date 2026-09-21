@@ -1289,6 +1289,24 @@ input provenance. Diagnostics are written as
 sideband-transfer uncertainty and remaining campaign systematic covariance are
 recorded as pending rather than folded into the statistical error.
 
+Compare two independent extractions, such as opposite torus polarities, before
+combining them:
+
+```bash
+python3 analysis/compare_beam_spin_asymmetries.py \
+  torus_plus/beam_spin_asymmetry.npz \
+  torus_minus/beam_spin_asymmetry.npz \
+  --left-label "torus +1" --right-label "torus -1" \
+  --output-dir results/beam_spin_polarity_comparison
+```
+
+The comparison reports amplitude and phi-point pulls and fits the extended
+null-test form `c0 + s1*sin(phi) + c1*cos(phi) + s2*sin(2phi)`. The constant,
+cosine, and second-sine coefficients should be statistically consistent with
+zero for the one-photon exclusive-pi0 beam-spin observable. These checks are
+internal consistency tests rather than replacements for detector and selection
+systematic studies.
+
 ## Legacy behavior intentionally corrected
 
 - reconstructed failures never remove generated events from the denominator;
