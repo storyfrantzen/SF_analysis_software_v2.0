@@ -441,7 +441,7 @@ def save_results(
     aggregates = aggregate_metrics(result.metrics)
     iterations = sorted({int(row["iterations"]) for row in result.metrics})
     summary: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "method": "source-aware deterministic K-fold held-out GEMC closure",
         "label": args.label,
         "software_revision": _git_revision(),
@@ -466,6 +466,11 @@ def save_results(
             "stress_strength": args.stress_strength,
             "phase_space": phase_space.description(),
             "topology_groups": sorted(set(args.topology_group)),
+            "harmonic_measurement_covariance": (
+                "bootstrap covariance among phi bins within each (Q2,xB,-t) cell; "
+                "response-MC variance added to the diagonal; finite-bootstrap precision "
+                "uses the per-fit Hartlap (N-p-2)/(N-1) correction"
+            ),
         },
         "scan": scan_metadata,
         "recommendation": {

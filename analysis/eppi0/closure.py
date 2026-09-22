@@ -9,7 +9,13 @@ from scipy.sparse import csr_matrix
 from .binning import AnalysisBinning
 from .harmonics import fit_grid
 from .response import ResponseResult, build_response_from_counts
-from .unfolding import bootstrap_uncertainty, iterative_bayes, subtract_feed_in
+from .unfolding import (
+    bootstrap_ensemble,
+    diagonal_phi_covariance,
+    iterative_bayes,
+    phi_block_covariance,
+    subtract_feed_in,
+)
 
 
 Array = np.ndarray
@@ -217,6 +223,9 @@ def run_closure_scan(
                         out=np.zeros_like(variance),
                         where=acceptance_valid,
                     )
+                    statistical_covariance_phi = diagonal_phi_covariance(
+                        sigma_stat * sigma_stat, binning.shape[-1]
+                    )
                 else:
                     unfolded = iterative_bayes(
                         response.core,
@@ -227,7 +236,7 @@ def run_closure_scan(
                         minimum_acceptance=minimum_acceptance,
                     ).unfolded
                     if bootstrap >= 2:
-                        _, sigma_stat = bootstrap_uncertainty(
+                        bootstrap_samples = bootstrap_ensemble(
                             response.core,
                             measured,
                             response.efficiency,
@@ -240,12 +249,19 @@ def run_closure_scan(
                             feed_in_shape=response.feed_in_shape,
                             measured_variance=variance,
                         )
+                        sigma_stat = bootstrap_samples.std(axis=0, ddof=1)
+                        statistical_covariance_phi = phi_block_covariance(
+                            bootstrap_samples, binning.shape[-1]
+                        )
                     else:
                         sigma_stat = np.divide(
                             np.sqrt(variance),
                             response.efficiency,
                             out=np.zeros_like(variance),
                             where=acceptance_valid,
+                        )
+                        statistical_covariance_phi = diagonal_phi_covariance(
+                            sigma_stat * sigma_stat, binning.shape[-1]
                         )
                 sensitivity = np.divide(
                     unfolded,
@@ -255,6 +271,14 @@ def run_closure_scan(
                 )
                 sigma_response = sensitivity * np.sqrt(response.response_variance_sum)
                 sigma = np.hypot(sigma_stat, sigma_response)
+                total_covariance_phi = (
+                    statistical_covariance_phi
+                    + diagonal_phi_covariance(
+                        sigma_response * sigma_response, binning.shape[-1]
+                    )
+                ).reshape(
+                    binning.shape[:-1] + (binning.shape[-1], binning.shape[-1])
+                )
                 valid = (
                     acceptance_valid
                     & (target >= minimum_truth)
@@ -281,6 +305,8 @@ def run_closure_scan(
                         stress=stress_name,
                         iterations=iteration,
                         minimum_harmonic_points=minimum_harmonic_points,
+                        covariance_phi=total_covariance_phi,
+                        covariance_samples=(bootstrap if bootstrap >= 2 else None),
                     )
                 )
 
@@ -310,6 +336,8 @@ def closure_metrics(
     stress: str,
     iterations: int,
     minimum_harmonic_points: int,
+    covariance_phi: Array | None = None,
+    covariance_samples: int | None = None,
 ) -> dict[str, float | int | str]:
     target = np.asarray(target, dtype=float)
     unfolded = np.asarray(unfolded, dtype=float)
@@ -353,6 +381,8 @@ def closure_metrics(
         valid,
         binning,
         minimum_points=minimum_harmonic_points,
+        covariance_phi=covariance_phi,
+        covariance_samples=covariance_samples,
     )
     result: dict[str, float | int | str] = {
         "fold": int(fold),
@@ -443,6 +473,8 @@ def _harmonic_metrics(
     binning: AnalysisBinning,
     *,
     minimum_points: int,
+    covariance_phi: Array | None = None,
+    covariance_samples: int | None = None,
 ) -> dict[str, float | int]:
     shaped_target = binning.unflatten(target)
     shaped_unfolded = binning.unflatten(unfolded)
@@ -450,6 +482,8 @@ def _harmonic_metrics(
     shaped_valid = binning.unflatten(valid)
     kwargs = dict(
         validity_mask=shaped_valid,
+        measurement_covariance_phi=covariance_phi,
+        measurement_covariance_samples=covariance_samples,
         minimum_points=max(4, min(minimum_points, binning.shape[-1])),
         require_nonnegative=False,
     )

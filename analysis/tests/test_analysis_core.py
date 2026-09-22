@@ -68,7 +68,11 @@ from eppi0.radiative_correction import (
 from eppi0.root_response import _truth_inside_mask
 from eppi0.phase_space import AnalysisPhaseSpace
 from eppi0.topology import INVALID_TOPOLOGY, detector_topology_id, ft_photon_count
-from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
+from eppi0.unfolding import (
+    bootstrap_uncertainty,
+    iterative_bayes,
+    phi_block_covariance,
+)
 from run_analysis import (
     command_radiative_correction,
     command_response,
@@ -1453,6 +1457,19 @@ class UnfoldingTests(unittest.TestCase):
         np.testing.assert_allclose(first[0], second[0])
         np.testing.assert_allclose(first[1], second[1])
 
+    def test_phi_block_covariance_keeps_cells_separate(self) -> None:
+        samples = np.asarray(
+            [
+                [1.0, 2.0, 10.0, 20.0],
+                [2.0, 4.0, 11.0, 18.0],
+                [3.0, 6.0, 12.0, 16.0],
+            ]
+        )
+        covariance = phi_block_covariance(samples, 2)
+        self.assertEqual(covariance.shape, (2, 2, 2))
+        np.testing.assert_allclose(covariance[0], np.cov(samples[:, :2], rowvar=False))
+        np.testing.assert_allclose(covariance[1], np.cov(samples[:, 2:], rowvar=False))
+
     def test_zero_iteration_records_raw_and_feed_in_subtracted_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
@@ -1522,6 +1539,12 @@ class UnfoldingTests(unittest.TestCase):
                     "measured_without_feed_in_subtraction",
                 )
                 self.assertFalse(bool(result["feed_in_subtraction_applied_to_unfolded"]))
+                np.testing.assert_allclose(
+                    np.diagonal(
+                        result["corrected_covariance_phi"], axis1=-2, axis2=-1
+                    ).reshape(-1),
+                    result["corrected_uncertainty"] ** 2,
+                )
 
             args.iterations = 1
             args.bootstrap = 5
@@ -1535,6 +1558,12 @@ class UnfoldingTests(unittest.TestCase):
                     "feed_in_subtracted_measured",
                 )
                 self.assertTrue(bool(result["feed_in_subtraction_applied_to_unfolded"]))
+                np.testing.assert_allclose(
+                    np.diagonal(
+                        result["corrected_covariance_phi"], axis1=-2, axis2=-1
+                    ).reshape(-1),
+                    result["corrected_uncertainty"] ** 2,
+                )
 
     def test_unfold_divides_by_radiative_correction(self) -> None:
         config = Path("configs/analysis/rgk/6.535.json")
@@ -2229,6 +2258,9 @@ class NormalizationTests(unittest.TestCase):
                 efficiency=np.asarray([1.0, 1.0]),
                 corrected_yield=np.asarray([100.0, 100.0]),
                 corrected_uncertainty=np.asarray([10.0, 10.0]),
+                corrected_covariance_phi=np.asarray(
+                    [[[[[100.0, 20.0], [20.0, 100.0]]]]]
+                ),
                 radiative_reliable=np.asarray([True, False]),
                 Q2_mean=np.asarray([1.35, 1.35]),
                 xB_mean=np.asarray([0.28, 0.28]),
@@ -2274,6 +2306,11 @@ class NormalizationTests(unittest.TestCase):
         )
         self.assertAlmostEqual(output["reduced_cross_section"][0, 0, 0, 0], expected)
         self.assertTrue(np.isnan(output["reduced_cross_section"][0, 0, 0, 1]))
+        self.assertAlmostEqual(
+            output["covariance_phi"][0, 0, 0, 0, 0],
+            output["uncertainty"][0, 0, 0, 0] ** 2,
+        )
+        self.assertTrue(np.isnan(output["covariance_phi"][0, 0, 0, 0, 1]))
         np.testing.assert_allclose(output["flux_q2_mean"], [1.25, 1.25])
         np.testing.assert_allclose(output["flux_xb_mean"], [0.24, 0.24])
         np.testing.assert_allclose(output["uncentered_q2_mean"], [1.35, 1.35])
@@ -2461,6 +2498,44 @@ class HarmonicTests(unittest.TestCase):
         fit = fit_phi(phi, values, np.full(phi.size, 0.1))
         self.assertIsNotNone(fit)
         np.testing.assert_allclose(fit.parameters, expected, atol=1e-12)
+
+    def test_correlated_harmonic_fit_uses_generalized_least_squares(self) -> None:
+        phi = np.arange(9.0, 360.0, 18.0)
+        radians = np.deg2rad(phi)
+        design = np.column_stack(
+            (np.ones(phi.size), np.cos(radians), np.cos(2.0 * radians))
+        )
+        expected = np.array([4.0, 1.2, -0.4])
+        covariance_y = 0.004 * np.ones((phi.size, phi.size)) + 0.006 * np.eye(phi.size)
+        fit = fit_phi(
+            phi,
+            design @ expected,
+            np.sqrt(np.diag(covariance_y)),
+            measurement_covariance=covariance_y,
+        )
+        self.assertIsNotNone(fit)
+        inverse = np.linalg.inv(covariance_y)
+        expected_covariance = np.linalg.inv(design.T @ inverse @ design)
+        np.testing.assert_allclose(fit.parameters, expected, atol=1e-12)
+        np.testing.assert_allclose(fit.covariance, expected_covariance, atol=1e-12)
+
+        finite_sample_fit = fit_phi(
+            phi,
+            design @ expected,
+            np.sqrt(np.diag(covariance_y)),
+            measurement_covariance=covariance_y,
+            measurement_covariance_samples=100,
+        )
+        self.assertIsNotNone(finite_sample_fit)
+        correction = (100 - phi.size - 2) / 99
+        self.assertAlmostEqual(
+            finite_sample_fit.measurement_precision_correction, correction
+        )
+        np.testing.assert_allclose(
+            finite_sample_fit.covariance,
+            expected_covariance / correction,
+            atol=1e-12,
+        )
 
     def test_exact_harmonic_minimum_checks_endpoints_and_vertex(self) -> None:
         self.assertAlmostEqual(minimum_harmonic_cross_section([4.0, 1.0, 0.0]), 3.0)

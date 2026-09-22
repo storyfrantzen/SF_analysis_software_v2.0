@@ -75,7 +75,7 @@ def iterative_bayes(
     )
 
 
-def bootstrap_uncertainty(
+def bootstrap_ensemble(
     response_core: csr_matrix,
     measured: Array,
     efficiency: Array,
@@ -87,7 +87,7 @@ def bootstrap_uncertainty(
     feed_in_fraction: float = 0.0,
     feed_in_shape: Array | None = None,
     measured_variance: Array | None = None,
-) -> tuple[Array, Array]:
+) -> Array:
     if experiments <= 0:
         raise ValueError("experiments must be positive")
     measured = np.asarray(measured, dtype=float)
@@ -118,7 +118,60 @@ def bootstrap_uncertainty(
             prior=prior,
             minimum_acceptance=minimum_acceptance,
         ).unfolded
+    return samples
+
+
+def bootstrap_uncertainty(
+    response_core: csr_matrix,
+    measured: Array,
+    efficiency: Array,
+    iterations: int,
+    prior: Array,
+    minimum_acceptance: float = 0.005,
+    experiments: int = 200,
+    seed: int | None = None,
+    feed_in_fraction: float = 0.0,
+    feed_in_shape: Array | None = None,
+    measured_variance: Array | None = None,
+) -> tuple[Array, Array]:
+    samples = bootstrap_ensemble(
+        response_core,
+        measured,
+        efficiency,
+        iterations,
+        prior,
+        minimum_acceptance=minimum_acceptance,
+        experiments=experiments,
+        seed=seed,
+        feed_in_fraction=feed_in_fraction,
+        feed_in_shape=feed_in_shape,
+        measured_variance=measured_variance,
+    )
     return samples.mean(axis=0), samples.std(axis=0, ddof=1)
+
+
+def phi_block_covariance(samples: Array, phi_bins: int) -> Array:
+    """Return covariance blocks among phi bins in each three-dimensional cell."""
+    samples = np.asarray(samples, dtype=float)
+    if samples.ndim != 2 or samples.shape[0] < 2:
+        raise ValueError("bootstrap samples must be a 2D array with at least two replicas")
+    if phi_bins <= 0 or samples.shape[1] % phi_bins != 0:
+        raise ValueError("phi-bin count must divide the flattened sample size")
+    blocks = samples.reshape(samples.shape[0], -1, phi_bins)
+    centered = blocks - blocks.mean(axis=0, keepdims=True)
+    return np.einsum("eci,ecj->cij", centered, centered) / (samples.shape[0] - 1)
+
+
+def diagonal_phi_covariance(variance: Array, phi_bins: int) -> Array:
+    """Pack flattened independent-bin variances into per-cell covariance blocks."""
+    variance = np.asarray(variance, dtype=float)
+    if variance.ndim != 1 or phi_bins <= 0 or variance.size % phi_bins != 0:
+        raise ValueError("flattened variance must be divisible by the phi-bin count")
+    blocks = variance.reshape(-1, phi_bins)
+    covariance = np.zeros((blocks.shape[0], phi_bins, phi_bins), dtype=float)
+    diagonal = np.arange(phi_bins)
+    covariance[:, diagonal, diagonal] = blocks
+    return covariance
 
 
 def _fluctuate_weighted_poisson(

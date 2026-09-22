@@ -289,10 +289,23 @@ volume and virtual-photon flux.  Invalid cross-section values and uncertainties
 are stored as `NaN`, and the component masks are retained separately so every
 rejection can be audited.  The harmonic stage consumes this mask directly.
 
+Positive-iteration unfolding also retains the bootstrap statistical covariance
+among phi bins inside every `(Q2, xB, -t)` cell. Response-MC and radiative-factor
+variances are added on the block diagonal, and `cross-section` propagates the
+blocks through luminosity, flux, bin-volume, bin-centering, and global
+normalization factors. The compact `covariance_phi` array therefore has shape
+`(NQ2, NxB, Nt, Nphi, Nphi)`; covariance between different three-dimensional
+cells is intentionally not stored. Its diagonal agrees with `uncertainty**2`.
+
 Theory prediction, structure-function export, and model-overlay commands are
 documented in [`docs/model_comparison.md`](../docs/model_comparison.md).
 
-`fit-harmonics` retains every numerically solvable raw weighted fit, but only sets
+`fit-harmonics` uses generalized least squares when the cross-section artifact
+contains `covariance_phi`, and otherwise records that it used the legacy diagonal
+`uncertainty` approximation. For bootstrap-estimated covariance it applies and
+records the finite-sample Hartlap precision correction `(N-p-2)/(N-1)`, where
+`p` is the number of valid phi points in the fit. It retains every numerically
+solvable raw fit, but only sets
 `quality_mask` for fits that satisfy the production guards.  Defaults require at
 least 12 valid phi bins, `chi2/ndf <= 3`, covariance condition number `<= 1e4`,
 `sigma_A/abs(A) <= 0.5`, a positive-definite finite covariance matrix, and a

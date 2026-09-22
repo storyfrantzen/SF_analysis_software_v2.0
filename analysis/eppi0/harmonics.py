@@ -52,6 +52,7 @@ class HarmonicFit:
     points: int
     covariance_condition: float
     minimum_cross_section: float
+    measurement_precision_correction: float
 
 
 def minimum_harmonic_cross_section(parameters: Array) -> float:
@@ -93,8 +94,10 @@ def fit_phi(
     values: Array,
     uncertainties: Array,
     validity_mask: Array | None = None,
+    measurement_covariance: Array | None = None,
+    measurement_covariance_samples: int | None = None,
 ) -> HarmonicFit | None:
-    """Fit `A + B cos(phi) + C cos(2 phi)` by weighted least squares."""
+    """Fit `A + B cos(phi) + C cos(2 phi)` by generalized least squares."""
     phi_deg, values, uncertainties, valid = _valid_points(
         phi_deg, values, uncertainties, validity_mask
     )
@@ -103,8 +106,34 @@ def fit_phi(
     phi = np.deg2rad(phi_deg[valid])
     y, sigma = values[valid], uncertainties[valid]
     design = np.column_stack((np.ones(phi.size), np.cos(phi), np.cos(2.0 * phi)))
-    weighted_design = design / sigma[:, None]
-    weighted_y = y / sigma
+    if measurement_covariance is None:
+        covariance_y = np.diag(sigma * sigma)
+    else:
+        measurement_covariance = np.asarray(measurement_covariance, dtype=float)
+        if measurement_covariance.shape != (values.size, values.size):
+            raise ValueError("measurement covariance does not match phi bins")
+        indices = np.flatnonzero(valid)
+        covariance_y = measurement_covariance[np.ix_(indices, indices)]
+        if (
+            not np.all(np.isfinite(covariance_y))
+            or not np.allclose(covariance_y, covariance_y.T, rtol=1.0e-10, atol=1.0e-14)
+        ):
+            return None
+    try:
+        lower = np.linalg.cholesky(covariance_y)
+    except np.linalg.LinAlgError:
+        return None
+    weighted_design = np.linalg.solve(lower, design)
+    weighted_y = np.linalg.solve(lower, y)
+    precision_correction = 1.0
+    if measurement_covariance is not None and measurement_covariance_samples is not None:
+        sample_count = int(measurement_covariance_samples)
+        if sample_count <= y.size + 2:
+            return None
+        precision_correction = (sample_count - y.size - 2.0) / (sample_count - 1.0)
+        scale = np.sqrt(precision_correction)
+        weighted_design *= scale
+        weighted_y *= scale
     parameters, _, rank, _ = np.linalg.lstsq(weighted_design, weighted_y, rcond=None)
     if rank < 3:
         return None
@@ -113,7 +142,7 @@ def fit_phi(
         covariance = np.linalg.inv(normal)
     except np.linalg.LinAlgError:
         return None
-    residual = (y - design @ parameters) / sigma
+    residual = np.linalg.solve(lower, y - design @ parameters)
     ndf = y.size - 3
     return HarmonicFit(
         parameters,
@@ -122,6 +151,7 @@ def fit_phi(
         int(y.size),
         float(np.linalg.cond(covariance)),
         minimum_harmonic_cross_section(parameters),
+        float(precision_correction),
     )
 
 
@@ -183,6 +213,8 @@ def fit_grid(
     phi_edges: Array,
     *,
     validity_mask: Array | None = None,
+    measurement_covariance_phi: Array | None = None,
+    measurement_covariance_samples: int | None = None,
     minimum_points: int = DEFAULT_MINIMUM_POINTS,
     maximum_chi2_ndf: float = DEFAULT_MAXIMUM_CHI2_NDF,
     maximum_covariance_condition: float = DEFAULT_MAXIMUM_COVARIANCE_CONDITION,
@@ -203,6 +235,13 @@ def fit_grid(
         validity_mask = np.asarray(validity_mask, dtype=bool)
         if validity_mask.shape != values.shape:
             raise ValueError("validity mask does not match cross-section bins")
+    if measurement_covariance_phi is not None:
+        measurement_covariance_phi = np.asarray(
+            measurement_covariance_phi, dtype=float
+        )
+        expected = values.shape[:-1] + (values.shape[-1], values.shape[-1])
+        if measurement_covariance_phi.shape != expected:
+            raise ValueError("measurement covariance blocks do not match cross-section bins")
     if minimum_points < 4:
         raise ValueError("minimum_points must be at least 4")
     for name, threshold in (
@@ -225,6 +264,7 @@ def fit_grid(
     minimum_cross_section = np.full(grid_shape, np.nan)
     parameter_uncertainties = np.full(grid_shape + (3,), np.nan)
     relative_a_uncertainty = np.full(grid_shape, np.nan)
+    measurement_precision_correction = np.full(grid_shape, np.nan)
     for index in np.ndindex(grid_shape):
         _, _, _, valid = _valid_points(
             centers, values[index], uncertainties[index], validity_mask[index]
@@ -235,6 +275,12 @@ def fit_grid(
             values[index],
             uncertainties[index],
             validity_mask=validity_mask[index],
+            measurement_covariance=(
+                None
+                if measurement_covariance_phi is None
+                else measurement_covariance_phi[index]
+            ),
+            measurement_covariance_samples=measurement_covariance_samples,
         )
         status = _quality_status(
             fit,
@@ -254,6 +300,9 @@ def fit_grid(
         chi2_ndf[index] = fit.chi2_ndf
         covariance_condition[index] = fit.covariance_condition
         minimum_cross_section[index] = fit.minimum_cross_section
+        measurement_precision_correction[index] = (
+            fit.measurement_precision_correction
+        )
         diagonal = np.diag(fit.covariance)
         parameter_uncertainties[index] = np.sqrt(
             np.where(diagonal >= 0.0, diagonal, np.nan)
@@ -277,4 +326,5 @@ def fit_grid(
         "covariance_condition": covariance_condition,
         "relative_A_uncertainty": relative_a_uncertainty,
         "minimum_fitted_cross_section": minimum_cross_section,
+        "measurement_precision_correction": measurement_precision_correction,
     }

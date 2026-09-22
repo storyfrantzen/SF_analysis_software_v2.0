@@ -71,7 +71,13 @@ from eppi0.structure_functions import (
     harmonic_to_structure_functions,
 )
 from eppi0.topology import INVALID_TOPOLOGY
-from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes, subtract_feed_in
+from eppi0.unfolding import (
+    bootstrap_ensemble,
+    diagonal_phi_covariance,
+    iterative_bayes,
+    phi_block_covariance,
+    subtract_feed_in,
+)
 
 
 C_RAD_DIAGNOSTIC_PLOT_RANGE = (0.0, 2.0)
@@ -1089,6 +1095,9 @@ def command_unfold(args: argparse.Namespace) -> None:
             out=np.zeros_like(measured),
             where=efficiency > minimum_acceptance,
         )
+        statistical_covariance_phi = diagonal_phi_covariance(
+            sigma_stat * sigma_stat, binning.shape[-1]
+        )
     else:
         unfolding_method = "iterative_bayes"
         unfolding_input_definition = "feed_in_subtracted_measured"
@@ -1101,7 +1110,7 @@ def command_unfold(args: argparse.Namespace) -> None:
             minimum_acceptance=minimum_acceptance,
         )
         unfolded, kl = result.unfolded, result.kl_divergence
-        _, sigma_stat = bootstrap_uncertainty(
+        bootstrap_samples = bootstrap_ensemble(
             response,
             measured,
             efficiency,
@@ -1114,13 +1123,22 @@ def command_unfold(args: argparse.Namespace) -> None:
             feed_in_shape=metadata["feed_in_shape"],
             measured_variance=measured_variance,
         )
+        sigma_stat = bootstrap_samples.std(axis=0, ddof=1)
+        statistical_covariance_phi = phi_block_covariance(
+            bootstrap_samples, binning.shape[-1]
+        )
     sensitivity = np.divide(
         unfolded, efficiency, out=np.zeros_like(unfolded), where=efficiency > minimum_acceptance
     )
     sigma_mc = sensitivity * np.sqrt(metadata["response_variance_sum"])
     sigma_total = np.hypot(sigma_stat, sigma_mc)
+    response_covariance_phi = diagonal_phi_covariance(
+        sigma_mc * sigma_mc, binning.shape[-1]
+    )
+    total_covariance_phi = statistical_covariance_phi + response_covariance_phi
     corrected_yield = unfolded.copy()
     corrected_uncertainty = sigma_total.copy()
+    corrected_covariance_phi = total_covariance_phi.copy()
     radiative_reliable = np.ones(binning.size, dtype=bool)
     if args.radiative_correction:
         correction = np.load(args.radiative_correction, allow_pickle=False)
@@ -1155,6 +1173,22 @@ def command_unfold(args: argparse.Namespace) -> None:
             radiative_valid,
             np.hypot(unfolded_sigma_after_radiative_correction, radiative_sigma),
             0.0,
+        )
+        factor_blocks = factor.reshape(-1, binning.shape[-1])
+        valid_blocks = radiative_valid.reshape(-1, binning.shape[-1])
+        inverse_factor = np.divide(
+            1.0,
+            factor_blocks,
+            out=np.zeros_like(factor_blocks),
+            where=valid_blocks,
+        )
+        corrected_covariance_phi = (
+            total_covariance_phi
+            * inverse_factor[..., :, None]
+            * inverse_factor[..., None, :]
+        )
+        corrected_covariance_phi += diagonal_phi_covariance(
+            radiative_sigma * radiative_sigma, binning.shape[-1]
         )
 
     original_beam_charge = (
@@ -1194,10 +1228,29 @@ def command_unfold(args: argparse.Namespace) -> None:
         unfolding_input_definition=unfolding_input_definition,
         feed_in_subtraction_applied_to_unfolded=args.iterations > 0,
         sigma_stat=sigma_stat,
+        statistical_covariance_phi=statistical_covariance_phi.reshape(
+            binning.shape[:-1] + (binning.shape[-1], binning.shape[-1])
+        ),
         sigma_mc=sigma_mc,
+        response_covariance_phi=response_covariance_phi.reshape(
+            binning.shape[:-1] + (binning.shape[-1], binning.shape[-1])
+        ),
         sigma_total=sigma_total,
+        total_covariance_phi=total_covariance_phi.reshape(
+            binning.shape[:-1] + (binning.shape[-1], binning.shape[-1])
+        ),
         corrected_yield=corrected_yield,
         corrected_uncertainty=corrected_uncertainty,
+        corrected_covariance_phi=corrected_covariance_phi.reshape(
+            binning.shape[:-1] + (binning.shape[-1], binning.shape[-1])
+        ),
+        covariance_phi_definition=(
+            "bootstrap statistical covariance within each (Q2,xB,-t) phi block; "
+            "response-MC and radiative-correction variances added to the diagonal"
+        ),
+        covariance_phi_bootstrap_experiments=(
+            int(args.bootstrap) if args.iterations > 0 else 0
+        ),
         radiative_reliable=radiative_reliable,
         kl_divergence=kl,
         efficiency=efficiency,
@@ -1376,6 +1429,11 @@ def command_unfold(args: argparse.Namespace) -> None:
                 f"in-range events={current_efficiency_excluded_event_count}, "
                 f"analysis charge={beam_charge:.8g} C"
             )
+    print(
+        "Stored phi-block covariance: "
+        f"{int(np.prod(binning.shape[:-1]))} cells x "
+        f"{binning.shape[-1]}x{binning.shape[-1]} phi bins"
+    )
     print(f"Wrote {args.output}")
 
 
@@ -3168,6 +3226,37 @@ def command_cross_section(args: argparse.Namespace) -> None:
         errors = np.divide(errors, cbc_flat, out=np.zeros_like(errors), where=apply_mask)
     values /= args.global_normalization
     errors /= args.global_normalization
+    cross_section_covariance_phi = None
+    if "corrected_covariance_phi" in result.files:
+        yield_covariance_phi = np.asarray(
+            result["corrected_covariance_phi"], dtype=float
+        ).reshape((-1, binning.shape[-1], binning.shape[-1]))
+        expected_covariance_shape = (
+            int(np.prod(binning.shape[:-1])),
+            binning.shape[-1],
+            binning.shape[-1],
+        )
+        if yield_covariance_phi.shape != expected_covariance_shape:
+            raise ValueError(
+                "unfolding corrected_covariance_phi does not match the configured binning"
+            )
+        normalization_scale = np.divide(
+            errors,
+            yield_uncertainty,
+            out=np.zeros_like(errors),
+            where=final_valid & (yield_uncertainty > 0.0),
+        ).reshape((-1, binning.shape[-1]))
+        cross_section_covariance_phi = (
+            yield_covariance_phi
+            * normalization_scale[..., :, None]
+            * normalization_scale[..., None, :]
+        )
+        valid_blocks = final_valid.reshape((-1, binning.shape[-1]))
+        cross_section_covariance_phi = np.where(
+            valid_blocks[..., :, None] & valid_blocks[..., None, :],
+            cross_section_covariance_phi,
+            np.nan,
+        ).reshape(binning.shape[:-1] + (binning.shape[-1], binning.shape[-1]))
     # Invalid bins remain explicitly masked and cannot masquerade as measured zeros.
     values = np.where(final_valid, values, np.nan)
     errors = np.where(final_valid, errors, np.nan)
@@ -3216,6 +3305,21 @@ def command_cross_section(args: argparse.Namespace) -> None:
         ),
         **phase_space.as_npz_fields(),
     )
+    if cross_section_covariance_phi is not None:
+        payload.update(
+            covariance_phi=cross_section_covariance_phi,
+            covariance_phi_definition=(
+                "cross-section covariance among phi bins within each (Q2,xB,-t) "
+                "cell, propagated from unfolding corrected_covariance_phi"
+            ),
+            covariance_phi_bootstrap_experiments=int(
+                np.asarray(
+                    result["covariance_phi_bootstrap_experiments"]
+                    if "covariance_phi_bootstrap_experiments" in result.files
+                    else 0
+                ).item()
+            ),
+        )
     if (
         bin_centering_cbc is not None
         and bin_centering_reliable is not None
@@ -3270,11 +3374,30 @@ def command_harmonics(args: argparse.Namespace) -> None:
             & (uncertainties > 0.0)
         )
         validity_source = "legacy finite positive-uncertainty fallback"
+    measurement_covariance_phi = (
+        np.asarray(cross_section["covariance_phi"], dtype=float)
+        if "covariance_phi" in cross_section.files
+        else None
+    )
+    covariance_source = (
+        "cross_section.covariance_phi"
+        if measurement_covariance_phi is not None
+        else "diagonal cross_section.uncertainty"
+    )
+    covariance_samples = (
+        int(np.asarray(cross_section["covariance_phi_bootstrap_experiments"]).item())
+        if "covariance_phi_bootstrap_experiments" in cross_section.files
+        and int(np.asarray(cross_section["covariance_phi_bootstrap_experiments"]).item())
+        > 0
+        else None
+    )
     fits = fit_grid(
         values,
         uncertainties,
         cross_section["phi_edges"],
         validity_mask=final_validity_mask,
+        measurement_covariance_phi=measurement_covariance_phi,
+        measurement_covariance_samples=covariance_samples,
         minimum_points=args.minimum_points,
         maximum_chi2_ndf=args.maximum_chi2_ndf,
         maximum_covariance_condition=args.maximum_covariance_condition,
@@ -3290,6 +3413,15 @@ def command_harmonics(args: argparse.Namespace) -> None:
         t_edges=cross_section["t_edges"],
         phi_edges=cross_section["phi_edges"],
         fit_validity_source=validity_source,
+        fit_measurement_covariance_source=covariance_source,
+        fit_measurement_covariance_bootstrap_experiments=(
+            covariance_samples if covariance_samples is not None else 0
+        ),
+        fit_measurement_precision_correction=(
+            "Hartlap (N-p-2)/(N-1) per fit"
+            if covariance_samples is not None
+            else "none"
+        ),
         quality_reason_names=np.asarray(QUALITY_REASON_NAMES),
         quality_reason_bits=QUALITY_REASON_BITS,
         quality_minimum_points=args.minimum_points,
@@ -3298,7 +3430,7 @@ def command_harmonics(args: argparse.Namespace) -> None:
         quality_maximum_relative_A_uncertainty=args.maximum_relative_a_uncertainty,
         quality_requires_nonnegative=not args.allow_negative_fits,
         quality_definition=(
-            "raw weighted least-squares coefficients are retained; quality_mask additionally "
+            "raw generalized least-squares coefficients are retained; quality_mask additionally "
             "requires the configured phi coverage, chi2/ndf, positive-definite well-conditioned "
             "covariance, relative A precision, and nonnegative harmonic curve"
         ),
@@ -3323,6 +3455,7 @@ def command_harmonics(args: argparse.Namespace) -> None:
         )
         if count:
             print(f"Quality rejection {name}: {count}")
+    print(f"Harmonic measurement covariance: {covariance_source}")
     print(f"Wrote {args.output}")
 
 
