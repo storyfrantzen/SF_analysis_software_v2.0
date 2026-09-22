@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import warnings
 
 import numpy as np
 from scipy.sparse import diags
@@ -22,7 +23,7 @@ from eppi0.closure import (
     training_response,
 )
 from eppi0.phase_space import AnalysisPhaseSpace
-from validate_response_closure import save_results
+from validate_response_closure import render_saved_diagnostics, save_results
 
 
 class ClosureTests(unittest.TestCase):
@@ -130,6 +131,26 @@ class ClosureTests(unittest.TestCase):
             self.assertEqual(summary["recommendation"]["iterations"], 0)
             self.assertTrue((temporary_path / "closure_metrics.csv").is_file())
             self.assertTrue((temporary_path / "closure_results.npz").is_file())
+
+            diagnostics = temporary_path / "closure_diagnostics.pdf"
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                render_saved_diagnostics(
+                    temporary_path,
+                    output=diagnostics,
+                    label=(
+                        "synthetic topology-integrated response closure with a "
+                        "deliberately long campaign label"
+                    ),
+                )
+            collapsed = [
+                warning
+                for warning in caught
+                if "axes sizes collapsed to zero" in str(warning.message)
+            ]
+            self.assertEqual(collapsed, [])
+            self.assertTrue(diagnostics.is_file())
+            self.assertGreater(diagnostics.stat().st_size, 10_000)
 
 
 if __name__ == "__main__":

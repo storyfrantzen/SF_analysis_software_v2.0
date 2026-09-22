@@ -149,7 +149,8 @@ def main() -> int:
     render_diagnostics(
         args.output_dir / "closure_diagnostics.pdf",
         result,
-        inputs,
+        inputs.validation_truth,
+        inputs.stress_names,
         binning,
         label=args.label,
     )
@@ -524,7 +525,8 @@ def save_results(
 def render_diagnostics(
     path: Path,
     result: ClosureScanResult,
-    inputs: SplitClosureInputs,
+    validation_truth: np.ndarray,
+    stress_names: tuple[str, ...],
     binning: AnalysisBinning,
     *,
     label: str,
@@ -536,8 +538,16 @@ def render_diagnostics(
     iteration_values = sorted({int(row["iterations"]) for row in result.metrics})
     recommended_index = iteration_values.index(result.recommended_iterations)
     with PdfPages(path) as pdf:
-        fig, axes = plt.subplots(2, 2, figsize=(11, 8.5), constrained_layout=True)
-        for stress in inputs.stress_names:
+        fig, axes = plt.subplots(2, 2, figsize=(12.0, 9.0))
+        fig.subplots_adjust(
+            left=0.085,
+            right=0.955,
+            bottom=0.085,
+            top=0.88,
+            wspace=0.27,
+            hspace=0.30,
+        )
+        for stress in stress_names:
             rows = sorted(
                 [row for row in aggregates if row["stress"] == stress],
                 key=lambda row: int(row["iterations"]),
@@ -579,8 +589,8 @@ def render_diagnostics(
         pdf.savefig(fig)
         plt.close(fig)
 
-        for stress_index, stress in enumerate(inputs.stress_names):
-            target = inputs.validation_truth[stress_index]
+        for stress_index, stress in enumerate(stress_names):
+            target = validation_truth[stress_index]
             unfolded = result.unfolded[stress_index, recommended_index]
             sigma = result.uncertainty[stress_index, recommended_index]
             valid = result.validity[stress_index, recommended_index]
@@ -605,7 +615,15 @@ def render_diagnostics(
                 out=np.full_like(target_qx, np.nan),
                 where=target_qx > 0,
             )
-            fig, axes = plt.subplots(2, 2, figsize=(11, 8.5), constrained_layout=True)
+            fig, axes = plt.subplots(2, 2, figsize=(12.0, 9.0))
+            fig.subplots_adjust(
+                left=0.085,
+                right=0.955,
+                bottom=0.085,
+                top=0.91,
+                wspace=0.30,
+                hspace=0.30,
+            )
             axes[0, 0].hist(
                 all_fractional[np.isfinite(all_fractional)],
                 bins=80,
@@ -672,11 +690,76 @@ def render_diagnostics(
                 ),
                 va="top",
                 family="monospace",
-                fontsize=9,
+                fontsize=8.5,
+                linespacing=1.25,
             )
             fig.suptitle(f"{label}: {stress} truth-shape closure")
             pdf.savefig(fig)
             plt.close(fig)
+
+
+def render_saved_diagnostics(
+    output_dir: Path,
+    *,
+    output: Path | None = None,
+    label: str | None = None,
+) -> Path:
+    """Rebuild closure diagnostics from saved numerical artifacts without rescanning ROOT."""
+    results_path = output_dir / "closure_results.npz"
+    metrics_path = output_dir / "closure_metrics.csv"
+    if not results_path.is_file():
+        raise FileNotFoundError(f"missing saved closure results: {results_path}")
+    if not metrics_path.is_file():
+        raise FileNotFoundError(f"missing saved closure metrics: {metrics_path}")
+
+    with metrics_path.open(newline="", encoding="utf-8") as source:
+        metrics = tuple(_parse_metric_row(row) for row in csv.DictReader(source))
+    if not metrics:
+        raise ValueError(f"saved closure metrics are empty: {metrics_path}")
+
+    with np.load(results_path, allow_pickle=False) as saved:
+        summary = json.loads(saved["summary_json"].item())
+        result = ClosureScanResult(
+            unfolded=np.asarray(saved["unfolded"]),
+            uncertainty=np.asarray(saved["uncertainty"]),
+            validity=np.asarray(saved["validity"], dtype=bool),
+            refolded=np.asarray(saved["refolded"]),
+            training_efficiency=np.asarray(saved["training_efficiency"]),
+            metrics=metrics,
+            recommended_iterations=int(saved["recommended_iterations"]),
+        )
+        validation_truth = np.asarray(saved["validation_truth"])
+        stress_names = tuple(str(value) for value in saved["stress_names"].tolist())
+        binning = AnalysisBinning(
+            saved["q2_edges"],
+            saved["xb_edges"],
+            saved["t_edges"],
+            saved["phi_edges"],
+        )
+
+    destination = output or output_dir / "closure_diagnostics.pdf"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    render_diagnostics(
+        destination,
+        result,
+        validation_truth,
+        stress_names,
+        binning,
+        label=label or str(summary.get("label", "GEMC split-sample response closure")),
+    )
+    return destination
+
+
+def _parse_metric_row(row: dict[str, str]) -> dict[str, float | int | str]:
+    parsed: dict[str, float | int | str] = {}
+    for key, value in row.items():
+        if key == "stress":
+            parsed[key] = value
+        elif key in {"fold", "iterations"}:
+            parsed[key] = int(value)
+        else:
+            parsed[key] = float(value)
+    return parsed
 
 
 def _concat(items: list[np.ndarray], *, dtype) -> np.ndarray:
