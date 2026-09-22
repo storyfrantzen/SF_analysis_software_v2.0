@@ -569,6 +569,25 @@ def render_diagnostics(
         axes[0, 1].set_ylabel("global relative bias")
         axes[1, 0].set_ylabel("pull mean")
         axes[1, 1].set_ylabel("pull width")
+        pull_means = np.asarray(
+            [float(row["pull_mean"]) for row in aggregates], dtype=float
+        )
+        finite_pull_means = pull_means[np.isfinite(pull_means)]
+        if finite_pull_means.size and np.max(np.abs(finite_pull_means)) > 10.0:
+            axes[1, 0].set_yscale("symlog", linthresh=1.0, linscale=1.0)
+            axes[1, 0].set_ylabel("pull mean (symmetric log scale)")
+        pull_widths = np.asarray(
+            [float(row["pull_std"]) for row in aggregates], dtype=float
+        )
+        finite_pull_widths = pull_widths[np.isfinite(pull_widths)]
+        positive_pull_widths = finite_pull_widths[finite_pull_widths > 0.0]
+        if (
+            positive_pull_widths.size == finite_pull_widths.size
+            and positive_pull_widths.size > 1
+            and np.max(positive_pull_widths) / np.min(positive_pull_widths) > 100.0
+        ):
+            axes[1, 1].set_yscale("log")
+            axes[1, 1].set_ylabel("pull width (log scale)")
         for axis in axes.ravel():
             axis.axvline(
                 result.recommended_iterations,
@@ -576,6 +595,7 @@ def render_diagnostics(
                 linestyle="--",
                 alpha=0.5,
             )
+            axis.set_xticks(iteration_values)
             axis.set_xlabel("iterations")
             axis.grid(alpha=0.25)
         axes[0, 1].axhline(0.0, color="black", linewidth=0.8)
