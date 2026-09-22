@@ -24,6 +24,7 @@ from eppi0.closure import (
 )
 from eppi0.phase_space import AnalysisPhaseSpace
 from validate_response_closure import render_saved_diagnostics, save_results
+from validate_response_closure import load_split_inputs, save_split_inputs
 
 
 class ClosureTests(unittest.TestCase):
@@ -104,6 +105,7 @@ class ClosureTests(unittest.TestCase):
                 label="synthetic closure",
                 converter_root=temporary_path / "converter.root",
                 selected_root=temporary_path / "selected.root",
+                split_input_dir=None,
                 config=config,
                 selection_mask=None,
                 dictionary=None,
@@ -152,6 +154,19 @@ class ClosureTests(unittest.TestCase):
             self.assertEqual(collapsed, [])
             self.assertTrue(diagnostics.is_file())
             self.assertGreater(diagnostics.stat().st_size, 10_000)
+
+            save_split_inputs(temporary_path, inputs, {"generated_rows": 18})
+            restored, metadata = load_split_inputs(temporary_path)
+            np.testing.assert_allclose(restored.fold_truth_total, inputs.fold_truth_total)
+            np.testing.assert_allclose(
+                restored.fold_reconstructed_total, inputs.fold_reconstructed_total
+            )
+            np.testing.assert_allclose(
+                restored.fold_migration_counts[0].toarray(),
+                inputs.fold_migration_counts[0].toarray(),
+            )
+            self.assertEqual(restored.stress_names, inputs.stress_names)
+            self.assertEqual(metadata["generated_rows"], 18)
 
     def test_fold_jackknife_response_covariance_inflates_varying_response(self) -> None:
         binning = AnalysisBinning(

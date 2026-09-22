@@ -145,6 +145,22 @@ the measured-spectrum bootstrap covariance within each phi block.  The
 approximation and is useful for diagnosing the size of the missing correlated
 term.
 
+To repeat only the numerical scan with different covariance settings, reuse the
+fold-local sufficient statistics from the first run:
+
+```bash
+python3 analysis/validate_response_closure.py \
+  --split-input-dir results/closure/integrated \
+  --config configs/analysis/rga/10.604.json \
+  --folds 5 --iterations 0 1 2 4 8 12 25 \
+  --bootstrap 100 \
+  --response-uncertainty fold-jackknife \
+  --output-dir results/closure/integrated_response_jackknife
+```
+
+This resume form does not require ROOT or rescan generated events.  Its summary
+records the source directory and checksum of the reused split-input artifact.
+
 Use repeated `--topology-group` options to restrict the reconstructed numerator
 while retaining the full generated denominator.  For example, an RGA pCD FD/FT
 closure uses `--topology-group 9`.  Separate runs for IDs 4, 8, 9, and 10 test

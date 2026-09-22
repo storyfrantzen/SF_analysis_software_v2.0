@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 import numpy as np
-from scipy.sparse import csr_matrix, save_npz
+from scipy.sparse import csr_matrix, load_npz, save_npz
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -50,10 +50,18 @@ def parser() -> argparse.ArgumentParser:
             "unfolding iteration scan, refolding, pulls, and harmonic recovery."
         )
     )
-    result.add_argument("converter_root", type=Path)
-    result.add_argument("selected_root", type=Path)
+    result.add_argument("converter_root", type=Path, nargs="?")
+    result.add_argument("selected_root", type=Path, nargs="?")
     result.add_argument("--config", type=Path, required=True)
     result.add_argument("--output-dir", type=Path, required=True)
+    result.add_argument(
+        "--split-input-dir",
+        type=Path,
+        help=(
+            "Reuse split_closure_inputs.npz and fold migration counts from a prior "
+            "scan instead of rereading the ROOT trees."
+        ),
+    )
     result.add_argument("--dictionary", type=Path)
     result.add_argument("--selection-mask", type=Path)
     result.add_argument("--tree", default="sEvents")
@@ -104,6 +112,18 @@ def main() -> int:
         raise ValueError("--folds must be at least two")
     if args.response_uncertainty == "fold-jackknife" and args.folds < 3:
         raise ValueError("--response-uncertainty fold-jackknife requires at least three folds")
+    if args.split_input_dir is None and (
+        args.converter_root is None or args.selected_root is None
+    ):
+        raise ValueError(
+            "converter_root and selected_root are required unless --split-input-dir is used"
+        )
+    if args.split_input_dir is not None and (
+        args.converter_root is not None or args.selected_root is not None
+    ):
+        raise ValueError(
+            "do not pass converter_root or selected_root with --split-input-dir"
+        )
     if args.chunk_size <= 0:
         raise ValueError("--chunk-size must be positive")
     with args.config.open(encoding="utf-8") as source:
@@ -118,25 +138,51 @@ def main() -> int:
     )
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    inputs, scan_metadata = scan_root_inputs(
-        args.converter_root,
-        args.selected_root,
-        binning,
-        phase_space=phase_space,
-        beam_energy=beam_energy,
-        dictionary=args.dictionary,
-        selection_mask_path=args.selection_mask,
-        tree=args.tree,
-        generated_tree=args.generated_tree,
-        number_of_folds=args.folds,
-        seed=args.seed,
-        stress_names=tuple(args.stress),
-        stress_strength=args.stress_strength,
-        topology_groups=tuple(sorted(set(args.topology_group))),
-        chunk_size=args.chunk_size,
-        progress_chunks=args.progress_chunks,
-    )
-    save_split_inputs(args.output_dir, inputs, scan_metadata)
+    if args.split_input_dir is not None:
+        inputs, scan_metadata = load_split_inputs(args.split_input_dir)
+        if inputs.fold_truth_total.shape[0] != args.folds:
+            raise ValueError(
+                "saved split-input fold count does not match --folds: "
+                f"{inputs.fold_truth_total.shape[0]} != {args.folds}"
+            )
+        if tuple(args.stress) != inputs.stress_names:
+            raise ValueError(
+                "saved split-input stresses do not match --stress: "
+                f"{inputs.stress_names} != {tuple(args.stress)}"
+            )
+        source_settings = scan_metadata.get("reused_split_settings")
+        if isinstance(source_settings, dict):
+            expected_settings = {
+                "fold_seed": args.seed,
+                "stress_strength": args.stress_strength,
+                "topology_groups": sorted(set(args.topology_group)),
+            }
+            for name, expected in expected_settings.items():
+                if name in source_settings and source_settings[name] != expected:
+                    raise ValueError(
+                        f"saved split-input {name} does not match this scan: "
+                        f"{source_settings[name]} != {expected}"
+                    )
+    else:
+        inputs, scan_metadata = scan_root_inputs(
+            args.converter_root,
+            args.selected_root,
+            binning,
+            phase_space=phase_space,
+            beam_energy=beam_energy,
+            dictionary=args.dictionary,
+            selection_mask_path=args.selection_mask,
+            tree=args.tree,
+            generated_tree=args.generated_tree,
+            number_of_folds=args.folds,
+            seed=args.seed,
+            stress_names=tuple(args.stress),
+            stress_strength=args.stress_strength,
+            topology_groups=tuple(sorted(set(args.topology_group))),
+            chunk_size=args.chunk_size,
+            progress_chunks=args.progress_chunks,
+        )
+        save_split_inputs(args.output_dir, inputs, scan_metadata)
     result = run_closure_scan(
         inputs,
         binning,
@@ -434,6 +480,49 @@ def save_split_inputs(
         save_npz(output_dir / f"fold_{fold:02d}_migration_counts.npz", matrix)
 
 
+def load_split_inputs(
+    input_dir: Path,
+) -> tuple[SplitClosureInputs, dict[str, object]]:
+    """Load fold-local sufficient statistics saved by an earlier ROOT scan."""
+    core_path = input_dir / "split_closure_inputs.npz"
+    if not core_path.is_file():
+        raise FileNotFoundError(f"missing saved closure inputs: {core_path}")
+    with np.load(core_path, allow_pickle=False) as saved:
+        fold_truth = np.asarray(saved["fold_truth_total"], dtype=float)
+        inputs_without_migrations = {
+            "fold_reconstructed_total": np.asarray(
+                saved["fold_reconstructed_total"], dtype=float
+            ),
+            "fold_feed_counts": np.asarray(saved["fold_feed_counts"], dtype=float),
+            "validation_truth": np.asarray(saved["validation_truth"], dtype=float),
+            "validation_measured": np.asarray(saved["validation_measured"], dtype=float),
+            "validation_variance": np.asarray(saved["validation_variance"], dtype=float),
+            "stress_names": tuple(str(value) for value in saved["stress_names"].tolist()),
+        }
+        scan_metadata = json.loads(saved["scan_metadata_json"].item())
+    source_summary = input_dir / "closure_summary.json"
+    if source_summary.is_file():
+        with source_summary.open(encoding="utf-8") as source:
+            summary = json.load(source)
+        source_settings = summary.get("settings")
+        if isinstance(source_settings, dict):
+            scan_metadata = dict(scan_metadata)
+            scan_metadata["reused_split_settings"] = source_settings
+    migrations = []
+    for fold in range(fold_truth.shape[0]):
+        path = input_dir / f"fold_{fold:02d}_migration_counts.npz"
+        if not path.is_file():
+            raise FileNotFoundError(f"missing saved fold migration counts: {path}")
+        migrations.append(load_npz(path).tocsr())
+    inputs = SplitClosureInputs(
+        fold_truth_total=fold_truth,
+        fold_migration_counts=tuple(migrations),
+        **inputs_without_migrations,
+    )
+    inputs.validate()
+    return inputs, scan_metadata
+
+
 def save_results(
     output_dir: Path,
     result: ClosureScanResult,
@@ -458,8 +547,31 @@ def save_results(
         "label": args.label,
         "software_revision": _git_revision(),
         "inputs": {
-            "converter_root": str(args.converter_root.resolve()),
-            "selected_root": str(args.selected_root.resolve()),
+            "converter_root": (
+                str(args.converter_root.resolve()) if args.converter_root else None
+            ),
+            "selected_root": (
+                str(args.selected_root.resolve()) if args.selected_root else None
+            ),
+            "split_input_dir": (
+                str(args.split_input_dir.resolve()) if args.split_input_dir else None
+            ),
+            "split_input_sha256": (
+                _sha256(args.split_input_dir / "split_closure_inputs.npz")
+                if args.split_input_dir
+                else None
+            ),
+            "split_migration_sha256": (
+                [
+                    _sha256(
+                        args.split_input_dir
+                        / f"fold_{fold:02d}_migration_counts.npz"
+                    )
+                    for fold in range(inputs.fold_truth_total.shape[0])
+                ]
+                if args.split_input_dir
+                else None
+            ),
             "analysis_config": str(args.config.resolve()),
             "analysis_config_sha256": _sha256(args.config),
             "selection_mask": str(args.selection_mask.resolve()) if args.selection_mask else None,
