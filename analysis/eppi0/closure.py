@@ -13,6 +13,7 @@ from .unfolding import (
     bootstrap_ensemble,
     diagonal_phi_covariance,
     iterative_bayes,
+    jackknife_phi_covariance,
     phi_block_covariance,
     subtract_feed_in,
 )
@@ -147,23 +148,54 @@ def stress_weights(
     return np.asarray(output, dtype=float)
 
 
+def _response_from_folds(
+    inputs: SplitClosureInputs, included_folds: Iterable[int]
+) -> ResponseResult:
+    kept = tuple(int(index) for index in included_folds)
+    if not kept:
+        raise ValueError("at least one fold is required to build a response")
+    folds = inputs.fold_truth_total.shape[0]
+    if any(index < 0 or index >= folds for index in kept):
+        raise IndexError("response fold is outside the available fold range")
+    if len(set(kept)) != len(kept):
+        raise ValueError("response folds must be unique")
+    counts = sum(
+        (inputs.fold_migration_counts[index] for index in kept),
+        start=csr_matrix(inputs.fold_migration_counts[0].shape, dtype=float),
+    ).tocoo()
+    return build_response_from_counts(
+        np.sum(inputs.fold_truth_total[list(kept)], axis=0),
+        np.sum(inputs.fold_reconstructed_total[list(kept)], axis=0),
+        counts.row,
+        counts.col,
+        counts.data,
+        np.sum(inputs.fold_feed_counts[list(kept)], axis=0),
+    )
+
+
 def training_response(inputs: SplitClosureInputs, held_out_fold: int) -> ResponseResult:
     inputs.validate()
     folds = inputs.fold_truth_total.shape[0]
     if held_out_fold < 0 or held_out_fold >= folds:
         raise IndexError("held-out fold is outside the available fold range")
     kept = [index for index in range(folds) if index != held_out_fold]
-    counts = sum(
-        (inputs.fold_migration_counts[index] for index in kept),
-        start=csr_matrix(inputs.fold_migration_counts[0].shape, dtype=float),
-    ).tocoo()
-    return build_response_from_counts(
-        np.sum(inputs.fold_truth_total[kept], axis=0),
-        np.sum(inputs.fold_reconstructed_total[kept], axis=0),
-        counts.row,
-        counts.col,
-        counts.data,
-        np.sum(inputs.fold_feed_counts[kept], axis=0),
+    return _response_from_folds(inputs, kept)
+
+
+def training_response_jackknife(
+    inputs: SplitClosureInputs, held_out_fold: int
+) -> tuple[ResponseResult, ...]:
+    """Build responses deleting each training fold in addition to the held-out fold."""
+    inputs.validate()
+    folds = inputs.fold_truth_total.shape[0]
+    training_folds = [index for index in range(folds) if index != held_out_fold]
+    if len(training_folds) < 2:
+        raise ValueError("response jackknife requires at least three total folds")
+    return tuple(
+        _response_from_folds(
+            inputs, [index for index in training_folds if index != deleted]
+        )
+        for deleted in training_folds
     )
 
 
@@ -177,6 +209,7 @@ def run_closure_scan(
     bootstrap: int = 50,
     seed: int = 731_921,
     minimum_harmonic_points: int = 8,
+    response_uncertainty: str = "analytic-diagonal",
 ) -> ClosureScanResult:
     """Evaluate held-out truth recovery, refolding, pulls, and harmonics."""
     inputs.validate()
@@ -185,6 +218,10 @@ def run_closure_scan(
         raise ValueError("iterations must contain nonnegative integers")
     if bootstrap < 0 or bootstrap == 1:
         raise ValueError("bootstrap must be zero or at least two")
+    if response_uncertainty not in {"analytic-diagonal", "fold-jackknife"}:
+        raise ValueError(
+            "response_uncertainty must be analytic-diagonal or fold-jackknife"
+        )
     stresses = len(inputs.stress_names)
     folds, bins = inputs.fold_truth_total.shape
     if bins != binning.size:
@@ -199,6 +236,11 @@ def run_closure_scan(
 
     for fold in range(folds):
         response = training_response(inputs, fold)
+        jackknife_responses = (
+            training_response_jackknife(inputs, fold)
+            if response_uncertainty == "fold-jackknife"
+            else ()
+        )
         efficiencies[fold] = response.efficiency
         acceptance_valid = response.efficiency > minimum_acceptance
         for stress_index, stress_name in enumerate(inputs.stress_names):
@@ -263,19 +305,58 @@ def run_closure_scan(
                         statistical_covariance_phi = diagonal_phi_covariance(
                             sigma_stat * sigma_stat, binning.shape[-1]
                         )
-                sensitivity = np.divide(
-                    unfolded,
-                    response.efficiency,
-                    out=np.zeros_like(unfolded),
-                    where=acceptance_valid,
-                )
-                sigma_response = sensitivity * np.sqrt(response.response_variance_sum)
+                if jackknife_responses:
+                    response_samples = np.empty(
+                        (len(jackknife_responses), bins), dtype=float
+                    )
+                    for replica_index, replica in enumerate(jackknife_responses):
+                        replica_valid = replica.efficiency > minimum_acceptance
+                        replica_prior = np.divide(
+                            measured,
+                            replica.efficiency,
+                            out=np.zeros_like(measured),
+                            where=replica_valid,
+                        )
+                        if iteration == 0:
+                            response_samples[replica_index] = replica_prior
+                        else:
+                            replica_corrected = subtract_feed_in(
+                                measured,
+                                replica.feed_in_fraction,
+                                replica.feed_in_shape,
+                            )
+                            response_samples[replica_index] = iterative_bayes(
+                                replica.core,
+                                replica_corrected,
+                                replica.efficiency,
+                                iteration,
+                                prior=replica_prior,
+                                minimum_acceptance=minimum_acceptance,
+                            ).unfolded
+                    response_covariance_phi = jackknife_phi_covariance(
+                        response_samples, binning.shape[-1]
+                    )
+                    response_variance = np.diagonal(
+                        response_covariance_phi, axis1=-2, axis2=-1
+                    ).reshape(-1)
+                    sigma_response = np.sqrt(np.clip(response_variance, 0.0, None))
+                else:
+                    sensitivity = np.divide(
+                        unfolded,
+                        response.efficiency,
+                        out=np.zeros_like(unfolded),
+                        where=acceptance_valid,
+                    )
+                    sigma_response = sensitivity * np.sqrt(
+                        response.response_variance_sum
+                    )
+                    response_covariance_phi = diagonal_phi_covariance(
+                        sigma_response * sigma_response, binning.shape[-1]
+                    )
                 sigma = np.hypot(sigma_stat, sigma_response)
                 total_covariance_phi = (
                     statistical_covariance_phi
-                    + diagonal_phi_covariance(
-                        sigma_response * sigma_response, binning.shape[-1]
-                    )
+                    + response_covariance_phi
                 ).reshape(
                     binning.shape[:-1] + (binning.shape[-1], binning.shape[-1])
                 )

@@ -162,6 +162,29 @@ def phi_block_covariance(samples: Array, phi_bins: int) -> Array:
     return np.einsum("eci,ecj->cij", centered, centered) / (samples.shape[0] - 1)
 
 
+def jackknife_phi_covariance(samples: Array, phi_bins: int) -> Array:
+    """Return delete-one-subsample covariance blocks among phi bins.
+
+    ``samples`` contains estimates recomputed after deleting each independent
+    response subsample in turn.  The jackknife normalization is therefore
+    ``(m - 1) / m`` times the centered outer-product sum, rather than the
+    ordinary sample-covariance normalization.
+    """
+    samples = np.asarray(samples, dtype=float)
+    if samples.ndim != 2 or samples.shape[0] < 2:
+        raise ValueError("jackknife samples must be a 2D array with at least two replicas")
+    if phi_bins <= 0 or samples.shape[1] % phi_bins != 0:
+        raise ValueError("phi-bin count must divide the flattened sample size")
+    blocks = samples.reshape(samples.shape[0], -1, phi_bins)
+    centered = blocks - blocks.mean(axis=0, keepdims=True)
+    replicas = samples.shape[0]
+    return (
+        np.einsum("eci,ecj->cij", centered, centered)
+        * (replicas - 1)
+        / replicas
+    )
+
+
 def diagonal_phi_covariance(variance: Array, phi_bins: int) -> Array:
     """Pack flattened independent-bin variances into per-cell covariance blocks."""
     variance = np.asarray(variance, dtype=float)

@@ -69,6 +69,15 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--stress-strength", type=float, default=0.6)
     result.add_argument("--bootstrap", type=int, default=50)
+    result.add_argument(
+        "--response-uncertainty",
+        choices=("analytic-diagonal", "fold-jackknife"),
+        default="analytic-diagonal",
+        help=(
+            "Estimate response-MC uncertainty with the legacy analytic diagonal "
+            "approximation or by deleting each response-training fold in turn."
+        ),
+    )
     result.add_argument("--seed", type=int, default=731_921)
     result.add_argument("--minimum-truth", type=float, default=20.0)
     result.add_argument("--minimum-acceptance", type=float)
@@ -93,6 +102,8 @@ def main() -> int:
     args = parser().parse_args()
     if args.folds < 2:
         raise ValueError("--folds must be at least two")
+    if args.response_uncertainty == "fold-jackknife" and args.folds < 3:
+        raise ValueError("--response-uncertainty fold-jackknife requires at least three folds")
     if args.chunk_size <= 0:
         raise ValueError("--chunk-size must be positive")
     with args.config.open(encoding="utf-8") as source:
@@ -135,6 +146,7 @@ def main() -> int:
         bootstrap=args.bootstrap,
         seed=args.seed,
         minimum_harmonic_points=args.minimum_harmonic_points,
+        response_uncertainty=args.response_uncertainty,
     )
     summary = save_results(
         args.output_dir,
@@ -459,6 +471,7 @@ def save_results(
             "fold_seed": args.seed,
             "iterations": iterations,
             "bootstrap_experiments": args.bootstrap,
+            "response_uncertainty": args.response_uncertainty,
             "minimum_acceptance": minimum_acceptance,
             "minimum_validation_truth": args.minimum_truth,
             "minimum_harmonic_points": args.minimum_harmonic_points,
@@ -468,7 +481,13 @@ def save_results(
             "topology_groups": sorted(set(args.topology_group)),
             "harmonic_measurement_covariance": (
                 "bootstrap covariance among phi bins within each (Q2,xB,-t) cell; "
-                "response-MC variance added to the diagonal; finite-bootstrap precision "
+                + (
+                    "delete-one-training-fold jackknife response covariance added "
+                    "within each phi block; "
+                    if args.response_uncertainty == "fold-jackknife"
+                    else "analytic response-MC variance added to the diagonal; "
+                )
+                + "finite-bootstrap precision "
                 "uses the per-fit Hartlap (N-p-2)/(N-1) correction"
             ),
         },

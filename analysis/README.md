@@ -132,8 +132,18 @@ python3 analysis/validate_response_closure.py \
   --dictionary build/libEvent.so \
   --folds 5 --iterations 0 1 2 4 8 12 25 \
   --bootstrap 50 \
+  --response-uncertainty fold-jackknife \
   --output-dir results/closure/integrated
 ```
+
+With five folds, `fold-jackknife` holds one fold out as pseudo-data, builds the
+central response from the other four, and recomputes the unfolded result four
+times while deleting one response-training fold in turn.  The delete-one-fold
+covariance varies migration, efficiency, and feed-in together and is added to
+the measured-spectrum bootstrap covariance within each phi block.  The
+`analytic-diagonal` alternative retains the faster legacy response-MC variance
+approximation and is useful for diagnosing the size of the missing correlated
+term.
 
 Use repeated `--topology-group` options to restrict the reconstructed numerator
 while retaining the full generated denominator.  For example, an RGA pCD FD/FT

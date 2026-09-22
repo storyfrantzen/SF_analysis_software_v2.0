@@ -110,6 +110,7 @@ class ClosureTests(unittest.TestCase):
                 folds=folds,
                 seed=731_921,
                 bootstrap=0,
+                response_uncertainty="analytic-diagonal",
                 minimum_truth=1.0,
                 minimum_harmonic_points=4,
                 stress_strength=0.6,
@@ -151,6 +152,50 @@ class ClosureTests(unittest.TestCase):
             self.assertEqual(collapsed, [])
             self.assertTrue(diagnostics.is_file())
             self.assertGreater(diagnostics.stat().st_size, 10_000)
+
+    def test_fold_jackknife_response_covariance_inflates_varying_response(self) -> None:
+        binning = AnalysisBinning(
+            [1, 2], [0.1, 0.5], [0.1, 1.0], [0, 90, 180, 270, 360]
+        )
+        truth = np.full((5, 4), 200.0)
+        efficiencies = np.array([0.35, 0.45, 0.55, 0.65, 0.75])
+        accepted = efficiencies[:, None] * truth
+        migrations = tuple(diags(row, format="csr") for row in accepted)
+        measured = np.full((1, 5, 4), 100.0)
+        inputs = SplitClosureInputs(
+            fold_truth_total=truth,
+            fold_reconstructed_total=accepted,
+            fold_feed_counts=np.zeros_like(truth),
+            fold_migration_counts=migrations,
+            validation_truth=np.full((1, 5, 4), 200.0),
+            validation_measured=measured,
+            validation_variance=measured,
+            stress_names=("nominal",),
+        )
+        analytic = run_closure_scan(
+            inputs,
+            binning,
+            iterations=(1,),
+            minimum_acceptance=0.01,
+            minimum_truth=1.0,
+            bootstrap=0,
+            minimum_harmonic_points=4,
+            response_uncertainty="analytic-diagonal",
+        )
+        jackknife = run_closure_scan(
+            inputs,
+            binning,
+            iterations=(1,),
+            minimum_acceptance=0.01,
+            minimum_truth=1.0,
+            bootstrap=0,
+            minimum_harmonic_points=4,
+            response_uncertainty="fold-jackknife",
+        )
+        self.assertGreater(
+            float(np.nanmedian(jackknife.uncertainty)),
+            float(np.nanmedian(analytic.uncertainty)),
+        )
 
 
 if __name__ == "__main__":
