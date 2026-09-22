@@ -102,6 +102,53 @@ mass.
 - `eppi0.campaign_diagnostics`: reproducible numerical end-of-campaign Markdown
   audits spanning normalization, validity, response support, and harmonic quality.
 
+## Independent response and unfolding closure
+
+`validate_response_closure.py` performs a source-aware K-fold closure directly
+from the converter `gEvents` tree and the final selected GEMC tree.  The fold is
+a deterministic hash of `(sourceFileId, sourceEventIndex)`, so an event cannot
+enter both the response-training sample and the held-out pseudo-data in the same
+test.  For every fold, the command rebuilds the response from the other folds,
+unfolds the held-out reconstruction, and compares it with the known held-out
+truth.
+
+The default scan includes the nominal generated population and four positive
+truth reweightings that stress Q2, xB, -t, and phi.  It evaluates zero-iteration
+bin-by-bin correction and an iterative-Bayes scan, and records:
+
+- held-out truth bias, normalized MSE, pull mean, pull width, and coverage;
+- reconstructed-level refolding pulls and chi2 per degree of freedom;
+- closure of the fitted `A + B cos(phi) + C cos(2 phi)` harmonics;
+- a diagnostic iteration recommendation defined as the minimum median held-out
+  normalized MSE across folds and truth stresses.
+
+Run the topology-integrated closure first:
+
+```bash
+python3 analysis/validate_response_closure.py \
+  /path/to/converter_gemc.root /path/to/selected_gemc.root \
+  --selection-mask /path/to/gemc_selected_exclusivity.npy \
+  --config configs/analysis/rga/10.604.json \
+  --dictionary build/libEvent.so \
+  --folds 5 --iterations 0 1 2 4 8 12 25 \
+  --bootstrap 50 \
+  --output-dir results/closure/integrated
+```
+
+Use repeated `--topology-group` options to restrict the reconstructed numerator
+while retaining the full generated denominator.  For example, an RGA pCD FD/FT
+closure uses `--topology-group 9`.  Separate runs for IDs 4, 8, 9, and 10 test
+the topology components whose accepted counts sum to the integrated response.
+
+The command writes `closure_summary.json`, `closure_metrics.csv`,
+`closure_results.npz`, and `closure_diagnostics.pdf`.  It also preserves the
+fold-local truth, reconstruction, feed-in, and sparse migration counts so the
+exact split can be audited.  The summary explicitly limits the conclusion to
+response, feed-in, unfolding, refolding, and harmonic recovery.  This test does
+not validate data sideband subtraction, current-efficiency corrections,
+radiative or bin-centering corrections, luminosity, helicity handling, or
+data/GEMC detector mismodeling.
+
 ## Dependencies
 
 - Python 3.10 or newer;
