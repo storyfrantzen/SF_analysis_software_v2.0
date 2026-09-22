@@ -719,3 +719,40 @@ python3 scripts/derive_sampling_fraction.py \
   --skim INCLUSIVE_GEMC_100M \
   --torus 1
 ```
+
+## RGK Spring 2024 baseline conversions
+
+The `rgk/6.395` and `rgk/8.477` configuration directories contain deliberately
+uncalibrated baseline conversions for the Spring 2024 torus-positive data and
+matching 0 nA Born AAO GEMC. They are intended for full-sample bookkeeping,
+yield, topology, and data/GEMC shape checks while energy-specific calibration
+artifacts are unavailable. The processing configurations therefore preserve
+raw reconstructed kinematics and do not borrow the Fall 2018 6.535 GeV proton
+energy-loss correction. The post-processing bases apply the common fiducial,
+PCAL, and diagonal sampling-fraction requirements but omit the fitted
+sampling-fraction sigma cut.
+
+Use an explicit manifest to make the exact full input set reproducible:
+
+```bash
+./build/hipo2root \
+  configs/processing/rgk/6.395/eppi0_GEMC_born_0nA_baseline_uncalibrated.json \
+  @/path/to/6.395_born_0nA_manifest.txt
+
+./build/hipo2root \
+  configs/processing/rgk/6.395/eppi0_data_baseline_uncalibrated.json \
+  @/path/to/6.395_data_manifest.txt
+
+./build/hipo2root \
+  configs/processing/rgk/8.477/eppi0_GEMC_born_0nA_baseline_uncalibrated.json \
+  @/path/to/8.477_born_0nA_manifest.txt
+
+./build/hipo2root \
+  configs/processing/rgk/8.477/eppi0_data_baseline_uncalibrated.json \
+  @/path/to/8.477_data_manifest.txt
+```
+
+Run the correspondingly named files under `configs/post/rgk/<energy>` on the
+four converter outputs. The names retain `baseline_uncalibrated` so these
+artifacts cannot be confused with a later extraction using Spring 2024
+energy-specific proton and sampling-fraction calibrations.

@@ -1,0 +1,4 @@
+{
+    "extends": "eppi0_base_baseline_uncalibrated.json",
+    "outputFile": "6.395_rgk_sp24_eppi0_data_baseline_uncalibrated_selected.root"
+}

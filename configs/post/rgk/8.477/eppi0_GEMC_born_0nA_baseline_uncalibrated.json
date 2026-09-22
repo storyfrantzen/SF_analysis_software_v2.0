@@ -1,0 +1,4 @@
+{
+    "extends": "eppi0_base_baseline_uncalibrated.json",
+    "outputFile": "8.477_rgk_sp24_eppi0_GEMC_born_0nA_baseline_uncalibrated_selected.root"
+}
