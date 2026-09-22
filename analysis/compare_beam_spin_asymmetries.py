@@ -117,10 +117,27 @@ def load_artifact(path: Path) -> dict[str, np.ndarray]:
 
 
 def null_summary(
-    coefficients: np.ndarray, errors: np.ndarray, ndof: np.ndarray
+    coefficients: np.ndarray,
+    errors: np.ndarray,
+    ndof: np.ndarray,
+    *,
+    selection: np.ndarray | None = None,
 ) -> dict[str, object]:
+    numerical = ndof > 0
+    evaluated = numerical.copy()
+    if selection is not None:
+        selection = np.asarray(selection, dtype=bool)
+        if selection.shape != ndof.shape:
+            raise ValueError("null-harmonic selection does not match fit shape")
+        evaluated &= selection
     output: dict[str, object] = {
-        "numerically_successful_bins": int(np.count_nonzero(ndof > 0))
+        "numerically_successful_bins": int(np.count_nonzero(numerical)),
+        "evaluated_bins": int(np.count_nonzero(evaluated)),
+        "selection": (
+            "production-quality sine-amplitude bins"
+            if selection is not None
+            else "all numerically successful extended-harmonic fits"
+        ),
     }
     for name, component in (("constant", 0), ("cos_phi", 2), ("sin_2phi", 3)):
         pull = np.divide(
@@ -129,7 +146,7 @@ def null_summary(
             out=np.full(ndof.shape, np.nan),
             where=errors[..., component] > 0.0,
         )
-        finite = np.isfinite(pull) & (ndof > 0)
+        finite = np.isfinite(pull) & evaluated
         output[name] = {
             "bins": int(np.count_nonzero(finite)),
             "pull_q10_median_q90": finite_quantiles(pull[finite]),
@@ -248,7 +265,7 @@ def main() -> int:
             np.corrcoef(left_amplitude[finite_common], right_amplitude[finite_common])[0, 1]
         )
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "comparison": "beam-spin extraction consistency",
         "event_relationship": "shared" if args.shared_events else "independent",
         "left": {"label": args.left_label, "artifact": str(left_path)},
@@ -279,6 +296,14 @@ def main() -> int:
         },
         "phi_point_comparison": phi_point_summary,
         "null_harmonics": {
+            args.left_label: null_summary(
+                left_null[0], left_null[1], left_null[3], selection=left_quality
+            ),
+            args.right_label: null_summary(
+                right_null[0], right_null[1], right_null[3], selection=right_quality
+            ),
+        },
+        "null_harmonics_all_numerical": {
             args.left_label: null_summary(left_null[0], left_null[1], left_null[3]),
             args.right_label: null_summary(right_null[0], right_null[1], right_null[3]),
         },
@@ -358,21 +383,21 @@ def main() -> int:
         for axis, (name, component) in zip(
             axes, (("constant", 0), (r"$\cos\phi$", 2), (r"$\sin2\phi$", 3))
         ):
-            for values, errors, ndof, label in (
-                (*left_null[:2], left_null[3], args.left_label),
-                (*right_null[:2], right_null[3], args.right_label),
+            for values, errors, ndof, quality, label in (
+                (*left_null[:2], left_null[3], left_quality, args.left_label),
+                (*right_null[:2], right_null[3], right_quality, args.right_label),
             ):
                 pull = np.divide(
                     values[..., component], errors[..., component],
                     out=np.full(ndof.shape, np.nan), where=errors[..., component] > 0.0,
                 )
-                keep = np.isfinite(pull) & (ndof > 0)
+                keep = np.isfinite(pull) & (ndof > 0) & quality
                 axis.hist(
                     pull[keep], bins=np.linspace(-6.0, 6.0, 31), histtype="step",
                     linewidth=1.4, label=label,
                 )
             axis.axvline(0.0, color="0.4", linewidth=0.8)
-            axis.set_title(name + " null pull")
+            axis.set_title(name + " null pull (production bins)")
             axis.set_xlabel("coefficient / statistical uncertainty")
             axis.grid(alpha=0.2)
         axes[0].set_ylabel("bins")

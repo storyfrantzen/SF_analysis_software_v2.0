@@ -52,6 +52,19 @@ class CompareBeamSpinTest(unittest.TestCase):
         self.assertEqual(summary["left_phi_bins"], 20)
         self.assertEqual(summary["right_phi_bins"], 12)
 
+    def test_null_summary_can_restrict_to_production_quality(self) -> None:
+        coefficients = np.zeros((3, 4))
+        errors = np.ones((3, 4))
+        coefficients[:, 0] = [1.0, 8.0, 3.0]
+        ndof = np.array([8, 8, 0])
+        quality = np.array([True, False, True])
+        summary = MODULE.null_summary(
+            coefficients, errors, ndof, selection=quality
+        )
+        self.assertEqual(summary["numerically_successful_bins"], 2)
+        self.assertEqual(summary["evaluated_bins"], 1)
+        self.assertEqual(summary["constant"]["absolute_pull_gt_2"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
