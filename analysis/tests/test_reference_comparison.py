@@ -88,6 +88,18 @@ class ReferenceComparisonTests(unittest.TestCase):
             96,
         )
 
+    def test_igor_table_has_expected_statistical_rows(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        path = root / "data/reference/igor_pass2_v1_structure_functions.csv"
+        table = load_reference_table(path)
+        self.assertEqual(table.q2.size, 174)
+        self.assertTrue(np.all(table.statistical >= 0.0))
+        np.testing.assert_array_equal(table.systematic, 0.0)
+        with path.open(newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        self.assertEqual([int(row["row"]) for row in rows], list(range(1, 175)))
+        self.assertEqual({float(row["reported_global_scale"]) for row in rows}, {1.3})
+
 
 if __name__ == "__main__":
     unittest.main()
