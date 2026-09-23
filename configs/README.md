@@ -757,3 +757,12 @@ Run the correspondingly named files under `configs/post/rgk/<energy>` on the
 four converter outputs. The names retain `baseline_uncalibrated` so these
 artifacts cannot be confused with a later extraction using Spring 2024
 energy-specific proton and sampling-fraction calibrations.
+
+Provisional numerical-analysis configurations are available as
+`analysis/rgk/6.395.json` and `analysis/rgk/8.477.json`. They support initial
+bin-dependent response, occupancy, and kinematic studies; they are explicitly
+marked `provisional_baseline` and must not be treated as production-final
+binning. Both retain the established RGK xB, -t, and 18-degree phi edges. The
+6.395 GeV Q2 grid follows the 6.535 GeV RGK grid with 6.395 GeV as its upper
+edge, while the 8.477 GeV grid adds the established 5.5--7.0 GeV2 interval and
+ends at 8.477 GeV2.
