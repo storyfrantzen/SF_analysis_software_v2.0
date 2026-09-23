@@ -133,6 +133,78 @@ def coordinate_validity_mask(
     )
 
 
+def combine_phi_covariance(
+    left_covariance: np.ndarray,
+    right_covariance: np.ndarray,
+    *,
+    left_weight: np.ndarray,
+    right_weight: np.ndarray,
+    combined_uncertainty: np.ndarray,
+    combined_valid: np.ndarray,
+) -> np.ndarray:
+    """Propagate within-polarity phi covariance through binwise BLUE weights.
+
+    Statistical and finite-response fluctuations are independent between the two
+    polarity samples.  Their within-cell covariance therefore propagates as
+    ``W_left C_left W_left + W_right C_right W_right``.  The authoritative
+    combined diagonal is restored from the binwise BLUE result so the shared
+    radiative term retained by :func:`combine_polarity_measurements` is included.
+    """
+
+    left_weight = np.asarray(left_weight, dtype=float)
+    right_weight = np.asarray(right_weight, dtype=float)
+    combined_uncertainty = np.asarray(combined_uncertainty, dtype=float)
+    combined_valid = np.asarray(combined_valid, dtype=bool)
+    if not (
+        left_weight.shape
+        == right_weight.shape
+        == combined_uncertainty.shape
+        == combined_valid.shape
+    ):
+        raise ValueError("combined polarity weights and masks must have identical shapes")
+    if left_weight.ndim < 1:
+        raise ValueError("combined polarity arrays must include a phi dimension")
+
+    expected = left_weight.shape[:-1] + (left_weight.shape[-1], left_weight.shape[-1])
+    left_covariance = np.asarray(left_covariance, dtype=float)
+    right_covariance = np.asarray(right_covariance, dtype=float)
+    if left_covariance.shape != expected or right_covariance.shape != expected:
+        raise ValueError(
+            "polarity phi covariance shape does not match the cross-section binning"
+        )
+
+    left_pairs = (left_weight[..., :, None] != 0.0) & (
+        left_weight[..., None, :] != 0.0
+    )
+    right_pairs = (right_weight[..., :, None] != 0.0) & (
+        right_weight[..., None, :] != 0.0
+    )
+    if np.any(left_pairs & ~np.isfinite(left_covariance)):
+        raise ValueError("left phi covariance is non-finite for a weighted bin pair")
+    if np.any(right_pairs & ~np.isfinite(right_covariance)):
+        raise ValueError("right phi covariance is non-finite for a weighted bin pair")
+
+    combined = np.where(
+        left_pairs,
+        left_covariance
+        * left_weight[..., :, None]
+        * left_weight[..., None, :],
+        0.0,
+    )
+    combined += np.where(
+        right_pairs,
+        right_covariance
+        * right_weight[..., :, None]
+        * right_weight[..., None, :],
+        0.0,
+    )
+    combined = 0.5 * (combined + np.swapaxes(combined, -1, -2))
+    diagonal = np.arange(left_weight.shape[-1])
+    combined[..., diagonal, diagonal] = combined_uncertainty**2
+    valid_pairs = combined_valid[..., :, None] & combined_valid[..., None, :]
+    return np.where(valid_pairs, combined, np.nan)
+
+
 def main() -> int:
     args = parse_args()
     left_path = args.left.resolve()
@@ -181,6 +253,21 @@ def main() -> int:
         shared_relative_uncertainty=shared_relative,
     )
 
+    combined_covariance_phi = None
+    left_has_covariance = "covariance_phi" in left.files
+    right_has_covariance = "covariance_phi" in right.files
+    if left_has_covariance != right_has_covariance:
+        raise ValueError("only one polarity contains covariance_phi")
+    if left_has_covariance:
+        combined_covariance_phi = combine_phi_covariance(
+            left["covariance_phi"],
+            right["covariance_phi"],
+            left_weight=result.left_weight,
+            right_weight=result.right_weight,
+            combined_uncertainty=result.uncertainties,
+            combined_valid=result.valid,
+        )
+
     payload = {
         "reduced_cross_section": result.values,
         "uncertainty": result.uncertainties,
@@ -212,6 +299,25 @@ def main() -> int:
             "other pending systematic covariance is not included"
         ),
     }
+    if combined_covariance_phi is not None:
+        payload["covariance_phi"] = combined_covariance_phi
+        payload["covariance_phi_definition"] = np.asarray(
+            "within-polarity phi covariance propagated through the binwise BLUE "
+            "weights, treating polarity statistical and finite-response fluctuations "
+            "as independent; the diagonal is the BLUE variance including the shared "
+            "radiative contribution"
+        )
+        left_replicas = int(
+            np.asarray(left["covariance_phi_bootstrap_experiments"]).item()
+        ) if "covariance_phi_bootstrap_experiments" in left.files else 0
+        right_replicas = int(
+            np.asarray(right["covariance_phi_bootstrap_experiments"]).item()
+        ) if "covariance_phi_bootstrap_experiments" in right.files else 0
+        if left_replicas != right_replicas:
+            raise ValueError(
+                "polarity covariance_phi bootstrap experiment counts do not match"
+            )
+        payload["covariance_phi_bootstrap_experiments"] = left_replicas
     for name in (*EDGE_NAMES, *COORDINATE_FIELDS, *SHARED_FIELDS):
         if name in left.files:
             payload[name] = left[name]

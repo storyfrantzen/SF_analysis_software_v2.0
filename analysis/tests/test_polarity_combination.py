@@ -11,10 +11,55 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from eppi0.polarity_combination import combine_polarity_measurements
 from eppi0.binning import AnalysisBinning
-from combine_polarity_cross_sections import coordinate_validity_mask
+from combine_polarity_cross_sections import (
+    combine_phi_covariance,
+    coordinate_validity_mask,
+)
 
 
 class PolarityCombinationTests(unittest.TestCase):
+    def test_phi_covariance_follows_blue_weights_and_diagonal(self) -> None:
+        left_values = np.asarray([[[[10.0, 20.0]]]])
+        right_values = np.asarray([[[[14.0, 18.0]]]])
+        left_uncertainty = np.asarray([[[[2.0, 3.0]]]])
+        right_uncertainty = np.asarray([[[[4.0, 5.0]]]])
+        valid = np.ones_like(left_values, dtype=bool)
+        result = combine_polarity_measurements(
+            left_values,
+            left_uncertainty,
+            valid,
+            right_values,
+            right_uncertainty,
+            valid,
+            shared_relative_uncertainty=0.02,
+        )
+        left_covariance = np.asarray([[[[[4.0, 1.0], [1.0, 9.0]]]]])
+        right_covariance = np.asarray([[[[[16.0, 2.0], [2.0, 25.0]]]]])
+
+        combined = combine_phi_covariance(
+            left_covariance,
+            right_covariance,
+            left_weight=result.left_weight,
+            right_weight=result.right_weight,
+            combined_uncertainty=result.uncertainties,
+            combined_valid=result.valid,
+        )
+
+        expected_off_diagonal = (
+            result.left_weight[0, 0, 0, 0]
+            * result.left_weight[0, 0, 0, 1]
+            * left_covariance[0, 0, 0, 0, 1]
+            + result.right_weight[0, 0, 0, 0]
+            * result.right_weight[0, 0, 0, 1]
+            * right_covariance[0, 0, 0, 0, 1]
+        )
+        self.assertAlmostEqual(combined[0, 0, 0, 0, 1], expected_off_diagonal)
+        self.assertAlmostEqual(combined[0, 0, 0, 1, 0], expected_off_diagonal)
+        np.testing.assert_allclose(
+            np.diagonal(combined, axis1=-2, axis2=-1),
+            result.uncertainties**2,
+        )
+
     def test_flat_coordinate_mask_uses_legacy_bin_order(self) -> None:
         binning = AnalysisBinning(
             [1.0, 2.0, 3.0],
