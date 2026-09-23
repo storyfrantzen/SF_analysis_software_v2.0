@@ -12,6 +12,7 @@ from .response import ResponseResult, build_response_from_counts
 from .unfolding import (
     bootstrap_ensemble,
     diagonal_phi_covariance,
+    fluctuate_weighted_poisson,
     iterative_bayes,
     jackknife_phi_covariance,
     phi_block_covariance,
@@ -71,6 +72,9 @@ class ClosureScanResult:
     refolded: Array
     training_efficiency: Array
     metrics: tuple[dict[str, float | int | str], ...]
+    harmonic_cell_metrics: tuple[dict[str, float | int | str], ...]
+    fixed_truth_metrics: tuple[dict[str, float | int | str], ...]
+    fixed_truth_harmonic_cell_metrics: tuple[dict[str, float | int | str], ...]
     recommended_iterations: int
 
 
@@ -199,6 +203,147 @@ def training_response_jackknife(
     )
 
 
+def _training_response_counts(
+    inputs: SplitClosureInputs, held_out_fold: int
+) -> tuple[Array, Array, csr_matrix]:
+    """Return integer-valued truth, feed, and migration training counts."""
+    inputs.validate()
+    folds = inputs.fold_truth_total.shape[0]
+    if held_out_fold < 0 or held_out_fold >= folds:
+        raise IndexError("held-out fold is outside the available fold range")
+    kept = [index for index in range(folds) if index != held_out_fold]
+    truth = np.sum(inputs.fold_truth_total[kept], axis=0)
+    feed = np.sum(inputs.fold_feed_counts[kept], axis=0)
+    migration = sum(
+        (inputs.fold_migration_counts[index] for index in kept),
+        start=csr_matrix(inputs.fold_migration_counts[0].shape, dtype=float),
+    ).tocsr()
+    _require_integer_counts(truth, "training truth counts")
+    _require_integer_counts(feed, "training feed-in counts")
+    _require_integer_counts(migration.data, "training migration counts")
+    migrated_by_truth = np.asarray(migration.sum(axis=0)).ravel()
+    missed = truth - migrated_by_truth
+    tolerance = 1.0e-7 * np.maximum(1.0, truth)
+    if np.any(missed < -tolerance):
+        raise ValueError("migration counts exceed generated truth counts")
+    _require_integer_counts(np.clip(missed, 0.0, None), "training missed counts")
+    return truth, feed, migration
+
+
+def _require_integer_counts(values: Array, name: str) -> None:
+    values = np.asarray(values, dtype=float)
+    if np.any(~np.isfinite(values)) or np.any(values < 0.0):
+        raise ValueError(f"{name} must be finite and nonnegative")
+    if not np.allclose(values, np.rint(values), rtol=0.0, atol=1.0e-7):
+        raise ValueError(
+            f"{name} are weighted rather than integer event counts; "
+            "count-bootstrap response replicas require unweighted counts"
+        )
+
+
+def count_bootstrap_response(
+    truth_total: Array,
+    feed_counts: Array,
+    migration_counts: csr_matrix,
+    rng: np.random.Generator,
+) -> ResponseResult:
+    """Poisson-resample migration, missed, and feed-in event counts.
+
+    Independent Poisson cells are the unconditional counterpart of a
+    multinomial response experiment.  The generated truth denominator is
+    rebuilt from the fluctuated migration and missed-event counts, preserving
+    their normalization covariance in every response replica.
+    """
+    truth_total = np.asarray(truth_total, dtype=float)
+    feed_counts = np.asarray(feed_counts, dtype=float)
+    migration = migration_counts.tocoo(copy=True)
+    _require_integer_counts(truth_total, "truth counts")
+    _require_integer_counts(feed_counts, "feed-in counts")
+    _require_integer_counts(migration.data, "migration counts")
+    migrated_by_truth = np.asarray(migration_counts.sum(axis=0)).ravel()
+    missed = np.clip(truth_total - migrated_by_truth, 0.0, None)
+    _require_integer_counts(missed, "missed counts")
+
+    sampled_migration = rng.poisson(np.rint(migration.data).astype(np.int64)).astype(float)
+    sampled_missed = rng.poisson(np.rint(missed).astype(np.int64)).astype(float)
+    sampled_feed = rng.poisson(np.rint(feed_counts).astype(np.int64)).astype(float)
+    sampled_counts = csr_matrix(
+        (sampled_migration, (migration.row, migration.col)),
+        shape=migration.shape,
+    )
+    sampled_truth = np.asarray(sampled_counts.sum(axis=0)).ravel() + sampled_missed
+    sampled_reconstructed = (
+        np.asarray(sampled_counts.sum(axis=1)).ravel() + sampled_feed
+    )
+    sampled = sampled_counts.tocoo()
+    return build_response_from_counts(
+        sampled_truth,
+        sampled_reconstructed,
+        sampled.row,
+        sampled.col,
+        sampled.data,
+        sampled_feed,
+        compute_variance=False,
+    )
+
+
+def _count_bootstrap_ensemble(
+    inputs: SplitClosureInputs,
+    held_out_fold: int,
+    measured: Array,
+    variance: Array,
+    iterations: tuple[int, ...],
+    *,
+    minimum_acceptance: float,
+    experiments: int,
+    seed: int,
+    progress_label: str | None = None,
+) -> Array:
+    """Return joint data-and-response replicas for every iteration value."""
+    truth, feed, migration = _training_response_counts(inputs, held_out_fold)
+    measured = np.asarray(measured, dtype=float)
+    variance = np.asarray(variance, dtype=float)
+    response_rng = np.random.default_rng(seed)
+    data_rng = np.random.default_rng(seed ^ 0x5DEECE66D)
+    samples = np.empty((len(iterations), experiments, measured.size), dtype=float)
+    progress_step = max(1, experiments // 5)
+    for replica_index in range(experiments):
+        response = count_bootstrap_response(truth, feed, migration, response_rng)
+        fluctuated = fluctuate_weighted_poisson(data_rng, measured, variance)
+        acceptance_valid = response.efficiency > minimum_acceptance
+        prior = np.divide(
+            fluctuated,
+            response.efficiency,
+            out=np.zeros_like(fluctuated),
+            where=acceptance_valid,
+        )
+        corrected = subtract_feed_in(
+            fluctuated, response.feed_in_fraction, response.feed_in_shape
+        )
+        for iteration_index, iteration in enumerate(iterations):
+            if iteration == 0:
+                samples[iteration_index, replica_index] = prior
+            else:
+                samples[iteration_index, replica_index] = iterative_bayes(
+                    response.core,
+                    corrected,
+                    response.efficiency,
+                    iteration,
+                    prior=prior,
+                    minimum_acceptance=minimum_acceptance,
+                ).unfolded
+        completed = replica_index + 1
+        if progress_label is not None and (
+            completed % progress_step == 0 or completed == experiments
+        ):
+            print(
+                f"[COUNT-BOOTSTRAP] {progress_label} replicas "
+                f"{completed}/{experiments}",
+                flush=True,
+            )
+    return samples
+
+
 def run_closure_scan(
     inputs: SplitClosureInputs,
     binning: AnalysisBinning,
@@ -218,14 +363,27 @@ def run_closure_scan(
         raise ValueError("iterations must contain nonnegative integers")
     if bootstrap < 0 or bootstrap == 1:
         raise ValueError("bootstrap must be zero or at least two")
-    if response_uncertainty not in {"analytic-diagonal", "fold-jackknife"}:
+    if response_uncertainty not in {
+        "analytic-diagonal",
+        "fold-jackknife",
+        "count-bootstrap",
+    }:
         raise ValueError(
-            "response_uncertainty must be analytic-diagonal or fold-jackknife"
+            "response_uncertainty must be analytic-diagonal, fold-jackknife, "
+            "or count-bootstrap"
         )
     stresses = len(inputs.stress_names)
     folds, bins = inputs.fold_truth_total.shape
     if bins != binning.size:
         raise ValueError("closure inputs do not match the analysis binning")
+    if response_uncertainty == "count-bootstrap":
+        minimum_replicas = 2 * (binning.shape[-1] + 3)
+        if bootstrap < minimum_replicas:
+            raise ValueError(
+                "count-bootstrap requires at least "
+                f"{minimum_replicas} replicas so its independent calibration half "
+                "can invert a complete phi covariance block"
+            )
     shape = (stresses, len(iteration_values), folds, bins)
     unfolded_all = np.full(shape, np.nan, dtype=float)
     uncertainty_all = np.full(shape, np.nan, dtype=float)
@@ -233,6 +391,9 @@ def run_closure_scan(
     refolded_all = np.full(shape, np.nan, dtype=float)
     efficiencies = np.zeros((folds, bins), dtype=float)
     metrics: list[dict[str, float | int | str]] = []
+    harmonic_cell_metrics: list[dict[str, float | int | str]] = []
+    fixed_truth_metrics: list[dict[str, float | int | str]] = []
+    fixed_truth_harmonic_cell_metrics: list[dict[str, float | int | str]] = []
 
     for fold in range(folds):
         response = training_response(inputs, fold)
@@ -256,18 +417,24 @@ def run_closure_scan(
                 out=np.zeros_like(measured),
                 where=acceptance_valid,
             )
+            count_samples = (
+                _count_bootstrap_ensemble(
+                    inputs,
+                    fold,
+                    measured,
+                    variance,
+                    iteration_values,
+                    minimum_acceptance=minimum_acceptance,
+                    experiments=bootstrap,
+                    seed=seed + 1009 * fold + 97 * stress_index,
+                    progress_label=f"fold={fold} stress={stress_name}",
+                )
+                if response_uncertainty == "count-bootstrap"
+                else None
+            )
             for iteration_index, iteration in enumerate(iteration_values):
                 if iteration == 0:
                     unfolded = prior.copy()
-                    sigma_stat = np.divide(
-                        np.sqrt(variance),
-                        response.efficiency,
-                        out=np.zeros_like(variance),
-                        where=acceptance_valid,
-                    )
-                    statistical_covariance_phi = diagonal_phi_covariance(
-                        sigma_stat * sigma_stat, binning.shape[-1]
-                    )
                 else:
                     unfolded = iterative_bayes(
                         response.core,
@@ -277,7 +444,28 @@ def run_closure_scan(
                         prior=prior,
                         minimum_acceptance=minimum_acceptance,
                     ).unfolded
-                    if bootstrap >= 2:
+                if count_samples is not None:
+                    estimator_samples = count_samples[iteration_index]
+                    sigma = estimator_samples.std(axis=0, ddof=1)
+                    total_covariance_phi = phi_block_covariance(
+                        estimator_samples, binning.shape[-1]
+                    ).reshape(
+                        binning.shape[:-1]
+                        + (binning.shape[-1], binning.shape[-1])
+                    )
+                    covariance_samples = bootstrap
+                else:
+                    if iteration == 0:
+                        sigma_stat = np.divide(
+                            np.sqrt(variance),
+                            response.efficiency,
+                            out=np.zeros_like(variance),
+                            where=acceptance_valid,
+                        )
+                        statistical_covariance_phi = diagonal_phi_covariance(
+                            sigma_stat * sigma_stat, binning.shape[-1]
+                        )
+                    elif bootstrap >= 2:
                         bootstrap_samples = bootstrap_ensemble(
                             response.core,
                             measured,
@@ -306,61 +494,64 @@ def run_closure_scan(
                         statistical_covariance_phi = diagonal_phi_covariance(
                             sigma_stat * sigma_stat, binning.shape[-1]
                         )
-                if jackknife_responses:
-                    response_samples = np.empty(
-                        (len(jackknife_responses), bins), dtype=float
-                    )
-                    for replica_index, replica in enumerate(jackknife_responses):
-                        replica_valid = replica.efficiency > minimum_acceptance
-                        replica_prior = np.divide(
-                            measured,
-                            replica.efficiency,
-                            out=np.zeros_like(measured),
-                            where=replica_valid,
+                    if jackknife_responses:
+                        response_samples = np.empty(
+                            (len(jackknife_responses), bins), dtype=float
                         )
-                        if iteration == 0:
-                            response_samples[replica_index] = replica_prior
-                        else:
-                            replica_corrected = subtract_feed_in(
+                        for replica_index, replica in enumerate(jackknife_responses):
+                            replica_valid = replica.efficiency > minimum_acceptance
+                            replica_prior = np.divide(
                                 measured,
-                                replica.feed_in_fraction,
-                                replica.feed_in_shape,
-                            )
-                            response_samples[replica_index] = iterative_bayes(
-                                replica.core,
-                                replica_corrected,
                                 replica.efficiency,
-                                iteration,
-                                prior=replica_prior,
-                                minimum_acceptance=minimum_acceptance,
-                            ).unfolded
-                    response_covariance_phi = jackknife_phi_covariance(
-                        response_samples, binning.shape[-1]
+                                out=np.zeros_like(measured),
+                                where=replica_valid,
+                            )
+                            if iteration == 0:
+                                response_samples[replica_index] = replica_prior
+                            else:
+                                replica_corrected = subtract_feed_in(
+                                    measured,
+                                    replica.feed_in_fraction,
+                                    replica.feed_in_shape,
+                                )
+                                response_samples[replica_index] = iterative_bayes(
+                                    replica.core,
+                                    replica_corrected,
+                                    replica.efficiency,
+                                    iteration,
+                                    prior=replica_prior,
+                                    minimum_acceptance=minimum_acceptance,
+                                ).unfolded
+                        response_covariance_phi = jackknife_phi_covariance(
+                            response_samples, binning.shape[-1]
+                        )
+                        response_variance = np.diagonal(
+                            response_covariance_phi, axis1=-2, axis2=-1
+                        ).reshape(-1)
+                        sigma_response = np.sqrt(
+                            np.clip(response_variance, 0.0, None)
+                        )
+                    else:
+                        sensitivity = np.divide(
+                            unfolded,
+                            response.efficiency,
+                            out=np.zeros_like(unfolded),
+                            where=acceptance_valid,
+                        )
+                        sigma_response = sensitivity * np.sqrt(
+                            response.response_variance_sum
+                        )
+                        response_covariance_phi = diagonal_phi_covariance(
+                            sigma_response * sigma_response, binning.shape[-1]
+                        )
+                    sigma = np.hypot(sigma_stat, sigma_response)
+                    total_covariance_phi = (
+                        statistical_covariance_phi + response_covariance_phi
+                    ).reshape(
+                        binning.shape[:-1]
+                        + (binning.shape[-1], binning.shape[-1])
                     )
-                    response_variance = np.diagonal(
-                        response_covariance_phi, axis1=-2, axis2=-1
-                    ).reshape(-1)
-                    sigma_response = np.sqrt(np.clip(response_variance, 0.0, None))
-                else:
-                    sensitivity = np.divide(
-                        unfolded,
-                        response.efficiency,
-                        out=np.zeros_like(unfolded),
-                        where=acceptance_valid,
-                    )
-                    sigma_response = sensitivity * np.sqrt(
-                        response.response_variance_sum
-                    )
-                    response_covariance_phi = diagonal_phi_covariance(
-                        sigma_response * sigma_response, binning.shape[-1]
-                    )
-                sigma = np.hypot(sigma_stat, sigma_response)
-                total_covariance_phi = (
-                    statistical_covariance_phi
-                    + response_covariance_phi
-                ).reshape(
-                    binning.shape[:-1] + (binning.shape[-1], binning.shape[-1])
-                )
+                    covariance_samples = bootstrap if bootstrap >= 2 else None
                 valid = (
                     acceptance_valid
                     & (target >= minimum_truth)
@@ -388,9 +579,25 @@ def run_closure_scan(
                         iterations=iteration,
                         minimum_harmonic_points=minimum_harmonic_points,
                         covariance_phi=total_covariance_phi,
-                        covariance_samples=(bootstrap if bootstrap >= 2 else None),
+                        covariance_samples=covariance_samples,
+                        harmonic_cell_metrics=harmonic_cell_metrics,
                     )
                 )
+                if count_samples is not None:
+                    calibration_count = bootstrap // 2
+                    fixed_summary, fixed_cells = fixed_truth_pseudoexperiment_metrics(
+                        target,
+                        count_samples[iteration_index, calibration_count:],
+                        count_samples[iteration_index, :calibration_count],
+                        valid,
+                        binning,
+                        fold=fold,
+                        stress=stress_name,
+                        iterations=iteration,
+                        minimum_harmonic_points=minimum_harmonic_points,
+                    )
+                    fixed_truth_metrics.append(fixed_summary)
+                    fixed_truth_harmonic_cell_metrics.extend(fixed_cells)
 
     recommendation = recommend_iterations(metrics, iteration_values)
     return ClosureScanResult(
@@ -400,6 +607,11 @@ def run_closure_scan(
         refolded=refolded_all,
         training_efficiency=efficiencies,
         metrics=tuple(metrics),
+        harmonic_cell_metrics=tuple(harmonic_cell_metrics),
+        fixed_truth_metrics=tuple(fixed_truth_metrics),
+        fixed_truth_harmonic_cell_metrics=tuple(
+            fixed_truth_harmonic_cell_metrics
+        ),
         recommended_iterations=recommendation,
     )
 
@@ -420,6 +632,7 @@ def closure_metrics(
     minimum_harmonic_points: int,
     covariance_phi: Array | None = None,
     covariance_samples: int | None = None,
+    harmonic_cell_metrics: list[dict[str, float | int | str]] | None = None,
 ) -> dict[str, float | int | str]:
     target = np.asarray(target, dtype=float)
     unfolded = np.asarray(unfolded, dtype=float)
@@ -456,7 +669,7 @@ def closure_metrics(
         out=np.full_like(refolded, np.nan),
         where=rec_valid,
     )
-    harmonic = _harmonic_metrics(
+    harmonic, harmonic_cells = _harmonic_metrics(
         target,
         unfolded,
         uncertainty,
@@ -466,6 +679,16 @@ def closure_metrics(
         covariance_phi=covariance_phi,
         covariance_samples=covariance_samples,
     )
+    if harmonic_cell_metrics is not None:
+        for row in harmonic_cells:
+            row.update(
+                {
+                    "fold": int(fold),
+                    "stress": stress,
+                    "iterations": int(iterations),
+                }
+            )
+            harmonic_cell_metrics.append(row)
     result: dict[str, float | int | str] = {
         "fold": int(fold),
         "stress": stress,
@@ -495,6 +718,229 @@ def closure_metrics(
     }
     result.update(harmonic)
     return result
+
+
+def fixed_truth_pseudoexperiment_metrics(
+    target: Array,
+    evaluation_samples: Array,
+    calibration_samples: Array,
+    valid: Array,
+    binning: AnalysisBinning,
+    *,
+    fold: int,
+    stress: str,
+    iterations: int,
+    minimum_harmonic_points: int,
+) -> tuple[
+    dict[str, float | int | str],
+    list[dict[str, float | int | str]],
+]:
+    """Measure coverage using disjoint covariance and evaluation replicas.
+
+    The held-out truth histogram is fixed.  The first half of the joint
+    data-and-response replicas estimates covariance; the second half evaluates
+    pulls and coverage.  This avoids both validation-target shot noise and the
+    circular use of one ensemble to define and assess its own covariance.
+    """
+    target = np.asarray(target, dtype=float)
+    evaluation = np.asarray(evaluation_samples, dtype=float)
+    calibration = np.asarray(calibration_samples, dtype=float)
+    valid = np.asarray(valid, dtype=bool)
+    if evaluation.ndim != 2 or calibration.ndim != 2:
+        raise ValueError("fixed-truth pseudoexperiment samples must be two-dimensional")
+    if evaluation.shape[1] != target.size or calibration.shape[1] != target.size:
+        raise ValueError("fixed-truth pseudoexperiment bins do not match the target")
+    if evaluation.shape[0] < 2 or calibration.shape[0] < 2:
+        raise ValueError("both pseudoexperiment halves require at least two replicas")
+
+    phi_bins = binning.shape[-1]
+    covariance_phi = phi_block_covariance(calibration, phi_bins).reshape(
+        binning.shape[:-1] + (phi_bins, phi_bins)
+    )
+    variance = np.diagonal(covariance_phi, axis1=-2, axis2=-1).reshape(-1)
+    sigma = np.sqrt(np.clip(variance, 0.0, None))
+    pseudo_valid = valid & np.isfinite(sigma) & (sigma > 0.0)
+    pulls = np.divide(
+        evaluation - target[None, :],
+        sigma[None, :],
+        out=np.full_like(evaluation, np.nan),
+        where=pseudo_valid[None, :],
+    )[:, pseudo_valid]
+    deltas = evaluation[:, pseudo_valid] - target[pseudo_valid][None, :]
+    target_norm = float(np.sum(target[pseudo_valid] ** 2))
+    target_total = float(np.sum(target[pseudo_valid]))
+    mean_estimate = evaluation[:, pseudo_valid].mean(axis=0)
+    summary: dict[str, float | int | str] = {
+        "fold": int(fold),
+        "stress": stress,
+        "iterations": int(iterations),
+        "calibration_pseudoexperiments": int(calibration.shape[0]),
+        "evaluation_pseudoexperiments": int(evaluation.shape[0]),
+        "valid_bins": int(np.count_nonzero(pseudo_valid)),
+        "target_total": target_total,
+        "unfolded_total": float(np.sum(mean_estimate)),
+        "global_relative_bias": (
+            float(np.sum(mean_estimate - target[pseudo_valid]) / target_total)
+            if target_total > 0.0
+            else np.nan
+        ),
+        "normalized_mse": (
+            float(np.mean(np.sum(deltas * deltas, axis=1)) / target_norm)
+            if target_norm > 0.0
+            else np.nan
+        ),
+        "pull_mean": _mean_or_nan(pulls[np.isfinite(pulls)]),
+        "pull_std": _std_or_nan(pulls[np.isfinite(pulls)]),
+        "coverage_1sigma": _mean_or_nan(np.abs(pulls[np.isfinite(pulls)]) <= 1.0),
+        "coverage_2sigma": _mean_or_nan(np.abs(pulls[np.isfinite(pulls)]) <= 2.0),
+    }
+    harmonic_summary, cell_rows = _fixed_truth_harmonic_metrics(
+        target,
+        evaluation,
+        sigma,
+        pseudo_valid,
+        covariance_phi,
+        binning,
+        covariance_samples=calibration.shape[0],
+        minimum_points=minimum_harmonic_points,
+    )
+    summary.update(harmonic_summary)
+    for row in cell_rows:
+        row.update(
+            {
+                "fold": int(fold),
+                "stress": stress,
+                "iterations": int(iterations),
+                "calibration_pseudoexperiments": int(calibration.shape[0]),
+                "evaluation_pseudoexperiments": int(evaluation.shape[0]),
+            }
+        )
+    return summary, cell_rows
+
+
+def _fixed_truth_harmonic_metrics(
+    target: Array,
+    evaluation_samples: Array,
+    uncertainty: Array,
+    valid: Array,
+    covariance_phi: Array,
+    binning: AnalysisBinning,
+    *,
+    covariance_samples: int,
+    minimum_points: int,
+) -> tuple[
+    dict[str, float | int],
+    list[dict[str, float | int | str]],
+]:
+    """Apply fixed GLS maps to independent evaluation pseudoexperiments."""
+    phi_bins = binning.shape[-1]
+    centers = 0.5 * (binning.phi_edges[:-1] + binning.phi_edges[1:])
+    design_all = np.column_stack(
+        (
+            np.ones(phi_bins),
+            np.cos(np.deg2rad(centers)),
+            np.cos(2.0 * np.deg2rad(centers)),
+        )
+    )
+    target_blocks = np.asarray(target, dtype=float).reshape(-1, phi_bins)
+    evaluation_blocks = np.asarray(evaluation_samples, dtype=float).reshape(
+        evaluation_samples.shape[0], -1, phi_bins
+    )
+    uncertainty_blocks = np.asarray(uncertainty, dtype=float).reshape(-1, phi_bins)
+    valid_blocks = np.asarray(valid, dtype=bool).reshape(-1, phi_bins)
+    covariance_blocks = np.asarray(covariance_phi, dtype=float).reshape(
+        -1, phi_bins, phi_bins
+    )
+    minimum = max(4, min(int(minimum_points), phi_bins))
+    coefficient_pulls: list[list[Array]] = [[], [], []]
+    cell_rows: list[dict[str, float | int | str]] = []
+    for cell in range(target_blocks.shape[0]):
+        mask = (
+            valid_blocks[cell]
+            & np.isfinite(target_blocks[cell])
+            & np.isfinite(uncertainty_blocks[cell])
+            & (uncertainty_blocks[cell] > 0.0)
+        )
+        points = int(np.count_nonzero(mask))
+        if points < minimum:
+            continue
+        covariance = covariance_blocks[cell][np.ix_(mask, mask)]
+        if not np.all(np.isfinite(covariance)):
+            continue
+        try:
+            lower = np.linalg.cholesky(covariance)
+        except np.linalg.LinAlgError:
+            continue
+        design = design_all[mask]
+        weighted_design = np.linalg.solve(lower, design)
+        if np.linalg.matrix_rank(weighted_design) < 3:
+            continue
+        normal = weighted_design.T @ weighted_design
+        try:
+            parameter_covariance = np.linalg.inv(normal)
+        except np.linalg.LinAlgError:
+            continue
+        if covariance_samples <= points + 2:
+            continue
+        precision_correction = (
+            covariance_samples - points - 2.0
+        ) / (covariance_samples - 1.0)
+        parameter_uncertainty = np.sqrt(
+            np.clip(np.diag(parameter_covariance) / precision_correction, 0.0, None)
+        )
+        covariance_inverse_design = np.linalg.solve(
+            lower.T, np.linalg.solve(lower, design)
+        )
+        linear_map = parameter_covariance @ covariance_inverse_design.T
+        target_parameters = linear_map @ target_blocks[cell, mask]
+        estimates = evaluation_blocks[:, cell, mask] @ linear_map.T
+        pulls = np.divide(
+            estimates - target_parameters[None, :],
+            parameter_uncertainty[None, :],
+            out=np.full_like(estimates, np.nan),
+            where=parameter_uncertainty[None, :] > 0.0,
+        )
+        index = tuple(
+            int(value)
+            for value in np.unravel_index(cell, binning.shape[:-1])
+        )
+        row: dict[str, float | int | str] = _cell_coordinates(binning, index)
+        row["phi_points"] = points
+        for coefficient, label in enumerate(("A", "B", "C")):
+            finite = pulls[:, coefficient][np.isfinite(pulls[:, coefficient])]
+            coefficient_pulls[coefficient].append(finite)
+            row[f"target_{label}"] = float(target_parameters[coefficient])
+            row[f"mean_estimate_{label}"] = float(
+                np.mean(estimates[:, coefficient])
+            )
+            row[f"uncertainty_{label}"] = float(
+                parameter_uncertainty[coefficient]
+            )
+            row[f"pull_mean_{label}"] = _mean_or_nan(finite)
+            row[f"pull_std_{label}"] = _std_or_nan(finite)
+            row[f"coverage_1sigma_{label}"] = _mean_or_nan(
+                np.abs(finite) <= 1.0
+            )
+            row[f"coverage_2sigma_{label}"] = _mean_or_nan(
+                np.abs(finite) <= 2.0
+            )
+        cell_rows.append(row)
+
+    summary: dict[str, float | int] = {
+        "harmonic_common_cells": len(cell_rows)
+    }
+    for coefficient, label in enumerate(("A", "B", "C")):
+        combined = (
+            np.concatenate(coefficient_pulls[coefficient])
+            if coefficient_pulls[coefficient]
+            else np.empty(0, dtype=float)
+        )
+        summary[f"harmonic_{label}_pull_mean"] = _mean_or_nan(combined)
+        summary[f"harmonic_{label}_pull_std"] = _std_or_nan(combined)
+        summary[f"harmonic_{label}_pull_absolute_gt2"] = int(
+            np.count_nonzero(np.abs(combined) > 2.0)
+        )
+    return summary, cell_rows
 
 
 def recommend_iterations(
@@ -629,7 +1075,10 @@ def _harmonic_metrics(
     minimum_points: int,
     covariance_phi: Array | None = None,
     covariance_samples: int | None = None,
-) -> dict[str, float | int]:
+) -> tuple[
+    dict[str, float | int],
+    list[dict[str, float | int | str]],
+]:
     shaped_target = binning.unflatten(target)
     shaped_unfolded = binning.unflatten(unfolded)
     shaped_uncertainty = binning.unflatten(uncertainty)
@@ -657,6 +1106,25 @@ def _harmonic_metrics(
     output: dict[str, float | int] = {
         "harmonic_common_cells": int(np.count_nonzero(common))
     }
+    cell_rows: list[dict[str, float | int | str]] = []
+    for index in zip(*np.nonzero(common), strict=True):
+        row: dict[str, float | int | str] = _cell_coordinates(binning, index)
+        row["phi_points"] = int(unfolded_fit["points"][index])
+        for coefficient, label in enumerate(("A", "B", "C")):
+            target_value = float(truth_fit["parameters"][index + (coefficient,)])
+            estimate = float(unfolded_fit["parameters"][index + (coefficient,)])
+            sigma_value = float(
+                unfolded_fit["parameter_uncertainties"][index + (coefficient,)]
+            )
+            row[f"target_{label}"] = target_value
+            row[f"estimate_{label}"] = estimate
+            row[f"uncertainty_{label}"] = sigma_value
+            row[f"pull_{label}"] = (
+                (estimate - target_value) / sigma_value
+                if np.isfinite(sigma_value) and sigma_value > 0.0
+                else np.nan
+            )
+        cell_rows.append(row)
     for coefficient, label in enumerate(("A", "B", "C")):
         delta = (
             unfolded_fit["parameters"][..., coefficient]
@@ -675,7 +1143,24 @@ def _harmonic_metrics(
         output[f"harmonic_{label}_pull_absolute_gt2"] = int(
             np.count_nonzero(np.abs(pulls) > 2.0)
         )
-    return output
+    return output, cell_rows
+
+
+def _cell_coordinates(
+    binning: AnalysisBinning, index: tuple[int, int, int]
+) -> dict[str, float | int | str]:
+    q2, xb, minus_t = (int(value) for value in index)
+    return {
+        "q2_bin": q2,
+        "xb_bin": xb,
+        "t_bin": minus_t,
+        "q2_low": float(binning.q2_edges[q2]),
+        "q2_high": float(binning.q2_edges[q2 + 1]),
+        "xb_low": float(binning.xb_edges[xb]),
+        "xb_high": float(binning.xb_edges[xb + 1]),
+        "t_low": float(binning.t_edges[minus_t]),
+        "t_high": float(binning.t_edges[minus_t + 1]),
+    }
 
 
 def _scaled_coordinate(values: Array, limits: tuple[float, float] | None) -> Array:

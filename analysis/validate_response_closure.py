@@ -78,14 +78,25 @@ def parser() -> argparse.ArgumentParser:
         help="Truth-shape alternatives used as held-out pseudo-data.",
     )
     result.add_argument("--stress-strength", type=float, default=0.6)
-    result.add_argument("--bootstrap", type=int, default=50)
+    result.add_argument(
+        "--bootstrap",
+        type=int,
+        default=50,
+        help=(
+            "Estimator replicas. In count-bootstrap mode these jointly fluctuate "
+            "data and response counts and are split equally between fixed-truth "
+            "covariance calibration and coverage evaluation."
+        ),
+    )
     result.add_argument(
         "--response-uncertainty",
-        choices=("analytic-diagonal", "fold-jackknife"),
+        choices=("analytic-diagonal", "fold-jackknife", "count-bootstrap"),
         default="analytic-diagonal",
         help=(
             "Estimate response-MC uncertainty with the legacy analytic diagonal "
-            "approximation or by deleting each response-training fold in turn."
+            "approximation, by deleting each response-training fold in turn, or "
+            "with joint Poisson replicas of integer migration, missed, feed-in, "
+            "and measured counts."
         ),
     )
     result.add_argument("--seed", type=int, default=731_921)
@@ -231,6 +242,12 @@ def main() -> int:
     print(f"Selected rows retained: {scan_metadata['selected_rows_retained']}")
     print(f"Wrote {args.output_dir / 'closure_summary.json'}")
     print(f"Wrote {args.output_dir / 'closure_metrics.csv'}")
+    print(f"Wrote {args.output_dir / 'harmonic_cell_metrics.csv'}")
+    if result.fixed_truth_metrics:
+        print(f"Wrote {args.output_dir / 'fixed_truth_metrics.csv'}")
+        print(
+            f"Wrote {args.output_dir / 'fixed_truth_harmonic_cell_metrics.csv'}"
+        )
     print(f"Wrote {args.output_dir / 'closure_results.npz'}")
     print(f"Wrote {args.output_dir / 'closure_diagnostics.pdf'}")
     if summary["scope"]["not_tested"]:
@@ -537,6 +554,45 @@ def load_split_inputs(
     return inputs, scan_metadata
 
 
+def _write_rows_csv(
+    path: Path, rows: tuple[dict[str, float | int | str], ...]
+) -> None:
+    if not rows:
+        return
+    with path.open("w", newline="", encoding="utf-8") as destination:
+        writer = csv.DictWriter(destination, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _covariance_description(args: argparse.Namespace) -> str:
+    prefix = (
+        "full-estimator covariance among phi bins within each (Q2,xB,-t) cell, "
+        "including recomputation of the data-derived prior; "
+    )
+    if args.response_uncertainty == "count-bootstrap":
+        method = (
+            "each replica jointly Poisson-resamples integer migration, missed-event, "
+            "feed-in, and measured counts and rebuilds the response; "
+        )
+    elif args.response_uncertainty == "fold-jackknife":
+        method = (
+            "measured-spectrum bootstrap covariance plus delete-one-training-fold "
+            "jackknife response covariance; "
+        )
+    else:
+        method = (
+            "measured-spectrum bootstrap covariance plus analytic response-MC "
+            "variance on the diagonal; "
+        )
+    return (
+        prefix
+        + method
+        + "finite-bootstrap precision uses the per-fit Hartlap "
+        "(N-p-2)/(N-1) correction"
+    )
+
+
 def save_results(
     output_dir: Path,
     result: ClosureScanResult,
@@ -553,9 +609,32 @@ def save_results(
         writer = csv.DictWriter(destination, fieldnames=list(result.metrics[0].keys()))
         writer.writeheader()
         writer.writerows(result.metrics)
+    _write_rows_csv(
+        output_dir / "harmonic_cell_metrics.csv", result.harmonic_cell_metrics
+    )
+    _write_rows_csv(
+        output_dir / "fixed_truth_metrics.csv", result.fixed_truth_metrics
+    )
+    _write_rows_csv(
+        output_dir / "fixed_truth_harmonic_cell_metrics.csv",
+        result.fixed_truth_harmonic_cell_metrics,
+    )
     aggregates = aggregate_metrics(result.metrics)
+    fixed_truth_aggregates = (
+        aggregate_metrics(result.fixed_truth_metrics)
+        if result.fixed_truth_metrics
+        else []
+    )
     iterations = sorted({int(row["iterations"]) for row in result.metrics})
-    coverage_assessment = assess_iteration_coverage(result.metrics, iterations)
+    coverage_rows = (
+        result.fixed_truth_metrics if result.fixed_truth_metrics else result.metrics
+    )
+    coverage_source = (
+        "fixed-truth independent pseudoexperiments"
+        if result.fixed_truth_metrics
+        else "held-out central estimates"
+    )
+    coverage_assessment = assess_iteration_coverage(coverage_rows, iterations)
     coverage_qualified = [
         int(row["iterations"])
         for row in coverage_assessment
@@ -567,7 +646,7 @@ def save_results(
         else None
     )
     summary: dict[str, object] = {
-        "schema_version": 3,
+        "schema_version": 4,
         "method": "source-aware deterministic K-fold held-out GEMC closure",
         "label": args.label,
         "software_revision": _git_revision(),
@@ -613,6 +692,24 @@ def save_results(
                 "for every positive-iteration replica"
             ),
             "response_uncertainty": args.response_uncertainty,
+            "fixed_truth_pseudoexperiments": (
+                {
+                    "enabled": True,
+                    "calibration_replicas": args.bootstrap // 2,
+                    "evaluation_replicas": args.bootstrap - args.bootstrap // 2,
+                    "truth_target": "fixed held-out generated histogram",
+                    "pseudo_data_expectation": (
+                        "fixed held-out reconstructed histogram with its stored "
+                        "weighted-Poisson variance"
+                    ),
+                    "independence": (
+                        "disjoint calibration and evaluation halves of the joint "
+                        "data-and-response count ensemble"
+                    ),
+                }
+                if result.fixed_truth_metrics
+                else {"enabled": False}
+            ),
             "minimum_acceptance": minimum_acceptance,
             "minimum_validation_truth": args.minimum_truth,
             "minimum_harmonic_points": args.minimum_harmonic_points,
@@ -620,23 +717,13 @@ def save_results(
             "stress_strength": args.stress_strength,
             "phase_space": phase_space.description(),
             "topology_groups": sorted(set(args.topology_group)),
-            "harmonic_measurement_covariance": (
-                "full-estimator bootstrap covariance among phi bins within each "
-                "(Q2,xB,-t) cell, including recomputation of the data-derived prior; "
-                + (
-                    "delete-one-training-fold jackknife response covariance added "
-                    "within each phi block; "
-                    if args.response_uncertainty == "fold-jackknife"
-                    else "analytic response-MC variance added to the diagonal; "
-                )
-                + "finite-bootstrap precision "
-                "uses the per-fit Hartlap (N-p-2)/(N-1) correction"
-            ),
+            "harmonic_measurement_covariance": _covariance_description(args),
         },
         "scan": scan_metadata,
         "recommendation": {
             "iterations": result.recommended_iterations,
             "criterion": "minimum median held-out normalized MSE across folds and stresses",
+            "coverage_assessment_source": coverage_source,
             "coverage_qualified_iterations": coverage_qualified,
             "coverage_qualified_recommendation": coverage_recommendation,
             "coverage_certified": result.recommended_iterations in coverage_qualified,
@@ -648,6 +735,7 @@ def save_results(
             ),
         },
         "aggregate_metrics": aggregates,
+        "fixed_truth_aggregate_metrics": fixed_truth_aggregates,
         "scope": {
             "tested": [
                 "response construction from training folds",
@@ -656,6 +744,15 @@ def save_results(
                 "held-out truth recovery under nominal and stressed truth shapes",
                 "reconstructed-level refolding",
                 "A + B cos(phi) + C cos(2 phi) harmonic recovery",
+                "per-cell harmonic residual and pull localization",
+                *(
+                    [
+                        "joint count-level response and measured-spectrum replicas",
+                        "fixed-truth coverage with disjoint calibration and evaluation replicas",
+                    ]
+                    if result.fixed_truth_metrics
+                    else []
+                ),
             ],
             "not_tested": [
                 "data m_gg sideband subtraction",
@@ -779,6 +876,69 @@ def render_diagnostics(
         )
         pdf.savefig(fig)
         plt.close(fig)
+
+        if result.fixed_truth_metrics:
+            fixed_aggregates = aggregate_metrics(result.fixed_truth_metrics)
+            fig, axes = plt.subplots(2, 2, figsize=(12.0, 9.0))
+            fig.subplots_adjust(
+                left=0.085,
+                right=0.955,
+                bottom=0.085,
+                top=0.88,
+                wspace=0.27,
+                hspace=0.30,
+            )
+            for stress in stress_names:
+                rows = sorted(
+                    [row for row in fixed_aggregates if row["stress"] == stress],
+                    key=lambda row: int(row["iterations"]),
+                )
+                x = [int(row["iterations"]) for row in rows]
+                axes[0, 0].plot(
+                    x, [row["pull_std"] for row in rows], marker="o", label=stress
+                )
+                axes[0, 1].plot(
+                    x,
+                    [row["coverage_1sigma"] for row in rows],
+                    marker="o",
+                    label=stress,
+                )
+                for label_name, linestyle in zip(
+                    ("A", "B", "C"), ("-", "--", ":"), strict=True
+                ):
+                    axes[1, 0].plot(
+                        x,
+                        [row[f"harmonic_{label_name}_pull_std"] for row in rows],
+                        marker="o",
+                        linestyle=linestyle,
+                        label=f"{stress} {label_name}",
+                    )
+                axes[1, 1].plot(
+                    x,
+                    [row["global_relative_bias"] for row in rows],
+                    marker="o",
+                    label=stress,
+                )
+            axes[0, 0].axhline(1.0, color="black", linewidth=0.8)
+            axes[0, 1].axhline(0.6827, color="black", linewidth=0.8)
+            axes[1, 0].axhline(1.0, color="black", linewidth=0.8)
+            axes[1, 1].axhline(0.0, color="black", linewidth=0.8)
+            axes[0, 0].set_ylabel("bin pull width")
+            axes[0, 1].set_ylabel("bin one-sigma coverage")
+            axes[1, 0].set_ylabel("harmonic pull width")
+            axes[1, 1].set_ylabel("global relative bias")
+            for axis in axes.ravel():
+                axis.set_xticks(iteration_values)
+                axis.set_xlabel("iterations")
+                axis.grid(alpha=0.25)
+            axes[0, 0].legend(fontsize=7)
+            axes[1, 0].legend(fontsize=6, ncol=2)
+            fig.suptitle(
+                f"{label}\nfixed-truth coverage from independent calibration "
+                "and evaluation replicas"
+            )
+            pdf.savefig(fig)
+            plt.close(fig)
 
         for stress_index, stress in enumerate(stress_names):
             target = validation_truth[stress_index]
@@ -917,6 +1077,11 @@ def render_saved_diagnostics(
             refolded=np.asarray(saved["refolded"]),
             training_efficiency=np.asarray(saved["training_efficiency"]),
             metrics=metrics,
+            harmonic_cell_metrics=(),
+            fixed_truth_metrics=_load_optional_metrics(
+                output_dir / "fixed_truth_metrics.csv"
+            ),
+            fixed_truth_harmonic_cell_metrics=(),
             recommended_iterations=int(saved["recommended_iterations"]),
         )
         validation_truth = np.asarray(saved["validation_truth"])
@@ -951,6 +1116,13 @@ def _parse_metric_row(row: dict[str, str]) -> dict[str, float | int | str]:
         else:
             parsed[key] = float(value)
     return parsed
+
+
+def _load_optional_metrics(path: Path) -> tuple[dict[str, float | int | str], ...]:
+    if not path.is_file():
+        return ()
+    with path.open(newline="", encoding="utf-8") as source:
+        return tuple(_parse_metric_row(row) for row in csv.DictReader(source))
 
 
 def _concat(items: list[np.ndarray], *, dtype) -> np.ndarray:

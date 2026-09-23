@@ -119,7 +119,7 @@ def bootstrap_ensemble(
     samples = np.empty((experiments, measured.size), dtype=float)
     acceptance_valid = np.asarray(efficiency, dtype=float) > minimum_acceptance
     for index in range(experiments):
-        fluctuated = _fluctuate_weighted_poisson(rng, measured, variance)
+        fluctuated = fluctuate_weighted_poisson(rng, measured, variance)
         corrected = subtract_feed_in(fluctuated, feed_in_fraction, shape)
         replica_prior = prior
         if recompute_data_prior:
@@ -218,7 +218,7 @@ def diagonal_phi_covariance(variance: Array, phi_bins: int) -> Array:
     return covariance
 
 
-def _fluctuate_weighted_poisson(
+def fluctuate_weighted_poisson(
     rng: np.random.Generator, measured: Array, variance: Array
 ) -> Array:
     """Moment-match a weighted Poisson sum using an effective count and scale."""
@@ -242,6 +242,10 @@ def _fluctuate_weighted_poisson(
         rng.poisson(effective_count[positive]).astype(float) * scale[positive]
     )
     return fluctuated
+
+
+# Compatibility for code that imported the earlier private helper.
+_fluctuate_weighted_poisson = fluctuate_weighted_poisson
 
 
 def _kl(new: Array, old: Array) -> float:

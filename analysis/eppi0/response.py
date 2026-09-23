@@ -106,6 +106,8 @@ def build_response_from_counts(
     migration_cols: Array,
     migration_weights: Array,
     feed_counts: Array,
+    *,
+    compute_variance: bool = True,
 ) -> ResponseResult:
     """Build the response from pre-accumulated histogram and migration counts."""
     truth_total = np.asarray(truth_total, dtype=float)
@@ -139,7 +141,11 @@ def build_response_from_counts(
     rec_sum = float(reconstructed_total.sum())
     feed_fraction = feed_sum / rec_sum if rec_sum > 0 else 0.0
     matrix = hstack([core, csr_matrix(feed_shape[:, None])], format="csr")
-    variance_sum = _multinomial_variance_sum(core.tocsc(), truth_total)
+    variance_sum = (
+        _multinomial_variance_sum(core.tocsc(), truth_total)
+        if compute_variance
+        else np.zeros_like(truth_total, dtype=float)
+    )
     return ResponseResult(
         matrix=matrix,
         core=core,

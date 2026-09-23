@@ -141,19 +141,31 @@ python3 analysis/validate_response_closure.py \
   --config configs/analysis/rga/10.604.json \
   --dictionary build/libEvent.so \
   --folds 5 --iterations 0 1 2 4 8 12 25 \
-  --bootstrap 50 \
-  --response-uncertainty fold-jackknife \
+  --bootstrap 300 \
+  --response-uncertainty count-bootstrap \
   --output-dir results/closure/integrated
 ```
 
-With five folds, `fold-jackknife` holds one fold out as pseudo-data, builds the
-central response from the other four, and recomputes the unfolded result four
-times while deleting one response-training fold in turn.  The delete-one-fold
-covariance varies migration, efficiency, and feed-in together and is added to
-the measured-spectrum bootstrap covariance within each phi block.  The
-`analytic-diagonal` alternative retains the faster legacy response-MC variance
-approximation and is useful for diagnosing the size of the missing correlated
-term.
+`count-bootstrap` is the coverage-grade mode for unweighted GEMC. Each replica
+Poisson-resamples the saved integer migration, missed-event, and feed-in counts,
+rebuilds the response, independently fluctuates the measured spectrum,
+recomputes the data-derived prior, and unfolds. The resulting joint
+full-estimator ensemble includes nonlinear interactions between data and
+finite-response statistics. At least `2 * (Nphi + 3)` replicas are required;
+300 or more are recommended for the campaign audit.
+
+The same ensemble is split into disjoint calibration and evaluation halves for
+a fixed-truth pseudoexperiment audit. The calibration half estimates the phi
+covariance and the evaluation half tests bin and harmonic pulls against the
+fixed held-out truth target. This removes finite target fluctuations from the
+coverage assessment and avoids judging a covariance with the replicas used to
+estimate it.
+
+`fold-jackknife` remains available as a fast comparison: with five folds it
+holds one fold out as pseudo-data and deletes each of the four response-training
+folds in turn. Its response covariance has at most rank three and is not the
+preferred harmonic-coverage estimate. `analytic-diagonal` retains the fastest
+legacy response-MC approximation.
 
 To repeat only the numerical scan with different covariance settings, reuse the
 fold-local sufficient statistics from the first run:
@@ -163,9 +175,9 @@ python3 analysis/validate_response_closure.py \
   --split-input-dir results/closure/integrated \
   --config configs/analysis/rga/10.604.json \
   --folds 5 --iterations 0 1 2 4 8 12 25 \
-  --bootstrap 100 \
-  --response-uncertainty fold-jackknife \
-  --output-dir results/closure/integrated_response_jackknife
+  --bootstrap 300 \
+  --response-uncertainty count-bootstrap \
+  --output-dir results/closure/integrated_count_bootstrap
 ```
 
 This resume form does not require ROOT or rescan generated events.  Its summary
@@ -177,18 +189,19 @@ closure uses `--topology-group 9`.  Separate runs for IDs 4, 8, 9, and 10 test
 the topology components whose accepted counts sum to the integrated response.
 
 The command writes `closure_summary.json`, `closure_metrics.csv`,
-`closure_results.npz`, and `closure_diagnostics.pdf`.  It also preserves the
-fold-local truth, reconstruction, feed-in, and sparse migration counts so the
-exact split can be audited. Positive-iteration pseudoexperiments fluctuate the
-measured spectrum and recompute its acceptance-corrected IBU prior, so closure
-tests the same data-dependent estimator used in production.
+`harmonic_cell_metrics.csv`, `closure_results.npz`, and
+`closure_diagnostics.pdf`. Count-bootstrap runs additionally write
+`fixed_truth_metrics.csv` and `fixed_truth_harmonic_cell_metrics.csv`. The two
+cell tables identify the `(Q2,xB,-t)` regions that dominate coefficient bias or
+undercoverage. The utility also preserves fold-local truth, reconstruction,
+feed-in, and sparse migration counts so the exact split can be audited.
 
 The summary reports the minimum-MSE iteration separately from an explicit
-coverage gate. The gate checks median bin-level pull mean, pull width, one- and
-two-sigma coverage, plus the means and widths of the recovered A, B, and C
-harmonic pulls. A minimum-MSE iteration with `coverage_certified: false` must
-not be promoted to the nominal extraction; the covariance model must first be
-repaired or augmented and closure rerun.
+coverage gate. For count-bootstrap runs, the gate uses the independent
+fixed-truth evaluation replicas. It checks median bin-level pull mean, pull
+width, one- and two-sigma coverage, plus the means and widths of the recovered
+A, B, and C harmonic pulls. A minimum-MSE iteration with
+`coverage_certified: false` must not be promoted to the nominal extraction.
 
 The summary explicitly limits the conclusion to
 response, feed-in, unfolding, refolding, and harmonic recovery.  This test does
