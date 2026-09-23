@@ -153,6 +153,10 @@ struct CandidateOutput {
     std::vector<double> selectedP;
     std::vector<double> selectedTheta;
     std::vector<double> selectedPhi;
+    // Transient copies used to populate the normalized selected-particle
+    // table and role-specific detector-coordinate branches.  This vector is
+    // intentionally not registered as a ROOT branch.
+    std::vector<RecBranches> selectedParticles;
     std::vector<int> topologyPids;
     std::vector<int> topologyPidCounts;
     std::vector<int> topologyPidCountsFT;
@@ -298,6 +302,141 @@ struct CandidateOutput {
     }
 };
 
+struct SelectedDetectorCoordinates {
+    double trackChi2N = NAN;
+
+    double xFT = NAN;
+    double yFT = NAN;
+    double E_FTCAL = NAN;
+
+    double xDC1 = NAN;
+    double yDC1 = NAN;
+    double xDC2 = NAN;
+    double yDC2 = NAN;
+    double xDC3 = NAN;
+    double yDC3 = NAN;
+    double edgeDC1 = NAN;
+    double edgeDC2 = NAN;
+    double edgeDC3 = NAN;
+
+    double xPCAL = NAN;
+    double yPCAL = NAN;
+    double uPCAL = NAN;
+    double vPCAL = NAN;
+    double wPCAL = NAN;
+    double E_PCAL = NAN;
+    double uECIN = NAN;
+    double vECIN = NAN;
+    double wECIN = NAN;
+    double E_ECIN = NAN;
+    double uECOUT = NAN;
+    double vECOUT = NAN;
+    double wECOUT = NAN;
+    double E_ECOUT = NAN;
+
+    double edge_cvt1 = NAN;
+    double edge_cvt3 = NAN;
+    double edge_cvt5 = NAN;
+    double edge_cvt7 = NAN;
+    double edge_cvt12 = NAN;
+    double theta_cvt = NAN;
+    double phi_cvt = NAN;
+
+    void reset() { *this = SelectedDetectorCoordinates{}; }
+
+    void fill(const RecBranches& particle) {
+        trackChi2N = particle.trackChi2N;
+        xFT = particle.xFT;
+        yFT = particle.yFT;
+        E_FTCAL = particle.E_FTCAL;
+        xDC1 = particle.xDC1;
+        yDC1 = particle.yDC1;
+        xDC2 = particle.xDC2;
+        yDC2 = particle.yDC2;
+        xDC3 = particle.xDC3;
+        yDC3 = particle.yDC3;
+        edgeDC1 = particle.edgeDC1;
+        edgeDC2 = particle.edgeDC2;
+        edgeDC3 = particle.edgeDC3;
+        xPCAL = particle.xPCAL;
+        yPCAL = particle.yPCAL;
+        uPCAL = particle.uPCAL;
+        vPCAL = particle.vPCAL;
+        wPCAL = particle.wPCAL;
+        E_PCAL = particle.E_PCAL;
+        uECIN = particle.uECIN;
+        vECIN = particle.vECIN;
+        wECIN = particle.wECIN;
+        E_ECIN = particle.E_ECIN;
+        uECOUT = particle.uECOUT;
+        vECOUT = particle.vECOUT;
+        wECOUT = particle.wECOUT;
+        E_ECOUT = particle.E_ECOUT;
+        edge_cvt1 = particle.edge_cvt1;
+        edge_cvt3 = particle.edge_cvt3;
+        edge_cvt5 = particle.edge_cvt5;
+        edge_cvt7 = particle.edge_cvt7;
+        edge_cvt12 = particle.edge_cvt12;
+        theta_cvt = particle.theta_cvt;
+        phi_cvt = particle.phi_cvt;
+    }
+
+    void registerBranches(TTree& tree, const std::string& prefix) {
+        registerDouble(tree, name(prefix, "trackChi2N", "TrackChi2N"), trackChi2N);
+        registerDouble(tree, name(prefix, "xFT", "XFT"), xFT);
+        registerDouble(tree, name(prefix, "yFT", "YFT"), yFT);
+        registerDouble(tree, name(prefix, "E_FTCAL", "EFTCAL"), E_FTCAL);
+        registerDouble(tree, name(prefix, "xDC1", "XDC1"), xDC1);
+        registerDouble(tree, name(prefix, "yDC1", "YDC1"), yDC1);
+        registerDouble(tree, name(prefix, "xDC2", "XDC2"), xDC2);
+        registerDouble(tree, name(prefix, "yDC2", "YDC2"), yDC2);
+        registerDouble(tree, name(prefix, "xDC3", "XDC3"), xDC3);
+        registerDouble(tree, name(prefix, "yDC3", "YDC3"), yDC3);
+        registerDouble(tree, name(prefix, "edgeDC1", "EdgeDC1"), edgeDC1);
+        registerDouble(tree, name(prefix, "edgeDC2", "EdgeDC2"), edgeDC2);
+        registerDouble(tree, name(prefix, "edgeDC3", "EdgeDC3"), edgeDC3);
+        registerDouble(tree, name(prefix, "xPCAL", "XPCAL"), xPCAL);
+        registerDouble(tree, name(prefix, "yPCAL", "YPCAL"), yPCAL);
+        registerDouble(tree, name(prefix, "uPCAL", "UPCAL"), uPCAL);
+        registerDouble(tree, name(prefix, "vPCAL", "VPCAL"), vPCAL);
+        registerDouble(tree, name(prefix, "wPCAL", "WPCAL"), wPCAL);
+        registerDouble(tree, name(prefix, "uECIN", "UECIN"), uECIN);
+        registerDouble(tree, name(prefix, "vECIN", "VECIN"), vECIN);
+        registerDouble(tree, name(prefix, "wECIN", "WECIN"), wECIN);
+        registerDouble(tree, name(prefix, "uECOUT", "UECOUT"), uECOUT);
+        registerDouble(tree, name(prefix, "vECOUT", "VECOUT"), vECOUT);
+        registerDouble(tree, name(prefix, "wECOUT", "WECOUT"), wECOUT);
+        // The candidate tree already provides the historical electronEPCAL,
+        // electronEECIN, and electronEECOUT branches. Avoid duplicate names
+        // there while retaining detector energies for all sParticles rows and
+        // for the other selected roles in sEvents.
+        if (prefix != "electron") {
+            registerDouble(tree, name(prefix, "E_PCAL", "EPCAL"), E_PCAL);
+            registerDouble(tree, name(prefix, "E_ECIN", "EECIN"), E_ECIN);
+            registerDouble(tree, name(prefix, "E_ECOUT", "EECOUT"), E_ECOUT);
+        }
+        registerDouble(tree, name(prefix, "edge_cvt1", "EdgeCVT1"), edge_cvt1);
+        registerDouble(tree, name(prefix, "edge_cvt3", "EdgeCVT3"), edge_cvt3);
+        registerDouble(tree, name(prefix, "edge_cvt5", "EdgeCVT5"), edge_cvt5);
+        registerDouble(tree, name(prefix, "edge_cvt7", "EdgeCVT7"), edge_cvt7);
+        registerDouble(tree, name(prefix, "edge_cvt12", "EdgeCVT12"), edge_cvt12);
+        registerDouble(tree, name(prefix, "theta_cvt", "ThetaCVT"), theta_cvt);
+        registerDouble(tree, name(prefix, "phi_cvt", "PhiCVT"), phi_cvt);
+    }
+
+private:
+    static std::string name(const std::string& prefix,
+                            const std::string& unprefixed,
+                            const std::string& suffix) {
+        return prefix.empty() ? unprefixed : prefix + suffix;
+    }
+
+    static void registerDouble(TTree& tree, const std::string& branch, double& value) {
+        const std::string leaf = branch + "/D";
+        tree.Branch(branch.c_str(), &value, leaf.c_str());
+    }
+};
+
 struct SelectedParticleOutput {
     ULong64_t sourceFileId = INVALID_SOURCE_ID;
     ULong64_t sourceEventIndex = INVALID_SOURCE_ID;
@@ -312,6 +451,7 @@ struct SelectedParticleOutput {
     double p = NAN;
     double theta = NAN;
     double phi = NAN;
+    SelectedDetectorCoordinates detector;
 
     void registerBranches(TTree& tree) {
         tree.Branch("sourceFileId", &sourceFileId, "sourceFileId/l");
@@ -327,6 +467,7 @@ struct SelectedParticleOutput {
         tree.Branch("p", &p, "p/D");
         tree.Branch("theta", &theta, "theta/D");
         tree.Branch("phi", &phi, "phi/D");
+        detector.registerBranches(tree, "");
     }
 
     void fillRows(const CandidateOutput& candidate, TTree& tree) {
@@ -348,6 +489,10 @@ struct SelectedParticleOutput {
             theta = index < candidate.selectedTheta.size()
                 ? candidate.selectedTheta[index] : NAN;
             phi = index < candidate.selectedPhi.size() ? candidate.selectedPhi[index] : NAN;
+            detector.reset();
+            if (index < candidate.selectedParticles.size()) {
+                detector.fill(candidate.selectedParticles[index]);
+            }
             tree.Fill();
         }
     }
@@ -514,10 +659,12 @@ struct SelectedRoleBranch {
     double p = NAN;
     double theta = NAN;
     double phi = NAN;
+    SelectedDetectorCoordinates detector;
 
     void reset() {
         idx = pid = det = sector = -999;
         p = theta = phi = NAN;
+        detector.reset();
     }
 };
 
@@ -558,6 +705,7 @@ public:
             registerDouble(tree, slot.branchBase + "P", slot.p);
             registerDouble(tree, slot.branchBase + "Theta", slot.theta);
             registerDouble(tree, slot.branchBase + "Phi", slot.phi);
+            slot.detector.registerBranches(tree, slot.branchBase);
         }
     }
 
@@ -577,6 +725,9 @@ public:
             if (index < candidate.selectedP.size()) slot.p = candidate.selectedP[index];
             if (index < candidate.selectedTheta.size()) slot.theta = candidate.selectedTheta[index];
             if (index < candidate.selectedPhi.size()) slot.phi = candidate.selectedPhi[index];
+            if (index < candidate.selectedParticles.size()) {
+                slot.detector.fill(candidate.selectedParticles[index]);
+            }
         }
     }
 
@@ -618,6 +769,7 @@ void fillSelectedParticleBranches(const Selection& selection,
             out.selectedP.push_back(particle->p);
             out.selectedTheta.push_back(particle->theta);
             out.selectedPhi.push_back(particle->phi);
+            out.selectedParticles.push_back(*particle);
         }
     }
 }

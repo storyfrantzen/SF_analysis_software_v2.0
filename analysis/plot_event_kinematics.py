@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from eppi0.event_kinematics_diagnostics import (  # noqa: E402
     VARIABLES,
+    detector_map_branches,
     reconstructed_topology,
     render_report,
     report_summary,
@@ -149,6 +150,11 @@ def read_selected_root(
         variable.branch
         for variable in VARIABLES
         if variable.branch in available and variable.branch not in requested
+    )
+    requested.extend(
+        branch
+        for branch in detector_map_branches()
+        if branch in available and branch not in requested
     )
     arrays = ROOT.RDataFrame(tree_name, root_path).AsNumpy(requested)
     return {name: np.asarray(values) for name, values in arrays.items()}, tree_name, input_rows

@@ -86,6 +86,15 @@ row per selected role occurrence with the event key, role, occurrence,
 selected-role vectors and scalar role branches remain in the candidate tree for
 existing analysis and visualization consumers.
 
+Detector-coordinate provenance is retained for every selected role in both
+tables. `sParticles` uses the converter field names (`xFT`, `xDC1`, `xPCAL`,
+`uPCAL`, `edge_cvt1`, and related fields). `sEvents` prefixes the corresponding
+camel-case field with the role name, for example `electronXDC1`,
+`protonPhiCVT`, and `gamma1UPCAL`. Non-applicable detector coordinates remain
+non-finite. These branches support candidate-level ECAL, DC, FTCAL, and CVT
+occupancy diagnostics without returning to the much larger converter particle
+tree.
+
 Post-processing always reads `rParticles` and `rEvents`, with ordered legacy
 fallbacks, and writes `sEvents` plus `sParticles`. In `matchedRows` mode it
 writes `rParticles`. Tree names are intentionally absent from maintained

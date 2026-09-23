@@ -6,7 +6,9 @@ import numpy as np
 
 from eppi0.event_kinematics_diagnostics import (
     TOPOLOGY_LABELS,
+    available_detector_maps,
     available_variables,
+    detector_map_values,
     observed_topologies,
     reconstructed_topology,
     report_summary,
@@ -56,6 +58,35 @@ class EventKinematicsDiagnosticsTests(unittest.TestCase):
     def test_trento_phi_is_wrapped_and_converted_to_degrees(self) -> None:
         values = trento_degrees(np.array([-np.pi / 2.0, 0.0, 2.0 * np.pi]))
         np.testing.assert_allclose(values, [270.0, 0.0, 0.0], atol=1.0e-12)
+
+    def test_detector_maps_require_all_coordinate_branches(self) -> None:
+        arrays = dict(self.arrays)
+        arrays["electronXDC1"] = np.arange(4.0)
+        self.assertEqual(available_detector_maps(arrays), ())
+        arrays["electronYDC1"] = np.arange(4.0)
+        self.assertEqual(
+            [item.key for item in available_detector_maps(arrays)],
+            ["electron_dc_r1"],
+        )
+
+    def test_combined_photon_map_concatenates_finite_hits(self) -> None:
+        arrays = dict(self.arrays)
+        arrays.update(
+            {
+                "gamma1XFT": np.array([1.0, np.nan, 3.0, np.nan]),
+                "gamma1YFT": np.array([2.0, np.nan, 4.0, np.nan]),
+                "gamma2XFT": np.array([np.nan, 5.0, np.nan, 7.0]),
+                "gamma2YFT": np.array([np.nan, 6.0, np.nan, 8.0]),
+            }
+        )
+        detector_map = next(
+            item
+            for item in available_detector_maps(arrays)
+            if item.key == "photon_ftcal_xy"
+        )
+        x, y = detector_map_values(detector_map, arrays, np.ones(4, dtype=bool))
+        np.testing.assert_array_equal(x, [1.0, 3.0, 5.0, 7.0])
+        np.testing.assert_array_equal(y, [2.0, 4.0, 6.0, 8.0])
 
 
 if __name__ == "__main__":

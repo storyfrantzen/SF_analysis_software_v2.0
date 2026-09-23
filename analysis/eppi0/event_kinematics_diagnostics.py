@@ -117,6 +117,172 @@ CORRELATIONS: tuple[Correlation, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class DetectorMap:
+    key: str
+    title: str
+    x_branches: tuple[str, ...]
+    y_branches: tuple[str, ...]
+    x_label: str
+    y_label: str
+    x_transform: Callable[[Array], Array] = identity
+    y_transform: Callable[[Array], Array] = identity
+    fixed_x_range: tuple[float, float] | None = None
+    fixed_y_range: tuple[float, float] | None = None
+    common_coordinate_range: bool = False
+    equal_aspect: bool = False
+    bins: int = 80
+
+    def __post_init__(self) -> None:
+        if len(self.x_branches) != len(self.y_branches):
+            raise ValueError(f"detector map {self.key} has unpaired coordinates")
+
+
+DETECTOR_MAPS: tuple[DetectorMap, ...] = (
+    DetectorMap(
+        "electron_pcal_xy", "Electron PCAL global occupancy",
+        ("electronXPCAL",), ("electronYPCAL",), "PCAL x [cm]", "PCAL y [cm]",
+        common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
+        "photon_pcal_xy", "FD photon PCAL global occupancy",
+        ("gamma1XPCAL", "gamma2XPCAL"),
+        ("gamma1YPCAL", "gamma2YPCAL"),
+        "PCAL x [cm]", "PCAL y [cm]", common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
+        "electron_pcal_uv", "Electron PCAL local occupancy",
+        ("electronUPCAL",), ("electronVPCAL",), "PCAL u [cm]", "PCAL v [cm]",
+        common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
+        "electron_ecin_uv", "Electron ECIN local occupancy",
+        ("electronUECIN",), ("electronVECIN",), "ECIN u [cm]", "ECIN v [cm]",
+        common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
+        "electron_ecout_uv", "Electron ECOUT local occupancy",
+        ("electronUECOUT",), ("electronVECOUT",), "ECOUT u [cm]", "ECOUT v [cm]",
+        common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
+        "photon_pcal_uv", "FD photon PCAL local occupancy",
+        ("gamma1UPCAL", "gamma2UPCAL"),
+        ("gamma1VPCAL", "gamma2VPCAL"),
+        "PCAL u [cm]", "PCAL v [cm]", common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
+        "photon_ecin_uv", "FD photon ECIN local occupancy",
+        ("gamma1UECIN", "gamma2UECIN"),
+        ("gamma1VECIN", "gamma2VECIN"),
+        "ECIN u [cm]", "ECIN v [cm]", common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
+        "photon_ecout_uv", "FD photon ECOUT local occupancy",
+        ("gamma1UECOUT", "gamma2UECOUT"),
+        ("gamma1VECOUT", "gamma2VECOUT"),
+        "ECOUT u [cm]", "ECOUT v [cm]", common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
+        "electron_dc_r1", "Electron DC region 1 occupancy",
+        ("electronXDC1",), ("electronYDC1",), "DC R1 x [cm]", "DC R1 y [cm]",
+        common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
+        "electron_dc_r2", "Electron DC region 2 occupancy",
+        ("electronXDC2",), ("electronYDC2",), "DC R2 x [cm]", "DC R2 y [cm]",
+        common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
+        "electron_dc_r3", "Electron DC region 3 occupancy",
+        ("electronXDC3",), ("electronYDC3",), "DC R3 x [cm]", "DC R3 y [cm]",
+        common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
+        "proton_dc_r1", "FD proton DC region 1 occupancy",
+        ("protonXDC1",), ("protonYDC1",), "DC R1 x [cm]", "DC R1 y [cm]",
+        common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
+        "proton_dc_r2", "FD proton DC region 2 occupancy",
+        ("protonXDC2",), ("protonYDC2",), "DC R2 x [cm]", "DC R2 y [cm]",
+        common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
+        "proton_dc_r3", "FD proton DC region 3 occupancy",
+        ("protonXDC3",), ("protonYDC3",), "DC R3 x [cm]", "DC R3 y [cm]",
+        common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
+        "photon_ftcal_xy", "FT photon FTCAL occupancy",
+        ("gamma1XFT", "gamma2XFT"), ("gamma1YFT", "gamma2YFT"),
+        "FTCAL x [cm]", "FTCAL y [cm]", common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
+        "proton_cvt_angles", "CD proton CVT layer-1 direction occupancy",
+        ("protonPhiCVT",), ("protonThetaCVT",),
+        r"CVT $\phi$ [deg]", r"CVT $\theta$ [deg]",
+        x_transform=degrees, y_transform=degrees,
+        fixed_x_range=(-180.0, 180.0), fixed_y_range=(0.0, 180.0), bins=90,
+    ),
+)
+
+
+def detector_map_branches() -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            branch
+            for detector_map in DETECTOR_MAPS
+            for branch in detector_map.x_branches + detector_map.y_branches
+        )
+    )
+
+
+def available_detector_maps(arrays: Mapping[str, Array]) -> tuple[DetectorMap, ...]:
+    return tuple(
+        detector_map
+        for detector_map in DETECTOR_MAPS
+        if all(
+            branch in arrays
+            for branch in detector_map.x_branches + detector_map.y_branches
+        )
+    )
+
+
+def detector_map_values(
+    detector_map: DetectorMap, arrays: Mapping[str, Array], mask: Array
+) -> tuple[Array, Array]:
+    x_parts: list[Array] = []
+    y_parts: list[Array] = []
+    selected = np.asarray(mask, dtype=bool)
+    for x_branch, y_branch in zip(
+        detector_map.x_branches, detector_map.y_branches, strict=True
+    ):
+        x = detector_map.x_transform(np.asarray(arrays[x_branch])[selected])
+        y = detector_map.y_transform(np.asarray(arrays[y_branch])[selected])
+        finite = np.isfinite(x) & np.isfinite(y)
+        if np.any(finite):
+            x_parts.append(np.asarray(x[finite], dtype=float))
+            y_parts.append(np.asarray(y[finite], dtype=float))
+    if not x_parts:
+        return np.empty(0, dtype=float), np.empty(0, dtype=float)
+    return np.concatenate(x_parts), np.concatenate(y_parts)
+
+
+def detector_map_ranges(
+    detector_map: DetectorMap, x: Array, y: Array
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    if detector_map.common_coordinate_range:
+        common = robust_range(
+            np.concatenate((np.asarray(x, dtype=float), np.asarray(y, dtype=float)))
+        )
+        return common, common
+    return (
+        robust_range(x, detector_map.fixed_x_range),
+        robust_range(y, detector_map.fixed_y_range),
+    )
+
+
 def reconstructed_topology(arrays: Mapping[str, Array]) -> Array:
     return detector_topology_id(
         arrays["pDet"], ft_photon_count(arrays["g1Det"], arrays["g2Det"])
@@ -167,6 +333,7 @@ def report_summary(
     ids, counts = np.unique(np.asarray(topology)[selected], return_counts=True)
     topology_counts = {str(int(key)): int(value) for key, value in zip(ids, counts, strict=True)}
     supported = np.isin(topology, tuple(TOPOLOGY_LABELS))
+    detector_maps = available_detector_maps(arrays)
     return {
         "input_rows": int(selected.size),
         "selected_rows": int(np.count_nonzero(selected)),
@@ -175,6 +342,7 @@ def report_summary(
         "topology_counts": topology_counts,
         "available_branches": sorted(arrays),
         "plotted_variables": [item.branch for item in available_variables(arrays)],
+        "detector_occupancy_maps": [item.key for item in detector_maps],
     }
 
 
@@ -197,6 +365,14 @@ def render_report(
     }
     variable_by_name = {variable.branch: variable for variable in variables}
     topologies = observed_topologies(topology, selected)
+    detector_maps = available_detector_maps(arrays)
+    detector_ranges = {
+        detector_map.key: detector_map_ranges(
+            detector_map,
+            *detector_map_values(detector_map, arrays, selected),
+        )
+        for detector_map in detector_maps
+    }
     scopes: list[tuple[str, Array]] = [("Topology integrated", selected)]
     scopes.extend(
         (
@@ -228,6 +404,15 @@ def render_report(
                     variables,
                     variable_by_name,
                     ranges,
+                )
+                pages += _detector_map_pages(
+                    pdf,
+                    label,
+                    scope_name,
+                    arrays,
+                    scope_mask,
+                    detector_maps,
+                    detector_ranges,
                 )
         temporary_output.replace(output)
     finally:
@@ -449,6 +634,81 @@ def _scope_pages(
         _hide_unused(axes.flat, len(batch))
         figure.suptitle(
             f"{label}\n{scope_name} - correlations ({page_index}); N={count:,}",
+            fontsize=14,
+        )
+        pdf.savefig(figure)
+        plt.close(figure)
+        pages += 1
+    return pages
+
+
+def _detector_map_pages(
+    pdf: PdfPages,
+    label: str,
+    scope_name: str,
+    arrays: Mapping[str, Array],
+    mask: Array,
+    detector_maps: Sequence[DetectorMap],
+    ranges: Mapping[str, tuple[tuple[float, float], tuple[float, float]]],
+) -> int:
+    populated: list[tuple[DetectorMap, Array, Array]] = []
+    for detector_map in detector_maps:
+        x, y = detector_map_values(detector_map, arrays, mask)
+        if x.size:
+            populated.append((detector_map, x, y))
+
+    pages = 0
+    for page_index, batch in enumerate(_batches(populated, 6), start=1):
+        figure, axes = plt.subplots(3, 2, figsize=(11.0, 8.5), constrained_layout=True)
+        for axis, (detector_map, x, y) in zip(axes.flat, batch, strict=False):
+            x_range, y_range = ranges[detector_map.key]
+            view = (
+                (x >= x_range[0]) & (x <= x_range[1])
+                & (y >= y_range[0]) & (y <= y_range[1])
+            )
+            x_view = x[view]
+            y_view = y[view]
+            counts, _, _ = np.histogram2d(
+                x_view,
+                y_view,
+                bins=detector_map.bins,
+                range=(x_range, y_range),
+            )
+            positive = counts[counts > 0]
+            norm = (
+                LogNorm(vmin=1.0, vmax=max(float(positive.max()), 1.01))
+                if positive.size
+                else None
+            )
+            image = axis.hist2d(
+                x_view,
+                y_view,
+                bins=detector_map.bins,
+                range=(x_range, y_range),
+                cmap="magma",
+                norm=norm,
+            )[3]
+            figure.colorbar(image, ax=axis, pad=0.01, label="Candidate hits")
+            axis.set_title(detector_map.title, fontsize=10)
+            axis.set_xlabel(detector_map.x_label)
+            axis.set_ylabel(detector_map.y_label)
+            axis.grid(alpha=0.12)
+            if detector_map.equal_aspect:
+                axis.set_aspect("equal", adjustable="box")
+            axis.text(
+                0.98,
+                0.96,
+                f"N={x.size:,}\noutside view={x.size - x_view.size:,}",
+                transform=axis.transAxes,
+                ha="right",
+                va="top",
+                fontsize=7.5,
+                color="white",
+                bbox={"facecolor": "black", "alpha": 0.55, "edgecolor": "none"},
+            )
+        _hide_unused(axes.flat, len(batch))
+        figure.suptitle(
+            f"{label}\n{scope_name} - detector occupancy ({page_index})",
             fontsize=14,
         )
         pdf.savefig(figure)

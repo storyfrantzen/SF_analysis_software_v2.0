@@ -16,6 +16,12 @@ visible without allowing the largest group to set the normalization.  A JSON
 sidecar records the source paths, input sizes, mask and configuration hashes,
 topology populations, plotted branches, angle conventions, and page count.
 
+Candidate files produced by the current `post_process` retain selected-role
+detector coordinates. The report uses them for logarithmic occupancy maps of
+PCAL, ECIN, ECOUT, all three DC regions, FTCAL, and the CVT layer-1 direction.
+FD photon maps combine both selected photons; every occupancy page is repeated
+for the topology-integrated sample and each populated reconstructed topology.
+
 ```bash
 python3 analysis/plot_event_kinematics.py selected_data.root \
   --selection-mask data_selected_exclusivity.npy \
