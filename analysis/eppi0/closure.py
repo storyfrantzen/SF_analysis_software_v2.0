@@ -287,51 +287,115 @@ def count_bootstrap_response(
     )
 
 
-def _count_bootstrap_ensemble(
+def _forward_measured_expectation(response: ResponseResult, truth: Array) -> Array:
+    """Return the reconstructed expectation represented by a response model.
+
+    ``response.core`` predicts selected events generated inside the truth range.
+    The feed-in component is normalized so that the same fractional subtraction
+    used by the unfolding estimator recovers that in-range expectation exactly.
+    This makes the model suitable for fixed-truth pseudoexperiments without
+    centering them on an already fluctuated held-out reconstructed histogram.
+    """
+    truth = np.asarray(truth, dtype=float)
+    if truth.shape != response.truth_total.shape:
+        raise ValueError("fixed truth target does not match the response dimensions")
+    in_range = np.asarray(response.core.dot(truth)).ravel()
+    fraction = float(response.feed_in_fraction)
+    if not np.isfinite(fraction) or fraction < 0.0 or fraction >= 1.0:
+        raise ValueError("response feed-in fraction must be finite and below one")
+    if fraction == 0.0:
+        return in_range
+    feed_total = fraction * float(in_range.sum()) / (1.0 - fraction)
+    return in_range + feed_total * np.asarray(response.feed_in_shape, dtype=float)
+
+
+def _unfold_count_bootstrap_replica(
+    response: ResponseResult,
+    measured: Array,
+    iterations: tuple[int, ...],
+    *,
+    minimum_acceptance: float,
+) -> Array:
+    """Run every requested estimator on one measured/response replica."""
+    measured = np.asarray(measured, dtype=float)
+    acceptance_valid = response.efficiency > minimum_acceptance
+    prior = np.divide(
+        measured,
+        response.efficiency,
+        out=np.zeros_like(measured),
+        where=acceptance_valid,
+    )
+    corrected = subtract_feed_in(
+        measured, response.feed_in_fraction, response.feed_in_shape
+    )
+    estimates = np.empty((len(iterations), measured.size), dtype=float)
+    for iteration_index, iteration in enumerate(iterations):
+        if iteration == 0:
+            estimates[iteration_index] = prior
+        else:
+            estimates[iteration_index] = iterative_bayes(
+                response.core,
+                corrected,
+                response.efficiency,
+                iteration,
+                prior=prior,
+                minimum_acceptance=minimum_acceptance,
+            ).unfolded
+    return estimates
+
+
+def _count_bootstrap_ensembles(
     inputs: SplitClosureInputs,
     held_out_fold: int,
     measured: Array,
     variance: Array,
+    fixed_truth: Array,
+    nominal_response: ResponseResult,
     iterations: tuple[int, ...],
     *,
     minimum_acceptance: float,
     experiments: int,
     seed: int,
     progress_label: str | None = None,
-) -> Array:
-    """Return joint data-and-response replicas for every iteration value."""
+) -> tuple[Array, Array]:
+    """Return observed-centered and fixed-truth estimator ensembles.
+
+    Both ensembles share each count-bootstrap response replica.  The first
+    fluctuates the observed held-out reconstructed spectrum and estimates the
+    covariance of the central closure result.  The second draws independent
+    Poisson pseudo-data from the nominal response applied to a fixed truth
+    target.  Keeping those centers distinct prevents the held-out sample's
+    original counting fluctuation from being counted a second time in the
+    fixed-truth coverage numerator.
+    """
     truth, feed, migration = _training_response_counts(inputs, held_out_fold)
     measured = np.asarray(measured, dtype=float)
     variance = np.asarray(variance, dtype=float)
+    fixed_expectation = _forward_measured_expectation(nominal_response, fixed_truth)
     response_rng = np.random.default_rng(seed)
-    data_rng = np.random.default_rng(seed ^ 0x5DEECE66D)
-    samples = np.empty((len(iterations), experiments, measured.size), dtype=float)
+    observed_rng = np.random.default_rng(seed ^ 0x5DEECE66D)
+    fixed_rng = np.random.default_rng(seed ^ 0xD1B54A32D192ED03)
+    observed_samples = np.empty(
+        (len(iterations), experiments, measured.size), dtype=float
+    )
+    fixed_samples = np.empty_like(observed_samples)
     progress_step = max(1, experiments // 5)
     for replica_index in range(experiments):
         response = count_bootstrap_response(truth, feed, migration, response_rng)
-        fluctuated = fluctuate_weighted_poisson(data_rng, measured, variance)
-        acceptance_valid = response.efficiency > minimum_acceptance
-        prior = np.divide(
-            fluctuated,
-            response.efficiency,
-            out=np.zeros_like(fluctuated),
-            where=acceptance_valid,
+        observed = fluctuate_weighted_poisson(observed_rng, measured, variance)
+        fixed = fixed_rng.poisson(fixed_expectation).astype(float)
+        observed_samples[:, replica_index] = _unfold_count_bootstrap_replica(
+            response,
+            observed,
+            iterations,
+            minimum_acceptance=minimum_acceptance,
         )
-        corrected = subtract_feed_in(
-            fluctuated, response.feed_in_fraction, response.feed_in_shape
+        fixed_samples[:, replica_index] = _unfold_count_bootstrap_replica(
+            response,
+            fixed,
+            iterations,
+            minimum_acceptance=minimum_acceptance,
         )
-        for iteration_index, iteration in enumerate(iterations):
-            if iteration == 0:
-                samples[iteration_index, replica_index] = prior
-            else:
-                samples[iteration_index, replica_index] = iterative_bayes(
-                    response.core,
-                    corrected,
-                    response.efficiency,
-                    iteration,
-                    prior=prior,
-                    minimum_acceptance=minimum_acceptance,
-                ).unfolded
         completed = replica_index + 1
         if progress_label is not None and (
             completed % progress_step == 0 or completed == experiments
@@ -341,7 +405,7 @@ def _count_bootstrap_ensemble(
                 f"{completed}/{experiments}",
                 flush=True,
             )
-    return samples
+    return observed_samples, fixed_samples
 
 
 def run_closure_scan(
@@ -417,12 +481,14 @@ def run_closure_scan(
                 out=np.zeros_like(measured),
                 where=acceptance_valid,
             )
-            count_samples = (
-                _count_bootstrap_ensemble(
+            count_ensembles = (
+                _count_bootstrap_ensembles(
                     inputs,
                     fold,
                     measured,
                     variance,
+                    target,
+                    response,
                     iteration_values,
                     minimum_acceptance=minimum_acceptance,
                     experiments=bootstrap,
@@ -431,6 +497,10 @@ def run_closure_scan(
                 )
                 if response_uncertainty == "count-bootstrap"
                 else None
+            )
+            count_samples = count_ensembles[0] if count_ensembles is not None else None
+            fixed_truth_samples = (
+                count_ensembles[1] if count_ensembles is not None else None
             )
             for iteration_index, iteration in enumerate(iteration_values):
                 if iteration == 0:
@@ -583,12 +653,12 @@ def run_closure_scan(
                         harmonic_cell_metrics=harmonic_cell_metrics,
                     )
                 )
-                if count_samples is not None:
+                if fixed_truth_samples is not None:
                     calibration_count = bootstrap // 2
                     fixed_summary, fixed_cells = fixed_truth_pseudoexperiment_metrics(
                         target,
-                        count_samples[iteration_index, calibration_count:],
-                        count_samples[iteration_index, :calibration_count],
+                        fixed_truth_samples[iteration_index, calibration_count:],
+                        fixed_truth_samples[iteration_index, :calibration_count],
                         valid,
                         binning,
                         fold=fold,

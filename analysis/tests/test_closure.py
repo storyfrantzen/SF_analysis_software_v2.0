@@ -287,14 +287,48 @@ class ClosureTests(unittest.TestCase):
             response_uncertainty="count-bootstrap",
             seed=29,
         )
+        shifted_inputs = SplitClosureInputs(
+            fold_truth_total=truth,
+            fold_reconstructed_total=accepted,
+            fold_feed_counts=np.zeros_like(truth),
+            fold_migration_counts=migrations,
+            validation_truth=np.full((1, folds, 6), 2_000.0),
+            validation_measured=np.full((1, folds, 6), 700.0),
+            validation_variance=np.full((1, folds, 6), 700.0),
+            stress_names=("nominal",),
+        )
+        shifted = run_closure_scan(
+            shifted_inputs,
+            binning,
+            iterations=(0, 1),
+            minimum_acceptance=0.01,
+            minimum_truth=1.0,
+            bootstrap=40,
+            minimum_harmonic_points=4,
+            response_uncertainty="count-bootstrap",
+            seed=29,
+        )
         self.assertEqual(len(result.fixed_truth_metrics), folds * 2)
         self.assertEqual(len(result.fixed_truth_harmonic_cell_metrics), folds * 2)
         self.assertEqual(len(result.harmonic_cell_metrics), folds * 2)
         for row in result.fixed_truth_metrics:
             self.assertEqual(int(row["calibration_pseudoexperiments"]), 20)
             self.assertEqual(int(row["evaluation_pseudoexperiments"]), 20)
-            self.assertGreater(float(row["pull_std"]), 0.5)
-            self.assertLess(float(row["pull_std"]), 1.8)
+            self.assertGreater(float(row["pull_std"]), 0.75)
+            self.assertLess(float(row["pull_std"]), 1.25)
+        for original, changed in zip(
+            result.fixed_truth_metrics, shifted.fixed_truth_metrics, strict=True
+        ):
+            for field in (
+                "pull_mean",
+                "pull_std",
+                "coverage_1sigma",
+                "coverage_2sigma",
+                "harmonic_A_pull_std",
+                "harmonic_B_pull_std",
+                "harmonic_C_pull_std",
+            ):
+                self.assertEqual(original[field], changed[field])
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
             config = output / "analysis.json"
@@ -326,7 +360,7 @@ class ClosureTests(unittest.TestCase):
                 phase_space=AnalysisPhaseSpace(),
                 minimum_acceptance=0.01,
             )
-            self.assertEqual(summary["schema_version"], 4)
+            self.assertEqual(summary["schema_version"], 5)
             self.assertEqual(
                 summary["recommendation"]["coverage_assessment_source"],
                 "fixed-truth independent pseudoexperiments",

@@ -83,9 +83,10 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         default=50,
         help=(
-            "Estimator replicas. In count-bootstrap mode these jointly fluctuate "
-            "data and response counts and are split equally between fixed-truth "
-            "covariance calibration and coverage evaluation."
+            "Estimator replicas. In count-bootstrap mode each response replica is "
+            "paired with an observed-centered data replica and an independent "
+            "forward-generated fixed-truth pseudoexperiment; the latter are split "
+            "equally between covariance calibration and coverage evaluation."
         ),
     )
     result.add_argument(
@@ -646,7 +647,7 @@ def save_results(
         else None
     )
     summary: dict[str, object] = {
-        "schema_version": 4,
+        "schema_version": 5,
         "method": "source-aware deterministic K-fold held-out GEMC closure",
         "label": args.label,
         "software_revision": _git_revision(),
@@ -699,12 +700,14 @@ def save_results(
                     "evaluation_replicas": args.bootstrap - args.bootstrap // 2,
                     "truth_target": "fixed held-out generated histogram",
                     "pseudo_data_expectation": (
-                        "fixed held-out reconstructed histogram with its stored "
-                        "weighted-Poisson variance"
+                        "nominal training response applied to the fixed truth target, "
+                        "including its self-consistent feed-in component"
                     ),
                     "independence": (
                         "disjoint calibration and evaluation halves of the joint "
-                        "data-and-response count ensemble"
+                        "forward-generated data-and-response count ensemble; this "
+                        "ensemble is distinct from the observed-centered covariance "
+                        "ensemble"
                     ),
                 }
                 if result.fixed_truth_metrics
@@ -747,8 +750,10 @@ def save_results(
                 "per-cell harmonic residual and pull localization",
                 *(
                     [
-                        "joint count-level response and measured-spectrum replicas",
-                        "fixed-truth coverage with disjoint calibration and evaluation replicas",
+                        "joint count-level response and observed-centered "
+                        "measured-spectrum replicas",
+                        "forward-generated fixed-truth coverage with disjoint "
+                        "calibration and evaluation replicas",
                     ]
                     if result.fixed_truth_metrics
                     else []

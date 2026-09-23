@@ -147,19 +147,23 @@ python3 analysis/validate_response_closure.py \
 ```
 
 `count-bootstrap` is the coverage-grade mode for unweighted GEMC. Each replica
-Poisson-resamples the saved integer migration, missed-event, and feed-in counts,
-rebuilds the response, independently fluctuates the measured spectrum,
-recomputes the data-derived prior, and unfolds. The resulting joint
-full-estimator ensemble includes nonlinear interactions between data and
-finite-response statistics. At least `2 * (Nphi + 3)` replicas are required;
-300 or more are recommended for the campaign audit.
+Poisson-resamples the saved integer migration, missed-event, and feed-in counts
+and rebuilds the response. It is paired with two independent data replicas.
+The observed-centered replica estimates the covariance of the central held-out
+closure result. The forward-generated replica is drawn from the nominal response
+applied to the fixed held-out truth target. Both recompute the data-derived prior
+and unfold, including nonlinear interactions between data and finite-response
+statistics. At least `2 * (Nphi + 3)` replicas are required; 300 or more are
+recommended for the campaign audit.
 
-The same ensemble is split into disjoint calibration and evaluation halves for
-a fixed-truth pseudoexperiment audit. The calibration half estimates the phi
-covariance and the evaluation half tests bin and harmonic pulls against the
-fixed held-out truth target. This removes finite target fluctuations from the
-coverage assessment and avoids judging a covariance with the replicas used to
-estimate it.
+The forward-generated ensemble is split into disjoint calibration and evaluation
+halves for the fixed-truth pseudoexperiment audit. The calibration half estimates
+the phi covariance and the evaluation half tests bin and harmonic pulls against
+the fixed truth target. It is deliberately not centered on the observed held-out
+reconstructed histogram: doing that would add the held-out sample's original
+counting fluctuation to the newly generated pseudoexperiment fluctuation and
+inflate pull widths by approximately `sqrt(2)`. The disjoint halves also avoid
+judging a covariance with the replicas used to estimate it.
 
 `fold-jackknife` remains available as a fast comparison: with five folds it
 holds one fold out as pseudo-data and deletes each of the four response-training
