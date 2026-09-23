@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.sparse import csr_matrix
 
+from .binning import AnalysisBinning
 from .response import count_bootstrap_response, response_counts_from_artifacts
 
 
@@ -251,19 +252,25 @@ def bootstrap_uncertainty(
     return samples.mean(axis=0), samples.std(axis=0, ddof=1)
 
 
-def phi_block_covariance(samples: Array, phi_bins: int) -> Array:
-    """Return covariance blocks among phi bins in each three-dimensional cell."""
+def phi_block_covariance(samples: Array, binning: AnalysisBinning) -> Array:
+    """Return phi covariance blocks in analysis ``(Q2, xB, -t)`` cell order.
+
+    Unfolded vectors use the legacy flat order ``(xB, Q2, phi, -t)`` with
+    ``-t`` fastest.  Consequently, adjacent flat entries are not adjacent phi
+    bins.  Convert through :class:`AnalysisBinning` before forming blocks.
+    """
     samples = np.asarray(samples, dtype=float)
     if samples.ndim != 2 or samples.shape[0] < 2:
         raise ValueError("bootstrap samples must be a 2D array with at least two replicas")
-    if phi_bins <= 0 or samples.shape[1] % phi_bins != 0:
-        raise ValueError("phi-bin count must divide the flattened sample size")
-    blocks = samples.reshape(samples.shape[0], -1, phi_bins)
+    if samples.shape[1] != binning.size:
+        raise ValueError("bootstrap samples do not match the analysis binning")
+    phi_bins = binning.shape[-1]
+    blocks = binning.unflatten(samples).reshape(samples.shape[0], -1, phi_bins)
     centered = blocks - blocks.mean(axis=0, keepdims=True)
     return np.einsum("eci,ecj->cij", centered, centered) / (samples.shape[0] - 1)
 
 
-def jackknife_phi_covariance(samples: Array, phi_bins: int) -> Array:
+def jackknife_phi_covariance(samples: Array, binning: AnalysisBinning) -> Array:
     """Return delete-one-subsample covariance blocks among phi bins.
 
     ``samples`` contains estimates recomputed after deleting each independent
@@ -274,9 +281,10 @@ def jackknife_phi_covariance(samples: Array, phi_bins: int) -> Array:
     samples = np.asarray(samples, dtype=float)
     if samples.ndim != 2 or samples.shape[0] < 2:
         raise ValueError("jackknife samples must be a 2D array with at least two replicas")
-    if phi_bins <= 0 or samples.shape[1] % phi_bins != 0:
-        raise ValueError("phi-bin count must divide the flattened sample size")
-    blocks = samples.reshape(samples.shape[0], -1, phi_bins)
+    if samples.shape[1] != binning.size:
+        raise ValueError("jackknife samples do not match the analysis binning")
+    phi_bins = binning.shape[-1]
+    blocks = binning.unflatten(samples).reshape(samples.shape[0], -1, phi_bins)
     centered = blocks - blocks.mean(axis=0, keepdims=True)
     replicas = samples.shape[0]
     return (
@@ -286,12 +294,13 @@ def jackknife_phi_covariance(samples: Array, phi_bins: int) -> Array:
     )
 
 
-def diagonal_phi_covariance(variance: Array, phi_bins: int) -> Array:
-    """Pack flattened independent-bin variances into per-cell covariance blocks."""
+def diagonal_phi_covariance(variance: Array, binning: AnalysisBinning) -> Array:
+    """Pack legacy-flat variances into analysis-ordered phi covariance blocks."""
     variance = np.asarray(variance, dtype=float)
-    if variance.ndim != 1 or phi_bins <= 0 or variance.size % phi_bins != 0:
-        raise ValueError("flattened variance must be divisible by the phi-bin count")
-    blocks = variance.reshape(-1, phi_bins)
+    if variance.ndim != 1 or variance.size != binning.size:
+        raise ValueError("flattened variance does not match the analysis binning")
+    phi_bins = binning.shape[-1]
+    blocks = binning.unflatten(variance).reshape(-1, phi_bins)
     covariance = np.zeros((blocks.shape[0], phi_bins, phi_bins), dtype=float)
     diagonal = np.arange(phi_bins)
     covariance[:, diagonal, diagonal] = blocks

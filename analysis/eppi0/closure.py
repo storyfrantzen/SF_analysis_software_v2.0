@@ -466,7 +466,7 @@ def run_closure_scan(
                     estimator_samples = count_samples[iteration_index]
                     sigma = estimator_samples.std(axis=0, ddof=1)
                     total_covariance_phi = phi_block_covariance(
-                        estimator_samples, binning.shape[-1]
+                        estimator_samples, binning
                     ).reshape(
                         binning.shape[:-1]
                         + (binning.shape[-1], binning.shape[-1])
@@ -481,7 +481,7 @@ def run_closure_scan(
                             where=acceptance_valid,
                         )
                         statistical_covariance_phi = diagonal_phi_covariance(
-                            sigma_stat * sigma_stat, binning.shape[-1]
+                            sigma_stat * sigma_stat, binning
                         )
                     elif bootstrap >= 2:
                         bootstrap_samples = bootstrap_ensemble(
@@ -500,7 +500,7 @@ def run_closure_scan(
                         )
                         sigma_stat = bootstrap_samples.std(axis=0, ddof=1)
                         statistical_covariance_phi = phi_block_covariance(
-                            bootstrap_samples, binning.shape[-1]
+                            bootstrap_samples, binning
                         )
                     else:
                         sigma_stat = np.divide(
@@ -510,7 +510,7 @@ def run_closure_scan(
                             where=acceptance_valid,
                         )
                         statistical_covariance_phi = diagonal_phi_covariance(
-                            sigma_stat * sigma_stat, binning.shape[-1]
+                            sigma_stat * sigma_stat, binning
                         )
                     if jackknife_responses:
                         response_samples = np.empty(
@@ -541,11 +541,13 @@ def run_closure_scan(
                                     minimum_acceptance=minimum_acceptance,
                                 ).unfolded
                         response_covariance_phi = jackknife_phi_covariance(
-                            response_samples, binning.shape[-1]
+                            response_samples, binning
                         )
-                        response_variance = np.diagonal(
-                            response_covariance_phi, axis1=-2, axis2=-1
-                        ).reshape(-1)
+                        response_variance = binning.flatten_values(
+                            np.diagonal(
+                                response_covariance_phi, axis1=-2, axis2=-1
+                            ).reshape(binning.shape)
+                        )
                         sigma_response = np.sqrt(
                             np.clip(response_variance, 0.0, None)
                         )
@@ -560,7 +562,7 @@ def run_closure_scan(
                             response.response_variance_sum
                         )
                         response_covariance_phi = diagonal_phi_covariance(
-                            sigma_response * sigma_response, binning.shape[-1]
+                            sigma_response * sigma_response, binning
                         )
                     sigma = np.hypot(sigma_stat, sigma_response)
                     total_covariance_phi = (
@@ -772,10 +774,12 @@ def fixed_truth_pseudoexperiment_metrics(
         raise ValueError("both pseudoexperiment halves require at least two replicas")
 
     phi_bins = binning.shape[-1]
-    covariance_phi = phi_block_covariance(calibration, phi_bins).reshape(
+    covariance_phi = phi_block_covariance(calibration, binning).reshape(
         binning.shape[:-1] + (phi_bins, phi_bins)
     )
-    variance = np.diagonal(covariance_phi, axis1=-2, axis2=-1).reshape(-1)
+    variance = binning.flatten_values(
+        np.diagonal(covariance_phi, axis1=-2, axis2=-1)
+    )
     sigma = np.sqrt(np.clip(variance, 0.0, None))
     pseudo_valid = valid & np.isfinite(sigma) & (sigma > 0.0)
     pulls = np.divide(
@@ -860,12 +864,18 @@ def _fixed_truth_harmonic_metrics(
             np.cos(2.0 * np.deg2rad(centers)),
         )
     )
-    target_blocks = np.asarray(target, dtype=float).reshape(-1, phi_bins)
-    evaluation_blocks = np.asarray(evaluation_samples, dtype=float).reshape(
-        evaluation_samples.shape[0], -1, phi_bins
+    target_blocks = binning.unflatten(np.asarray(target, dtype=float)).reshape(
+        -1, phi_bins
     )
-    uncertainty_blocks = np.asarray(uncertainty, dtype=float).reshape(-1, phi_bins)
-    valid_blocks = np.asarray(valid, dtype=bool).reshape(-1, phi_bins)
+    evaluation_blocks = binning.unflatten(
+        np.asarray(evaluation_samples, dtype=float)
+    ).reshape(evaluation_samples.shape[0], -1, phi_bins)
+    uncertainty_blocks = binning.unflatten(
+        np.asarray(uncertainty, dtype=float)
+    ).reshape(-1, phi_bins)
+    valid_blocks = binning.unflatten(np.asarray(valid, dtype=bool)).reshape(
+        -1, phi_bins
+    )
     covariance_blocks = np.asarray(covariance_phi, dtype=float).reshape(
         -1, phi_bins, phi_bins
     )

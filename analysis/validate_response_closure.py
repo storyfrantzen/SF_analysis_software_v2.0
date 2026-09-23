@@ -647,7 +647,7 @@ def save_results(
         else None
     )
     summary: dict[str, object] = {
-        "schema_version": 5,
+        "schema_version": 6,
         "method": "source-aware deterministic K-fold held-out GEMC closure",
         "label": args.label,
         "software_revision": _git_revision(),

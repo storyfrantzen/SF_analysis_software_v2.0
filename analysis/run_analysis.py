@@ -1112,7 +1112,7 @@ def command_unfold(args: argparse.Namespace) -> None:
             where=efficiency > minimum_acceptance,
         )
         statistical_covariance_phi = diagonal_phi_covariance(
-            sigma_stat * sigma_stat, binning.shape[-1]
+            sigma_stat * sigma_stat, binning
         )
     else:
         unfolding_method = "iterative_bayes"
@@ -1142,7 +1142,7 @@ def command_unfold(args: argparse.Namespace) -> None:
         )
         sigma_stat = bootstrap_samples.std(axis=0, ddof=1)
         statistical_covariance_phi = phi_block_covariance(
-            bootstrap_samples, binning.shape[-1]
+            bootstrap_samples, binning
         )
     if response_uncertainty_method == "count-bootstrap":
         required_response_fields = {"truth_total", "reconstructed_total"}
@@ -1169,18 +1169,22 @@ def command_unfold(args: argparse.Namespace) -> None:
             progress_label="production unfolding",
         )
         total_covariance_phi = phi_block_covariance(
-            joint_samples, binning.shape[-1]
+            joint_samples, binning
         )
-        total_variance = np.diagonal(
-            total_covariance_phi, axis1=-2, axis2=-1
-        ).reshape(-1)
+        total_variance = binning.flatten_values(
+            np.diagonal(total_covariance_phi, axis1=-2, axis2=-1).reshape(
+                binning.shape
+            )
+        )
         sigma_total = np.sqrt(np.clip(total_variance, 0.0, None))
         response_covariance_phi = (
             total_covariance_phi - statistical_covariance_phi
         )
-        response_variance = np.diagonal(
-            response_covariance_phi, axis1=-2, axis2=-1
-        ).reshape(-1)
+        response_variance = binning.flatten_values(
+            np.diagonal(response_covariance_phi, axis1=-2, axis2=-1).reshape(
+                binning.shape
+            )
+        )
         sigma_mc = np.sqrt(np.clip(response_variance, 0.0, None))
         response_covariance_definition = (
             "joint data-and-response count-bootstrap covariance minus the "
@@ -1202,7 +1206,7 @@ def command_unfold(args: argparse.Namespace) -> None:
         sigma_mc = sensitivity * np.sqrt(metadata["response_variance_sum"])
         sigma_total = np.hypot(sigma_stat, sigma_mc)
         response_covariance_phi = diagonal_phi_covariance(
-            sigma_mc * sigma_mc, binning.shape[-1]
+            sigma_mc * sigma_mc, binning
         )
         total_covariance_phi = statistical_covariance_phi + response_covariance_phi
         response_covariance_definition = (
@@ -1250,8 +1254,10 @@ def command_unfold(args: argparse.Namespace) -> None:
             np.hypot(unfolded_sigma_after_radiative_correction, radiative_sigma),
             0.0,
         )
-        factor_blocks = factor.reshape(-1, binning.shape[-1])
-        valid_blocks = radiative_valid.reshape(-1, binning.shape[-1])
+        factor_blocks = binning.unflatten(factor).reshape(-1, binning.shape[-1])
+        valid_blocks = binning.unflatten(radiative_valid).reshape(
+            -1, binning.shape[-1]
+        )
         inverse_factor = np.divide(
             1.0,
             factor_blocks,
@@ -1264,7 +1270,7 @@ def command_unfold(args: argparse.Namespace) -> None:
             * inverse_factor[..., None, :]
         )
         corrected_covariance_phi += diagonal_phi_covariance(
-            radiative_sigma * radiative_sigma, binning.shape[-1]
+            radiative_sigma * radiative_sigma, binning
         )
 
     original_beam_charge = (
@@ -3336,18 +3342,23 @@ def command_cross_section(args: argparse.Namespace) -> None:
             raise ValueError(
                 "unfolding corrected_covariance_phi does not match the configured binning"
             )
-        normalization_scale = np.divide(
+        normalization_scale_flat = np.divide(
             errors,
             yield_uncertainty,
             out=np.zeros_like(errors),
             where=final_valid & (yield_uncertainty > 0.0),
-        ).reshape((-1, binning.shape[-1]))
+        )
+        normalization_scale = binning.unflatten(normalization_scale_flat).reshape(
+            -1, binning.shape[-1]
+        )
         cross_section_covariance_phi = (
             yield_covariance_phi
             * normalization_scale[..., :, None]
             * normalization_scale[..., None, :]
         )
-        valid_blocks = final_valid.reshape((-1, binning.shape[-1]))
+        valid_blocks = binning.unflatten(final_valid).reshape(
+            -1, binning.shape[-1]
+        )
         cross_section_covariance_phi = np.where(
             valid_blocks[..., :, None] & valid_blocks[..., None, :],
             cross_section_covariance_phi,

@@ -360,7 +360,7 @@ class ClosureTests(unittest.TestCase):
                 phase_space=AnalysisPhaseSpace(),
                 minimum_acceptance=0.01,
             )
-            self.assertEqual(summary["schema_version"], 5)
+            self.assertEqual(summary["schema_version"], 6)
             self.assertEqual(
                 summary["recommendation"]["coverage_assessment_source"],
                 "fixed-truth independent pseudoexperiments",

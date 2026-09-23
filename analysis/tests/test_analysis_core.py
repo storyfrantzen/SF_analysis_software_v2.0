@@ -71,6 +71,7 @@ from eppi0.topology import INVALID_TOPOLOGY, detector_topology_id, ft_photon_cou
 from eppi0.unfolding import (
     bootstrap_ensemble,
     bootstrap_uncertainty,
+    diagonal_phi_covariance,
     iterative_bayes,
     phi_block_covariance,
 )
@@ -1514,17 +1515,54 @@ class UnfoldingTests(unittest.TestCase):
         self.assertGreater(fixed_covariance[0, 1], 0.0)
 
     def test_phi_block_covariance_keeps_cells_separate(self) -> None:
+        binning = AnalysisBinning(
+            [1.0, 2.0], [0.1, 0.2], [0.1, 0.2], [0.0, 180.0, 360.0]
+        )
         samples = np.asarray(
             [
-                [1.0, 2.0, 10.0, 20.0],
-                [2.0, 4.0, 11.0, 18.0],
-                [3.0, 6.0, 12.0, 16.0],
+                [1.0, 2.0],
+                [2.0, 4.0],
+                [3.0, 6.0],
             ]
         )
-        covariance = phi_block_covariance(samples, 2)
+        covariance = phi_block_covariance(samples, binning)
+        self.assertEqual(covariance.shape, (1, 2, 2))
+        np.testing.assert_allclose(covariance[0], np.cov(samples, rowvar=False))
+
+    def test_phi_covariance_respects_legacy_t_fastest_flat_order(self) -> None:
+        binning = AnalysisBinning(
+            [1.0, 2.0],
+            [0.1, 0.2],
+            [0.1, 0.2, 0.3],
+            [0.0, 180.0, 360.0],
+        )
+        # Legacy flat order is [phi0-t0, phi0-t1, phi1-t0, phi1-t1].
+        samples = np.asarray(
+            [
+                [1.0, 10.0, 2.0, 20.0],
+                [2.0, 11.0, 4.0, 18.0],
+                [3.0, 12.0, 6.0, 16.0],
+            ]
+        )
+        covariance = phi_block_covariance(samples, binning)
         self.assertEqual(covariance.shape, (2, 2, 2))
-        np.testing.assert_allclose(covariance[0], np.cov(samples[:, :2], rowvar=False))
-        np.testing.assert_allclose(covariance[1], np.cov(samples[:, 2:], rowvar=False))
+        np.testing.assert_allclose(
+            covariance[0], np.cov(samples[:, [0, 2]], rowvar=False)
+        )
+        np.testing.assert_allclose(
+            covariance[1], np.cov(samples[:, [1, 3]], rowvar=False)
+        )
+        covariance_variance_flat = binning.flatten_values(
+            np.diagonal(covariance, axis1=-2, axis2=-1).reshape(binning.shape)
+        )
+        np.testing.assert_allclose(
+            covariance_variance_flat, np.var(samples, axis=0, ddof=1)
+        )
+
+        variance = np.asarray([1.0, 10.0, 2.0, 20.0])
+        diagonal = diagonal_phi_covariance(variance, binning)
+        np.testing.assert_allclose(np.diag(diagonal[0]), [1.0, 2.0])
+        np.testing.assert_allclose(np.diag(diagonal[1]), [10.0, 20.0])
 
     def test_zero_iteration_records_raw_and_feed_in_subtracted_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

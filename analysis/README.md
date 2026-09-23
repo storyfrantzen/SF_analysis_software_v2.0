@@ -165,6 +165,12 @@ counting fluctuation to the newly generated pseudoexperiment fluctuation and
 inflate pull widths by approximately `sqrt(2)`. The disjoint halves also avoid
 judging a covariance with the replicas used to estimate it.
 
+Phi covariance blocks are assembled only after converting the legacy flat
+`(xB, Q2, phi, -t)` ordering, where `-t` changes fastest, into analysis
+`(Q2, xB, -t, phi)` order. This conversion is also used by production
+unfolding and cross-section normalization, so closure and production attach
+each covariance block to the same physical phi distribution.
+
 `fold-jackknife` remains available as a fast comparison: with five folds it
 holds one fold out as pseudo-data and deletes each of the four response-training
 folds in turn. Its response covariance has at most rank three and is not the
