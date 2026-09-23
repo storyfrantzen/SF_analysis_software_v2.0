@@ -6,6 +6,7 @@ import numpy as np
 
 from eppi0.event_kinematics_diagnostics import (
     TOPOLOGY_LABELS,
+    _balanced_batches,
     available_detector_maps,
     available_variables,
     detector_map_values,
@@ -87,6 +88,24 @@ class EventKinematicsDiagnosticsTests(unittest.TestCase):
         x, y = detector_map_values(detector_map, arrays, np.ones(4, dtype=bool))
         np.testing.assert_array_equal(x, [1.0, 3.0, 5.0, 7.0])
         np.testing.assert_array_equal(y, [2.0, 4.0, 6.0, 8.0])
+
+    def test_balanced_pagination_avoids_sparse_final_pages(self) -> None:
+        self.assertEqual(
+            [len(batch) for batch in _balanced_batches(list(range(15)), 6)],
+            [5, 5, 5],
+        )
+        self.assertEqual(
+            [len(batch) for batch in _balanced_batches(list(range(35)), 6)],
+            [6, 6, 6, 6, 6, 5],
+        )
+        self.assertEqual(
+            [len(batch) for batch in _balanced_batches(list(range(15)), 4)],
+            [4, 4, 4, 3],
+        )
+
+    def test_balanced_pagination_rejects_invalid_page_size(self) -> None:
+        with self.assertRaisesRegex(ValueError, "positive"):
+            _balanced_batches([1], 0)
 
 
 if __name__ == "__main__":

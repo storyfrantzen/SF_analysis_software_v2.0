@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import textwrap
 from dataclasses import dataclass
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -99,6 +100,13 @@ VARIABLES: tuple[PlotVariable, ...] = (
 
 SECTIONS = ("DIS", "particle momenta", "particle angles", "exclusivity")
 
+SECTION_COLORS = {
+    "DIS": "#0369a1",
+    "particle momenta": "#047857",
+    "particle angles": "#7c3aed",
+    "exclusivity": "#b45309",
+}
+
 
 @dataclass(frozen=True)
 class Correlation:
@@ -156,6 +164,12 @@ DETECTOR_MAPS: tuple[DetectorMap, ...] = (
         common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
+        "photon_pcal_uv", "FD photon PCAL local occupancy",
+        ("gamma1UPCAL", "gamma2UPCAL"),
+        ("gamma1VPCAL", "gamma2VPCAL"),
+        "PCAL u [cm]", "PCAL v [cm]", common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
         "electron_ecin_uv", "Electron ECIN local occupancy",
         ("electronUECIN",), ("electronVECIN",), "ECIN u [cm]", "ECIN v [cm]",
         common_coordinate_range=True, equal_aspect=True,
@@ -164,12 +178,6 @@ DETECTOR_MAPS: tuple[DetectorMap, ...] = (
         "electron_ecout_uv", "Electron ECOUT local occupancy",
         ("electronUECOUT",), ("electronVECOUT",), "ECOUT u [cm]", "ECOUT v [cm]",
         common_coordinate_range=True, equal_aspect=True,
-    ),
-    DetectorMap(
-        "photon_pcal_uv", "FD photon PCAL local occupancy",
-        ("gamma1UPCAL", "gamma2UPCAL"),
-        ("gamma1VPCAL", "gamma2VPCAL"),
-        "PCAL u [cm]", "PCAL v [cm]", common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
         "photon_ecin_uv", "FD photon ECIN local occupancy",
@@ -199,6 +207,11 @@ DETECTOR_MAPS: tuple[DetectorMap, ...] = (
         common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
+        "photon_ftcal_xy", "FT photon FTCAL occupancy",
+        ("gamma1XFT", "gamma2XFT"), ("gamma1YFT", "gamma2YFT"),
+        "FTCAL x [cm]", "FTCAL y [cm]", common_coordinate_range=True, equal_aspect=True,
+    ),
+    DetectorMap(
         "proton_dc_r1", "FD proton DC region 1 occupancy",
         ("protonXDC1",), ("protonYDC1",), "DC R1 x [cm]", "DC R1 y [cm]",
         common_coordinate_range=True, equal_aspect=True,
@@ -212,11 +225,6 @@ DETECTOR_MAPS: tuple[DetectorMap, ...] = (
         "proton_dc_r3", "FD proton DC region 3 occupancy",
         ("protonXDC3",), ("protonYDC3",), "DC R3 x [cm]", "DC R3 y [cm]",
         common_coordinate_range=True, equal_aspect=True,
-    ),
-    DetectorMap(
-        "photon_ftcal_xy", "FT photon FTCAL occupancy",
-        ("gamma1XFT", "gamma2XFT"), ("gamma1YFT", "gamma2YFT"),
-        "FTCAL x [cm]", "FTCAL y [cm]", common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
         "proton_cvt_angles", "CD proton CVT layer-1 direction occupancy",
@@ -478,7 +486,7 @@ def _title_page(
         color="#4b5563",
         wrap=True,
     )
-    pdf.savefig(figure, bbox_inches="tight")
+    pdf.savefig(figure)
     plt.close(figure)
 
 
@@ -500,8 +508,9 @@ def _topology_overlays(
     core = [variable for variable in variables if variable.branch in core_names]
     pages = 0
     colors = plt.get_cmap("tab10")
-    for page_index, batch in enumerate(_batches(core, 6), start=1):
-        figure, axes = plt.subplots(3, 2, figsize=(11.0, 8.5), constrained_layout=True)
+    batches = _balanced_batches(core, 6)
+    for page_index, batch in enumerate(batches, start=1):
+        figure, axes = _panel_figure(len(batch), maximum_panels=6)
         for axis, variable in zip(axes.flat, batch, strict=False):
             lo, hi = ranges[variable.branch]
             edges = np.linspace(lo, hi, variable.bins + 1)
@@ -519,13 +528,17 @@ def _topology_overlays(
                     color=colors(color_index),
                     label=TOPOLOGY_LABELS[group],
                 )
-            axis.set_title(variable.title, fontsize=10)
+            _set_variable_title(axis, variable)
             axis.set_xlabel(variable.x_label)
             axis.set_ylabel("Unit-normalized density")
             axis.grid(alpha=0.2)
             axis.legend(fontsize=7, frameon=False)
         _hide_unused(axes.flat, len(batch))
-        figure.suptitle(f"{label}\nTopology shape comparison ({page_index})", fontsize=14)
+        figure.suptitle(
+            f"{label}\nTopology shape comparison - page {page_index} of {len(batches)}",
+            fontsize=14,
+            weight="semibold",
+        )
         pdf.savefig(figure)
         plt.close(figure)
         pages += 1
@@ -544,56 +557,66 @@ def _scope_pages(
 ) -> int:
     pages = 0
     count = int(np.count_nonzero(mask))
-    for section in SECTIONS:
-        section_variables = [variable for variable in variables if variable.section == section]
-        for page_index, batch in enumerate(_batches(section_variables, 6), start=1):
-            figure, axes = plt.subplots(3, 2, figsize=(11.0, 8.5), constrained_layout=True)
-            for axis, variable in zip(axes.flat, batch, strict=False):
-                values = finite_values(variable, arrays, mask)
-                lo, hi = ranges[variable.branch]
-                in_range = values[(values >= lo) & (values <= hi)]
-                axis.hist(
-                    in_range,
-                    bins=variable.bins,
-                    range=(lo, hi),
-                    color="#2563eb",
-                    alpha=0.82,
-                    linewidth=0.35,
-                    edgecolor="white",
-                )
-                axis.set_title(variable.title, fontsize=10)
-                axis.set_xlabel(variable.x_label)
-                axis.set_ylabel("Candidates")
-                axis.grid(alpha=0.2)
-                if values.size:
-                    under = int(np.count_nonzero(values < lo))
-                    over = int(np.count_nonzero(values > hi))
-                    axis.text(
-                        0.98,
-                        0.96,
-                        f"N={values.size:,}\nmedian={np.median(values):.4g}\noutside view={under + over:,}",
-                        transform=axis.transAxes,
-                        ha="right",
-                        va="top",
-                        fontsize=7.5,
-                        bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none"},
-                    )
-            _hide_unused(axes.flat, len(batch))
-            figure.suptitle(
-                f"{label}\n{scope_name} - {section} ({page_index}); N={count:,}",
-                fontsize=14,
+    ordered_variables = [
+        variable
+        for section in SECTIONS
+        for variable in variables
+        if variable.section == section
+    ]
+    batches = _balanced_batches(ordered_variables, 6)
+    for page_index, batch in enumerate(batches, start=1):
+        figure, axes = _panel_figure(len(batch), maximum_panels=6)
+        for axis, variable in zip(axes.flat, batch, strict=False):
+            values = finite_values(variable, arrays, mask)
+            lo, hi = ranges[variable.branch]
+            in_range = values[(values >= lo) & (values <= hi)]
+            axis.hist(
+                in_range,
+                bins=variable.bins,
+                range=(lo, hi),
+                color="#2563eb",
+                alpha=0.82,
+                linewidth=0.35,
+                edgecolor="white",
             )
-            pdf.savefig(figure)
-            plt.close(figure)
-            pages += 1
+            _set_variable_title(axis, variable)
+            axis.set_xlabel(variable.x_label)
+            axis.set_ylabel("Candidates")
+            axis.grid(alpha=0.2)
+            if values.size:
+                under = int(np.count_nonzero(values < lo))
+                over = int(np.count_nonzero(values > hi))
+                axis.text(
+                    0.98,
+                    0.96,
+                    f"N={values.size:,}\nmedian={np.median(values):.4g}\noutside view={under + over:,}",
+                    transform=axis.transAxes,
+                    ha="right",
+                    va="top",
+                    fontsize=7.5,
+                    bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none"},
+                )
+        _hide_unused(axes.flat, len(batch))
+        section_names = ", ".join(dict.fromkeys(item.section for item in batch))
+        figure.suptitle(
+            f"{label}\n{scope_name} - kinematic distributions - "
+            f"page {page_index} of {len(batches)}\n"
+            f"{section_names}; N={count:,}",
+            fontsize=13,
+            weight="semibold",
+        )
+        pdf.savefig(figure)
+        plt.close(figure)
+        pages += 1
 
     correlations = [
         correlation
         for correlation in CORRELATIONS
         if correlation.x in variable_by_name and correlation.y in variable_by_name
     ]
-    for page_index, batch in enumerate(_batches(correlations, 6), start=1):
-        figure, axes = plt.subplots(3, 2, figsize=(11.0, 8.5), constrained_layout=True)
+    correlation_batches = _balanced_batches(correlations, 6)
+    for page_index, batch in enumerate(correlation_batches, start=1):
+        figure, axes = _panel_figure(len(batch), maximum_panels=6)
         for axis, correlation in zip(axes.flat, batch, strict=False):
             x_variable = variable_by_name[correlation.x]
             y_variable = variable_by_name[correlation.y]
@@ -633,8 +656,10 @@ def _scope_pages(
             axis.grid(alpha=0.12)
         _hide_unused(axes.flat, len(batch))
         figure.suptitle(
-            f"{label}\n{scope_name} - correlations ({page_index}); N={count:,}",
+            f"{label}\n{scope_name} - correlations - "
+            f"page {page_index} of {len(correlation_batches)}; N={count:,}",
             fontsize=14,
+            weight="semibold",
         )
         pdf.savefig(figure)
         plt.close(figure)
@@ -658,8 +683,9 @@ def _detector_map_pages(
             populated.append((detector_map, x, y))
 
     pages = 0
-    for page_index, batch in enumerate(_batches(populated, 6), start=1):
-        figure, axes = plt.subplots(3, 2, figsize=(11.0, 8.5), constrained_layout=True)
+    batches = _balanced_batches(populated, 4)
+    for page_index, batch in enumerate(batches, start=1):
+        figure, axes = _panel_figure(len(batch), maximum_panels=4)
         for axis, (detector_map, x, y) in zip(axes.flat, batch, strict=False):
             x_range, y_range = ranges[detector_map.key]
             view = (
@@ -708,8 +734,10 @@ def _detector_map_pages(
             )
         _hide_unused(axes.flat, len(batch))
         figure.suptitle(
-            f"{label}\n{scope_name} - detector occupancy ({page_index})",
+            f"{label}\n{scope_name} - detector occupancy - "
+            f"page {page_index} of {len(batches)}",
             fontsize=14,
+            weight="semibold",
         )
         pdf.savefig(figure)
         plt.close(figure)
@@ -717,9 +745,52 @@ def _detector_map_pages(
     return pages
 
 
-def _batches(values: Sequence, size: int) -> Iterable[Sequence]:
-    for start in range(0, len(values), size):
-        yield values[start : start + size]
+def _balanced_batches(values: Sequence, maximum_size: int) -> list[Sequence]:
+    """Split values into pages whose panel counts differ by at most one."""
+    if maximum_size <= 0:
+        raise ValueError("maximum_size must be positive")
+    if not values:
+        return []
+    page_count = (len(values) + maximum_size - 1) // maximum_size
+    base_size, extra = divmod(len(values), page_count)
+    batches: list[Sequence] = []
+    start = 0
+    for page_index in range(page_count):
+        size = base_size + (1 if page_index < extra else 0)
+        batches.append(values[start : start + size])
+        start += size
+    return batches
+
+
+def _panel_figure(
+    panel_count: int, *, maximum_panels: int
+) -> tuple[plt.Figure, np.ndarray]:
+    if panel_count <= 0:
+        raise ValueError("panel_count must be positive")
+    if panel_count > maximum_panels:
+        raise ValueError("panel_count exceeds maximum_panels")
+    columns = 1 if panel_count == 1 else 2
+    rows = (panel_count + columns - 1) // columns
+    figure, axes = plt.subplots(
+        rows,
+        columns,
+        figsize=(11.0, 8.5),
+        constrained_layout=True,
+        squeeze=False,
+    )
+    figure.patch.set_facecolor("white")
+    return figure, axes
+
+
+def _set_variable_title(axis: plt.Axes, variable: PlotVariable) -> None:
+    axis.set_title(variable.title, fontsize=10, loc="left", weight="semibold", pad=9)
+    axis.set_title(
+        variable.section.upper(),
+        fontsize=7,
+        loc="right",
+        color=SECTION_COLORS.get(variable.section, "#4b5563"),
+        pad=11,
+    )
 
 
 def _hide_unused(axes: Iterable[plt.Axes], used: int) -> None:
@@ -729,15 +800,9 @@ def _hide_unused(axes: Iterable[plt.Axes], used: int) -> None:
 
 
 def _wrap(text: str, width: int) -> list[str]:
-    words = text.split()
-    lines: list[str] = []
-    current: list[str] = []
-    for word in words:
-        if current and len(" ".join(current + [word])) > width:
-            lines.append(" ".join(current))
-            current = [word]
-        else:
-            current.append(word)
-    if current:
-        lines.append(" ".join(current))
-    return lines or [""]
+    return textwrap.wrap(
+        text,
+        width=width,
+        break_long_words=True,
+        break_on_hyphens=False,
+    ) or [""]

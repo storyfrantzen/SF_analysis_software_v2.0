@@ -15,6 +15,10 @@ retained reconstructed topology.  Topology-overlay pages make shape differences
 visible without allowing the largest group to set the normalization.  A JSON
 sidecar records the source paths, input sizes, mask and configuration hashes,
 topology populations, plotted branches, angle conventions, and page count.
+Plot panels are balanced across fixed-size landscape pages instead of restarting
+a mostly empty page at every subsection boundary. Each one-dimensional panel is
+tagged by its section, and detector occupancies use a larger two-by-two layout
+so square and rectangular detector coordinates remain legible and comparable.
 
 Candidate files produced by the current `post_process` retain selected-role
 detector coordinates. The report uses them for logarithmic occupancy maps of

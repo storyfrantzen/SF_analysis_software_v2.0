@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
@@ -255,7 +256,7 @@ def _title_page(
         for wrapped in _wrap(line, 112):
             figure.text(0.09, y, wrapped, fontsize=8.1, family="monospace")
             y -= 0.025
-    pdf.savefig(figure, bbox_inches="tight")
+    pdf.savefig(figure)
     plt.close(figure)
 
 
@@ -537,15 +538,9 @@ def _batches(values: Sequence, size: int) -> Iterable[Sequence]:
 
 
 def _wrap(text: str, width: int) -> list[str]:
-    words = text.split()
-    lines: list[str] = []
-    current: list[str] = []
-    for word in words:
-        if current and len(" ".join(current + [word])) > width:
-            lines.append(" ".join(current))
-            current = [word]
-        else:
-            current.append(word)
-    if current:
-        lines.append(" ".join(current))
-    return lines or [""]
+    return textwrap.wrap(
+        text,
+        width=width,
+        break_long_words=True,
+        break_on_hyphens=False,
+    ) or [""]
