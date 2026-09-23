@@ -728,9 +728,10 @@ matching 0 nA Born AAO GEMC. They are intended for full-sample bookkeeping,
 yield, topology, and data/GEMC shape checks while energy-specific calibration
 artifacts are unavailable. The processing configurations therefore preserve
 raw reconstructed kinematics and do not borrow the Fall 2018 6.535 GeV proton
-energy-loss correction. The post-processing bases apply the common fiducial,
-PCAL, and diagonal sampling-fraction requirements but omit the fitted
-sampling-fraction sigma cut.
+energy-loss correction. The post-processing bases omit detector fiducials,
+sampling-fraction requirements, CVT phi vetoes, and the FD electron-sector
+photon veto. They retain only basic particle, topology, mass, and loose
+exclusivity requirements suitable for baseline sample characterization.
 
 Use an explicit manifest to make the exact full input set reproducible:
 
