@@ -292,6 +292,8 @@ python3 analysis/run_analysis.py radiative-correction born_lund/ rad_lund/ \
 python3 analysis/run_analysis.py unfold data_events.npz \
   results/response/response_matrix.npz results/response/response_meta.npz \
   --config configs/analysis/rgk/6.535.json --output results/unfolding.npz \
+  --iterations 1 --bootstrap 300 \
+  --response-uncertainty count-bootstrap \
   --background-cuts results/data_exclusivity.npz \
   --current-efficiency-correction \
     results/data_efficiency/rgk_6.535/current_efficiency_correction.json \
@@ -353,17 +355,26 @@ volume and virtual-photon flux.  Invalid cross-section values and uncertainties
 are stored as `NaN`, and the component masks are retained separately so every
 rejection can be audited.  The harmonic stage consumes this mask directly.
 
-Positive-iteration unfolding also retains the bootstrap statistical covariance
-among phi bins inside every `(Q2, xB, -t)` cell. Every replica reruns the full
+Positive-iteration unfolding retains covariance among phi bins inside every
+`(Q2, xB, -t)` cell. Every measured-spectrum replica reruns the full
 data-dependent estimator: it fluctuates the measured spectrum and rebuilds the
 acceptance-corrected IBU prior from that fluctuation. Keeping this prior fixed
 would omit a first-order statistical contribution at early iterations.
-Response-MC and radiative-factor
-variances are added on the block diagonal, and `cross-section` propagates the
-blocks through luminosity, flux, bin-volume, bin-centering, and global
-normalization factors. The compact `covariance_phi` array therefore has shape
-`(NQ2, NxB, Nt, Nphi, Nphi)`; covariance between different three-dimensional
-cells is intentionally not stored. Its diagonal agrees with `uncertainty**2`.
+
+Use `--response-uncertainty count-bootstrap` after closure certification. It
+also Poisson-resamples integer migration, missed-event, and feed-in counts,
+rebuilds the response for every replica, and stores the covariance of the joint
+data-and-response estimator as `total_covariance_phi`. The response NPZ must
+represent unweighted integer GEMC counts. `statistical_covariance_phi` remains a
+measured-spectrum-only diagnostic; `response_covariance_phi` is the residual
+joint-minus-statistical diagnostic and is not used separately downstream.
+The legacy `analytic-diagonal` mode instead adds its response-MC approximation
+on the block diagonal. In both modes, radiative-factor variances are added after
+unfolding, and `cross-section` propagates the blocks through luminosity, flux,
+bin volume, bin centering, and global normalization factors. The compact
+`covariance_phi` array therefore has shape `(NQ2, NxB, Nt, Nphi, Nphi)`;
+covariance between different three-dimensional cells is intentionally not
+stored. Its diagonal agrees with `uncertainty**2`.
 
 Theory prediction, structure-function export, and model-overlay commands are
 documented in [`docs/model_comparison.md`](../docs/model_comparison.md).

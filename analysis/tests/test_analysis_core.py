@@ -1564,6 +1564,8 @@ class UnfoldingTests(unittest.TestCase):
                 feed_in_fraction=0.25,
                 feed_in_shape=np.asarray([1.0]),
                 response_variance_sum=np.zeros(1),
+                truth_total=np.asarray([12.0]),
+                reconstructed_total=np.asarray([8.0]),
             )
             args = argparse.Namespace(
                 data=data_path,
@@ -1614,6 +1616,25 @@ class UnfoldingTests(unittest.TestCase):
                     "feed_in_subtracted_measured",
                 )
                 self.assertTrue(bool(result["feed_in_subtraction_applied_to_unfolded"]))
+                np.testing.assert_allclose(
+                    np.diagonal(
+                        result["corrected_covariance_phi"], axis1=-2, axis2=-1
+                    ).reshape(-1),
+                    result["corrected_uncertainty"] ** 2,
+                )
+
+            args.response_uncertainty = "count-bootstrap"
+            args.bootstrap = 100
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_unfold(args)
+            with np.load(output_path, allow_pickle=False) as result:
+                self.assertEqual(
+                    str(result["response_uncertainty_method"]), "count-bootstrap"
+                )
+                self.assertEqual(
+                    int(result["response_count_bootstrap_experiments"]), 100
+                )
+                self.assertGreater(float(result["sigma_total"][0]), 0.0)
                 np.testing.assert_allclose(
                     np.diagonal(
                         result["corrected_covariance_phi"], axis1=-2, axis2=-1

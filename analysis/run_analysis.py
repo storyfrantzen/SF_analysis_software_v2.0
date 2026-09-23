@@ -75,6 +75,7 @@ from eppi0.unfolding import (
     bootstrap_ensemble,
     diagonal_phi_covariance,
     iterative_bayes,
+    joint_count_bootstrap_ensemble,
     phi_block_covariance,
     subtract_feed_in,
 )
@@ -255,6 +256,16 @@ def parser() -> argparse.ArgumentParser:
     )
     unfold.add_argument("--iterations", type=int, default=25)
     unfold.add_argument("--bootstrap", type=int, default=200)
+    unfold.add_argument(
+        "--response-uncertainty",
+        choices=("analytic-diagonal", "count-bootstrap"),
+        default="analytic-diagonal",
+        help=(
+            "Propagate finite-response statistics with the legacy analytic "
+            "diagonal approximation or the closure-certified joint count "
+            "bootstrap (requires integer response counts)"
+        ),
+    )
     unfold.add_argument("--seed", type=int, default=12345)
     unfold.add_argument(
         "--current-efficiency-correction",
@@ -902,6 +913,11 @@ def command_unfold(args: argparse.Namespace) -> None:
     binning = from_config(args.config)
     config = load_config(args.config)
     minimum_acceptance = float(config.get("minimum_acceptance", 0.005))
+    response_uncertainty_method = getattr(
+        args, "response_uncertainty", "analytic-diagonal"
+    )
+    if response_uncertainty_method == "count-bootstrap" and args.bootstrap < 2:
+        raise ValueError("count-bootstrap response uncertainty requires --bootstrap >= 2")
     rec_flat = binning.coordinates_to_flat(
         data["rec_Q2"], data["rec_xB"], data["rec_minus_t"], data["rec_trento_phi"]
     )
@@ -1128,15 +1144,74 @@ def command_unfold(args: argparse.Namespace) -> None:
         statistical_covariance_phi = phi_block_covariance(
             bootstrap_samples, binning.shape[-1]
         )
-    sensitivity = np.divide(
-        unfolded, efficiency, out=np.zeros_like(unfolded), where=efficiency > minimum_acceptance
-    )
-    sigma_mc = sensitivity * np.sqrt(metadata["response_variance_sum"])
-    sigma_total = np.hypot(sigma_stat, sigma_mc)
-    response_covariance_phi = diagonal_phi_covariance(
-        sigma_mc * sigma_mc, binning.shape[-1]
-    )
-    total_covariance_phi = statistical_covariance_phi + response_covariance_phi
+    if response_uncertainty_method == "count-bootstrap":
+        required_response_fields = {"truth_total", "reconstructed_total"}
+        missing_response_fields = sorted(
+            required_response_fields.difference(metadata.files)
+        )
+        if missing_response_fields:
+            raise ValueError(
+                "count-bootstrap response uncertainty requires response metadata: "
+                + ", ".join(missing_response_fields)
+            )
+        joint_samples = joint_count_bootstrap_ensemble(
+            response,
+            metadata["truth_total"],
+            metadata["reconstructed_total"],
+            float(metadata["feed_in_fraction"]),
+            metadata["feed_in_shape"],
+            measured,
+            measured_variance,
+            args.iterations,
+            minimum_acceptance=minimum_acceptance,
+            experiments=args.bootstrap,
+            seed=args.seed + 104_729,
+            progress_label="production unfolding",
+        )
+        total_covariance_phi = phi_block_covariance(
+            joint_samples, binning.shape[-1]
+        )
+        total_variance = np.diagonal(
+            total_covariance_phi, axis1=-2, axis2=-1
+        ).reshape(-1)
+        sigma_total = np.sqrt(np.clip(total_variance, 0.0, None))
+        response_covariance_phi = (
+            total_covariance_phi - statistical_covariance_phi
+        )
+        response_variance = np.diagonal(
+            response_covariance_phi, axis1=-2, axis2=-1
+        ).reshape(-1)
+        sigma_mc = np.sqrt(np.clip(response_variance, 0.0, None))
+        response_covariance_definition = (
+            "joint data-and-response count-bootstrap covariance minus the "
+            "measured-spectrum-only bootstrap covariance; retained as a diagnostic "
+            "decomposition while total_covariance_phi is the production covariance"
+        )
+        covariance_phi_definition = (
+            "closure-certified joint count-bootstrap covariance within each "
+            "(Q2,xB,-t) phi block; radiative-correction variance added to the "
+            "diagonal after unfolding"
+        )
+    else:
+        sensitivity = np.divide(
+            unfolded,
+            efficiency,
+            out=np.zeros_like(unfolded),
+            where=efficiency > minimum_acceptance,
+        )
+        sigma_mc = sensitivity * np.sqrt(metadata["response_variance_sum"])
+        sigma_total = np.hypot(sigma_stat, sigma_mc)
+        response_covariance_phi = diagonal_phi_covariance(
+            sigma_mc * sigma_mc, binning.shape[-1]
+        )
+        total_covariance_phi = statistical_covariance_phi + response_covariance_phi
+        response_covariance_definition = (
+            "analytic response-probability variance added on the diagonal"
+        )
+        covariance_phi_definition = (
+            "bootstrap statistical covariance within each (Q2,xB,-t) phi block; "
+            "response-MC and radiative-correction variances added to the diagonal"
+        )
     corrected_yield = unfolded.copy()
     corrected_uncertainty = sigma_total.copy()
     corrected_covariance_phi = total_covariance_phi.copy()
@@ -1245,12 +1320,19 @@ def command_unfold(args: argparse.Namespace) -> None:
         corrected_covariance_phi=corrected_covariance_phi.reshape(
             binning.shape[:-1] + (binning.shape[-1], binning.shape[-1])
         ),
-        covariance_phi_definition=(
-            "bootstrap statistical covariance within each (Q2,xB,-t) phi block; "
-            "response-MC and radiative-correction variances added to the diagonal"
+        covariance_phi_definition=covariance_phi_definition,
+        response_covariance_definition=response_covariance_definition,
+        response_uncertainty_method=response_uncertainty_method,
+        response_count_bootstrap_experiments=(
+            int(args.bootstrap)
+            if response_uncertainty_method == "count-bootstrap"
+            else 0
         ),
         covariance_phi_bootstrap_experiments=(
-            int(args.bootstrap) if args.iterations > 0 else 0
+            int(args.bootstrap)
+            if args.iterations > 0
+            or response_uncertainty_method == "count-bootstrap"
+            else 0
         ),
         bootstrap_prior_definition=(
             "acceptance-corrected fluctuated measured spectrum recomputed per replica"
@@ -1435,6 +1517,14 @@ def command_unfold(args: argparse.Namespace) -> None:
                 f"in-range events={current_efficiency_excluded_event_count}, "
                 f"analysis charge={beam_charge:.8g} C"
             )
+    print(
+        "Unfolding uncertainty: "
+        + (
+            f"joint data-and-response count bootstrap ({args.bootstrap} replicas)"
+            if response_uncertainty_method == "count-bootstrap"
+            else "measured bootstrap plus analytic response diagonal"
+        )
+    )
     print(
         "Stored phi-block covariance: "
         f"{int(np.prod(binning.shape[:-1]))} cells x "

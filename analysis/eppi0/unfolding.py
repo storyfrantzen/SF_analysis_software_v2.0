@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.sparse import csr_matrix
 
+from .response import count_bootstrap_response, response_counts_from_artifacts
+
 
 Array = np.ndarray
 
@@ -137,6 +139,84 @@ def bootstrap_ensemble(
             prior=replica_prior,
             minimum_acceptance=minimum_acceptance,
         ).unfolded
+    return samples
+
+
+def joint_count_bootstrap_ensemble(
+    response_core: csr_matrix,
+    truth_total: Array,
+    reconstructed_total: Array,
+    feed_in_fraction: float,
+    feed_in_shape: Array,
+    measured: Array,
+    measured_variance: Array,
+    iterations: int,
+    *,
+    minimum_acceptance: float = 0.005,
+    experiments: int = 200,
+    seed: int | None = None,
+    progress_label: str | None = None,
+) -> Array:
+    """Bootstrap the complete data-and-finite-response unfolding estimator."""
+    if experiments < 2:
+        raise ValueError("joint count bootstrap requires at least two replicas")
+    if iterations < 0:
+        raise ValueError("iterations must be nonnegative")
+    measured = np.asarray(measured, dtype=float)
+    measured_variance = np.asarray(measured_variance, dtype=float)
+    if measured.shape != measured_variance.shape:
+        raise ValueError("measured variance dimensions do not match measured spectrum")
+    if np.any(~np.isfinite(measured_variance)) or np.any(measured_variance < 0.0):
+        raise ValueError("measured variance must be finite and nonnegative")
+    truth, feed, migration = response_counts_from_artifacts(
+        response_core,
+        truth_total,
+        reconstructed_total,
+        feed_in_fraction,
+        feed_in_shape,
+    )
+    response_rng = np.random.default_rng(seed)
+    data_seed = None if seed is None else int(seed) ^ 0xD1B54A32D192ED03
+    data_rng = np.random.default_rng(data_seed)
+    samples = np.empty((experiments, measured.size), dtype=float)
+    progress_step = max(1, experiments // 5)
+    for replica_index in range(experiments):
+        response = count_bootstrap_response(truth, feed, migration, response_rng)
+        fluctuated = fluctuate_weighted_poisson(
+            data_rng, measured, measured_variance
+        )
+        acceptance_valid = response.efficiency > minimum_acceptance
+        prior = np.divide(
+            fluctuated,
+            response.efficiency,
+            out=np.zeros_like(fluctuated),
+            where=acceptance_valid,
+        )
+        if iterations == 0:
+            samples[replica_index] = prior
+        else:
+            corrected = subtract_feed_in(
+                fluctuated,
+                response.feed_in_fraction,
+                response.feed_in_shape,
+            )
+            samples[replica_index] = iterative_bayes(
+                response.core,
+                corrected,
+                response.efficiency,
+                iterations,
+                prior=prior,
+                minimum_acceptance=minimum_acceptance,
+            ).unfolded
+        completed = replica_index + 1
+        if progress_label is not None and (
+            completed % progress_step == 0 or completed == experiments
+        ):
+            print(
+                f"[COUNT-BOOTSTRAP] {progress_label} replicas "
+                f"{completed}/{experiments}",
+                flush=True,
+            )
     return samples
 
 

@@ -8,7 +8,12 @@ from scipy.sparse import csr_matrix
 
 from .binning import AnalysisBinning
 from .harmonics import fit_grid
-from .response import ResponseResult, build_response_from_counts
+from .response import (
+    ResponseResult,
+    build_response_from_counts,
+    count_bootstrap_response,
+    require_integer_counts,
+)
 from .unfolding import (
     bootstrap_ensemble,
     diagonal_phi_covariance,
@@ -218,73 +223,16 @@ def _training_response_counts(
         (inputs.fold_migration_counts[index] for index in kept),
         start=csr_matrix(inputs.fold_migration_counts[0].shape, dtype=float),
     ).tocsr()
-    _require_integer_counts(truth, "training truth counts")
-    _require_integer_counts(feed, "training feed-in counts")
-    _require_integer_counts(migration.data, "training migration counts")
+    require_integer_counts(truth, "training truth counts")
+    require_integer_counts(feed, "training feed-in counts")
+    require_integer_counts(migration.data, "training migration counts")
     migrated_by_truth = np.asarray(migration.sum(axis=0)).ravel()
     missed = truth - migrated_by_truth
     tolerance = 1.0e-7 * np.maximum(1.0, truth)
     if np.any(missed < -tolerance):
         raise ValueError("migration counts exceed generated truth counts")
-    _require_integer_counts(np.clip(missed, 0.0, None), "training missed counts")
+    require_integer_counts(np.clip(missed, 0.0, None), "training missed counts")
     return truth, feed, migration
-
-
-def _require_integer_counts(values: Array, name: str) -> None:
-    values = np.asarray(values, dtype=float)
-    if np.any(~np.isfinite(values)) or np.any(values < 0.0):
-        raise ValueError(f"{name} must be finite and nonnegative")
-    if not np.allclose(values, np.rint(values), rtol=0.0, atol=1.0e-7):
-        raise ValueError(
-            f"{name} are weighted rather than integer event counts; "
-            "count-bootstrap response replicas require unweighted counts"
-        )
-
-
-def count_bootstrap_response(
-    truth_total: Array,
-    feed_counts: Array,
-    migration_counts: csr_matrix,
-    rng: np.random.Generator,
-) -> ResponseResult:
-    """Poisson-resample migration, missed, and feed-in event counts.
-
-    Independent Poisson cells are the unconditional counterpart of a
-    multinomial response experiment.  The generated truth denominator is
-    rebuilt from the fluctuated migration and missed-event counts, preserving
-    their normalization covariance in every response replica.
-    """
-    truth_total = np.asarray(truth_total, dtype=float)
-    feed_counts = np.asarray(feed_counts, dtype=float)
-    migration = migration_counts.tocoo(copy=True)
-    _require_integer_counts(truth_total, "truth counts")
-    _require_integer_counts(feed_counts, "feed-in counts")
-    _require_integer_counts(migration.data, "migration counts")
-    migrated_by_truth = np.asarray(migration_counts.sum(axis=0)).ravel()
-    missed = np.clip(truth_total - migrated_by_truth, 0.0, None)
-    _require_integer_counts(missed, "missed counts")
-
-    sampled_migration = rng.poisson(np.rint(migration.data).astype(np.int64)).astype(float)
-    sampled_missed = rng.poisson(np.rint(missed).astype(np.int64)).astype(float)
-    sampled_feed = rng.poisson(np.rint(feed_counts).astype(np.int64)).astype(float)
-    sampled_counts = csr_matrix(
-        (sampled_migration, (migration.row, migration.col)),
-        shape=migration.shape,
-    )
-    sampled_truth = np.asarray(sampled_counts.sum(axis=0)).ravel() + sampled_missed
-    sampled_reconstructed = (
-        np.asarray(sampled_counts.sum(axis=1)).ravel() + sampled_feed
-    )
-    sampled = sampled_counts.tocoo()
-    return build_response_from_counts(
-        sampled_truth,
-        sampled_reconstructed,
-        sampled.row,
-        sampled.col,
-        sampled.data,
-        sampled_feed,
-        compute_variance=False,
-    )
 
 
 def _forward_measured_expectation(response: ResponseResult, truth: Array) -> Array:
