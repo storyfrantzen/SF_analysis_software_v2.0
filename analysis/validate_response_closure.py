@@ -23,6 +23,7 @@ from eppi0.closure import (
     aggregate_metrics,
     assess_iteration_coverage,
     deterministic_folds,
+    recommend_iterations,
     run_closure_scan,
     stress_weights,
 )
@@ -219,6 +220,10 @@ def main() -> int:
         print(
             "Coverage-qualified iterations: "
             + ", ".join(str(value) for value in qualified)
+        )
+        print(
+            "Minimum-MSE coverage-qualified iteration: "
+            f"{summary['recommendation']['coverage_qualified_recommendation']}"
         )
     else:
         print("Coverage-qualified iterations: none; do not promote this scan to nominal")
@@ -556,6 +561,11 @@ def save_results(
         for row in coverage_assessment
         if bool(row["certified"])
     ]
+    coverage_recommendation = (
+        recommend_iterations(result.metrics, coverage_qualified)
+        if coverage_qualified
+        else None
+    )
     summary: dict[str, object] = {
         "schema_version": 3,
         "method": "source-aware deterministic K-fold held-out GEMC closure",
@@ -628,6 +638,7 @@ def save_results(
             "iterations": result.recommended_iterations,
             "criterion": "minimum median held-out normalized MSE across folds and stresses",
             "coverage_qualified_iterations": coverage_qualified,
+            "coverage_qualified_recommendation": coverage_recommendation,
             "coverage_certified": result.recommended_iterations in coverage_qualified,
             "coverage_assessment": coverage_assessment,
             "warning": (
