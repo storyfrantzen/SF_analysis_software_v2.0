@@ -5,8 +5,12 @@ import unittest
 import numpy as np
 
 from eppi0.event_kinematics_diagnostics import (
+    CORRELATIONS,
+    DETECTOR_MAPS,
     TOPOLOGY_LABELS,
+    VARIABLES,
     _balanced_batches,
+    _grouped_batches,
     available_detector_maps,
     available_variables,
     detector_map_values,
@@ -106,6 +110,32 @@ class EventKinematicsDiagnosticsTests(unittest.TestCase):
     def test_balanced_pagination_rejects_invalid_page_size(self) -> None:
         with self.assertRaisesRegex(ValueError, "positive"):
             _balanced_batches([1], 0)
+
+    def test_kinematic_pages_never_mix_physics_sections(self) -> None:
+        pages = _grouped_batches(VARIABLES, 6)
+        self.assertTrue(pages)
+        for section, page_index, page_count, variables in pages:
+            self.assertGreaterEqual(page_index, 1)
+            self.assertLessEqual(page_index, page_count)
+            self.assertTrue(all(variable.section == section for variable in variables))
+        self.assertEqual(
+            [section for section, page, _count, _items in pages if page == 1],
+            [
+                "DIS",
+                "channel kinematics",
+                "exclusivity",
+                "electron",
+                "proton",
+                "photons",
+            ],
+        )
+
+    def test_correlations_and_detector_maps_have_coherent_page_sections(self) -> None:
+        for values, maximum_size in ((CORRELATIONS, 6), (DETECTOR_MAPS, 4)):
+            for section, _page, _count, items in _grouped_batches(
+                values, maximum_size
+            ):
+                self.assertTrue(all(item.section == section for item in items))
 
 
 if __name__ == "__main__":

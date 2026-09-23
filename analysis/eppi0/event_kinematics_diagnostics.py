@@ -65,24 +65,24 @@ VARIABLES: tuple[PlotVariable, ...] = (
     PlotVariable("W", r"$W$", r"$W$ [GeV]", "DIS"),
     PlotVariable("y", r"$y$", r"$y$", "DIS", fixed_range=(0.0, 1.0)),
     PlotVariable("nu", r"Energy transfer $\nu$", r"$\nu$ [GeV]", "DIS"),
-    PlotVariable("t", r"Momentum transfer $-t$", r"$-t$ [GeV$^2$]", "DIS"),
-    PlotVariable("trentoPhi", r"Trento $\phi$", r"$\phi$ [deg]", "particle angles", transform=trento_degrees, fixed_range=(0.0, 360.0), bins=72),
-    PlotVariable("electronP", "Electron momentum", r"$p_e$ [GeV]", "particle momenta"),
-    PlotVariable("electronTheta", "Electron polar angle", r"$\theta_e$ [deg]", "particle angles", transform=degrees),
-    PlotVariable("electronPhi", "Electron azimuth", r"$\phi_e$ [deg]", "particle angles", transform=degrees, fixed_range=(-180.0, 180.0), bins=72),
-    PlotVariable("protonP", "Proton momentum", r"$p_p$ [GeV]", "particle momenta"),
-    PlotVariable("protonTheta", "Proton polar angle", r"$\theta_p$ [deg]", "particle angles", transform=degrees),
-    PlotVariable("protonPhi", "Proton azimuth", r"$\phi_p$ [deg]", "particle angles", transform=degrees, fixed_range=(-180.0, 180.0), bins=72),
-    PlotVariable("gamma1P", "Photon 1 momentum", r"$p_{\gamma_1}$ [GeV]", "particle momenta"),
-    PlotVariable("gamma1Theta", "Photon 1 polar angle", r"$\theta_{\gamma_1}$ [deg]", "particle angles", transform=degrees),
-    PlotVariable("gamma1Phi", "Photon 1 azimuth", r"$\phi_{\gamma_1}$ [deg]", "particle angles", transform=degrees, fixed_range=(-180.0, 180.0), bins=72),
-    PlotVariable("gamma2P", "Photon 2 momentum", r"$p_{\gamma_2}$ [GeV]", "particle momenta"),
-    PlotVariable("gamma2Theta", "Photon 2 polar angle", r"$\theta_{\gamma_2}$ [deg]", "particle angles", transform=degrees),
-    PlotVariable("gamma2Phi", "Photon 2 azimuth", r"$\phi_{\gamma_2}$ [deg]", "particle angles", transform=degrees, fixed_range=(-180.0, 180.0), bins=72),
-    PlotVariable("pi0_p", r"$\pi^0$ momentum", r"$p_{\pi^0}$ [GeV]", "particle momenta"),
-    PlotVariable("pi0_theta", r"$\pi^0$ polar angle", r"$\theta_{\pi^0}$ [deg]", "particle angles", transform=degrees),
-    PlotVariable("pi0_phi", r"$\pi^0$ azimuth", r"$\phi_{\pi^0}$ [deg]", "particle angles", transform=degrees, fixed_range=(-180.0, 180.0), bins=72),
-    PlotVariable("t_pi0", r"$\pi^0$-side momentum transfer", r"$-t_{\pi^0}$ [GeV$^2$]", "exclusivity"),
+    PlotVariable("t", r"Momentum transfer $-t$", r"$-t$ [GeV$^2$]", "channel kinematics"),
+    PlotVariable("trentoPhi", r"Trento $\phi$", r"$\phi$ [deg]", "channel kinematics", transform=trento_degrees, fixed_range=(0.0, 360.0), bins=72),
+    PlotVariable("electronP", "Electron momentum", r"$p_e$ [GeV]", "electron"),
+    PlotVariable("electronTheta", "Electron polar angle", r"$\theta_e$ [deg]", "electron", transform=degrees),
+    PlotVariable("electronPhi", "Electron azimuth", r"$\phi_e$ [deg]", "electron", transform=degrees, fixed_range=(-180.0, 180.0), bins=72),
+    PlotVariable("protonP", "Proton momentum", r"$p_p$ [GeV]", "proton"),
+    PlotVariable("protonTheta", "Proton polar angle", r"$\theta_p$ [deg]", "proton", transform=degrees),
+    PlotVariable("protonPhi", "Proton azimuth", r"$\phi_p$ [deg]", "proton", transform=degrees, fixed_range=(-180.0, 180.0), bins=72),
+    PlotVariable("gamma1P", "Photon 1 momentum", r"$p_{\gamma_1}$ [GeV]", "photons"),
+    PlotVariable("gamma1Theta", "Photon 1 polar angle", r"$\theta_{\gamma_1}$ [deg]", "photons", transform=degrees),
+    PlotVariable("gamma1Phi", "Photon 1 azimuth", r"$\phi_{\gamma_1}$ [deg]", "photons", transform=degrees, fixed_range=(-180.0, 180.0), bins=72),
+    PlotVariable("gamma2P", "Photon 2 momentum", r"$p_{\gamma_2}$ [GeV]", "photons"),
+    PlotVariable("gamma2Theta", "Photon 2 polar angle", r"$\theta_{\gamma_2}$ [deg]", "photons", transform=degrees),
+    PlotVariable("gamma2Phi", "Photon 2 azimuth", r"$\phi_{\gamma_2}$ [deg]", "photons", transform=degrees, fixed_range=(-180.0, 180.0), bins=72),
+    PlotVariable("pi0_p", r"$\pi^0$ momentum", r"$p_{\pi^0}$ [GeV]", "channel kinematics"),
+    PlotVariable("pi0_theta", r"$\pi^0$ polar angle", r"$\theta_{\pi^0}$ [deg]", "channel kinematics", transform=degrees),
+    PlotVariable("pi0_phi", r"$\pi^0$ azimuth", r"$\phi_{\pi^0}$ [deg]", "channel kinematics", transform=degrees, fixed_range=(-180.0, 180.0), bins=72),
+    PlotVariable("t_pi0", r"$\pi^0$-side momentum transfer", r"$-t_{\pi^0}$ [GeV$^2$]", "channel kinematics"),
     PlotVariable("m_gg", r"Diphoton mass", r"$m_{\gamma\gamma}$ [GeV]", "exclusivity"),
     PlotVariable("m2_miss", r"Exclusive missing mass squared", r"$M_X^2(ep\pi^0X)$ [GeV$^2$]", "exclusivity"),
     PlotVariable("m2_epX", r"Missing $epX$ mass squared", r"$M_X^2(epX)$ [GeV$^2$]", "exclusivity"),
@@ -98,14 +98,14 @@ VARIABLES: tuple[PlotVariable, ...] = (
 )
 
 
-SECTIONS = ("DIS", "particle momenta", "particle angles", "exclusivity")
-
-SECTION_COLORS = {
-    "DIS": "#0369a1",
-    "particle momenta": "#047857",
-    "particle angles": "#7c3aed",
-    "exclusivity": "#b45309",
-}
+SECTIONS = (
+    "DIS",
+    "channel kinematics",
+    "exclusivity",
+    "electron",
+    "proton",
+    "photons",
+)
 
 
 @dataclass(frozen=True)
@@ -113,15 +113,16 @@ class Correlation:
     x: str
     y: str
     title: str
+    section: str
 
 
 CORRELATIONS: tuple[Correlation, ...] = (
-    Correlation("xB", "Q2", r"DIS coverage: $Q^2$ vs $x_B$"),
-    Correlation("xB", "t", r"Production coverage: $-t$ vs $x_B$"),
-    Correlation("Q2", "W", r"DIS correlation: $W$ vs $Q^2$"),
-    Correlation("electronP", "electronTheta", "Electron angle vs momentum"),
-    Correlation("protonP", "protonTheta", "Proton angle vs momentum"),
-    Correlation("pT_miss", "m_gg", r"$m_{\gamma\gamma}$ vs missing $p_T$"),
+    Correlation("xB", "Q2", r"DIS coverage: $Q^2$ vs $x_B$", "DIS"),
+    Correlation("Q2", "W", r"DIS correlation: $W$ vs $Q^2$", "DIS"),
+    Correlation("xB", "t", r"Production coverage: $-t$ vs $x_B$", "channel kinematics"),
+    Correlation("pT_miss", "m_gg", r"$m_{\gamma\gamma}$ vs missing $p_T$", "exclusivity"),
+    Correlation("electronP", "electronTheta", "Electron angle vs momentum", "electron"),
+    Correlation("protonP", "protonTheta", "Proton angle vs momentum", "proton"),
 )
 
 
@@ -129,6 +130,7 @@ CORRELATIONS: tuple[Correlation, ...] = (
 class DetectorMap:
     key: str
     title: str
+    section: str
     x_branches: tuple[str, ...]
     y_branches: tuple[str, ...]
     x_label: str
@@ -148,86 +150,86 @@ class DetectorMap:
 
 DETECTOR_MAPS: tuple[DetectorMap, ...] = (
     DetectorMap(
-        "electron_pcal_xy", "Electron PCAL global occupancy",
+        "electron_pcal_xy", "Electron PCAL global occupancy", "electron",
         ("electronXPCAL",), ("electronYPCAL",), "PCAL x [cm]", "PCAL y [cm]",
         common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
-        "photon_pcal_xy", "FD photon PCAL global occupancy",
+        "photon_pcal_xy", "FD photon PCAL global occupancy", "photons",
         ("gamma1XPCAL", "gamma2XPCAL"),
         ("gamma1YPCAL", "gamma2YPCAL"),
         "PCAL x [cm]", "PCAL y [cm]", common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
-        "electron_pcal_uv", "Electron PCAL local occupancy",
+        "electron_pcal_uv", "Electron PCAL local occupancy", "electron",
         ("electronUPCAL",), ("electronVPCAL",), "PCAL u [cm]", "PCAL v [cm]",
         common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
-        "photon_pcal_uv", "FD photon PCAL local occupancy",
+        "photon_pcal_uv", "FD photon PCAL local occupancy", "photons",
         ("gamma1UPCAL", "gamma2UPCAL"),
         ("gamma1VPCAL", "gamma2VPCAL"),
         "PCAL u [cm]", "PCAL v [cm]", common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
-        "electron_ecin_uv", "Electron ECIN local occupancy",
+        "electron_ecin_uv", "Electron ECIN local occupancy", "electron",
         ("electronUECIN",), ("electronVECIN",), "ECIN u [cm]", "ECIN v [cm]",
         common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
-        "electron_ecout_uv", "Electron ECOUT local occupancy",
+        "electron_ecout_uv", "Electron ECOUT local occupancy", "electron",
         ("electronUECOUT",), ("electronVECOUT",), "ECOUT u [cm]", "ECOUT v [cm]",
         common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
-        "photon_ecin_uv", "FD photon ECIN local occupancy",
+        "photon_ecin_uv", "FD photon ECIN local occupancy", "photons",
         ("gamma1UECIN", "gamma2UECIN"),
         ("gamma1VECIN", "gamma2VECIN"),
         "ECIN u [cm]", "ECIN v [cm]", common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
-        "photon_ecout_uv", "FD photon ECOUT local occupancy",
+        "photon_ecout_uv", "FD photon ECOUT local occupancy", "photons",
         ("gamma1UECOUT", "gamma2UECOUT"),
         ("gamma1VECOUT", "gamma2VECOUT"),
         "ECOUT u [cm]", "ECOUT v [cm]", common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
-        "electron_dc_r1", "Electron DC region 1 occupancy",
+        "electron_dc_r1", "Electron DC region 1 occupancy", "electron",
         ("electronXDC1",), ("electronYDC1",), "DC R1 x [cm]", "DC R1 y [cm]",
         common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
-        "electron_dc_r2", "Electron DC region 2 occupancy",
+        "electron_dc_r2", "Electron DC region 2 occupancy", "electron",
         ("electronXDC2",), ("electronYDC2",), "DC R2 x [cm]", "DC R2 y [cm]",
         common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
-        "electron_dc_r3", "Electron DC region 3 occupancy",
+        "electron_dc_r3", "Electron DC region 3 occupancy", "electron",
         ("electronXDC3",), ("electronYDC3",), "DC R3 x [cm]", "DC R3 y [cm]",
         common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
-        "photon_ftcal_xy", "FT photon FTCAL occupancy",
+        "photon_ftcal_xy", "FT photon FTCAL occupancy", "photons",
         ("gamma1XFT", "gamma2XFT"), ("gamma1YFT", "gamma2YFT"),
         "FTCAL x [cm]", "FTCAL y [cm]", common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
-        "proton_dc_r1", "FD proton DC region 1 occupancy",
+        "proton_dc_r1", "FD proton DC region 1 occupancy", "proton",
         ("protonXDC1",), ("protonYDC1",), "DC R1 x [cm]", "DC R1 y [cm]",
         common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
-        "proton_dc_r2", "FD proton DC region 2 occupancy",
+        "proton_dc_r2", "FD proton DC region 2 occupancy", "proton",
         ("protonXDC2",), ("protonYDC2",), "DC R2 x [cm]", "DC R2 y [cm]",
         common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
-        "proton_dc_r3", "FD proton DC region 3 occupancy",
+        "proton_dc_r3", "FD proton DC region 3 occupancy", "proton",
         ("protonXDC3",), ("protonYDC3",), "DC R3 x [cm]", "DC R3 y [cm]",
         common_coordinate_range=True, equal_aspect=True,
     ),
     DetectorMap(
-        "proton_cvt_angles", "CD proton CVT layer-1 direction occupancy",
+        "proton_cvt_angles", "CD proton CVT layer-1 direction occupancy", "proton",
         ("protonPhiCVT",), ("protonThetaCVT",),
         r"CVT $\phi$ [deg]", r"CVT $\theta$ [deg]",
         x_transform=degrees, y_transform=degrees,
@@ -508,8 +510,7 @@ def _topology_overlays(
     core = [variable for variable in variables if variable.branch in core_names]
     pages = 0
     colors = plt.get_cmap("tab10")
-    batches = _balanced_batches(core, 6)
-    for page_index, batch in enumerate(batches, start=1):
+    for section, page_index, section_pages, batch in _grouped_batches(core, 6):
         figure, axes = _panel_figure(len(batch), maximum_panels=6)
         for axis, variable in zip(axes.flat, batch, strict=False):
             lo, hi = ranges[variable.branch]
@@ -535,7 +536,8 @@ def _topology_overlays(
             axis.legend(fontsize=7, frameon=False)
         _hide_unused(axes.flat, len(batch))
         figure.suptitle(
-            f"{label}\nTopology shape comparison - page {page_index} of {len(batches)}",
+            f"{label}\nTopology shape comparison - {section}"
+            f"{_page_suffix(page_index, section_pages)}",
             fontsize=14,
             weight="semibold",
         )
@@ -557,14 +559,7 @@ def _scope_pages(
 ) -> int:
     pages = 0
     count = int(np.count_nonzero(mask))
-    ordered_variables = [
-        variable
-        for section in SECTIONS
-        for variable in variables
-        if variable.section == section
-    ]
-    batches = _balanced_batches(ordered_variables, 6)
-    for page_index, batch in enumerate(batches, start=1):
+    for section, page_index, section_pages, batch in _grouped_batches(variables, 6):
         figure, axes = _panel_figure(len(batch), maximum_panels=6)
         for axis, variable in zip(axes.flat, batch, strict=False):
             values = finite_values(variable, arrays, mask)
@@ -597,11 +592,9 @@ def _scope_pages(
                     bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none"},
                 )
         _hide_unused(axes.flat, len(batch))
-        section_names = ", ".join(dict.fromkeys(item.section for item in batch))
         figure.suptitle(
-            f"{label}\n{scope_name} - kinematic distributions - "
-            f"page {page_index} of {len(batches)}\n"
-            f"{section_names}; N={count:,}",
+            f"{label}\n{scope_name} - {section} distributions"
+            f"{_page_suffix(page_index, section_pages)}; N={count:,}",
             fontsize=13,
             weight="semibold",
         )
@@ -614,8 +607,9 @@ def _scope_pages(
         for correlation in CORRELATIONS
         if correlation.x in variable_by_name and correlation.y in variable_by_name
     ]
-    correlation_batches = _balanced_batches(correlations, 6)
-    for page_index, batch in enumerate(correlation_batches, start=1):
+    for section, page_index, section_pages, batch in _grouped_batches(
+        correlations, 6
+    ):
         figure, axes = _panel_figure(len(batch), maximum_panels=6)
         for axis, correlation in zip(axes.flat, batch, strict=False):
             x_variable = variable_by_name[correlation.x]
@@ -656,8 +650,8 @@ def _scope_pages(
             axis.grid(alpha=0.12)
         _hide_unused(axes.flat, len(batch))
         figure.suptitle(
-            f"{label}\n{scope_name} - correlations - "
-            f"page {page_index} of {len(correlation_batches)}; N={count:,}",
+            f"{label}\n{scope_name} - {section} correlations"
+            f"{_page_suffix(page_index, section_pages)}; N={count:,}",
             fontsize=14,
             weight="semibold",
         )
@@ -683,8 +677,9 @@ def _detector_map_pages(
             populated.append((detector_map, x, y))
 
     pages = 0
-    batches = _balanced_batches(populated, 4)
-    for page_index, batch in enumerate(batches, start=1):
+    for section, page_index, section_pages, batch in _grouped_batches(
+        populated, 4, section_getter=lambda item: item[0].section
+    ):
         figure, axes = _panel_figure(len(batch), maximum_panels=4)
         for axis, (detector_map, x, y) in zip(axes.flat, batch, strict=False):
             x_range, y_range = ranges[detector_map.key]
@@ -734,8 +729,8 @@ def _detector_map_pages(
             )
         _hide_unused(axes.flat, len(batch))
         figure.suptitle(
-            f"{label}\n{scope_name} - detector occupancy - "
-            f"page {page_index} of {len(batches)}",
+            f"{label}\n{scope_name} - {section} detector occupancy"
+            f"{_page_suffix(page_index, section_pages)}",
             fontsize=14,
             weight="semibold",
         )
@@ -762,6 +757,35 @@ def _balanced_batches(values: Sequence, maximum_size: int) -> list[Sequence]:
     return batches
 
 
+def _grouped_batches(
+    values: Sequence,
+    maximum_size: int,
+    *,
+    section_getter: Callable | None = None,
+) -> list[tuple[str, int, int, Sequence]]:
+    """Paginate each physics section independently, preserving section order."""
+    getter = section_getter or (lambda item: item.section)
+    section_order = list(SECTIONS)
+    for value in values:
+        section = getter(value)
+        if section not in section_order:
+            section_order.append(section)
+
+    result: list[tuple[str, int, int, Sequence]] = []
+    for section in section_order:
+        section_values = [value for value in values if getter(value) == section]
+        batches = _balanced_batches(section_values, maximum_size)
+        result.extend(
+            (section, page_index, len(batches), batch)
+            for page_index, batch in enumerate(batches, start=1)
+        )
+    return result
+
+
+def _page_suffix(page_index: int, page_count: int) -> str:
+    return f" - page {page_index} of {page_count}" if page_count > 1 else ""
+
+
 def _panel_figure(
     panel_count: int, *, maximum_panels: int
 ) -> tuple[plt.Figure, np.ndarray]:
@@ -784,13 +808,6 @@ def _panel_figure(
 
 def _set_variable_title(axis: plt.Axes, variable: PlotVariable) -> None:
     axis.set_title(variable.title, fontsize=10, loc="left", weight="semibold", pad=9)
-    axis.set_title(
-        variable.section.upper(),
-        fontsize=7,
-        loc="right",
-        color=SECTION_COLORS.get(variable.section, "#4b5563"),
-        pad=11,
-    )
 
 
 def _hide_unused(axes: Iterable[plt.Axes], used: int) -> None:
