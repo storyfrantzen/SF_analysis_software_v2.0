@@ -7,12 +7,15 @@ import numpy as np
 from eppi0.event_kinematics_diagnostics import (
     CORRELATIONS,
     DETECTOR_MAPS,
+    MIN_DETAILED_TOPOLOGY_EVENTS,
     TOPOLOGY_LABELS,
     VARIABLES,
     _balanced_batches,
     _grouped_batches,
+    _panel_dimensions,
     available_detector_maps,
     available_variables,
+    detailed_topologies,
     detector_map_values,
     observed_topologies,
     reconstructed_topology,
@@ -46,6 +49,11 @@ class EventKinematicsDiagnosticsTests(unittest.TestCase):
         self.assertEqual(summary["input_rows"], 4)
         self.assertEqual(summary["selected_rows"], 3)
         self.assertEqual(summary["topology_counts"], {"4": 1, "6": 1, "9": 1})
+        self.assertEqual(summary["detailed_topologies"], [])
+        self.assertEqual(
+            summary["topology_detail_minimum_candidates"],
+            MIN_DETAILED_TOPOLOGY_EVENTS,
+        )
         self.assertEqual(observed_topologies(topology, mask), [4, 6, 9])
         self.assertTrue(all(group in TOPOLOGY_LABELS for group in (4, 6, 9)))
 
@@ -110,6 +118,33 @@ class EventKinematicsDiagnosticsTests(unittest.TestCase):
     def test_balanced_pagination_rejects_invalid_page_size(self) -> None:
         with self.assertRaisesRegex(ValueError, "positive"):
             _balanced_batches([1], 0)
+
+    def test_dense_pages_balance_to_compact_nine_panel_grids(self) -> None:
+        self.assertEqual(
+            [len(batch) for batch in _balanced_batches(list(range(13)), 9)],
+            [7, 6],
+        )
+        self.assertEqual(
+            [len(batch) for batch in _balanced_batches(list(range(11)), 9)],
+            [6, 5],
+        )
+
+    def test_panel_dimensions_avoid_full_page_sparse_plots(self) -> None:
+        self.assertEqual(_panel_dimensions(1), (2, 2))
+        self.assertEqual(_panel_dimensions(3), (2, 3))
+        self.assertEqual(_panel_dimensions(4), (2, 2))
+        self.assertEqual(_panel_dimensions(6), (2, 3))
+        self.assertEqual(_panel_dimensions(9), (3, 3))
+
+    def test_sparse_topologies_remain_counts_only(self) -> None:
+        topology = np.concatenate(
+            (
+                np.full(MIN_DETAILED_TOPOLOGY_EVENTS, 4),
+                np.full(MIN_DETAILED_TOPOLOGY_EVENTS - 1, 5),
+            )
+        )
+        selected = np.ones(topology.size, dtype=bool)
+        self.assertEqual(detailed_topologies(topology, selected), [4])
 
     def test_kinematic_pages_never_mix_physics_sections(self) -> None:
         pages = _grouped_batches(VARIABLES, 6)
