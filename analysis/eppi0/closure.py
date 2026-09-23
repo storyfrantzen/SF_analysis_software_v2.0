@@ -290,6 +290,7 @@ def run_closure_scan(
                             feed_in_fraction=response.feed_in_fraction,
                             feed_in_shape=response.feed_in_shape,
                             measured_variance=variance,
+                            recompute_data_prior=True,
                         )
                         sigma_stat = bootstrap_samples.std(axis=0, ddof=1)
                         statistical_covariance_phi = phi_block_covariance(
@@ -516,6 +517,78 @@ def recommend_iterations(
         score = float(np.median(values)) if values.size else np.inf
         candidates.append((score, int(iteration)))
     return min(candidates)[1]
+
+
+def assess_iteration_coverage(
+    metrics: Iterable[dict[str, float | int | str]],
+    iteration_values: Iterable[int],
+) -> list[dict[str, object]]:
+    """Apply an explicit, conservative coverage gate to each iteration.
+
+    The gate is deliberately separate from the minimum-MSE recommendation:
+    regularization can minimize mean-squared error while still producing
+    confidence intervals that are too narrow. Medians are taken across the
+    independent fold/stress rows before applying the documented tolerances.
+    """
+    rows = tuple(metrics)
+    limits = {
+        "absolute_pull_mean": (0.0, 0.25),
+        "pull_std": (0.80, 1.20),
+        "coverage_1sigma": (0.63, 0.73),
+        "coverage_2sigma": (0.93, 0.97),
+        "absolute_harmonic_pull_mean": (0.0, 0.30),
+        "harmonic_pull_std": (0.75, 1.25),
+    }
+    assessments: list[dict[str, object]] = []
+    for iteration in iteration_values:
+        selected = [
+            row for row in rows if int(row["iterations"]) == int(iteration)
+        ]
+        medians: dict[str, float] = {}
+        for field in ("pull_mean", "pull_std", "coverage_1sigma", "coverage_2sigma"):
+            values = np.asarray([float(row[field]) for row in selected], dtype=float)
+            finite = values[np.isfinite(values)]
+            medians[field] = float(np.median(finite)) if finite.size else np.nan
+        for label in ("A", "B", "C"):
+            for suffix in ("pull_mean", "pull_std"):
+                field = f"harmonic_{label}_{suffix}"
+                values = np.asarray([float(row[field]) for row in selected], dtype=float)
+                finite = values[np.isfinite(values)]
+                medians[field] = float(np.median(finite)) if finite.size else np.nan
+
+        checks = {
+            "pull_mean": _inside(abs(medians["pull_mean"]), limits["absolute_pull_mean"]),
+            "pull_std": _inside(medians["pull_std"], limits["pull_std"]),
+            "coverage_1sigma": _inside(
+                medians["coverage_1sigma"], limits["coverage_1sigma"]
+            ),
+            "coverage_2sigma": _inside(
+                medians["coverage_2sigma"], limits["coverage_2sigma"]
+            ),
+        }
+        for label in ("A", "B", "C"):
+            checks[f"harmonic_{label}_pull_mean"] = _inside(
+                abs(medians[f"harmonic_{label}_pull_mean"]),
+                limits["absolute_harmonic_pull_mean"],
+            )
+            checks[f"harmonic_{label}_pull_std"] = _inside(
+                medians[f"harmonic_{label}_pull_std"],
+                limits["harmonic_pull_std"],
+            )
+        assessments.append(
+            {
+                "iterations": int(iteration),
+                "certified": bool(checks) and all(checks.values()),
+                "failed_checks": [name for name, passed in checks.items() if not passed],
+                "medians": medians,
+                "limits": limits,
+            }
+        )
+    return assessments
+
+
+def _inside(value: float, limits: tuple[float, float]) -> bool:
+    return bool(np.isfinite(value) and limits[0] <= value <= limits[1])
 
 
 def aggregate_metrics(

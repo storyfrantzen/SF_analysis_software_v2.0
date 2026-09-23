@@ -1122,6 +1122,7 @@ def command_unfold(args: argparse.Namespace) -> None:
             feed_in_fraction=float(metadata["feed_in_fraction"]),
             feed_in_shape=metadata["feed_in_shape"],
             measured_variance=measured_variance,
+            recompute_data_prior=True,
         )
         sigma_stat = bootstrap_samples.std(axis=0, ddof=1)
         statistical_covariance_phi = phi_block_covariance(
@@ -1250,6 +1251,11 @@ def command_unfold(args: argparse.Namespace) -> None:
         ),
         covariance_phi_bootstrap_experiments=(
             int(args.bootstrap) if args.iterations > 0 else 0
+        ),
+        bootstrap_prior_definition=(
+            "acceptance-corrected fluctuated measured spectrum recomputed per replica"
+            if args.iterations > 0
+            else "not applicable to zero-iteration bin-by-bin correction"
         ),
         radiative_reliable=radiative_reliable,
         kl_divergence=kl,

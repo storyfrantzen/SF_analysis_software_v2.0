@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from eppi0.binning import AnalysisBinning
 from eppi0.closure import (
     SplitClosureInputs,
+    assess_iteration_coverage,
     deterministic_folds,
     run_closure_scan,
     stress_weights,
@@ -28,6 +29,28 @@ from validate_response_closure import load_split_inputs, save_split_inputs
 
 
 class ClosureTests(unittest.TestCase):
+    def test_iteration_coverage_gate_is_separate_from_minimum_mse(self) -> None:
+        rows = []
+        for iteration, pull_std in ((1, 1.02), (2, 1.40)):
+            for fold in range(3):
+                row = {
+                    "fold": fold,
+                    "stress": "nominal",
+                    "iterations": iteration,
+                    "pull_mean": 0.03,
+                    "pull_std": pull_std,
+                    "coverage_1sigma": 0.68,
+                    "coverage_2sigma": 0.95,
+                }
+                for label in ("A", "B", "C"):
+                    row[f"harmonic_{label}_pull_mean"] = 0.05
+                    row[f"harmonic_{label}_pull_std"] = 1.05
+                rows.append(row)
+        assessment = assess_iteration_coverage(rows, (1, 2))
+        self.assertTrue(assessment[0]["certified"])
+        self.assertFalse(assessment[1]["certified"])
+        self.assertIn("pull_std", assessment[1]["failed_checks"])
+
     def test_deterministic_folds_are_stable_and_source_aware(self) -> None:
         source = np.repeat(np.arange(4, dtype=np.uint64), 100)
         event = np.tile(np.arange(100, dtype=np.uint64), 4)

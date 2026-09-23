@@ -69,6 +69,7 @@ from eppi0.root_response import _truth_inside_mask
 from eppi0.phase_space import AnalysisPhaseSpace
 from eppi0.topology import INVALID_TOPOLOGY, detector_topology_id, ft_photon_count
 from eppi0.unfolding import (
+    bootstrap_ensemble,
     bootstrap_uncertainty,
     iterative_bayes,
     phi_block_covariance,
@@ -1456,6 +1457,61 @@ class UnfoldingTests(unittest.TestCase):
         second = bootstrap_uncertainty(*args, experiments=20, seed=7)
         np.testing.assert_allclose(first[0], second[0])
         np.testing.assert_allclose(first[1], second[1])
+
+    def test_data_derived_prior_is_recomputed_for_bootstrap_coverage(self) -> None:
+        response = csr_matrix(np.array([[0.55, 0.18], [0.20, 0.57]]))
+        efficiency = np.asarray(response.sum(axis=0)).ravel()
+        truth = np.array([100.0, 35.0])
+        expected_measured = np.asarray(response.dot(truth)).ravel()
+        prior = expected_measured / efficiency
+
+        fixed_prior = bootstrap_ensemble(
+            response,
+            expected_measured,
+            efficiency,
+            1,
+            prior,
+            minimum_acceptance=0.0,
+            experiments=6000,
+            seed=11,
+        )
+        full_estimator = bootstrap_ensemble(
+            response,
+            expected_measured,
+            efficiency,
+            1,
+            prior,
+            minimum_acceptance=0.0,
+            experiments=6000,
+            seed=11,
+            recompute_data_prior=True,
+        )
+
+        rng = np.random.default_rng(91)
+        repeated_estimates = []
+        for measured in rng.poisson(expected_measured, size=(6000, 2)):
+            measured = measured.astype(float)
+            repeated_estimates.append(
+                iterative_bayes(
+                    response,
+                    measured,
+                    efficiency,
+                    1,
+                    prior=measured / efficiency,
+                    minimum_acceptance=0.0,
+                ).unfolded
+            )
+        empirical_covariance = np.cov(np.asarray(repeated_estimates), rowvar=False)
+        full_covariance = np.cov(full_estimator, rowvar=False)
+        fixed_covariance = np.cov(fixed_prior, rowvar=False)
+
+        np.testing.assert_allclose(
+            np.diag(full_covariance), np.diag(empirical_covariance), rtol=0.12
+        )
+        self.assertLess(fixed_covariance[0, 0], 0.75 * empirical_covariance[0, 0])
+        self.assertLess(fixed_covariance[1, 1], 0.75 * empirical_covariance[1, 1])
+        self.assertLess(full_covariance[0, 1], 0.0)
+        self.assertGreater(fixed_covariance[0, 1], 0.0)
 
     def test_phi_block_covariance_keeps_cells_separate(self) -> None:
         samples = np.asarray(

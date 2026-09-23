@@ -21,6 +21,7 @@ from eppi0.closure import (
     ClosureScanResult,
     SplitClosureInputs,
     aggregate_metrics,
+    assess_iteration_coverage,
     deterministic_folds,
     run_closure_scan,
     stress_weights,
@@ -213,6 +214,14 @@ def main() -> int:
         label=args.label,
     )
     print(f"Recommended iterations by held-out normalized MSE: {result.recommended_iterations}")
+    qualified = summary["recommendation"]["coverage_qualified_iterations"]
+    if qualified:
+        print(
+            "Coverage-qualified iterations: "
+            + ", ".join(str(value) for value in qualified)
+        )
+    else:
+        print("Coverage-qualified iterations: none; do not promote this scan to nominal")
     print(f"Generated rows scanned: {scan_metadata['generated_rows']}")
     print(f"Selected rows retained: {scan_metadata['selected_rows_retained']}")
     print(f"Wrote {args.output_dir / 'closure_summary.json'}")
@@ -541,8 +550,14 @@ def save_results(
         writer.writerows(result.metrics)
     aggregates = aggregate_metrics(result.metrics)
     iterations = sorted({int(row["iterations"]) for row in result.metrics})
+    coverage_assessment = assess_iteration_coverage(result.metrics, iterations)
+    coverage_qualified = [
+        int(row["iterations"])
+        for row in coverage_assessment
+        if bool(row["certified"])
+    ]
     summary: dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "method": "source-aware deterministic K-fold held-out GEMC closure",
         "label": args.label,
         "software_revision": _git_revision(),
@@ -583,6 +598,10 @@ def save_results(
             "fold_seed": args.seed,
             "iterations": iterations,
             "bootstrap_experiments": args.bootstrap,
+            "bootstrap_prior": (
+                "acceptance-corrected fluctuated measured spectrum recomputed "
+                "for every positive-iteration replica"
+            ),
             "response_uncertainty": args.response_uncertainty,
             "minimum_acceptance": minimum_acceptance,
             "minimum_validation_truth": args.minimum_truth,
@@ -592,7 +611,8 @@ def save_results(
             "phase_space": phase_space.description(),
             "topology_groups": sorted(set(args.topology_group)),
             "harmonic_measurement_covariance": (
-                "bootstrap covariance among phi bins within each (Q2,xB,-t) cell; "
+                "full-estimator bootstrap covariance among phi bins within each "
+                "(Q2,xB,-t) cell, including recomputation of the data-derived prior; "
                 + (
                     "delete-one-training-fold jackknife response covariance added "
                     "within each phi block; "
@@ -607,9 +627,13 @@ def save_results(
         "recommendation": {
             "iterations": result.recommended_iterations,
             "criterion": "minimum median held-out normalized MSE across folds and stresses",
+            "coverage_qualified_iterations": coverage_qualified,
+            "coverage_certified": result.recommended_iterations in coverage_qualified,
+            "coverage_assessment": coverage_assessment,
             "warning": (
-                "This is a closure diagnostic recommendation, not an automatic publication "
-                "choice; inspect pull coverage, refolding, and harmonic closure as well."
+                "The minimum-MSE iteration is a production candidate only when "
+                "coverage_certified is true. Otherwise repair or augment the covariance "
+                "and rerun closure; do not promote the scan to nominal."
             ),
         },
         "aggregate_metrics": aggregates,

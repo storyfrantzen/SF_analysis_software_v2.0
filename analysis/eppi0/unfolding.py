@@ -87,7 +87,17 @@ def bootstrap_ensemble(
     feed_in_fraction: float = 0.0,
     feed_in_shape: Array | None = None,
     measured_variance: Array | None = None,
+    recompute_data_prior: bool = False,
 ) -> Array:
+    """Bootstrap the unfolded estimator.
+
+    Set ``recompute_data_prior`` when the central IBU prior was constructed as
+    ``measured / efficiency``.  Each replica then rebuilds that prior from its
+    fluctuated measured spectrum.  Holding a data-derived prior fixed omits a
+    first-order source of statistical variation, especially for early IBU
+    iterations.  Leave it false only for a prior independent of the measured
+    sample.
+    """
     if experiments <= 0:
         raise ValueError("experiments must be positive")
     measured = np.asarray(measured, dtype=float)
@@ -107,15 +117,24 @@ def bootstrap_ensemble(
     )
     rng = np.random.default_rng(seed)
     samples = np.empty((experiments, measured.size), dtype=float)
+    acceptance_valid = np.asarray(efficiency, dtype=float) > minimum_acceptance
     for index in range(experiments):
         fluctuated = _fluctuate_weighted_poisson(rng, measured, variance)
         corrected = subtract_feed_in(fluctuated, feed_in_fraction, shape)
+        replica_prior = prior
+        if recompute_data_prior:
+            replica_prior = np.divide(
+                fluctuated,
+                efficiency,
+                out=np.zeros_like(fluctuated),
+                where=acceptance_valid,
+            )
         samples[index] = iterative_bayes(
             response_core,
             corrected,
             efficiency,
             iterations,
-            prior=prior,
+            prior=replica_prior,
             minimum_acceptance=minimum_acceptance,
         ).unfolded
     return samples
@@ -133,6 +152,7 @@ def bootstrap_uncertainty(
     feed_in_fraction: float = 0.0,
     feed_in_shape: Array | None = None,
     measured_variance: Array | None = None,
+    recompute_data_prior: bool = False,
 ) -> tuple[Array, Array]:
     samples = bootstrap_ensemble(
         response_core,
@@ -146,6 +166,7 @@ def bootstrap_uncertainty(
         feed_in_fraction=feed_in_fraction,
         feed_in_shape=feed_in_shape,
         measured_variance=measured_variance,
+        recompute_data_prior=recompute_data_prior,
     )
     return samples.mean(axis=0), samples.std(axis=0, ddof=1)
 

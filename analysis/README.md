@@ -179,7 +179,18 @@ the topology components whose accepted counts sum to the integrated response.
 The command writes `closure_summary.json`, `closure_metrics.csv`,
 `closure_results.npz`, and `closure_diagnostics.pdf`.  It also preserves the
 fold-local truth, reconstruction, feed-in, and sparse migration counts so the
-exact split can be audited.  The summary explicitly limits the conclusion to
+exact split can be audited. Positive-iteration pseudoexperiments fluctuate the
+measured spectrum and recompute its acceptance-corrected IBU prior, so closure
+tests the same data-dependent estimator used in production.
+
+The summary reports the minimum-MSE iteration separately from an explicit
+coverage gate. The gate checks median bin-level pull mean, pull width, one- and
+two-sigma coverage, plus the means and widths of the recovered A, B, and C
+harmonic pulls. A minimum-MSE iteration with `coverage_certified: false` must
+not be promoted to the nominal extraction; the covariance model must first be
+repaired or augmented and closure rerun.
+
+The summary explicitly limits the conclusion to
 response, feed-in, unfolding, refolding, and harmonic recovery.  This test does
 not validate data sideband subtraction, current-efficiency corrections,
 radiative or bin-centering corrections, luminosity, helicity handling, or
@@ -326,7 +337,11 @@ are stored as `NaN`, and the component masks are retained separately so every
 rejection can be audited.  The harmonic stage consumes this mask directly.
 
 Positive-iteration unfolding also retains the bootstrap statistical covariance
-among phi bins inside every `(Q2, xB, -t)` cell. Response-MC and radiative-factor
+among phi bins inside every `(Q2, xB, -t)` cell. Every replica reruns the full
+data-dependent estimator: it fluctuates the measured spectrum and rebuilds the
+acceptance-corrected IBU prior from that fluctuation. Keeping this prior fixed
+would omit a first-order statistical contribution at early iterations.
+Response-MC and radiative-factor
 variances are added on the block diagonal, and `cross-section` propagates the
 blocks through luminosity, flux, bin-volume, bin-centering, and global
 normalization factors. The compact `covariance_phi` array therefore has shape
