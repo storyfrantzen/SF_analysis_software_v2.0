@@ -1545,6 +1545,24 @@ Because no event-level rebinning is performed, the resulting chi-squared is a
 descriptive diagnostic. The BSA inputs are helicity-yield asymmetries and do
 not depend on IBU iterations or unfolded cross-section covariance.
 
+Export one or more finalized cross-section artifacts as plain CSV tables for
+external collaborators while retaining the within-cell phi covariance:
+
+```bash
+python3 analysis/export_reduced_cross_sections.py \
+  --sample torus_plus1 "RGA Fall 2018 torus+1" plus/cross_section.npz \
+  --sample torus_minus1 "RGA Fall 2018 torus-1" minus/cross_section.npz \
+  --sample combined "RGA Fall 2018 combined polarities" combined/cross_section.npz \
+  --output-dir results/rga_fa18_cross_section_export
+```
+
+Each CSV contains only final-valid bins, all four bin indices and edges, the
+coordinates used for the virtual-photon flux, reduced cross section, propagated
+counting uncertainty, and BLUE weights where applicable. The companion NPZ
+retains the phi covariance required for correlated harmonic fits. The generated
+README and JSON summary record input paths, hashes, units, validity definitions,
+uncertainty scope, and provisional limitations.
+
 ## Legacy behavior intentionally corrected
 
 - reconstructed failures never remove generated events from the denominator;
