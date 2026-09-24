@@ -1526,6 +1526,25 @@ zero for the one-photon exclusive-pi0 beam-spin observable. These checks are
 internal consistency tests rather than replacements for detector and selection
 systematic studies.
 
+Make the provisional comparison with the values transcribed from Table 5.1 of
+Andrey's internal EPPI0 analysis note directly from the two current BSA
+artifacts:
+
+```bash
+python3 analysis/compare_bsa_to_andrey.py \
+  --torus-plus-1 torus_plus/beam_spin_asymmetry.npz \
+  --torus-minus-1 torus_minus/beam_spin_asymmetry.npz \
+  --output-dir results/andrey_bsa_comparison
+```
+
+This utility assigns the note's outbending rows to torus+1 and its inbending
+rows to torus-1. It selects the nearest production-quality campaign-bin center
+in `(Q2,xB,-t)`, writes the complete matching table and input hashes, and
+produces a five-region comparison quilt plus matching and pull diagnostics.
+Because no event-level rebinning is performed, the resulting chi-squared is a
+descriptive diagnostic. The BSA inputs are helicity-yield asymmetries and do
+not depend on IBU iterations or unfolded cross-section covariance.
+
 ## Legacy behavior intentionally corrected
 
 - reconstructed failures never remove generated events from the denominator;

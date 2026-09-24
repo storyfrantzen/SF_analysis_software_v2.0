@@ -20,3 +20,13 @@ zero placeholders required by the common reference-table schema; comparisons
 must not interpret them as a claim of zero systematic uncertainty.  The `row`
 column preserves the table row number and `reported_global_scale` records the
 stated factor.
+
+`andrey_eppi0_table_5_1_bsa.csv` transcribes the 30 beam-spin
+`A_LU^{sin(phi)}` results in Table 5.1 of the internal note *Andrey EPPI0
+analysis note*, supplied by the analysis author. The table reports statistical
+uncertainties only. The note's `out` rows are compared with the RGA Fall 2018
+torus+1 extraction and its `in` rows with torus-1; this polarity assignment is
+also recorded in every comparison output. These values are suitable for a
+provisional comparison, not a publication citation. The two analyses use
+different multidimensional bins, so `compare_bsa_to_andrey.py` performs a
+documented nearest-center diagnostic rather than claiming an exact rebinning.
