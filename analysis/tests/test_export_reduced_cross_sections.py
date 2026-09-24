@@ -45,7 +45,8 @@ class ExportReducedCrossSectionsTest(unittest.TestCase):
             path = Path(directory) / "cross_section.npz"
             np.savez(path, **self.artifact())
             rows, metadata = MODULE.rows_for_sample(
-                "torus_plus1", "torus+1", MODULE.load_artifact(path), path
+                "torus_plus1", "torus+1", MODULE.load_artifact(path), path,
+                beam_energy=10.604,
             )
             self.assertEqual(len(rows), 3)
             self.assertEqual(metadata["valid_bins"], 3)
@@ -54,6 +55,9 @@ class ExportReducedCrossSectionsTest(unittest.TestCase):
                 rows[0]["propagated_statistical_and_finite_MC_uncertainty_nb_per_GeV2_rad"],
                 0.2,
             )
+            self.assertGreater(rows[0]["virtual_photon_epsilon"], 0.0)
+            self.assertLess(rows[0]["virtual_photon_epsilon"], 1.0)
+            self.assertEqual(metadata["beam_energy_GeV"], 10.604)
             output = Path(directory) / "out.csv"
             MODULE.write_csv(output, rows)
             with output.open(newline="", encoding="utf-8") as source:

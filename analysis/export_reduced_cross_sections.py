@@ -10,8 +10,13 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sys
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from eppi0.structure_functions import epsilon_from_xb_q2
 
 
 EDGE_NAMES = ("q2_edges", "xb_edges", "t_edges", "phi_edges")
@@ -35,6 +40,8 @@ CSV_FIELDS = (
     "xB_low",
     "xB_high",
     "xB_flux_coordinate",
+    "beam_energy_GeV",
+    "virtual_photon_epsilon",
     "minus_t_low_GeV2",
     "minus_t_high_GeV2",
     "minus_t_center_GeV2",
@@ -61,6 +68,27 @@ def parse_args() -> argparse.Namespace:
         help="repeat for each campaign or combined result",
     )
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--beam-energy",
+        nargs=2,
+        metavar=("KEY", "GEV"),
+        action="append",
+        default=[],
+        help="beam energy for a sample key; enables an epsilon column",
+    )
+    parser.add_argument(
+        "--package-key",
+        default="rga_fa18_reduced_cross_section",
+        help="filesystem-safe prefix for the covariance artifact",
+    )
+    parser.add_argument(
+        "--package-title",
+        default="RGA Fall 2018 provisional reduced cross sections",
+    )
+    parser.add_argument(
+        "--current-efficiency-treatment",
+        default="unit current weights",
+    )
     parser.add_argument(
         "--analysis-note",
         default=(
@@ -148,6 +176,7 @@ def rows_for_sample(
     label: str,
     artifact: dict[str, np.ndarray],
     path: Path,
+    beam_energy: float | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     shape, valid = validate_artifact(artifact, path)
     q2_edges, xb_edges, t_edges, phi_edges = (
@@ -155,6 +184,11 @@ def rows_for_sample(
     )
     q2_coordinate = value_grid(artifact, "flux_q2_coordinate", shape)
     xb_coordinate = value_grid(artifact, "flux_xb_coordinate", shape)
+    epsilon = (
+        epsilon_from_xb_q2(q2_coordinate, xb_coordinate, beam_energy)
+        if beam_energy is not None
+        else np.full(shape, np.nan)
+    )
     values = np.asarray(artifact["reduced_cross_section"], dtype=float)
     errors = np.asarray(artifact["uncertainty"], dtype=float)
     contributors = optional_grid(artifact, "combination_contributor_count", shape)
@@ -178,6 +212,11 @@ def rows_for_sample(
                 "xB_low": float(xb_edges[ixb]),
                 "xB_high": float(xb_edges[ixb + 1]),
                 "xB_flux_coordinate": float(xb_coordinate[iq2, ixb, it, iphi]),
+                "beam_energy_GeV": beam_energy if beam_energy is not None else "",
+                "virtual_photon_epsilon": (
+                    float(epsilon[iq2, ixb, it, iphi])
+                    if np.isfinite(epsilon[iq2, ixb, it, iphi]) else ""
+                ),
                 "minus_t_low_GeV2": float(t_edges[it]),
                 "minus_t_high_GeV2": float(t_edges[it + 1]),
                 "minus_t_center_GeV2": float(0.5 * (t_edges[it] + t_edges[it + 1])),
@@ -208,6 +247,7 @@ def rows_for_sample(
         "sha256": sha256(path),
         "array_shape": list(shape),
         "valid_bins": len(rows),
+        "beam_energy_GeV": beam_energy,
         "units": scalar_text(
             artifact, "reduced_cross_section_units", "nb/(GeV^2 rad)"
         ),
@@ -256,25 +296,30 @@ def write_readme(
     path: Path,
     samples: list[dict[str, object]],
     analysis_note: str,
+    package_title: str,
+    current_efficiency_treatment: str,
+    covariance_filename: str,
 ) -> None:
     lines = [
-        "# RGA Fall 2018 reduced cross sections",
+        f"# {package_title}",
         "",
         analysis_note.rstrip(".") + ".",
         "",
         "Each campaign CSV contains only bins passing that artifact's final validity mask.",
         "The reduced cross-section unit is `nb/(GeV^2 rad)`. Phi is recorded in degrees.",
         "The Q2 and xB coordinate columns are the coordinates used to evaluate the virtual-photon flux.",
+        "When a beam energy is supplied, epsilon is evaluated at those same Q2 and xB coordinates.",
         "The -t and phi coordinate columns are geometric bin centers; all four bin edges are included.",
         "",
         "The error column is the square root of the stored covariance diagonal. It includes",
         "data counting fluctuations, finite response-simulation counting fluctuations, and",
         "finite radiative-correction simulation uncertainty. It does not include detector,",
         "selection, luminosity, current-efficiency, bin-centering-model, or other pending",
-        "campaign systematic covariance. The supplied production variants use unit current",
-        "weights. Treat these exports as provisional until those systematics are finalized.",
+        "campaign systematic covariance. The current-efficiency treatment is",
+        f"`{current_efficiency_treatment}`. Treat these exports as provisional until the",
+        "remaining systematics are finalized.",
         "",
-        "`rga_fa18_reduced_cross_section_phi_covariance.npz` stores the full within-cell",
+        f"`{covariance_filename}` stores the full within-cell",
         "phi covariance and validity mask for each sample. Use it instead of independent",
         "diagonal errors when fitting harmonics across phi.",
         "",
@@ -286,6 +331,7 @@ def write_readme(
             [
                 f"- `{sample['key']}`: {sample['label']}",
                 f"  - valid bins: {sample['valid_bins']}",
+                f"  - beam energy: {sample['beam_energy_GeV']} GeV",
                 f"  - source SHA-256: `{sample['sha256']}`",
                 f"  - covariance replicas: {sample['covariance_bootstrap_experiments']}",
             ]
@@ -295,6 +341,16 @@ def write_readme(
 
 def main() -> int:
     args = parse_args()
+    if not KEY_PATTERN.match(args.package_key):
+        raise ValueError("package key must contain only letters, numbers, and underscores")
+    beam_energies: dict[str, float] = {}
+    for key, raw_energy in args.beam_energy:
+        if key in beam_energies:
+            raise ValueError(f"duplicate beam energy for {key}")
+        energy = float(raw_energy)
+        if not np.isfinite(energy) or energy <= 0.0:
+            raise ValueError(f"invalid beam energy for {key}: {raw_energy}")
+        beam_energies[key] = energy
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     covariance_payload: dict[str, np.ndarray] = {}
@@ -311,7 +367,9 @@ def main() -> int:
             covariance_payload.update(edges)
         elif any(not np.array_equal(common_edges[name], edges[name]) for name in EDGE_NAMES):
             raise ValueError(f"{path} does not share the package bin edges")
-        rows, metadata = rows_for_sample(key, label, artifact, path)
+        rows, metadata = rows_for_sample(
+            key, label, artifact, path, beam_energy=beam_energies.get(key)
+        )
         write_csv(output_dir / f"{key}_reduced_cross_sections.csv", rows)
         sample_metadata.append(metadata)
         covariance_payload[f"{key}_final_validity_mask"] = np.asarray(
@@ -325,11 +383,11 @@ def main() -> int:
         covariance_payload[f"{key}_source_sha256"] = np.asarray(metadata["sha256"])
         print(f"{key}: exported {len(rows)} valid bins")
 
-    covariance_path = output_dir / "rga_fa18_reduced_cross_section_phi_covariance.npz"
+    covariance_path = output_dir / f"{args.package_key}_phi_covariance.npz"
     np.savez_compressed(covariance_path, **covariance_payload)
     summary = {
         "schema_version": 1,
-        "package": "RGA Fall 2018 provisional reduced cross sections",
+        "package": args.package_title,
         "analysis_note": args.analysis_note,
         "csv_definition": "one row per final-valid 4D cross-section bin",
         "uncertainty_scope": (
@@ -337,14 +395,21 @@ def main() -> int:
             "radiative-correction MC uncertainty; remaining campaign systematic "
             "covariance is not included"
         ),
-        "current_efficiency_treatment": "unit current weights",
+        "current_efficiency_treatment": args.current_efficiency_treatment,
         "samples": sample_metadata,
         "covariance_artifact": str(covariance_path),
     }
     summary_path = output_dir / "export_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     readme_path = output_dir / "README.md"
-    write_readme(readme_path, sample_metadata, args.analysis_note)
+    write_readme(
+        readme_path,
+        sample_metadata,
+        args.analysis_note,
+        args.package_title,
+        args.current_efficiency_treatment,
+        covariance_path.name,
+    )
     print(f"Wrote {covariance_path}")
     print(f"Wrote {summary_path}")
     print(f"Wrote {readme_path}")
