@@ -17,6 +17,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from eppi0.structure_functions import epsilon_from_xb_q2
+from eppi0.binning import AnalysisBinning
 
 
 EDGE_NAMES = ("q2_edges", "xb_edges", "t_edges", "phi_edges")
@@ -125,24 +126,25 @@ def load_artifact(path: Path) -> dict[str, np.ndarray]:
 
 
 def value_grid(
-    artifact: dict[str, np.ndarray], name: str, shape: tuple[int, ...]
+    artifact: dict[str, np.ndarray], name: str, binning: AnalysisBinning
 ) -> np.ndarray:
+    shape = binning.shape
     if name not in artifact:
         return np.full(shape, np.nan)
     values = np.asarray(artifact[name], dtype=float)
     if values.shape == shape:
         return values
-    if values.size == int(np.prod(shape)):
-        return values.reshape(shape)
+    if values.size == binning.size:
+        return binning.unflatten(values.reshape(-1))
     raise ValueError(f"{name} has shape {values.shape}; expected {shape}")
 
 
 def optional_grid(
-    artifact: dict[str, np.ndarray], name: str, shape: tuple[int, ...]
+    artifact: dict[str, np.ndarray], name: str, binning: AnalysisBinning
 ) -> np.ndarray:
     if name not in artifact:
-        return np.full(shape, np.nan)
-    return value_grid(artifact, name, shape)
+        return np.full(binning.shape, np.nan)
+    return value_grid(artifact, name, binning)
 
 
 def validate_artifact(
@@ -182,8 +184,9 @@ def rows_for_sample(
     q2_edges, xb_edges, t_edges, phi_edges = (
         np.asarray(artifact[name], dtype=float) for name in EDGE_NAMES
     )
-    q2_coordinate = value_grid(artifact, "flux_q2_coordinate", shape)
-    xb_coordinate = value_grid(artifact, "flux_xb_coordinate", shape)
+    binning = AnalysisBinning(q2_edges, xb_edges, t_edges, phi_edges)
+    q2_coordinate = value_grid(artifact, "flux_q2_coordinate", binning)
+    xb_coordinate = value_grid(artifact, "flux_xb_coordinate", binning)
     epsilon = (
         epsilon_from_xb_q2(q2_coordinate, xb_coordinate, beam_energy)
         if beam_energy is not None
@@ -191,9 +194,9 @@ def rows_for_sample(
     )
     values = np.asarray(artifact["reduced_cross_section"], dtype=float)
     errors = np.asarray(artifact["uncertainty"], dtype=float)
-    contributors = optional_grid(artifact, "combination_contributor_count", shape)
-    left_weight = optional_grid(artifact, "combination_left_weight", shape)
-    right_weight = optional_grid(artifact, "combination_right_weight", shape)
+    contributors = optional_grid(artifact, "combination_contributor_count", binning)
+    left_weight = optional_grid(artifact, "combination_left_weight", binning)
+    right_weight = optional_grid(artifact, "combination_right_weight", binning)
     rows: list[dict[str, object]] = []
     for iq2, ixb, it, iphi in np.argwhere(valid):
         value = float(values[iq2, ixb, it, iphi])
@@ -247,6 +250,9 @@ def rows_for_sample(
         "sha256": sha256(path),
         "array_shape": list(shape),
         "valid_bins": len(rows),
+        "finite_epsilon_bins": sum(
+            bool(str(row["virtual_photon_epsilon"])) for row in rows
+        ),
         "beam_energy_GeV": beam_energy,
         "units": scalar_text(
             artifact, "reduced_cross_section_units", "nb/(GeV^2 rad)"
@@ -332,6 +338,7 @@ def write_readme(
                 f"- `{sample['key']}`: {sample['label']}",
                 f"  - valid bins: {sample['valid_bins']}",
                 f"  - beam energy: {sample['beam_energy_GeV']} GeV",
+                f"  - bins with finite physical epsilon: {sample['finite_epsilon_bins']}",
                 f"  - source SHA-256: `{sample['sha256']}`",
                 f"  - covariance replicas: {sample['covariance_bootstrap_experiments']}",
             ]

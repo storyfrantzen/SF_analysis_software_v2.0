@@ -74,6 +74,23 @@ class ExportReducedCrossSectionsTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "covariance diagonal"):
                 MODULE.validate_artifact(MODULE.load_artifact(path), path)
 
+    def test_legacy_flat_coordinate_order_is_unflattened(self) -> None:
+        binning = MODULE.AnalysisBinning(
+            [1.0, 2.0, 3.0],
+            [0.1, 0.2, 0.3],
+            [0.2, 0.4, 0.6],
+            [0.0, 180.0, 360.0],
+        )
+        expected = np.arange(binning.size, dtype=float).reshape(binning.shape)
+        legacy_flat = binning.flatten_values(expected)
+        self.assertFalse(np.array_equal(legacy_flat.reshape(binning.shape), expected))
+        actual = MODULE.value_grid(
+            {"flux_q2_coordinate": legacy_flat},
+            "flux_q2_coordinate",
+            binning,
+        )
+        np.testing.assert_array_equal(actual, expected)
+
 
 if __name__ == "__main__":
     unittest.main()
