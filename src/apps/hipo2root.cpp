@@ -553,7 +553,7 @@ void fillRecBranch(RecBranches& recBranches,
     const MomentumCorrectionResult momentum = momentumCorrections.correct(
         corrected.p, corrected.theta, corrected.phi, pid, det, sector
     );
-    const bool changed = energyLossDeltaP != 0.0 || momentum.deltaP != 0.0 ||
+    const bool changed = energyLossDeltaP != 0.0 || momentum.applied ||
                          corrected.deltaTheta != 0.0 || corrected.deltaPhi != 0.0;
     if (!changed) {
         recBranches.fill(particle, runNum, eventNum, particleIdx);
@@ -563,6 +563,8 @@ void fillRecBranch(RecBranches& recBranches,
     recBranches.fill(particle, runNum, eventNum, particleIdx,
                      momentum.p, corrected.theta, corrected.phi);
     recBranches.delta_p_energy_loss = energyLossDeltaP;
+    recBranches.delta_p_momentum_correction = momentum.deltaP;
+    recBranches.momentum_correction_applied = momentum.applied;
     recBranches.delta_p_elastic = momentum.deltaP;
 }
 

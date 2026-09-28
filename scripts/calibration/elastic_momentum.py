@@ -21,6 +21,8 @@ RAD_TO_DEG = 180.0 / np.pi
 class ElasticFitConfig:
     beam_energy: float
     torus: int = 0
+    electron_selection: str = "exclusive-ep"
+    elastic_w_max_abs_gev: float = 0.20
     coplanarity_max_deg: float = 3.0
     theta_balance_max_deg: float = 2.0
     missing_energy_max_gev: float = 0.75
@@ -141,12 +143,21 @@ def elastic_proton_theta_from_electron(
     return np.arctan2(transverse, longitudinal)
 
 
-def load_elastic_arrays(input_file: Path, tree: str, max_rows: int | None) -> dict[str, np.ndarray]:
+def load_elastic_arrays(
+    input_file: Path,
+    tree: str,
+    max_rows: int | None,
+    *,
+    require_proton: bool = True,
+) -> dict[str, np.ndarray]:
     df = load_dataframe(input_file, tree)
     required = [
         "electronP", "electronTheta", "electronPhi", "electronDet", "electronSector",
-        "protonP", "protonTheta", "protonPhi", "protonDet", "protonSector",
     ]
+    if require_proton:
+        required.extend([
+            "protonP", "protonTheta", "protonPhi", "protonDet", "protonSector",
+        ])
     missing = [column for column in required if not has_column(df, column)]
     if missing:
         raise RuntimeError(
@@ -234,6 +245,80 @@ def select_elastic_events(
         "selectedMissingEnergyGeV": _region_summary(missing_energy[mask]),
     }
     return selected, summary
+
+
+def select_inclusive_elastic_electrons(
+    arrays: dict[str, np.ndarray],
+    cfg: ElasticFitConfig,
+) -> tuple[dict[str, np.ndarray], dict[str, object]]:
+    """Select an electron-only elastic peak using reconstructed W.
+
+    This deliberately does not require a reconstructed recoil proton.  The W
+    window is only a broad purity preselection; the narrow residual core is
+    still located independently inside every theta/phi profile cell.
+    """
+    momentum = np.asarray(arrays["electronP"], dtype=float)
+    theta = np.asarray(arrays["electronTheta"], dtype=float)
+    energy = np.sqrt(np.square(momentum) + ELECTRON_MASS_GEV**2)
+    q2 = 2.0 * cfg.beam_energy * (
+        energy - momentum * np.cos(theta)
+    ) - ELECTRON_MASS_GEV**2
+    w2 = (
+        PROTON_MASS_GEV**2
+        + 2.0 * PROTON_MASS_GEV * (cfg.beam_energy - energy)
+        - q2
+    )
+    w = np.where(w2 >= 0.0, np.sqrt(np.maximum(w2, 0.0)), np.nan)
+    residual = elastic_electron_momentum(theta, cfg.beam_energy) / momentum - 1.0
+
+    mask = np.ones(momentum.size, dtype=bool)
+    for name in (
+        "electronP", "electronTheta", "electronPhi", "electronDet",
+        "electronSector",
+    ):
+        mask &= np.isfinite(np.asarray(arrays[name], dtype=float))
+    mask &= momentum > 0.0
+    mask &= np.asarray(arrays["electronDet"], dtype=int) == 1
+    sectors = np.asarray(arrays["electronSector"], dtype=int)
+    mask &= (sectors >= 1) & (sectors <= 6)
+    if "nPid11" in arrays:
+        mask &= np.asarray(arrays["nPid11"], dtype=int) == 1
+    preselection = mask.copy()
+    mask &= np.isfinite(w)
+    mask &= np.abs(w - PROTON_MASS_GEV) <= cfg.elastic_w_max_abs_gev
+
+    selected = {name: np.asarray(values)[mask] for name, values in arrays.items()}
+    selected["elasticWGeV"] = w[mask]
+    selected["elasticResidual"] = residual[mask]
+    summary: dict[str, object] = {
+        "mode": "inclusive-w",
+        "inputCandidates": int(mask.size),
+        "preselectedCandidates": int(np.count_nonzero(preselection)),
+        "angularSelectedCandidates": int(np.count_nonzero(mask)),
+        "selectedCandidates": int(np.count_nonzero(mask)),
+        "selectedFraction": float(np.mean(mask)) if mask.size else 0.0,
+        "elasticWCenterGeV": PROTON_MASS_GEV,
+        "elasticWMaxAbsGeV": cfg.elastic_w_max_abs_gev,
+        "preselectionWGeV": _region_summary(w[preselection & np.isfinite(w)]),
+        "selectedWGeV": _region_summary(w[mask]),
+        "selectedResidual": _region_summary(residual[mask]),
+    }
+    return selected, summary
+
+
+def select_calibration_events(
+    arrays: dict[str, np.ndarray],
+    cfg: ElasticFitConfig,
+) -> tuple[dict[str, np.ndarray], dict[str, object]]:
+    if cfg.electron_selection == "exclusive-ep":
+        selected, summary = select_elastic_events(arrays, cfg)
+        summary["mode"] = "exclusive-ep"
+        return selected, summary
+    if cfg.electron_selection == "inclusive-w":
+        return select_inclusive_elastic_electrons(arrays, cfg)
+    raise ValueError(
+        "electron_selection must be exclusive-ep or inclusive-w"
+    )
 
 
 def robust_core(values: np.ndarray) -> tuple[float, float, float, int]:
@@ -763,17 +848,34 @@ def evaluate_region(
     region: dict[str, object],
     theta_deg: np.ndarray,
     phi_deg: np.ndarray,
+    momentum_gev: np.ndarray | None = None,
 ) -> np.ndarray:
+    theta_values = np.asarray(theta_deg, dtype=float)
     theta_normalized = (
-        np.asarray(theta_deg) - float(region["thetaCenterDeg"])
+        theta_values - float(region["thetaCenterDeg"])
     ) / float(region["thetaScaleDeg"])
     terms = list(region["terms"])
+    momentum_dependent = "momentumRangeGeV" in region or any(
+        int(term.get("momentumPower", 0)) != 0 for term in terms
+    )
+    if momentum_dependent:
+        if momentum_gev is None:
+            raise ValueError("momentum-dependent region requires momentum_gev")
+        momentum_values = np.asarray(momentum_gev, dtype=float)
+        if momentum_values.shape != theta_values.shape:
+            raise ValueError("momentum_gev must have the same shape as theta_deg")
+        momentum_normalized = (
+            momentum_values - float(region["momentumCenterGeV"])
+        ) / float(region["momentumScaleGeV"])
+    else:
+        momentum_normalized = np.zeros(theta_values.shape, dtype=float)
     if region["basis"] == "polynomial":
         phi_normalized = (
             np.asarray(phi_deg) - float(region["phiCenterDeg"])
         ) / float(region["phiScaleDeg"])
         return np.sum(np.column_stack([
             float(term["coefficient"]) *
+            np.power(momentum_normalized, int(term.get("momentumPower", 0))) *
             np.power(theta_normalized, int(term["thetaPower"])) *
             np.power(phi_normalized, int(term["phiPower"]))
             for term in terms
@@ -791,6 +893,7 @@ def evaluate_region(
             phi_term = np.sin(harmonic * phi_rad)
         columns.append(
             float(term["coefficient"]) *
+            np.power(momentum_normalized, int(term.get("momentumPower", 0))) *
             np.power(theta_normalized, int(term["thetaPower"])) * phi_term
         )
     return np.sum(np.column_stack(columns), axis=1)
@@ -800,9 +903,16 @@ def region_support_mask(
     region: dict[str, object],
     theta_deg: np.ndarray,
     phi_deg: np.ndarray,
+    momentum_gev: np.ndarray | None = None,
 ) -> np.ndarray:
     theta = np.asarray(theta_deg, dtype=float)
     phi = np.asarray(phi_deg, dtype=float)
+    momentum = (
+        np.asarray(momentum_gev, dtype=float)
+        if momentum_gev is not None else None
+    )
+    if momentum is not None and momentum.shape != theta.shape:
+        raise ValueError("momentum_gev must have the same shape as theta_deg")
     theta_range = list(region["thetaRangeDeg"])
     phi_range = list(region["phiRangeDeg"])
     mask = (
@@ -811,6 +921,14 @@ def region_support_mask(
         (phi >= float(phi_range[0])) &
         (phi <= float(phi_range[1]))
     )
+    if "momentumRangeGeV" in region:
+        if momentum_gev is None:
+            raise ValueError("momentum-dependent region requires momentum_gev")
+        momentum_range = list(region["momentumRangeGeV"])
+        mask &= (
+            (momentum >= float(momentum_range[0])) &
+            (momentum <= float(momentum_range[1]))
+        )
     support_cells = list(region.get("supportCells", []))
     if not support_cells:
         return mask
@@ -818,13 +936,88 @@ def region_support_mask(
     for cell in support_cells:
         cell_theta = list(cell["thetaRangeDeg"])
         cell_phi = list(cell["phiRangeDeg"])
-        cell_mask |= (
+        this_cell = (
             (theta >= float(cell_theta[0])) &
             (theta <= float(cell_theta[1])) &
             (phi >= float(cell_phi[0])) &
             (phi <= float(cell_phi[1]))
         )
+        if "momentumRangeGeV" in cell:
+            if momentum_gev is None:
+                raise ValueError("momentum support cell requires momentum_gev")
+            cell_momentum = list(cell["momentumRangeGeV"])
+            assert momentum is not None
+            this_cell &= (
+                (momentum >= float(cell_momentum[0])) &
+                (momentum <= float(cell_momentum[1]))
+            )
+        cell_mask |= this_cell
     return mask & cell_mask
+
+
+def apply_supported_particle_correction(
+    momentum: np.ndarray,
+    theta_rad: np.ndarray,
+    phi_rad: np.ndarray,
+    detector: np.ndarray,
+    sector: np.ndarray,
+    *,
+    pid: int,
+    parameters: dict[str, object],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Apply matching regions only inside their exact calibration cells."""
+    momentum = np.asarray(momentum, dtype=float)
+    theta_deg = np.asarray(theta_rad, dtype=float) * RAD_TO_DEG
+    phi_rad = np.asarray(phi_rad, dtype=float)
+    global_phi = wrap_degrees(phi_rad * RAD_TO_DEG)
+    detector = np.asarray(detector, dtype=int)
+    sector = np.asarray(sector, dtype=int)
+    correction = np.zeros(momentum.shape, dtype=float)
+    support = np.zeros(momentum.shape, dtype=bool)
+    assigned = np.zeros(momentum.shape, dtype=bool)
+    for region in parameters.get("regions", []):
+        if int(region.get("pid", 0)) != pid:
+            continue
+        region_detector = int(region["detector"])
+        region_sector = int(region.get("sector", 0))
+        rows = detector == region_detector
+        if region_sector:
+            rows &= sector == region_sector
+        indices = np.flatnonzero(rows)
+        if indices.size == 0:
+            continue
+        phi_mode = region.get(
+            "phiVariable", "sectorLocal" if region_sector else "global"
+        )
+        phi_variable = (
+            sector_local_phi(phi_rad[indices], sector[indices])
+            if phi_mode == "sectorLocal"
+            else global_phi[indices]
+        )
+        in_support = region_support_mask(
+            region, theta_deg[indices], phi_variable, momentum[indices]
+        )
+        supported = indices[in_support]
+        if np.any(assigned[supported]):
+            raise ValueError(
+                f"overlapping correction regions for pid={pid}, "
+                f"detector={region_detector}, sector={region_sector}"
+            )
+        if supported.size:
+            correction[supported] = evaluate_region(
+                region, theta_deg[supported], phi_variable[in_support],
+                momentum[supported],
+            )
+            support[supported] = True
+            assigned[supported] = True
+    corrected = momentum * (1.0 + correction)
+    invalid = support & (~np.isfinite(corrected) | (corrected <= 0.0))
+    if np.any(invalid):
+        raise ValueError(
+            f"pid {pid} correction produced {np.count_nonzero(invalid)} invalid values"
+        )
+    corrected[~support] = momentum[~support]
+    return corrected, support, correction
 
 
 def _accepted_cell_mask(
@@ -1180,7 +1373,7 @@ def derive_corrections(
 ) -> tuple[dict[str, object], list[RegionDiagnostics]]:
     if cfg.torus not in (-1, 1):
         raise ValueError("torus must be -1 or 1 when exporting corrections")
-    selected, selection_summary = select_elastic_events(arrays, cfg)
+    selected, selection_summary = select_calibration_events(arrays, cfg)
     if selection_summary["selectedCandidates"] == 0:
         raise ValueError("no candidates survive the elastic angular selection")
 
@@ -1188,6 +1381,11 @@ def derive_corrections(
     diagnostics: list[RegionDiagnostics] = []
     skipped: list[dict[str, object]] = []
     requested = set(particles)
+    if cfg.electron_selection == "inclusive-w" and "proton" in requested:
+        raise ValueError(
+            "inclusive-w calibration is electron-only; proton correction requires "
+            "exclusive ep or ep-pi0 kinematic constraints"
+        )
     particle_inputs = []
     if "electron" in requested:
         particle_inputs.append((
@@ -1291,6 +1489,8 @@ def derive_corrections(
         "selection": selection_summary,
         "fitConfiguration": {
             "missingEnergyMaxGeV": cfg.missing_energy_max_gev,
+            "electronSelection": cfg.electron_selection,
+            "elasticWMaxAbsGeV": cfg.elastic_w_max_abs_gev,
             "thetaMinDeg": cfg.theta_min_deg,
             "thetaMaxDeg": cfg.theta_max_deg,
             "thetaTrimQuantile": cfg.theta_trim_quantile,
@@ -1778,6 +1978,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-tag", default="")
     parser.add_argument("--max-rows", type=int)
     parser.add_argument("--particle", choices=("electron", "proton", "both"), default="both")
+    parser.add_argument(
+        "--electron-selection",
+        choices=("exclusive-ep", "inclusive-w"),
+        default="exclusive-ep",
+        help=(
+            "inclusive-w calibrates electrons from the reconstructed elastic-W "
+            "peak without requiring a detected proton"
+        ),
+    )
+    parser.add_argument("--elastic-w-max-abs-gev", type=float, default=0.20)
     parser.add_argument("--coplanarity-max-deg", type=float, default=3.0)
     parser.add_argument("--theta-balance-max-deg", type=float, default=2.0)
     parser.add_argument("--missing-energy-max-gev", type=float, default=0.75)
@@ -1833,6 +2043,8 @@ def main() -> None:
     cfg = ElasticFitConfig(
         beam_energy=args.beam_energy,
         torus=args.torus,
+        electron_selection=args.electron_selection,
+        elastic_w_max_abs_gev=args.elastic_w_max_abs_gev,
         coplanarity_max_deg=args.coplanarity_max_deg,
         theta_balance_max_deg=args.theta_balance_max_deg,
         missing_energy_max_gev=args.missing_energy_max_gev,
@@ -1862,7 +2074,14 @@ def main() -> None:
         max_abs_surface_correction=args.max_abs_surface_correction,
     )
     particles = ("electron", "proton") if args.particle == "both" else (args.particle,)
-    arrays = load_elastic_arrays(args.input_file, args.tree, args.max_rows)
+    if args.electron_selection == "inclusive-w" and args.particle != "electron":
+        raise ValueError("--electron-selection inclusive-w requires --particle electron")
+    arrays = load_elastic_arrays(
+        args.input_file,
+        args.tree,
+        args.max_rows,
+        require_proton=args.electron_selection != "inclusive-w",
+    )
     correction, diagnostics = derive_corrections(arrays, cfg, particles)
     correction["datasetTag"] = args.dataset_tag
     args.output.parent.mkdir(parents=True, exist_ok=True)

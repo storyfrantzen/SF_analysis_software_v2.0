@@ -29,9 +29,12 @@ std::pair<double, double> finiteRange(const nlohmann::json& object, const char* 
 ElasticMomentumCorrections::ElasticMomentumCorrections(
     const nlohmann::json& corrections) {
     if (corrections.is_null() || corrections.empty()) return;
-    if (corrections.value("schema", std::string{}) != "elastic_momentum_correction/v1") {
+    const std::string schema = corrections.value("schema", std::string{});
+    if (schema != "elastic_momentum_correction/v1" &&
+        schema != "particle_momentum_correction/v2") {
         throw std::runtime_error(
-            "elasticMomentumCorrections must use schema elastic_momentum_correction/v1"
+            "elasticMomentumCorrections must use schema elastic_momentum_correction/v1 "
+            "or particle_momentum_correction/v2"
         );
     }
     if (corrections.value("correctionType", std::string{}) != "fractionalMomentum") {
@@ -52,6 +55,20 @@ ElasticMomentumCorrections::ElasticMomentumCorrections(
     for (const auto& entry : corrections.at("regions")) {
         regions_.push_back(parseRegion(entry));
     }
+    for (std::size_t first = 0; first < regions_.size(); ++first) {
+        for (std::size_t second = first + 1; second < regions_.size(); ++second) {
+            const auto& left = regions_[first];
+            const auto& right = regions_[second];
+            const bool overlappingAssignment =
+                left.pid == right.pid && left.detector == right.detector &&
+                (left.sector == right.sector || left.sector == 0 || right.sector == 0);
+            if (overlappingAssignment) {
+                throw std::runtime_error(
+                    "Overlapping elastic momentum pid/detector/sector regions"
+                );
+            }
+        }
+    }
 }
 
 ElasticMomentumCorrections::Region
@@ -64,6 +81,19 @@ ElasticMomentumCorrections::parseRegion(const nlohmann::json& entry) {
         throw std::runtime_error("Invalid pid, detector, or sector in elastic momentum region");
     }
 
+    if (entry.contains("momentumRangeGeV")) {
+        const auto momentumRange = finiteRange(entry, "momentumRangeGeV");
+        region.momentumMinGeV = momentumRange.first;
+        region.momentumMaxGeV = momentumRange.second;
+        region.momentumCenterGeV = finiteNumber(entry, "momentumCenterGeV");
+        region.momentumScaleGeV = finiteNumber(entry, "momentumScaleGeV");
+        region.hasMomentumRange = true;
+        if (region.momentumScaleGeV <= 0.0) {
+            throw std::runtime_error(
+                "Elastic momentum normalization scales must be positive"
+            );
+        }
+    }
     const auto thetaRange = finiteRange(entry, "thetaRangeDeg");
     const auto phiRange = finiteRange(entry, "phiRangeDeg");
     region.thetaMinDeg = thetaRange.first;
@@ -101,10 +131,18 @@ ElasticMomentumCorrections::parseRegion(const nlohmann::json& entry) {
     }
     for (const auto& termEntry : entry.at("terms")) {
         Term term;
+        term.momentumPower = termEntry.value("momentumPower", 0);
         term.thetaPower = termEntry.value("thetaPower", 0);
         term.coefficient = finiteNumber(termEntry, "coefficient");
-        if (term.thetaPower < 0) {
-            throw std::runtime_error("Elastic momentum theta powers must be nonnegative");
+        if (term.momentumPower < 0 || term.thetaPower < 0) {
+            throw std::runtime_error(
+                "Elastic momentum powers must be nonnegative"
+            );
+        }
+        if (term.momentumPower > 0 && !region.hasMomentumRange) {
+            throw std::runtime_error(
+                "Momentum-dependent terms require momentumRangeGeV and normalization"
+            );
         }
         if (region.basis == Basis::Polynomial) {
             term.phiPower = termEntry.value("phiPower", 0);
@@ -143,6 +181,18 @@ ElasticMomentumCorrections::parseRegion(const nlohmann::json& entry) {
             const auto thetaSupport = finiteRange(supportEntry, "thetaRangeDeg");
             const auto phiSupport = finiteRange(supportEntry, "phiRangeDeg");
             SupportCell support;
+            if (supportEntry.contains("momentumRangeGeV")) {
+                const auto momentumSupport = finiteRange(
+                    supportEntry, "momentumRangeGeV"
+                );
+                support.momentumMinGeV = momentumSupport.first;
+                support.momentumMaxGeV = momentumSupport.second;
+                support.hasMomentumRange = true;
+            } else if (region.hasMomentumRange) {
+                throw std::runtime_error(
+                    "Momentum-dependent supportCells require momentumRangeGeV"
+                );
+            }
             support.thetaMinDeg = thetaSupport.first;
             support.thetaMaxDeg = thetaSupport.second;
             support.phiMinDeg = phiSupport.first;
@@ -164,15 +214,21 @@ double ElasticMomentumCorrections::sectorLocalPhiDegrees(double phiDeg, int sect
 }
 
 double ElasticMomentumCorrections::evaluate(const Region& region,
+                                             double momentumGeV,
                                              double thetaDeg,
                                              double phiDeg) {
+    const double momentum = region.hasMomentumRange
+        ? (momentumGeV - region.momentumCenterGeV) / region.momentumScaleGeV
+        : 0.0;
     const double theta = (thetaDeg - region.thetaCenterDeg) / region.thetaScaleDeg;
     const double phi = (phiDeg - region.phiCenterDeg) / region.phiScaleDeg;
     double value = 0.0;
     for (const auto& term : region.terms) {
+        const double momentumTerm = std::pow(momentum, term.momentumPower);
         const double thetaTerm = std::pow(theta, term.thetaPower);
         if (region.basis == Basis::Polynomial) {
-            value += term.coefficient * thetaTerm * std::pow(phi, term.phiPower);
+            value += term.coefficient * momentumTerm * thetaTerm *
+                     std::pow(phi, term.phiPower);
             continue;
         }
 
@@ -183,7 +239,7 @@ double ElasticMomentumCorrections::evaluate(const Region& region,
         } else if (term.component == FourierComponent::Sine) {
             phiTerm = std::sin(static_cast<double>(term.harmonic) * phiRad);
         }
-        value += term.coefficient * thetaTerm * phiTerm;
+        value += term.coefficient * momentumTerm * thetaTerm * phiTerm;
     }
     return value;
 }
@@ -194,7 +250,7 @@ MomentumCorrectionResult ElasticMomentumCorrections::correct(double p,
                                                               int pid,
                                                               int detector,
                                                               int sector) const {
-    MomentumCorrectionResult result{p, 0.0};
+    MomentumCorrectionResult result{p, 0.0, false};
     if (!std::isfinite(p) || p <= 0.0 || !std::isfinite(thetaRad) ||
         !std::isfinite(phiRad)) {
         return result;
@@ -209,14 +265,18 @@ MomentumCorrectionResult ElasticMomentumCorrections::correct(double p,
         const double phiDeg = region.phiVariable == PhiVariable::SectorLocal
             ? sectorLocalPhiDegrees(globalPhiDeg, sector)
             : globalPhiDeg;
-        if (thetaDeg < region.thetaMinDeg || thetaDeg > region.thetaMaxDeg ||
+        if ((region.hasMomentumRange &&
+             (p < region.momentumMinGeV || p > region.momentumMaxGeV)) ||
+            thetaDeg < region.thetaMinDeg || thetaDeg > region.thetaMaxDeg ||
             phiDeg < region.phiMinDeg || phiDeg > region.phiMaxDeg) {
             continue;
         }
         if (!region.supportCells.empty()) {
             bool inSupportedCell = false;
             for (const auto& support : region.supportCells) {
-                if (thetaDeg >= support.thetaMinDeg &&
+                if ((!support.hasMomentumRange ||
+                     (p >= support.momentumMinGeV && p <= support.momentumMaxGeV)) &&
+                    thetaDeg >= support.thetaMinDeg &&
                     thetaDeg <= support.thetaMaxDeg &&
                     phiDeg >= support.phiMinDeg &&
                     phiDeg <= support.phiMaxDeg) {
@@ -227,11 +287,12 @@ MomentumCorrectionResult ElasticMomentumCorrections::correct(double p,
             if (!inSupportedCell) continue;
         }
 
-        const double fractionalCorrection = evaluate(region, thetaDeg, phiDeg);
+        const double fractionalCorrection = evaluate(region, p, thetaDeg, phiDeg);
         const double correctedP = p * (1.0 + fractionalCorrection);
         if (!std::isfinite(correctedP) || correctedP <= 0.0) return result;
         result.p = correctedP;
         result.deltaP = correctedP - p;
+        result.applied = true;
         return result;
     }
     return result;

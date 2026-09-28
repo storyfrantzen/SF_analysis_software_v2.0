@@ -21,7 +21,7 @@ from .elastic_momentum import (
     plot_diagnostics,
     region_support_mask,
     sector_local_phi,
-    select_elastic_events,
+    select_calibration_events,
     wrap_degrees,
 )
 from .plot_utils import save_plot
@@ -98,12 +98,14 @@ def subset_arrays(
 
 
 def load_candidate_inputs(
-    input_files: Iterable[Path], tree: str,
+    input_files: Iterable[Path], tree: str, *, require_proton: bool = True,
 ) -> dict[str, np.ndarray]:
     parts: list[dict[str, np.ndarray]] = []
     for path in input_files:
         print(f"[LOAD] {path}", flush=True)
-        part = load_elastic_arrays(path, tree, None)
+        part = load_elastic_arrays(
+            path, tree, None, require_proton=require_proton
+        )
         entries = next(iter(part.values())).size if part else 0
         print(f"[LOAD] {path}: {entries} candidate rows", flush=True)
         parts.append(part)
@@ -1222,7 +1224,7 @@ def run_validation(
             cfg.min_phi_cells_per_theta, shared_phi_cells
         ),
     )
-    selected, selection = select_elastic_events(arrays, cfg)
+    selected, selection = select_calibration_events(arrays, cfg)
     if "runNum" not in selected:
         raise ValueError("candidate tree must contain runNum for multi-run validation")
     if particle == "electron":
@@ -1481,6 +1483,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--torus", type=int, choices=(-1, 1), required=True)
     parser.add_argument("--particle", choices=("electron", "proton"), default="electron")
     parser.add_argument(
+        "--electron-selection",
+        choices=("exclusive-ep", "inclusive-w"),
+        default="exclusive-ep",
+    )
+    parser.add_argument("--elastic-w-max-abs-gev", type=float, default=0.20)
+    parser.add_argument(
         "--models", nargs="+", choices=tuple(MODEL_ORDERS),
         default=list(MODEL_ORDERS),
     )
@@ -1567,7 +1575,13 @@ def main() -> None:
         raise ValueError(
             "--fold-by-run-class requires exactly two --include-run-classes"
         )
-    arrays = load_candidate_inputs(args.input_files, args.tree)
+    if args.electron_selection == "inclusive-w" and args.particle != "electron":
+        raise ValueError("--electron-selection inclusive-w requires --particle electron")
+    arrays = load_candidate_inputs(
+        args.input_files,
+        args.tree,
+        require_proton=args.electron_selection != "inclusive-w",
+    )
     if args.max_rows is not None:
         arrays = subset_arrays(
             arrays,
@@ -1590,6 +1604,8 @@ def main() -> None:
     cfg = ElasticFitConfig(
         beam_energy=args.beam_energy,
         torus=args.torus,
+        electron_selection=args.electron_selection,
+        elastic_w_max_abs_gev=args.elastic_w_max_abs_gev,
         coplanarity_max_deg=args.coplanarity_max_deg,
         theta_balance_max_deg=args.theta_balance_max_deg,
         missing_energy_max_gev=args.missing_energy_max_gev,

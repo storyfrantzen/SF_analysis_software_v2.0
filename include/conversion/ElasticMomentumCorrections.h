@@ -7,6 +7,7 @@
 struct MomentumCorrectionResult {
     double p = 0.0;
     double deltaP = 0.0;
+    bool applied = false;
 };
 
 class ElasticMomentumCorrections {
@@ -31,6 +32,7 @@ private:
     enum class FourierComponent { Constant, Cosine, Sine };
 
     struct Term {
+        int momentumPower = 0;
         int thetaPower = 0;
         int phiPower = 0;
         int harmonic = 0;
@@ -39,6 +41,9 @@ private:
     };
 
     struct SupportCell {
+        double momentumMinGeV = 0.0;
+        double momentumMaxGeV = 0.0;
+        bool hasMomentumRange = false;
         double thetaMinDeg = 0.0;
         double thetaMaxDeg = 0.0;
         double phiMinDeg = 0.0;
@@ -49,6 +54,11 @@ private:
         int pid = 0;
         int detector = -1;
         int sector = 0;  // zero is a detector-wide wildcard
+        double momentumMinGeV = 0.0;
+        double momentumMaxGeV = 0.0;
+        double momentumCenterGeV = 0.0;
+        double momentumScaleGeV = 1.0;
+        bool hasMomentumRange = false;
         double thetaMinDeg = 0.0;
         double thetaMaxDeg = 0.0;
         double phiMinDeg = 0.0;
@@ -70,5 +80,8 @@ private:
     static Region parseRegion(const nlohmann::json& entry);
     static double normalizeDegrees(double degrees);
     static double sectorLocalPhiDegrees(double phiDeg, int sector);
-    static double evaluate(const Region& region, double thetaDeg, double phiDeg);
+    static double evaluate(const Region& region,
+                           double momentumGeV,
+                           double thetaDeg,
+                           double phiDeg);
 };

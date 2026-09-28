@@ -23,6 +23,8 @@ from scripts.calibration.elastic_momentum import (
     mode_seeded_core,
     phi_slice_line_parameters,
     plot_diagnostics,
+    region_support_mask,
+    select_inclusive_elastic_electrons,
     select_elastic_events,
 )
 
@@ -115,8 +117,70 @@ class ElasticKinematicsTests(unittest.TestCase):
         self.assertGreater(estimate.retained_fraction, 0.40)
         self.assertLess(estimate.retained_fraction, 0.60)
 
+    def test_inclusive_selection_needs_no_proton_branches(self) -> None:
+        beam_energy = 6.535
+        theta = np.deg2rad(np.array([12.0, 20.0]))
+        elastic = elastic_electron_momentum(theta, beam_energy)
+        arrays = {
+            "electronP": np.array([elastic[0], 0.65 * elastic[1]]),
+            "electronTheta": theta,
+            "electronPhi": np.zeros(2),
+            "electronDet": np.ones(2, dtype=int),
+            "electronSector": np.ones(2, dtype=int),
+            "nPid11": np.ones(2, dtype=int),
+        }
+        selected, summary = select_inclusive_elastic_electrons(
+            arrays,
+            ElasticFitConfig(
+                beam_energy=beam_energy,
+                electron_selection="inclusive-w",
+                elastic_w_max_abs_gev=0.15,
+            ),
+        )
+        self.assertEqual(summary["mode"], "inclusive-w")
+        self.assertEqual(summary["selectedCandidates"], 1)
+        self.assertEqual(selected["electronP"].size, 1)
+
 
 class ElasticSurfaceFitTests(unittest.TestCase):
+    def test_momentum_theta_region_evaluation_and_support(self) -> None:
+        region = {
+            "pid": 2212,
+            "detector": 2,
+            "sector": 0,
+            "momentumRangeGeV": [0.5, 1.5],
+            "momentumCenterGeV": 1.0,
+            "momentumScaleGeV": 0.5,
+            "thetaRangeDeg": [35.0, 65.0],
+            "thetaCenterDeg": 50.0,
+            "thetaScaleDeg": 15.0,
+            "phiRangeDeg": [-180.0, 180.0],
+            "phiCenterDeg": 0.0,
+            "phiScaleDeg": 180.0,
+            "phiVariable": "global",
+            "basis": "polynomial",
+            "terms": [
+                {"momentumPower": 0, "thetaPower": 0, "phiPower": 0,
+                 "coefficient": 0.01},
+                {"momentumPower": 1, "thetaPower": 1, "phiPower": 0,
+                 "coefficient": 0.04},
+            ],
+            "supportCells": [{
+                "momentumRangeGeV": [0.75, 1.25],
+                "thetaRangeDeg": [40.0, 60.0],
+                "phiRangeDeg": [-180.0, 180.0],
+            }],
+        }
+        momentum = np.array([1.25, 1.40])
+        theta = np.array([57.5, 50.0])
+        phi = np.zeros(2)
+        value = evaluate_region(region, theta, phi, momentum)
+        np.testing.assert_allclose(value, [0.02, 0.01])
+        np.testing.assert_array_equal(
+            region_support_mask(region, theta, phi, momentum),
+            [True, False],
+        )
+
     @staticmethod
     def _population_fallback_sample() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         rng = np.random.default_rng(19)

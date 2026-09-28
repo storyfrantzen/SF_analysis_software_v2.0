@@ -46,6 +46,44 @@ def _parameters() -> dict[str, object]:
     }
 
 
+def _full_chain_parameters() -> dict[str, object]:
+    payload = _parameters()
+    payload["schema"] = "particle_momentum_correction/v2"
+    payload["correctionType"] = "fractionalMomentum"
+    for pid, detector, momentum_range, theta_range, coefficient in (
+        (2212, 1, [0.5, 2.0], [30.0, 45.0], -0.02),
+        (22, 1, [0.2, 1.2], [10.0, 30.0], 0.03),
+    ):
+        payload["regions"].append({
+            "pid": pid,
+            "detector": detector,
+            "sector": 0,
+            "momentumRangeGeV": momentum_range,
+            "momentumCenterGeV": 0.5 * sum(momentum_range),
+            "momentumScaleGeV": 0.5 * (momentum_range[1] - momentum_range[0]),
+            "thetaRangeDeg": theta_range,
+            "thetaCenterDeg": 0.5 * sum(theta_range),
+            "thetaScaleDeg": 0.5 * (theta_range[1] - theta_range[0]),
+            "phiRangeDeg": [-180.0, 180.0],
+            "phiCenterDeg": 0.0,
+            "phiScaleDeg": 180.0,
+            "phiVariable": "global",
+            "basis": "polynomial",
+            "terms": [{
+                "momentumPower": 0,
+                "thetaPower": 0,
+                "phiPower": 0,
+                "coefficient": coefficient,
+            }],
+            "supportCells": [{
+                "momentumRangeGeV": momentum_range,
+                "thetaRangeDeg": theta_range,
+                "phiRangeDeg": [-180.0, 180.0],
+            }],
+        })
+    return payload
+
+
 def _arrays() -> dict[str, np.ndarray]:
     sectors = np.arange(1, 7)
     local_phi_deg = np.asarray([-8.0, -4.0, 0.0, 4.0, 8.0, 0.0])
@@ -165,6 +203,31 @@ class Eppi0MomentumValidationTests(unittest.TestCase):
         invariant_cut = report["migration"]["individualCuts"]["rec_m_gg"]
         self.assertEqual(invariant_cut["lostAfterCorrection"], 0)
         self.assertEqual(invariant_cut["gainedAfterCorrection"], 0)
+
+    def test_full_particle_chain_changes_expected_observables_only(self) -> None:
+        arrays = _arrays()
+        report, diagnostics = run_paired_validation(
+            arrays,
+            _full_chain_parameters(),
+            _broad_cuts(),
+            legacy_binning(),
+            external_selection_mask=np.ones(6, dtype=bool),
+            minimum_electron_p=0.0,
+            minimum_q2=0.0,
+            minimum_w=0.0,
+        )
+        self.assertTrue(report["invariants"]["passed"])
+        self.assertEqual(report["correction"]["enabledPids"], [11, 22, 2212])
+        self.assertGreater(np.max(np.abs(
+            diagnostics["after_mGG"] - diagnostics["before_mGG"]
+        )), 0.0)
+        self.assertGreater(np.max(np.abs(
+            diagnostics["after_t"] - diagnostics["before_t"]
+        )), 0.0)
+        np.testing.assert_allclose(
+            diagnostics["after_thetaGamma1Gamma2"],
+            diagnostics["before_thetaGamma1Gamma2"],
+        )
 
 
 if __name__ == "__main__":

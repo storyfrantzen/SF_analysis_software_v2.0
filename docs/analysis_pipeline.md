@@ -689,14 +689,164 @@ The production config must also declare the same `beamEnergy` and nonzero
 
 The corrected `p`, `px`, `py`, and `pz` values then flow to all downstream
 kinematics. `p_raw` remains the detector-bank value, `delta_p` is the total
-applied momentum change, and `delta_p_energy_loss` plus `delta_p_elastic`
-record the two stages separately. Do not enable elastic corrections in the
-converter used to derive their own calibration sample.
+applied momentum change, and `delta_p_energy_loss` plus
+`delta_p_momentum_correction` record the two stages separately.
+`momentum_correction_applied` distinguishes exact-support application from an
+uncorrected row; `delta_p_elastic` remains as a deprecated compatibility alias.
+Do not enable momentum corrections in the converter used to derive their own
+calibration sample.
 
 Electron sampling-fraction PID continues to use `p_raw`, because the committed
 sampling-fraction bands were calibrated against detector-bank momentum.
 Analysis momentum thresholds and reconstructed physics kinematics use the
 corrected `p`.
+
+### Inclusive elastic electrons and sequential ep-pi0 corrections
+
+The production sequence is deliberately ordered:
+
+1. apply the simulation-derived proton material energy-loss correction;
+2. derive and freeze the electron momentum correction from elastic electrons;
+3. derive the proton momentum correction in `ep -> ep pi0` with the corrected
+   electron and energy-loss-corrected proton;
+4. derive photon energy corrections only after the electron and proton stages
+   are fixed;
+5. merge validated, non-overlapping regions and repeat the paired exclusivity
+   and selection-migration audit.
+
+An electron-only elastic sample avoids requiring reconstruction of the recoil
+proton. The calibration uses a broad reconstructed-W window for purity and
+still locates the narrow elastic residual peak independently in each local
+theta/phi cell. Produce and validate it with the inclusive RGK configs:
+
+```bash
+./build/hipo2root \
+  configs/processing/rgk/6.535/calibration/elastic_electrons_inclusive_data_run_spanning.json \
+  @manifests/rgk_6p535_torus+1_processing_pinned.txt
+
+./build/post_process \
+  configs/post/rgk/6.535/calibration/elastic_electron_candidates_inclusive_data_run_spanning.json \
+  6.535_rgk_elastic_electrons_inclusive_data_run_spanning.root
+
+python3 scripts/validate_elastic_momentum_runs.py \
+  6.535_rgk_elastic_electron_candidates_inclusive_run_spanning.root \
+  --beam-energy 6.535 --torus 1 --particle electron \
+  --electron-selection inclusive-w --elastic-w-max-abs-gev 0.20 \
+  --models constant theta-linear theta-phi theta2-phi \
+  --profile-binning adaptive --theta-bins 10 --phi-bins 7 \
+  --output-dir calibration_plots/momentum/rgk_6p535_inclusive_elastic_runs
+```
+
+The inclusive-W result is not automatically preferred. Compare its held-out
+closure and angular support with the detected-`ep` result. A tighter W window
+is a systematic variation, not a free improvement, because W is computed from
+the same electron momentum being calibrated.
+
+For the proton stage, the corrected electron defines
+`H = k + target - k'`. At fixed measured proton direction, the script solves
+`(H - p_proton)^2 = m_pi0^2` for the expected proton magnitude. If both
+quadratic roots are physical, reconstructed proton momentum is used only to
+choose the branch. The fitted residual is `p_expected/p_reconstructed - 1`.
+
+For the photon stage, the corrected electron and proton define the expected
+pi0 four-vector. The two photon energies are then obtained from a joint
+least-squares solution using the two measured photon directions. Non-positive
+or ill-conditioned solutions fail closed. The fitted residual is
+`E_expected/E_reconstructed - 1`; `m_gg` is retained as an independent closure
+quantity rather than being forced to the pi0 mass by the correction fit.
+
+Run the first diagnostic proton/photon fit on the pre-exclusivity selected
+tree, optionally restricted by an aligned NumPy selection mask:
+
+```bash
+python3 scripts/derive_eppi0_momentum.py \
+  /path/to/eppi0_data_selected.root \
+  --beam-energy 6.535 --torus 1 --particle both \
+  --electron-parameters /path/to/validated_electron_parameters.json \
+  --selection-mask /path/to/data_exclusivity.npy \
+  --model momentum-theta \
+  --output parameters/momentum/6.535RGK_eppi0_proton_photon_diagnostic.json \
+  --plot-dir calibration_plots/momentum/rgk_6p535_eppi0_particle_diagnostic \
+  --dataset-tag 6.535RGK_eppi0_particle_diagnostic
+```
+
+The default detector-wide bilinear surface has terms `1`, `p`, `theta`, and
+`p*theta`, evaluated in normalized coordinates. Exact accepted
+momentum/theta cells are exported, so neither the Python validators nor the
+C++ converter extrapolates into empty cells. `--fd-by-sector` is available as
+a diagnostic alternative but should be promoted only if held-out results show
+that detector-wide proton surfaces are inadequate.
+
+Use alternating run folds to choose the surface separately in each detector
+region. Validate and freeze the proton stage first:
+
+```bash
+python3 scripts/validate_eppi0_momentum_runs.py \
+  /path/to/eppi0_data_selected.root \
+  --beam-energy 6.535 --torus 1 --particle proton \
+  --electron-parameters /path/to/validated_electron_parameters.json \
+  --selection-mask /path/to/data_exclusivity.npy \
+  --models constant momentum-linear theta-linear momentum-theta \
+  --output-dir calibration_plots/momentum/rgk_6p535_eppi0_proton_runs \
+  --dataset-tag 6.535RGK_eppi0_proton_runs
+```
+
+Then use its `recommended_parameters.json` as a fixed upstream input to the
+photon study:
+
+```bash
+python3 scripts/validate_eppi0_momentum_runs.py \
+  /path/to/eppi0_data_selected.root \
+  --beam-energy 6.535 --torus 1 --particle photon \
+  --electron-parameters /path/to/validated_electron_parameters.json \
+  --proton-parameters calibration_plots/momentum/rgk_6p535_eppi0_proton_runs/recommended_parameters.json \
+  --selection-mask /path/to/data_exclusivity.npy \
+  --models constant momentum-linear theta-linear momentum-theta \
+  --output-dir calibration_plots/momentum/rgk_6p535_eppi0_photon_runs \
+  --dataset-tag 6.535RGK_eppi0_photon_runs
+```
+
+The validator profiles the residual independently in held-out momentum/theta
+cells. A more complex model is selected only if its median held-out cell-center
+RMS improves by the configured fraction (10% by default); model complexity is
+chosen independently for every detector region. The recommended file remains
+a candidate pending cut, binning, run-period, model, and correction-strength
+variations.
+
+After validating each stage, merge the electron and ep-pi0 files:
+
+```bash
+python3 scripts/merge_momentum_corrections.py \
+  /path/to/validated_electron_parameters.json \
+  /path/to/validated_eppi0_proton_photon_parameters.json \
+  --output parameters/momentum/6.535RGK_particle_momentum.json
+```
+
+The merger rejects duplicate `(pid, detector, sector)` assignments and
+beam-energy or torus mismatches. Validate the merged file on a fixed event
+cohort and on a reselected cohort with:
+
+```bash
+python3 scripts/validate_eppi0_particle_momentum.py \
+  /path/to/eppi0_data_selected.root \
+  --parameters parameters/momentum/6.535RGK_particle_momentum.json \
+  --exclusivity-cuts /path/to/data_exclusivity.npz \
+  --analysis-config /path/to/analysis_config.json \
+  --selection-mask /path/to/data_exclusivity.npy \
+  --output-dir calibration_plots/momentum/rgk_6p535_full_chain_validation \
+  --dataset-tag 6.535RGK_full_particle_chain
+```
+
+Repeat the paired validation with `--correction-strength 0.9` and `1.1` for
+the reference-style correction-amplitude variation; keep those reports beside
+the model and selection envelopes rather than overwriting the nominal output.
+
+The v2 correction schema remains backward compatible with v1 electron files.
+It adds normalized momentum powers and momentum ranges to polynomial terms and
+support cells, allowing proton momentum and photon energy surfaces to use the
+same fail-closed application engine. Diagnostic fits must remain disabled in
+production until held-out run tests, selection/model variations, correction-
+strength variations, and data/MC closure have been reviewed.
 
 ## Sampling-Fraction Parameters
 

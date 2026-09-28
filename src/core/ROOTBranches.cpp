@@ -71,6 +71,8 @@ void RecBranches::reset() {
     delta_theta = 0.0;
     delta_phi = 0.0;
     delta_p_energy_loss = 0.0;
+    delta_p_momentum_correction = 0.0;
+    momentum_correction_applied = false;
     delta_p_elastic = 0.0;
     beta = NAN;
     chi2pid = NAN;
@@ -121,6 +123,8 @@ void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx) {
     delta_theta = 0.0;
     delta_phi = 0.0;
     delta_p_energy_loss = 0.0;
+    delta_p_momentum_correction = 0.0;
+    momentum_correction_applied = false;
     delta_p_elastic = 0.0;
     beta    = safeGet(rec->par()->getBeta());
     chi2pid = safeGet(rec->par()->getChi2Pid());

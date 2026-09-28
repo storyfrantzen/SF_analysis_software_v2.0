@@ -49,8 +49,10 @@ Kinematic corrections preserve the detector-bank values in `p_raw`,
 the Cartesian momentum and downstream analysis. `delta_p`, `delta_theta`, and
 `delta_phi` store the total change. For momentum provenance,
 `delta_p_energy_loss` records the simulation-derived proton energy-loss stage
-and `delta_p_elastic` records the subsequent data-derived elastic momentum
-stage; both are zero for stages that were not applied.
+and `delta_p_momentum_correction` records the subsequent data-derived particle
+momentum stage. `momentum_correction_applied` is true only when the row lies in
+an exact calibration support cell. `delta_p_elastic` remains as a deprecated
+compatibility alias; delta fields are zero for stages that were not applied.
 
 For backward compatibility, this tree temporarily retains the repeated
 `event` object used by existing post-processing, calibration scripts, and old

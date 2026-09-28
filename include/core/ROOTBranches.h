@@ -78,6 +78,9 @@ struct RecBranches : public TObject {
     double delta_theta = 0.0;
     double delta_phi   = 0.0;
     double delta_p_energy_loss = 0.0;
+    double delta_p_momentum_correction = 0.0;
+    bool momentum_correction_applied = false;
+    // Deprecated compatibility alias for delta_p_momentum_correction.
     double delta_p_elastic = 0.0;
     double beta   = NAN;
     double chi2pid = NAN;
@@ -128,7 +131,7 @@ struct RecBranches : public TObject {
               double pCorr, double thetaCorr, double phiCorr);
     #endif
 
-    ClassDef(RecBranches, 7);
+    ClassDef(RecBranches, 8);
 };
 
 // ─── GenBranches ─────────────────────────────────────────────────────────────────

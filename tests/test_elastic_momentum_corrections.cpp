@@ -60,6 +60,46 @@ nlohmann::json sampleParameters() {
         }}
     };
 }
+
+nlohmann::json momentumDependentParameters() {
+    return {
+        {"schema", "particle_momentum_correction/v2"},
+        {"correctionType", "fractionalMomentum"},
+        {"beamEnergyGeV", 6.535},
+        {"torus", 1},
+        {"regions", {{
+            {"pid", 2212},
+            {"detector", 2},
+            {"sector", 0},
+            {"momentumRangeGeV", {0.5, 1.5}},
+            {"momentumCenterGeV", 1.0},
+            {"momentumScaleGeV", 0.5},
+            {"thetaRangeDeg", {35.0, 65.0}},
+            {"phiRangeDeg", {-180.0, 180.0}},
+            {"thetaCenterDeg", 50.0},
+            {"thetaScaleDeg", 15.0},
+            {"phiCenterDeg", 0.0},
+            {"phiScaleDeg", 180.0},
+            {"phiVariable", "global"},
+            {"basis", "polynomial"},
+            {"supportCells", {{
+                {"momentumRangeGeV", {0.75, 1.25}},
+                {"thetaRangeDeg", {40.0, 60.0}},
+                {"phiRangeDeg", {-180.0, 180.0}}
+            }}},
+            {"terms", {
+                {{"momentumPower", 0}, {"thetaPower", 0}, {"phiPower", 0},
+                 {"coefficient", 0.01}},
+                {{"momentumPower", 1}, {"thetaPower", 0}, {"phiPower", 0},
+                 {"coefficient", 0.02}},
+                {{"momentumPower", 0}, {"thetaPower", 1}, {"phiPower", 0},
+                 {"coefficient", -0.03}},
+                {{"momentumPower", 1}, {"thetaPower", 1}, {"phiPower", 0},
+                 {"coefficient", 0.04}}
+            }}
+        }}}
+    };
+}
 }
 
 int main() {
@@ -81,6 +121,10 @@ int main() {
     );
     if (std::abs(electron.p - 4.0) > 1.0e-12) {
         std::cerr << "sector-local polynomial correction evaluated incorrectly\n";
+        return 1;
+    }
+    if (!electron.applied) {
+        std::cerr << "an in-support zero correction was not marked applied\n";
         return 1;
     }
 
@@ -108,6 +152,30 @@ int main() {
         std::cerr << "correction interpolated through an unsupported profile cell\n";
         return 1;
     }
+    if (unsupportedHole.applied) {
+        std::cerr << "an unsupported correction was marked applied\n";
+        return 1;
+    }
+
+    const ElasticMomentumCorrections momentumDependent(
+        momentumDependentParameters()
+    );
+    // At p=1.25 GeV and theta=57.5 degrees, both normalized coordinates
+    // are 0.5, so f = .01 + .02*.5 - .03*.5 + .04*.25 = .015.
+    const auto bilinear = momentumDependent.correct(
+        1.25, 57.5 * kPi / 180.0, 0.0, 2212, 2, 0
+    );
+    if (!bilinear.applied || std::abs(bilinear.p - 1.26875) > 1.0e-12) {
+        std::cerr << "momentum-theta bilinear correction evaluated incorrectly\n";
+        return 1;
+    }
+    const auto outsideMomentumCell = momentumDependent.correct(
+        1.4, 50.0 * kPi / 180.0, 0.0, 2212, 2, 0
+    );
+    if (outsideMomentumCell.applied || outsideMomentumCell.deltaP != 0.0) {
+        std::cerr << "correction extrapolated outside momentum-cell support\n";
+        return 1;
+    }
 
     bool rejected = false;
     try {
@@ -119,6 +187,21 @@ int main() {
     }
     if (!rejected) {
         std::cerr << "invalid correction schema was accepted\n";
+        return 1;
+    }
+    rejected = false;
+    try {
+        nlohmann::json overlapping = sampleParameters();
+        auto duplicate = overlapping["regions"][0];
+        duplicate["sector"] = 0;
+        duplicate["phiVariable"] = "global";
+        overlapping["regions"].push_back(duplicate);
+        const ElasticMomentumCorrections bad(overlapping);
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    if (!rejected) {
+        std::cerr << "overlapping wildcard correction regions were accepted\n";
         return 1;
     }
     return 0;

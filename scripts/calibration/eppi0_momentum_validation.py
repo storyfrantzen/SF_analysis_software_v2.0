@@ -11,6 +11,7 @@ import numpy as np
 
 from .elastic_momentum import (
     RAD_TO_DEG,
+    apply_supported_particle_correction,
     evaluate_region,
     region_support_mask,
     sector_local_phi,
@@ -51,6 +52,12 @@ ROLE_COLUMNS = {
     "gamma2Theta": ("gamma2Theta",),
     "gamma2Phi": ("gamma2Phi",),
     "gamma2Det": ("gamma2Det", "g2Det"),
+}
+
+OPTIONAL_ROLE_COLUMNS = {
+    "protonSector": ("protonSector", "pSector"),
+    "gamma1Sector": ("gamma1Sector", "g1Sector"),
+    "gamma2Sector": ("gamma2Sector", "g2Sector"),
 }
 
 REFERENCE_COLUMNS = (
@@ -258,22 +265,29 @@ def compute_eppi0_observables(
     arrays: dict[str, np.ndarray],
     electron_momentum: np.ndarray,
     beam_energy: float,
+    *,
+    proton_momentum: np.ndarray | None = None,
+    gamma1_energy: np.ndarray | None = None,
+    gamma2_energy: np.ndarray | None = None,
 ) -> dict[str, np.ndarray]:
-    """Recompute the post-process ep-pi0 kinematics with one electron p array."""
+    """Recompute post-process ep-pi0 kinematics with supplied magnitudes."""
     entries = int(np.asarray(electron_momentum).size)
     electron = _four_vector(
         electron_momentum, arrays["electronTheta"], arrays["electronPhi"],
         ELECTRON_MASS_GEV,
     )
     proton = _four_vector(
-        arrays["protonP"], arrays["protonTheta"], arrays["protonPhi"],
+        arrays["protonP"] if proton_momentum is None else proton_momentum,
+        arrays["protonTheta"], arrays["protonPhi"],
         PROTON_MASS_GEV,
     )
     gamma1 = _four_vector(
-        arrays["gamma1P"], arrays["gamma1Theta"], arrays["gamma1Phi"], 0.0,
+        arrays["gamma1P"] if gamma1_energy is None else gamma1_energy,
+        arrays["gamma1Theta"], arrays["gamma1Phi"], 0.0,
     )
     gamma2 = _four_vector(
-        arrays["gamma2P"], arrays["gamma2Theta"], arrays["gamma2Phi"], 0.0,
+        arrays["gamma2P"] if gamma2_energy is None else gamma2_energy,
+        arrays["gamma2Theta"], arrays["gamma2Phi"], 0.0,
     )
     pi0 = gamma1 + gamma2
     beam = np.zeros((entries, 4), dtype=float)
@@ -370,6 +384,13 @@ def load_eppi0_arrays(
         name for name in ("runNum", "eventNum", *REFERENCE_COLUMNS)
         if has_column(df, name) and name not in resolved.values()
     ]
+    optional_resolved = {
+        destination: source
+        for destination, candidates in OPTIONAL_ROLE_COLUMNS.items()
+        if (source := next((name for name in candidates if has_column(df, name)), None))
+        is not None
+    }
+    resolved.update(optional_resolved)
     source_columns = list(dict.fromkeys([*resolved.values(), *optional]))
     loaded = arrays_from_dataframe(df, source_columns, max_rows=max_rows)
     arrays = {destination: loaded[source] for destination, source in resolved.items()}
@@ -420,44 +441,12 @@ def apply_supported_electron_correction(
     parameters: dict[str, object],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     momentum = np.asarray(arrays["electronP"], dtype=float)
-    theta_deg = np.asarray(arrays["electronTheta"], dtype=float) * RAD_TO_DEG
     sectors = np.asarray(arrays["electronSector"], dtype=int)
     local_phi = sector_local_phi(np.asarray(arrays["electronPhi"], dtype=float), sectors)
-    detectors = np.asarray(arrays["electronDet"], dtype=int)
-    support = np.zeros(momentum.size, dtype=bool)
-    correction = np.zeros(momentum.size, dtype=float)
-    regions: dict[tuple[int, int], dict[str, object]] = {}
-    for region in parameters.get("regions", []):
-        if int(region.get("pid", 0)) != 11:
-            continue
-        key = (int(region["detector"]), int(region["sector"]))
-        if key in regions:
-            raise ValueError(f"duplicate electron correction region det/sector={key}")
-        regions[key] = region
-    for sector in range(1, 7):
-        region = regions.get((1, sector))
-        if region is None:
-            continue
-        sector_rows = (detectors == 1) & (sectors == sector)
-        rows = np.flatnonzero(sector_rows)
-        if rows.size == 0:
-            continue
-        in_support = region_support_mask(
-            region, theta_deg[rows], local_phi[rows]
-        )
-        supported_rows = rows[in_support]
-        support[supported_rows] = True
-        if supported_rows.size:
-            correction[supported_rows] = evaluate_region(
-                region, theta_deg[supported_rows], local_phi[supported_rows]
-            )
-    corrected = momentum * (1.0 + correction)
-    invalid = support & (~np.isfinite(corrected) | (corrected <= 0.0))
-    if np.any(invalid):
-        raise ValueError(
-            f"electron correction produced {np.count_nonzero(invalid)} invalid momenta"
-        )
-    corrected[~support] = momentum[~support]
+    corrected, support, correction = apply_supported_particle_correction(
+        momentum, arrays["electronTheta"], arrays["electronPhi"],
+        arrays["electronDet"], sectors, pid=11, parameters=parameters,
+    )
     return corrected, support, correction, local_phi
 
 
@@ -657,6 +646,7 @@ def _audit_invariants(
     after: dict[str, np.ndarray],
     support: np.ndarray,
     tolerance: float,
+    invariant_names: tuple[str, ...] = INVARIANT_OBSERVABLES,
 ) -> dict[str, object]:
     entries = support.size
     all_rows = np.ones(entries, dtype=bool)
@@ -664,7 +654,7 @@ def _audit_invariants(
         name: _maximum_difference(
             before[name], after[name], all_rows, circular=name in ANGLE_OBSERVABLES
         )
-        for name in INVARIANT_OBSERVABLES
+        for name in invariant_names
     }
     unsupported = {
         name: _maximum_difference(
@@ -682,7 +672,7 @@ def _audit_invariants(
         "tolerance": tolerance,
         "passed": bool(maximum <= tolerance),
         "maximumObservedAbsoluteDifference": float(maximum),
-        "electronMagnitudeInvariantQuantities": unchanged,
+        "magnitudeCorrectionInvariantQuantities": unchanged,
         "unsupportedEventQuantities": unsupported,
     }
 
@@ -747,16 +737,104 @@ def run_paired_validation(
     minimum_w: float = 2.0,
     invariant_tolerance: float = 1.0e-10,
     reference_tolerance: float = 1.0e-7,
+    correction_strength: float = 1.0,
 ) -> tuple[dict[str, object], dict[str, np.ndarray]]:
     entries = int(np.asarray(arrays["electronP"]).size)
     if any(np.asarray(arrays[name]).size != entries for name in ROLE_COLUMNS):
         raise ValueError("selected-particle arrays do not all have the same length")
     beam_energy = float(parameters["beamEnergyGeV"])
-    corrected_p, support, correction, local_phi = apply_supported_electron_correction(
-        arrays, parameters
+    if not np.isfinite(correction_strength) or correction_strength < 0.0:
+        raise ValueError("correction_strength must be finite and nonnegative")
+    enabled_pids = {
+        int(region.get("pid", 0)) for region in parameters.get("regions", [])
+    }
+    electron_p = np.asarray(arrays["electronP"], dtype=float)
+    proton_p = np.asarray(arrays["protonP"], dtype=float)
+    gamma1_p = np.asarray(arrays["gamma1P"], dtype=float)
+    gamma2_p = np.asarray(arrays["gamma2P"], dtype=float)
+    if 11 in enabled_pids:
+        corrected_p, electron_support, electron_correction, local_phi = (
+            apply_supported_electron_correction(arrays, parameters)
+        )
+    else:
+        corrected_p = electron_p.copy()
+        electron_support = np.ones(entries, dtype=bool)
+        electron_correction = np.zeros(entries, dtype=float)
+        local_phi = sector_local_phi(
+            np.asarray(arrays["electronPhi"], dtype=float),
+            np.asarray(arrays["electronSector"], dtype=int),
+        )
+    proton_sector = np.asarray(
+        arrays.get("protonSector", np.zeros(entries, dtype=int)), dtype=int
     )
+    if 2212 in enabled_pids:
+        corrected_proton, proton_support, proton_correction = (
+            apply_supported_particle_correction(
+                proton_p, arrays["protonTheta"], arrays["protonPhi"],
+                arrays["protonDet"], proton_sector,
+                pid=2212, parameters=parameters,
+            )
+        )
+    else:
+        corrected_proton = proton_p.copy()
+        proton_support = np.ones(entries, dtype=bool)
+        proton_correction = np.zeros(entries, dtype=float)
+    if 22 in enabled_pids:
+        gamma1_sector = np.asarray(
+            arrays.get("gamma1Sector", np.zeros(entries, dtype=int)), dtype=int
+        )
+        gamma2_sector = np.asarray(
+            arrays.get("gamma2Sector", np.zeros(entries, dtype=int)), dtype=int
+        )
+        corrected_gamma1, gamma1_support, gamma1_correction = (
+            apply_supported_particle_correction(
+                gamma1_p, arrays["gamma1Theta"], arrays["gamma1Phi"],
+                arrays["gamma1Det"], gamma1_sector,
+                pid=22, parameters=parameters,
+            )
+        )
+        corrected_gamma2, gamma2_support, gamma2_correction = (
+            apply_supported_particle_correction(
+                gamma2_p, arrays["gamma2Theta"], arrays["gamma2Phi"],
+                arrays["gamma2Det"], gamma2_sector,
+                pid=22, parameters=parameters,
+            )
+        )
+    else:
+        corrected_gamma1 = gamma1_p.copy()
+        corrected_gamma2 = gamma2_p.copy()
+        gamma1_support = np.ones(entries, dtype=bool)
+        gamma2_support = np.ones(entries, dtype=bool)
+        gamma1_correction = np.zeros(entries, dtype=float)
+        gamma2_correction = np.zeros(entries, dtype=float)
+    corrected_p = electron_p * (1.0 + correction_strength * electron_correction)
+    corrected_proton = proton_p * (1.0 + correction_strength * proton_correction)
+    corrected_gamma1 = gamma1_p * (1.0 + correction_strength * gamma1_correction)
+    corrected_gamma2 = gamma2_p * (1.0 + correction_strength * gamma2_correction)
+    if np.any(
+        ~np.isfinite(corrected_p) | (corrected_p <= 0.0) |
+        ~np.isfinite(corrected_proton) | (corrected_proton <= 0.0) |
+        ~np.isfinite(corrected_gamma1) | (corrected_gamma1 <= 0.0) |
+        ~np.isfinite(corrected_gamma2) | (corrected_gamma2 <= 0.0)
+    ):
+        raise ValueError("scaled correction produced a non-positive magnitude")
+    support = (
+        electron_support & proton_support & gamma1_support & gamma2_support
+    )
+    any_particle_support = np.zeros(entries, dtype=bool)
+    if 11 in enabled_pids:
+        any_particle_support |= electron_support
+    if 2212 in enabled_pids:
+        any_particle_support |= proton_support
+    if 22 in enabled_pids:
+        any_particle_support |= gamma1_support | gamma2_support
     before = compute_eppi0_observables(arrays, arrays["electronP"], beam_energy)
-    after = compute_eppi0_observables(arrays, corrected_p, beam_energy)
+    after = compute_eppi0_observables(
+        arrays, corrected_p, beam_energy,
+        proton_momentum=corrected_proton,
+        gamma1_energy=corrected_gamma1,
+        gamma2_energy=corrected_gamma2,
+    )
     base_before = _base_analysis_mask(
         arrays, before, minimum_electron_p=minimum_electron_p,
         minimum_q2=minimum_q2, minimum_w=minimum_w,
@@ -830,7 +908,18 @@ def run_paired_validation(
         migration["individualCuts"][variable] = _migration_summary(
             pass_before, pass_after
         )
-    invariants = _audit_invariants(before, after, support, invariant_tolerance)
+    invariant_names = [
+        "electronTheta", "electronPhi", "thetaEGamma1", "thetaEGamma2",
+        "thetaGamma1Gamma2",
+    ]
+    if 2212 not in enabled_pids:
+        invariant_names.append("t")
+    if 22 not in enabled_pids:
+        invariant_names.extend(("pi0P", "pi0Theta", "pi0Phi", "mGG"))
+    invariants = _audit_invariants(
+        before, after, any_particle_support, invariant_tolerance,
+        tuple(invariant_names),
+    )
     if not invariants["passed"]:
         raise RuntimeError(
             "paired-validation invariant failed: maximum difference "
@@ -860,7 +949,7 @@ def run_paired_validation(
     correction_by_sector: dict[str, object] = {}
     for sector in range(1, 7):
         rows = (sectors == sector) & support
-        values = correction[rows]
+        values = electron_correction[rows]
         correction_by_sector[str(sector)] = {
             "entries": int(values.size),
             "meanFraction": float(np.mean(values)) if values.size else None,
@@ -869,7 +958,7 @@ def run_paired_validation(
             "maximumFraction": float(np.max(values)) if values.size else None,
         }
     report: dict[str, object] = {
-        "schema": "eppi0-paired-electron-momentum-validation-v1",
+        "schema": "eppi0-paired-particle-momentum-validation-v2",
         "beamEnergyGeV": beam_energy,
         "parameterDatasetTag": parameters.get("datasetTag", ""),
         "entries": entries,
@@ -894,8 +983,18 @@ def run_paired_validation(
         "migration": migration,
         "correction": {
             "convention": "p_after = p_before * (1 + fractionalCorrection)",
+            "strength": correction_strength,
             "supportedOnly": True,
+            "enabledPids": sorted(enabled_pids),
+            "electronSectors": correction_by_sector,
             "sectors": correction_by_sector,
+            "supportByParticle": {
+                "electron": int(np.count_nonzero(electron_support)),
+                "proton": int(np.count_nonzero(proton_support)),
+                "gamma1": int(np.count_nonzero(gamma1_support)),
+                "gamma2": int(np.count_nonzero(gamma2_support)),
+                "simultaneous": int(np.count_nonzero(support)),
+            },
         },
         "cohorts": cohorts,
         "fixedSupportedBySector": sector_cohorts,
@@ -904,8 +1003,19 @@ def run_paired_validation(
     }
     diagnostics = {
         "support": support,
-        "correctionFraction": correction,
+        "correctionFraction": electron_correction,
+        "electronCorrectionFraction": electron_correction,
+        "protonCorrectionFraction": proton_correction,
+        "gamma1CorrectionFraction": gamma1_correction,
+        "gamma2CorrectionFraction": gamma2_correction,
         "deltaElectronP": corrected_p - np.asarray(arrays["electronP"], dtype=float),
+        "deltaProtonP": corrected_proton - proton_p,
+        "deltaGamma1Energy": corrected_gamma1 - gamma1_p,
+        "deltaGamma2Energy": corrected_gamma2 - gamma2_p,
+        "electronSupport": electron_support,
+        "protonSupport": proton_support,
+        "gamma1Support": gamma1_support,
+        "gamma2Support": gamma2_support,
         "localPhiDeg": local_phi,
         "baseBefore": base_before,
         "baseAfter": base_after,
@@ -1168,6 +1278,14 @@ def _write_event_npz(
         "selectedBefore": diagnostics["selectedBefore"],
         "selectedAfter": diagnostics["selectedAfter"],
     })
+    for name in (
+        "electronSupport", "protonSupport", "gamma1Support", "gamma2Support",
+        "electronCorrectionFraction", "protonCorrectionFraction",
+        "gamma1CorrectionFraction", "gamma2CorrectionFraction",
+        "deltaProtonP", "deltaGamma1Energy", "deltaGamma2Energy",
+    ):
+        if name in diagnostics:
+            payload[name] = diagnostics[name]
     for name in SUMMARY_QUANTITIES:
         payload[f"before_{name}"] = diagnostics[f"before_{name}"]
         payload[f"after_{name}"] = diagnostics[f"after_{name}"]
@@ -1178,8 +1296,8 @@ def _write_event_npz(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Apply an elastic electron correction in memory and perform paired "
-            "ep-pi0 validation on fixed and reselected cohorts."
+            "Apply support-gated electron/proton/photon corrections in memory "
+            "and perform paired ep-pi0 validation on fixed and reselected cohorts."
         )
     )
     parser.add_argument("input_file", type=Path)
@@ -1199,6 +1317,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--event-output", type=Path)
     parser.add_argument("--invariant-tolerance", type=float, default=1.0e-10)
     parser.add_argument("--reference-tolerance", type=float, default=1.0e-4)
+    parser.add_argument(
+        "--correction-strength", type=float, default=1.0,
+        help="multiply every fitted fractional correction by this value",
+    )
     parser.add_argument("--no-plots", action="store_true")
     return parser
 
@@ -1231,6 +1353,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         minimum_w=args.min_w,
         invariant_tolerance=args.invariant_tolerance,
         reference_tolerance=args.reference_tolerance,
+        correction_strength=args.correction_strength,
     )
     report["datasetTag"] = args.dataset_tag
     report["inputFile"] = str(args.input_file)

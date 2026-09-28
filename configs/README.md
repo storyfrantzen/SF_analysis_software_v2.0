@@ -338,6 +338,22 @@ topology against a strict two-particle sample by setting
 nominal-beam-energy mismatch or an uncorrected angle bias appears directly as a
 momentum-scale bias in this method.
 
+For electron angular-coverage studies, the RGK
+`elastic_electrons_inclusive_data_run_spanning.json` processing config and
+`elastic_electron_candidates_inclusive_data_run_spanning.json` post config
+retain exactly one identified electron while allowing any other reconstructed
+particles. Consume this sample with `--electron-selection inclusive-w`; no
+reconstructed proton is required. Keep the W window broad and vary it because
+it is calculated from the same momentum being calibrated.
+
+The `particle_momentum_correction/v2` schema extends the original elastic
+schema with `momentumRangeGeV`, momentum normalization, `momentumPower` terms,
+and momentum ranges on exact support cells. It supports detector-region proton
+`(p,theta)` and photon `(E,theta)` surfaces derived by
+`scripts/derive_eppi0_momentum.py`. The converter applies this generic stage
+after proton energy loss and records it in
+`delta_p_momentum_correction`/`momentum_correction_applied`.
+
 For the held-out study, use `scripts/select_hipo_run_sample.py` to choose one or
 more files per run, process the resulting `@manifest` with a config that omits
 `maxEvents`, and run `scripts/validate_elastic_momentum_runs.py`. The validator
