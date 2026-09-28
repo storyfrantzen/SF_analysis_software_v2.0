@@ -79,6 +79,27 @@ bool evaluateSamplingFractionDiagonal(const RecBranches& particle) {
     const Cuts cuts(cfg);
     return cuts.evaluateParticle(particle, electron, {particle}, {}).pass;
 }
+
+bool evaluateElasticW(double momentum, double theta, double maxAbsW) {
+    PostCutConfig cfg;
+    cfg.beamEnergy = 6.535;
+    ParticleRoleSpec electron;
+    electron.role = "electron";
+    electron.pid = 11;
+
+    PrimitiveCutSpec elasticW;
+    elasticW.name = "electron.elastic_w";
+    elasticW.op = "elasticWWindow";
+    elasticW.max = maxAbsW;
+    electron.cuts.push_back(elasticW);
+
+    RecBranches particle;
+    particle.pid = 11;
+    particle.p = momentum;
+    particle.theta = theta;
+    const Cuts cuts(cfg);
+    return cuts.evaluateParticle(particle, electron, {particle}, {}).pass;
+}
 }
 
 int main() {
@@ -189,6 +210,18 @@ int main() {
     correctedElectron.E_ECIN = 0.5;
     if (!evaluateSamplingFractionDiagonal(correctedElectron)) {
         std::cerr << "sampling-fraction PID did not use detector-bank momentum\n";
+        return 1;
+    }
+
+    const double elasticTheta = 20.0 * 3.14159265358979323846 / 180.0;
+    const double elasticMomentum = 6.535 /
+        (1.0 + 6.535 * (1.0 - std::cos(elasticTheta)) / 0.9382720813);
+    if (!evaluateElasticW(elasticMomentum, elasticTheta, 0.20)) {
+        std::cerr << "elasticWWindow rejected exact elastic electron kinematics\n";
+        return 1;
+    }
+    if (evaluateElasticW(0.75 * elasticMomentum, elasticTheta, 0.20)) {
+        std::cerr << "elasticWWindow accepted a distant inelastic electron\n";
         return 1;
     }
     return 0;

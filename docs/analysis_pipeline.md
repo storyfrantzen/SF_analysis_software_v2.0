@@ -717,7 +717,10 @@ The production sequence is deliberately ordered:
 An electron-only elastic sample avoids requiring reconstruction of the recoil
 proton. The calibration uses a broad reconstructed-W window for purity and
 still locates the narrow elastic residual peak independently in each local
-theta/phi cell. Produce and validate it with the inclusive RGK configs:
+theta/phi cell. The post-processing config applies the same broad 0.20 GeV
+window before writing candidates, avoiding a much larger intermediate file;
+the Python calibration independently rechecks it. Produce and validate the
+sample with the inclusive RGK configs:
 
 ```bash
 ./build/hipo2root \

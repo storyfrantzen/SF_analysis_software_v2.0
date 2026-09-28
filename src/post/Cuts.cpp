@@ -13,6 +13,8 @@ using json = nlohmann::json;
 
 namespace {
 constexpr double kPi = 3.14159265358979323846;
+constexpr double kElectronMassGeV = 0.00051099895;
+constexpr double kProtonMassGeV = 0.9382720813;
 
 bool isFinite(double value) {
     return std::isfinite(value);
@@ -547,6 +549,20 @@ CutDecision Cuts::evaluateParticle(const RecBranches& p,
                   (!sfCoeffs_.empty() && passSFSigmaCut(p.sector, sf, sfMomentum)));
         } else if (cut.op == "samplingFraction") {
             apply(evaluateSamplingFraction(p).pass);
+        } else if (cut.op == "elasticWWindow") {
+            const double momentum = p.p;
+            const double energy = std::sqrt(
+                momentum * momentum + kElectronMassGeV * kElectronMassGeV
+            );
+            const double q2 = 2.0 * cfg_.beamEnergy *
+                (energy - momentum * std::cos(p.theta)) -
+                kElectronMassGeV * kElectronMassGeV;
+            const double w2 = kProtonMassGeV * kProtonMassGeV +
+                2.0 * kProtonMassGeV * (cfg_.beamEnergy - energy) - q2;
+            const double w = w2 >= 0.0 ? std::sqrt(w2) : NAN;
+            apply(p.pid == 11 && isFinite(momentum) && momentum > 0.0 &&
+                  isFinite(p.theta) && isFinite(cut.max) && cut.max > 0.0 &&
+                  isFinite(w) && std::abs(w - kProtonMassGeV) <= cut.max);
         } else {
             apply(false);
         }

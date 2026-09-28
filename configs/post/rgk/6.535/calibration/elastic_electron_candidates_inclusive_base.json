@@ -36,7 +36,8 @@
                     { "name": "electron.fiducial", "op": "fiducial" },
                     { "name": "electron.min_pcal", "op": "minPcalEnergy" },
                     { "name": "electron.sf_diagonal", "op": "samplingFractionDiagonal" },
-                    { "name": "electron.sf_sigma", "op": "samplingFractionSigma" }
+                    { "name": "electron.sf_sigma", "op": "samplingFractionSigma" },
+                    { "name": "electron.elastic_w", "op": "elasticWWindow", "max": 0.20 }
                 ]
             }
         ],
