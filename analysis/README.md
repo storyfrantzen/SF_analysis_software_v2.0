@@ -38,6 +38,40 @@ The selected ROOT file is not hashed by default because campaign files can be
 large; use `--hash-inputs` when a full content hash is required.  The final
 selection mask and analysis configuration are always hashed.
 
+For GEMC, the same plotting command can add generated/reconstructed diagnostic
+pages when given the generated-left event sample produced by
+`build_event_sample.py`:
+
+```bash
+python3 analysis/build_event_sample.py \
+  converter_gemc.root selected_gemc.root results/gemc_events.npz \
+  --beam-energy 10.604
+
+python3 analysis/plot_event_kinematics.py selected_gemc.root \
+  --config configs/analysis/rga/10.604.json \
+  --label "RGA Fall 2018 inbending GEMC" \
+  --output results/gemc_event_kinematics.pdf \
+  --gemc-event-sample results/gemc_events.npz \
+  --gemc-output-dir results/gemc_generated_reconstructed
+```
+
+The supplementary directory contains standalone generated and reconstructed
+kinematics, a unit-normalized shape comparison, selection efficiency versus
+generated coordinates, and a three-distribution overlay modeled on the GEMC
+production diagnostic.  In that overlay, `rec` is the selected reconstructed
+candidate, `gen, same events` is generator truth for those same events, and
+`gen, all scaled` is the complete finite generated distribution scaled to the
+same-event generated integral.  The complete denominator comes from `gEvents`,
+which `hipo2root` fills before reconstructed QA, topology, or DIS decisions.
+The event-sample `rec_selected` definition comes from the selected ROOT file
+used to build it; a separate `--selection-mask` supplied only to the plotting
+command does not alter that generated-left join.
+
+The standalone `analysis/plot_gen_rec_kinematics.py` command remains available
+for regenerating only these GEMC PNGs from an existing event-sample NPZ.  It
+reads the beam energy from NPZ metadata by default, or accepts an explicit
+`--beam-energy` override.
+
 `compare_event_kinematics.py` applies the final data and GEMC masks separately,
 then compares their unit-normalized reconstructed-candidate shapes.  Every 1D
 panel contains a data/GEMC ratio, Jensen-Shannon divergence, and total-variation

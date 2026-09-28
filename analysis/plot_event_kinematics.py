@@ -21,6 +21,10 @@ from eppi0.event_kinematics_diagnostics import (  # noqa: E402
     report_summary,
 )
 from eppi0.root_trees import resolve  # noqa: E402
+from plot_gen_rec_kinematics import (  # noqa: E402
+    load_sample as load_gemc_event_sample,
+    render_diagnostics as render_gemc_diagnostics,
+)
 
 
 TOPOLOGY_BRANCHES = ("pDet", "g1Det", "g2Det")
@@ -46,11 +50,37 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="SHA256 the ROOT input in addition to the mask and config",
     )
+    parser.add_argument(
+        "--gemc-event-sample",
+        type=Path,
+        help=(
+            "Optional generated-left event sample from build_event_sample.py. "
+            "When supplied, also write generated/reconstructed GEMC diagnostics."
+        ),
+    )
+    parser.add_argument(
+        "--gemc-output-dir",
+        type=Path,
+        help=(
+            "Directory for generated/reconstructed GEMC PNGs; defaults to "
+            "<output-stem>_gemc beside the selected-event PDF"
+        ),
+    )
+    parser.add_argument(
+        "--gemc-bins",
+        type=int,
+        default=60,
+        help="Histogram bins for generated/reconstructed GEMC pages (default: 60)",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.gemc_output_dir is not None and args.gemc_event_sample is None:
+        raise ValueError("--gemc-output-dir requires --gemc-event-sample")
+    if args.gemc_bins <= 0:
+        raise ValueError("--gemc-bins must be positive")
     config = json.loads(args.config.read_text())
     arrays, tree_name, input_rows = read_selected_root(
         args.selected_root, args.tree, args.dictionary
@@ -100,6 +130,51 @@ def main() -> int:
         label=args.label,
         provenance_lines=provenance,
     )
+    gemc_outputs: tuple[Path, ...] = ()
+    if args.gemc_event_sample is not None:
+        gemc_arrays, gemc_metadata = load_gemc_event_sample(args.gemc_event_sample)
+        metadata_beam_energy = gemc_metadata.get("beam_energy")
+        if metadata_beam_energy is not None and not np.isclose(
+            float(metadata_beam_energy), float(config["beam_energy"]), rtol=0.0, atol=1.0e-9
+        ):
+            raise ValueError(
+                "GEMC event-sample beam energy does not match the campaign config: "
+                f"{metadata_beam_energy} versus {config['beam_energy']} GeV"
+            )
+        gemc_output_dir = args.gemc_output_dir or args.output.with_name(
+            f"{args.output.stem}_gemc"
+        )
+        gemc_outputs = render_gemc_diagnostics(
+            gemc_arrays,
+            gemc_metadata,
+            gemc_output_dir,
+            args.label,
+            args.gemc_bins,
+            float(config["beam_energy"]),
+        )
+        generated_events = int(np.asarray(gemc_arrays["rec_selected"]).size)
+        selected_candidates = int(
+            np.count_nonzero(np.asarray(gemc_arrays["rec_selected"], dtype=bool))
+        )
+        summary["gemc_generated_reconstructed"] = {
+            "event_sample": file_record(args.gemc_event_sample, args.hash_inputs),
+            "event_sample_metadata": gemc_metadata,
+            "generated_events": generated_events,
+            "selected_reconstructed_candidates": selected_candidates,
+            "selection_fraction": (
+                selected_candidates / generated_events if generated_events else 0.0
+            ),
+            "selection_definition": (
+                "rec_selected from the generated-left event sample; reconstructed "
+                "columns are NaN when no selected candidate joined to the generated event"
+            ),
+            "all_generated_overlay_definition": (
+                "all finite generated-event values scaled by the finite generated "
+                "same-selected-event count divided by the finite all-generated count"
+            ),
+            "output_directory": str(gemc_output_dir.resolve()),
+            "outputs": [str(path.resolve()) for path in gemc_outputs],
+        }
     summary["pdf_pages"] = pages
     summary["output_pdf"] = str(args.output.resolve())
     summary_path = args.summary or args.output.with_name(
@@ -113,6 +188,15 @@ def main() -> int:
     print(f"Final selected rows: {summary['selected_rows']}")
     print(f"Topology counts: {summary['topology_counts']}")
     print(f"PDF pages: {pages}")
+    if args.gemc_event_sample is not None:
+        gemc_record = summary["gemc_generated_reconstructed"]
+        print(f"GEMC generated events: {gemc_record['generated_events']}")
+        print(
+            "GEMC selected reconstructed candidates: "
+            f"{gemc_record['selected_reconstructed_candidates']}"
+        )
+        for path in gemc_outputs:
+            print(f"Wrote {path.resolve()}")
     print(f"Wrote {args.output.resolve()}")
     print(f"Wrote {summary_path.resolve()}")
     return 0
