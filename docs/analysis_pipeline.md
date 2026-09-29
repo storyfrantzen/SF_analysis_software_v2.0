@@ -473,6 +473,28 @@ The systematic driver accepts the same `--run-catalog`,
 options. It applies the run filter before the nominal fit and preserves the
 resulting class-respecting nominal partition in every variation.
 
+For an electron-only inclusive elastic sample, select `inclusive-w` explicitly.
+The systematic selection axis then becomes the elastic-window half-width rather
+than the exclusive-ep missing energy:
+
+```bash
+python3 scripts/scan_elastic_momentum_systematics.py \
+  6.535_rgk_elastic_electron_candidates_inclusive_run_spanning.root \
+  --beam-energy 6.535 --torus 1 --particle electron \
+  --electron-selection inclusive-w --elastic-w-max-abs-gev 0.20 \
+  --elastic-w-scan-gev 0.10 0.15 0.20 \
+  --run-catalog configs/efficiency/rgk/6.535/run_currents.json \
+  --include-run-classes L4 P3 P4 L5 --block-by-run-class \
+  --models constant theta-linear theta-phi theta2-phi \
+  --output-dir calibration_plots/momentum/rgk_6p535_inclusive_systematics
+```
+
+The driver rejects `inclusive-w` for proton calibration and loads no proton
+branches in that mode. Missing-energy variations remain the default for the
+exclusive-ep selection. The inclusive candidate tree must have been written
+with a W window at least as broad as every requested scan value; the standard
+0.20-GeV candidate window therefore uses 0.10, 0.15, and 0.20 GeV.
+
 The scan loads the candidate tree once and varies one setting at a time around
 the nominal configuration. It defines the run blocks from the nominal sample
 and reuses the same run membership in every variation, preventing changing
@@ -490,9 +512,10 @@ The aggregate outputs are:
   separate surface movement from changes made by the automatic selector;
 - `recommended_robust_parameters.json`, assembled from the nominal pooled
   surfaces using the least-complex model selected across the nominal,
-  missing-energy, and cell-binning tests in each sector.  Lower-theta changes
-  are recorded as domain sensitivity rather than silently folded into the
-  model choice;
+  event-selection, and cell-binning tests in each sector. For exclusive ep the
+  selection axis is missing energy; for inclusive elastic electrons it is the
+  elastic-W window. Lower-theta changes are recorded as domain sensitivity
+  rather than silently folded into the model choice;
 - one subdirectory per variation containing its full validation JSON and
   candidate parameter files.
 

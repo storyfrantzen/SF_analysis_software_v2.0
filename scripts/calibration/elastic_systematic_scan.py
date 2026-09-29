@@ -49,6 +49,7 @@ def make_one_at_a_time_variations(
     missing_energy_values: Iterable[float],
     theta_min_values: Iterable[float],
     target_cell_entry_values: Iterable[int],
+    elastic_w_values: Iterable[float] = (),
 ) -> list[ScanVariation]:
     variations = [
         ScanVariation(
@@ -60,20 +61,36 @@ def make_one_at_a_time_variations(
         )
     ]
     seen = {"nominal"}
-    for value in missing_energy_values:
-        value = float(value)
-        if np.isclose(value, cfg.missing_energy_max_gev):
-            continue
-        variation = ScanVariation(
-            name=f"missing_energy_{_float_slug(value)}",
-            label=f"missing energy < {value:.2f} GeV",
-            axis="missingEnergyMaxGeV",
-            value=value,
-            overrides={"missing_energy_max_gev": value},
-        )
-        if variation.name not in seen:
-            variations.append(variation)
-            seen.add(variation.name)
+    if cfg.electron_selection == "inclusive-w":
+        for value in elastic_w_values:
+            value = float(value)
+            if np.isclose(value, cfg.elastic_w_max_abs_gev):
+                continue
+            variation = ScanVariation(
+                name=f"elastic_w_{_float_slug(value)}",
+                label=f"|W - M_p| < {value:.2f} GeV",
+                axis="elasticWMaxAbsGeV",
+                value=value,
+                overrides={"elastic_w_max_abs_gev": value},
+            )
+            if variation.name not in seen:
+                variations.append(variation)
+                seen.add(variation.name)
+    else:
+        for value in missing_energy_values:
+            value = float(value)
+            if np.isclose(value, cfg.missing_energy_max_gev):
+                continue
+            variation = ScanVariation(
+                name=f"missing_energy_{_float_slug(value)}",
+                label=f"missing energy < {value:.2f} GeV",
+                axis="missingEnergyMaxGeV",
+                value=value,
+                overrides={"missing_energy_max_gev": value},
+            )
+            if variation.name not in seen:
+                variations.append(variation)
+                seen.add(variation.name)
     for value in theta_min_values:
         value = float(value)
         if cfg.theta_min_deg is not None and np.isclose(value, cfg.theta_min_deg):
@@ -1279,6 +1296,12 @@ def parse_args() -> argparse.Namespace:
         "--particle", choices=("electron", "proton"), default="electron"
     )
     parser.add_argument(
+        "--electron-selection",
+        choices=("exclusive-ep", "inclusive-w"),
+        default="exclusive-ep",
+    )
+    parser.add_argument("--elastic-w-max-abs-gev", type=float, default=0.20)
+    parser.add_argument(
         "--models", nargs="+", choices=tuple(MODEL_ORDERS),
         default=["constant", "theta-linear", "theta-phi"],
     )
@@ -1316,6 +1339,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--missing-energy-scan-gev", nargs="+", type=float,
         default=[0.50, 0.75, 1.00],
+    )
+    parser.add_argument(
+        "--elastic-w-scan-gev", nargs="+", type=float,
+        default=[0.10, 0.15, 0.20],
+        help=(
+            "inclusive-w selection half-widths; replaces the missing-energy "
+            "axis when --electron-selection inclusive-w"
+        ),
     )
     parser.add_argument(
         "--theta-min-scan-deg", nargs="+", type=float,
@@ -1383,9 +1414,17 @@ def main() -> None:
         raise ValueError(
             "--fold-by-run-class requires exactly two --include-run-classes"
         )
+    if args.electron_selection == "inclusive-w" and args.particle != "electron":
+        raise ValueError("--electron-selection inclusive-w requires --particle electron")
+    if args.elastic_w_max_abs_gev <= 0.0:
+        raise ValueError("elastic W half-width must be positive")
+    if any(value <= 0.0 for value in args.elastic_w_scan_gev):
+        raise ValueError("elastic W scan half-widths must be positive")
     cfg = ElasticFitConfig(
         beam_energy=args.beam_energy,
         torus=args.torus,
+        electron_selection=args.electron_selection,
+        elastic_w_max_abs_gev=args.elastic_w_max_abs_gev,
         coplanarity_max_deg=args.coplanarity_max_deg,
         theta_balance_max_deg=args.theta_balance_max_deg,
         missing_energy_max_gev=args.missing_energy_max_gev,
@@ -1416,6 +1455,7 @@ def main() -> None:
         missing_energy_values=args.missing_energy_scan_gev,
         theta_min_values=args.theta_min_scan_deg,
         target_cell_entry_values=args.target_cell_entries_scan,
+        elastic_w_values=args.elastic_w_scan_gev,
     )
     if args.rebuild_existing_report:
         report = rebuild_existing_systematic_scan(
@@ -1435,7 +1475,11 @@ def main() -> None:
                 "at least one candidate ROOT input is required unless "
                 "--rebuild-existing-report is used"
             )
-        arrays = load_candidate_inputs(args.input_files, args.tree)
+        arrays = load_candidate_inputs(
+            args.input_files,
+            args.tree,
+            require_proton=args.electron_selection != "inclusive-w",
+        )
         if args.max_rows is not None:
             arrays = subset_arrays(
                 arrays,

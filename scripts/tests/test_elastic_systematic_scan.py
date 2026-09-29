@@ -74,6 +74,45 @@ class ElasticSystematicScanTests(unittest.TestCase):
         )
         self.assertTrue(all(len(variation.overrides) <= 1 for variation in variations))
 
+    def test_inclusive_variations_scan_w_instead_of_missing_energy(self) -> None:
+        cfg = ElasticFitConfig(
+            beam_energy=6.535,
+            electron_selection="inclusive-w",
+            elastic_w_max_abs_gev=0.20,
+            missing_energy_max_gev=0.75,
+            theta_min_deg=6.1,
+            target_cell_entries=10_000,
+        )
+        variations = make_one_at_a_time_variations(
+            cfg,
+            missing_energy_values=[0.50, 0.75, 1.00],
+            theta_min_values=[6.10],
+            target_cell_entry_values=[5_000, 10_000, 15_000],
+            elastic_w_values=[0.10, 0.15, 0.20],
+        )
+        self.assertEqual(
+            [variation.name for variation in variations],
+            [
+                "nominal",
+                "elastic_w_0p10",
+                "elastic_w_0p15",
+                "target_cell_entries_5000",
+                "target_cell_entries_15000",
+            ],
+        )
+        self.assertNotIn(
+            "missingEnergyMaxGeV",
+            {variation.axis for variation in variations},
+        )
+        self.assertEqual(
+            {
+                variation.overrides.get("elastic_w_max_abs_gev")
+                for variation in variations
+                if variation.axis == "elasticWMaxAbsGeV"
+            },
+            {0.10, 0.15},
+        )
+
     def test_surface_comparison_uses_common_nominal_cells(self) -> None:
         comparisons = compare_parameter_surfaces(
             _parameters(0.004), _parameters(0.005)
