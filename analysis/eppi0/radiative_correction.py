@@ -543,7 +543,10 @@ def _limited_lund_files(pattern_or_dir: str | Path | Sequence[Path], max_files: 
 
 
 def _lund_files(pattern_or_dir: str | Path | Sequence[Path], max_files: int | None = None) -> list[Path]:
-    if not isinstance(pattern_or_dir, str | Path):
+    # Use a type tuple rather than ``str | Path`` here: the latter is valid as
+    # a postponed annotation on Python 3.9, but not as the runtime second
+    # argument to isinstance on the farm's Python 3.9 interpreter.
+    if not isinstance(pattern_or_dir, (str, Path)):
         return _filter_lund_files(pattern_or_dir, max_files=max_files)
     path = Path(pattern_or_dir)
     if path.is_dir():
