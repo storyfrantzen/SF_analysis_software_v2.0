@@ -13,9 +13,14 @@ import argparse
 import json
 import math
 from pathlib import Path
+import sys
 from typing import Any
 
 import numpy as np
+
+# Support both ``python -m analysis...`` and direct execution from the repository.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from analysis.eppi0.binning import AnalysisBinning, from_config
 from analysis.eppi0.phase_space import AnalysisPhaseSpace
