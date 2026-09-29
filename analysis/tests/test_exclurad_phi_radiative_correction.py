@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
 import unittest
 
 import numpy as np
@@ -17,9 +18,40 @@ from analysis.exclurad_4d_radiative_correction import (
     minus_t,
     weighted_effective_count,
 )
+from analysis.run_analysis import _plot_radiative_correction_diagnostics
 
 
 class ExcluradPhiRadiativeCorrectionTests(unittest.TestCase):
+    def test_correction_overlay_rejects_different_phi_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            primary = directory / "primary.npz"
+            overlay = directory / "overlay.npz"
+            shape = (1, 1, 1, 2)
+            common = {
+                "C_rad": np.ones(shape),
+                "delta_C": np.full(shape, 0.1),
+                "reliable": np.ones(shape, dtype=bool),
+                "support_overlap": np.ones(shape, dtype=bool),
+                "support_status": np.zeros(shape, dtype=np.uint8),
+                "H_born": np.full(shape, 10.0),
+                "H_rad": np.full(shape, 10.0),
+                "H_born_effective": np.full(shape, 10.0),
+                "H_rad_effective": np.full(shape, 10.0),
+                "q2_edges": np.asarray([1.0, 2.0]),
+                "xb_edges": np.asarray([0.1, 0.2]),
+                "t_edges": np.asarray([0.1, 0.2]),
+                "min_counts": 5,
+            }
+            np.savez(primary, **common, phi_edges=np.asarray([0.0, 180.0, 360.0]))
+            np.savez(overlay, **common, phi_edges=np.asarray([0.0, 90.0, 360.0]))
+            with self.assertRaisesRegex(ValueError, "overlay phi_edges"):
+                _plot_radiative_correction_diagnostics(
+                    primary,
+                    directory / "comparison.pdf",
+                    overlay_correction_path=overlay,
+                )
+
     def test_coarse_quilt_config_has_requested_shape(self) -> None:
         repository = Path(__file__).resolve().parents[2]
         config = repository / (

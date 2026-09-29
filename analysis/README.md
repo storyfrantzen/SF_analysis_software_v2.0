@@ -1319,6 +1319,18 @@ python3 analysis/run_analysis.py radiative-correction-plots results/C_rad.npz \
   --quilt
 ```
 
+Overlay two corrections only when they use identical four-dimensional bin
+edges.  The comparison adds one quilt page per `-t` bin and masks each series
+with its own reliability selection:
+
+```bash
+python3 analysis/run_analysis.py radiative-correction-plots results/exclurad_C_rad.npz \
+  --overlay-correction results/aao_C_rad.npz \
+  --primary-label EXCLURAD --overlay-label AAO \
+  --output results/exclurad_vs_aao_C_rad.pdf --quilt \
+  --quilt-scale-mode panel
+```
+
 The PDF includes summary/support pages, a clipped `0<C_rad<2` summary
 histogram, projection heatmaps of median reliable `C_rad` and reliable-bin
 fraction in `(xB,Q2)` and `(phi,-t)`, and then detailed per-`(Q2,xB,-t)` phi

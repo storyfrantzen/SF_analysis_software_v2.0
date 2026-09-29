@@ -382,6 +382,22 @@ def parser() -> argparse.ArgumentParser:
         default="panel",
         help="Use one y scale per -t quilt or independently scale every panel (default: panel)",
     )
+    radcorr_plots.add_argument(
+        "--overlay-correction",
+        type=Path,
+        help=(
+            "Second correction artifact to overlay on the quilt pages; its 4D "
+            "shape and every bin edge must match the primary artifact"
+        ),
+    )
+    radcorr_plots.add_argument(
+        "--primary-label",
+        help="Legend label for the primary correction (default: filename stem)",
+    )
+    radcorr_plots.add_argument(
+        "--overlay-label",
+        help="Legend label for the overlaid correction (default: filename stem)",
+    )
 
     xsec = commands.add_parser("cross-section", help="Normalize unfolded yields")
     xsec.add_argument("unfolding_result", type=Path)
@@ -2138,6 +2154,9 @@ def command_radiative_correction_plots(args: argparse.Namespace) -> None:
         csv_path=args.csv,
         include_quilt=args.quilt,
         quilt_scale_mode=args.quilt_scale_mode,
+        overlay_correction_path=args.overlay_correction,
+        primary_label=args.primary_label,
+        overlay_label=args.overlay_label,
     )
     print(f"Wrote radiative-correction diagnostic PDF with {pages} pages: {args.output}")
 
@@ -2148,6 +2167,9 @@ def _plot_radiative_correction_diagnostics(
     csv_path: Path | None = None,
     include_quilt: bool = False,
     quilt_scale_mode: str = "panel",
+    overlay_correction_path: Path | None = None,
+    primary_label: str | None = None,
+    overlay_label: str | None = None,
 ) -> int:
     _prepare_matplotlib_cache()
     import matplotlib.pyplot as plt
@@ -2205,6 +2227,47 @@ def _plot_radiative_correction_diagnostics(
     ):
         if values.shape != expected_shape:
             raise ValueError(f"{name} has shape {values.shape}; expected {expected_shape}")
+
+    overlay_series = None
+    if overlay_correction_path is not None:
+        overlay = np.load(overlay_correction_path, allow_pickle=False)
+        overlay_c_rad = np.asarray(overlay["C_rad"], dtype=float)
+        overlay_delta_c = np.asarray(overlay["delta_C"], dtype=float)
+        overlay_reliable = np.asarray(overlay["reliable"], dtype=bool)
+        for edge_name, primary_edges in (
+            ("q2_edges", q2_edges),
+            ("xb_edges", xb_edges),
+            ("t_edges", t_edges),
+            ("phi_edges", phi_edges),
+        ):
+            overlay_edges = _npz_first(
+                overlay,
+                edge_name,
+                "Q2_edges" if edge_name == "q2_edges" else (
+                    "Xb_edges" if edge_name == "xb_edges" else edge_name
+                ),
+            )
+            if (
+                overlay_edges.shape != primary_edges.shape
+                or not np.allclose(overlay_edges, primary_edges, rtol=0.0, atol=1.0e-12)
+            ):
+                raise ValueError(
+                    f"overlay {edge_name} does not match the primary correction"
+                )
+        for name, values in (
+            ("C_rad", overlay_c_rad),
+            ("delta_C", overlay_delta_c),
+            ("reliable", overlay_reliable),
+        ):
+            if values.shape != expected_shape:
+                raise ValueError(
+                    f"overlay {name} has shape {values.shape}; expected {expected_shape}"
+                )
+        overlay_series = (
+            overlay_c_rad,
+            overlay_delta_c,
+            overlay_reliable,
+        )
 
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
     if csv_path is not None:
@@ -2277,6 +2340,25 @@ def _plot_radiative_correction_diagnostics(
                 t_edges,
                 title="Radiative correction vs phi quilt",
                 ylabel="C_rad",
+                scale_mode=quilt_scale_mode,
+                reference_lines=(1.0,),
+            )
+
+        if overlay_series is not None:
+            primary_name = primary_label or correction_path.stem
+            comparison_name = overlay_label or overlay_correction_path.stem
+            pages += _plot_quantity_quilts_vs_phi(
+                pdf,
+                {
+                    primary_name: (c_rad, delta_c, reliable),
+                    comparison_name: overlay_series,
+                },
+                phi_edges,
+                q2_edges,
+                xb_edges,
+                t_edges,
+                title="Radiative-correction comparison vs phi",
+                ylabel="C_rad = sigma_rad / sigma_Born",
                 scale_mode=quilt_scale_mode,
                 reference_lines=(1.0,),
             )
