@@ -398,6 +398,11 @@ def parser() -> argparse.ArgumentParser:
         "--overlay-label",
         help="Legend label for the overlaid correction (default: filename stem)",
     )
+    radcorr_plots.add_argument(
+        "--overlay-only",
+        action="store_true",
+        help="Write only the comparison quilt pages (requires --overlay-correction)",
+    )
 
     xsec = commands.add_parser("cross-section", help="Normalize unfolded yields")
     xsec.add_argument("unfolding_result", type=Path)
@@ -2157,6 +2162,7 @@ def command_radiative_correction_plots(args: argparse.Namespace) -> None:
         overlay_correction_path=args.overlay_correction,
         primary_label=args.primary_label,
         overlay_label=args.overlay_label,
+        overlay_only=args.overlay_only,
     )
     print(f"Wrote radiative-correction diagnostic PDF with {pages} pages: {args.output}")
 
@@ -2170,7 +2176,10 @@ def _plot_radiative_correction_diagnostics(
     overlay_correction_path: Path | None = None,
     primary_label: str | None = None,
     overlay_label: str | None = None,
+    overlay_only: bool = False,
 ) -> int:
+    if overlay_only and overlay_correction_path is None:
+        raise ValueError("--overlay-only requires --overlay-correction")
     _prepare_matplotlib_cache()
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
@@ -2301,48 +2310,49 @@ def _plot_radiative_correction_diagnostics(
 
     pages = 0
     with PdfPages(pdf_path) as pdf:
-        _plot_radcorr_summary_page(
-            pdf,
-            correction_path,
-            c_rad,
-            delta_c,
-            reliable,
-            support_overlap,
-            support_status,
-            h_born,
-            h_rad,
-            h_born_effective,
-            h_rad_effective,
-            correction,
-            min_counts,
-        )
-        pages += 1
-
-        _plot_radcorr_status_page(pdf, support_status, status_labels, status_colors)
-        pages += 1
-
-        _plot_radcorr_histograms(pdf, c_rad, delta_c, reliable)
-        pages += 1
-
-        _plot_radcorr_q2_xb_projection(pdf, c_rad, reliable, q2_edges, xb_edges)
-        pages += 1
-
-        _plot_radcorr_t_phi_projection(pdf, c_rad, reliable, t_edges, phi_edges)
-        pages += 1
-
-        if include_quilt:
-            pages += _plot_quantity_quilts_vs_phi(
+        if not overlay_only:
+            _plot_radcorr_summary_page(
                 pdf,
-                {"C_rad": (c_rad, delta_c, reliable)},
-                phi_edges,
-                q2_edges,
-                xb_edges,
-                t_edges,
-                title="Radiative correction vs phi quilt",
-                ylabel="C_rad",
-                scale_mode=quilt_scale_mode,
-                reference_lines=(1.0,),
+                correction_path,
+                c_rad,
+                delta_c,
+                reliable,
+                support_overlap,
+                support_status,
+                h_born,
+                h_rad,
+                h_born_effective,
+                h_rad_effective,
+                correction,
+                min_counts,
             )
+            pages += 1
+
+            _plot_radcorr_status_page(pdf, support_status, status_labels, status_colors)
+            pages += 1
+
+            _plot_radcorr_histograms(pdf, c_rad, delta_c, reliable)
+            pages += 1
+
+            _plot_radcorr_q2_xb_projection(pdf, c_rad, reliable, q2_edges, xb_edges)
+            pages += 1
+
+            _plot_radcorr_t_phi_projection(pdf, c_rad, reliable, t_edges, phi_edges)
+            pages += 1
+
+            if include_quilt:
+                pages += _plot_quantity_quilts_vs_phi(
+                    pdf,
+                    {"C_rad": (c_rad, delta_c, reliable)},
+                    phi_edges,
+                    q2_edges,
+                    xb_edges,
+                    t_edges,
+                    title="Radiative correction vs phi quilt",
+                    ylabel="C_rad",
+                    scale_mode=quilt_scale_mode,
+                    reference_lines=(1.0,),
+                )
 
         if overlay_series is not None:
             primary_name = primary_label or correction_path.stem
@@ -2363,69 +2373,70 @@ def _plot_radiative_correction_diagnostics(
                 reference_lines=(1.0,),
             )
 
-        for iq2 in range(c_rad.shape[0]):
-            for ixb in range(c_rad.shape[1]):
-                for it in range(c_rad.shape[2]):
-                    born_phi = h_born[iq2, ixb, it, :]
-                    rad_phi = h_rad[iq2, ixb, it, :]
-                    born_effective_phi = h_born_effective[iq2, ixb, it, :]
-                    rad_effective_phi = h_rad_effective[iq2, ixb, it, :]
-                    if not np.any((born_phi > 0.0) | (rad_phi > 0.0)):
-                        continue
-                    reliable_phi = reliable[iq2, ixb, it, :]
-                    overlap_phi = support_overlap[iq2, ixb, it, :]
-                    values = c_rad[iq2, ixb, it, :]
-                    errors = delta_c[iq2, ixb, it, :]
-                    status_phi = support_status[iq2, ixb, it, :]
-                    _plot_radcorr_phi_page(
-                        pdf,
-                        phi_centers,
-                        values,
-                        errors,
-                        reliable_phi,
-                        status_phi,
-                        born_phi,
-                        rad_phi,
-                        born_effective_phi,
-                        rad_effective_phi,
-                        q2_edges,
-                        xb_edges,
-                        t_edges,
-                        iq2,
-                        ixb,
-                        it,
-                        status_labels,
-                        status_colors,
-                    )
-                    pages += 1
-                    good = reliable_phi & np.isfinite(values)
-                    csv_lines.append(
-                        ",".join(
-                            str(item)
-                            for item in (
-                                iq2,
-                                q2_edges[iq2],
-                                q2_edges[iq2 + 1],
-                                ixb,
-                                xb_edges[ixb],
-                                xb_edges[ixb + 1],
-                                it,
-                                t_edges[it],
-                                t_edges[it + 1],
-                                int(np.count_nonzero(reliable_phi)),
-                                int(np.count_nonzero(overlap_phi)),
-                                float(np.sum(born_phi)),
-                                float(np.sum(rad_phi)),
-                                float(np.sum(born_effective_phi)),
-                                float(np.sum(rad_effective_phi)),
-                                float(np.nanmean(values[good])) if np.any(good) else np.nan,
-                                float(np.nanmedian(values[good])) if np.any(good) else np.nan,
-                                float(np.nanmin(values[good])) if np.any(good) else np.nan,
-                                float(np.nanmax(values[good])) if np.any(good) else np.nan,
-                                float(np.nanmean(errors[good])) if np.any(good) else np.nan,
+        if not overlay_only:
+            for iq2 in range(c_rad.shape[0]):
+                for ixb in range(c_rad.shape[1]):
+                    for it in range(c_rad.shape[2]):
+                        born_phi = h_born[iq2, ixb, it, :]
+                        rad_phi = h_rad[iq2, ixb, it, :]
+                        born_effective_phi = h_born_effective[iq2, ixb, it, :]
+                        rad_effective_phi = h_rad_effective[iq2, ixb, it, :]
+                        if not np.any((born_phi > 0.0) | (rad_phi > 0.0)):
+                            continue
+                        reliable_phi = reliable[iq2, ixb, it, :]
+                        overlap_phi = support_overlap[iq2, ixb, it, :]
+                        values = c_rad[iq2, ixb, it, :]
+                        errors = delta_c[iq2, ixb, it, :]
+                        status_phi = support_status[iq2, ixb, it, :]
+                        _plot_radcorr_phi_page(
+                            pdf,
+                            phi_centers,
+                            values,
+                            errors,
+                            reliable_phi,
+                            status_phi,
+                            born_phi,
+                            rad_phi,
+                            born_effective_phi,
+                            rad_effective_phi,
+                            q2_edges,
+                            xb_edges,
+                            t_edges,
+                            iq2,
+                            ixb,
+                            it,
+                            status_labels,
+                            status_colors,
+                        )
+                        pages += 1
+                        good = reliable_phi & np.isfinite(values)
+                        csv_lines.append(
+                            ",".join(
+                                str(item)
+                                for item in (
+                                    iq2,
+                                    q2_edges[iq2],
+                                    q2_edges[iq2 + 1],
+                                    ixb,
+                                    xb_edges[ixb],
+                                    xb_edges[ixb + 1],
+                                    it,
+                                    t_edges[it],
+                                    t_edges[it + 1],
+                                    int(np.count_nonzero(reliable_phi)),
+                                    int(np.count_nonzero(overlap_phi)),
+                                    float(np.sum(born_phi)),
+                                    float(np.sum(rad_phi)),
+                                    float(np.sum(born_effective_phi)),
+                                    float(np.sum(rad_effective_phi)),
+                                    float(np.nanmean(values[good])) if np.any(good) else np.nan,
+                                    float(np.nanmedian(values[good])) if np.any(good) else np.nan,
+                                    float(np.nanmin(values[good])) if np.any(good) else np.nan,
+                                    float(np.nanmax(values[good])) if np.any(good) else np.nan,
+                                    float(np.nanmean(errors[good])) if np.any(good) else np.nan,
+                                )
                             )
                         )
-                    )
 
     if csv_path is not None:
         csv_path.write_text("\n".join(csv_lines) + "\n", encoding="utf-8")

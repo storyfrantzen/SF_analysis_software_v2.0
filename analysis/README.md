@@ -1327,7 +1327,7 @@ with its own reliability selection:
 python3 analysis/run_analysis.py radiative-correction-plots results/exclurad_C_rad.npz \
   --overlay-correction results/aao_C_rad.npz \
   --primary-label EXCLURAD --overlay-label AAO \
-  --output results/exclurad_vs_aao_C_rad.pdf --quilt \
+  --output results/exclurad_vs_aao_C_rad.pdf --overlay-only \
   --quilt-scale-mode panel
 ```
 

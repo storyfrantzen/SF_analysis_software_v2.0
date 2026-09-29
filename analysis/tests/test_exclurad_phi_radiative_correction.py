@@ -52,6 +52,40 @@ class ExcluradPhiRadiativeCorrectionTests(unittest.TestCase):
                     overlay_correction_path=overlay,
                 )
 
+    def test_overlay_only_writes_one_page_per_t_bin(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            shape = (1, 1, 2, 2)
+            fields = {
+                "C_rad": np.ones(shape),
+                "delta_C": np.full(shape, 0.1),
+                "reliable": np.ones(shape, dtype=bool),
+                "support_overlap": np.ones(shape, dtype=bool),
+                "support_status": np.zeros(shape, dtype=np.uint8),
+                "H_born": np.full(shape, 10.0),
+                "H_rad": np.full(shape, 10.0),
+                "H_born_effective": np.full(shape, 10.0),
+                "H_rad_effective": np.full(shape, 10.0),
+                "q2_edges": np.asarray([1.0, 2.0]),
+                "xb_edges": np.asarray([0.1, 0.2]),
+                "t_edges": np.asarray([0.1, 0.2, 0.3]),
+                "phi_edges": np.asarray([0.0, 180.0, 360.0]),
+                "min_counts": 5,
+            }
+            primary = directory / "primary.npz"
+            overlay = directory / "overlay.npz"
+            output = directory / "comparison.pdf"
+            np.savez(primary, **fields)
+            np.savez(overlay, **fields)
+            pages = _plot_radiative_correction_diagnostics(
+                primary,
+                output,
+                overlay_correction_path=overlay,
+                overlay_only=True,
+            )
+            self.assertEqual(pages, 2)
+            self.assertGreater(output.stat().st_size, 0)
+
     def test_coarse_quilt_config_has_requested_shape(self) -> None:
         repository = Path(__file__).resolve().parents[2]
         config = repository / (
