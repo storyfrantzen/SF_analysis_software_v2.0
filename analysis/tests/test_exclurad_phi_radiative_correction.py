@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
 import unittest
 
 import numpy as np
 
+from analysis.eppi0.binning import from_config
 from analysis.exclurad_phi_radiative_correction import (
     inelasticity_v,
     ratio_and_error,
@@ -18,6 +20,16 @@ from analysis.exclurad_4d_radiative_correction import (
 
 
 class ExcluradPhiRadiativeCorrectionTests(unittest.TestCase):
+    def test_coarse_quilt_config_has_requested_shape(self) -> None:
+        repository = Path(__file__).resolve().parents[2]
+        config = repository / (
+            "configs/diagnostics/rga/10.604/"
+            "exclurad_radiative_correction_coarse_5x5x4x12.json"
+        )
+        binning = from_config(config)
+        self.assertEqual(binning.shape, (5, 5, 4, 12))
+        np.testing.assert_allclose(binning.phi_edges, np.linspace(0.0, 360.0, 13))
+
     def test_nested_sigma_nb_is_found(self) -> None:
         self.assertEqual(sigma_nb({"result": {"sigma_nb": 1.25}}), 1.25)
 
