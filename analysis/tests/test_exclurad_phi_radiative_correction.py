@@ -10,6 +10,11 @@ from analysis.exclurad_phi_radiative_correction import (
     sigma_nb,
     trento_phi,
 )
+from analysis.exclurad_4d_radiative_correction import (
+    dis_kinematics,
+    minus_t,
+    weighted_effective_count,
+)
 
 
 class ExcluradPhiRadiativeCorrectionTests(unittest.TestCase):
@@ -51,6 +56,22 @@ class ExcluradPhiRadiativeCorrectionTests(unittest.TestCase):
         self.assertTrue(np.isfinite(phi[0]))
         self.assertGreaterEqual(phi[0], 0.0)
         self.assertLess(phi[0], 2.0 * np.pi)
+
+    def test_weighted_effective_count(self) -> None:
+        # Two entries with weights 1 and 2 have Kish support 9/5.
+        np.testing.assert_allclose(
+            weighted_effective_count(np.asarray([3.0]), np.asarray([5.0])),
+            [1.8],
+        )
+
+    def test_dis_and_minus_t_are_finite(self) -> None:
+        electron = np.asarray([[0.5, 0.1, 7.0, np.sqrt(49.26)]])
+        proton = np.asarray([[0.2, -0.1, 0.6, 1.15]])
+        q2, xb = dis_kinematics(electron, 10.6)
+        mt = minus_t(proton)
+        self.assertTrue(np.all(np.isfinite(q2)))
+        self.assertTrue(np.all(np.isfinite(xb)))
+        self.assertTrue(np.all(np.isfinite(mt)))
 
 
 if __name__ == "__main__":
