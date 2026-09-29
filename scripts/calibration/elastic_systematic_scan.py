@@ -490,7 +490,7 @@ def _conservative_recommendation(
         ),
         "strategy": (
             "for each region, take the least complex automatically selected model "
-            "across nominal, missing-energy, and cell-binning variations"
+            "across nominal and domain-preserving selection/binning variations"
         ),
         "domainChangingAxesExcludedFromModelChoice": sorted(DOMAIN_CHANGING_AXES),
         "domainSensitiveRegions": domain_sensitive_regions,
@@ -746,9 +746,12 @@ def build_systematic_report(
         "failedVariations": failed_names,
         "allRegionModelAssignmentsStable": all_stable,
         "status": (
+            "one or more systematic variations failed"
+            if failed_names else
             "all detector-region model assignments are stable across the scan"
             if all_stable else
-            "one or more detector-region assignments changed or a variation failed"
+            "all variations completed; one or more detector-region model "
+            "assignments changed"
         ),
         "variations": variation_summaries,
         "regionStability": region_stability,
