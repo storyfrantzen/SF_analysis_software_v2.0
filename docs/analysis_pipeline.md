@@ -872,6 +872,16 @@ rate, or poor agreement for diphoton-direction-decisive events, means the
 nearest-root residual is not stable enough to calibrate directly; use a local
 or simultaneous exclusivity fit instead.
 
+For proton systematics, keep the nominal nearest-root cohort unchanged and run
+the two root-quality exclusions one at a time. `--root-stability-parameters`
+removes only events whose nearest branch changes after applying a provisional
+proton surface. `--exclude-photon-direction-disagreements-min-gap-deg 1.0`
+removes only events for which the measured diphoton direction prefers the
+alternate root and the two angular residuals differ by at least one degree.
+Each output records its excluded and retained counts under `rootSelection`.
+Compare these with 5x5, 6x6, and 8x8 momentum/theta cell definitions before
+promoting the proton parameters.
+
 After validating each stage, merge the electron and ep-pi0 files:
 
 ```bash

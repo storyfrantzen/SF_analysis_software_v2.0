@@ -7,18 +7,26 @@ from pathlib import Path
 
 import numpy as np
 
-from .elastic_momentum import evaluate_region, mode_seeded_core, region_support_mask
+from .elastic_momentum import (
+    apply_supported_particle_correction,
+    evaluate_region,
+    mode_seeded_core,
+    region_support_mask,
+)
 from .elastic_run_validation import (
     filter_arrays_by_run_classes,
     load_run_catalog,
 )
 from .eppi0_momentum_validation import load_aligned_selection_mask, load_eppi0_arrays
+from .eppi0_proton_root_audit import _nearest_root_choice, photon_branch_metrics
 from .exclusive_particle_momentum import (
     SURFACE_TERMS,
     ExclusiveFitConfig,
+    _base_mask,
     _read_parameters,
     build_eppi0_particle_sample,
     fit_momentum_theta_region,
+    proton_momentum_roots_eppi0,
 )
 from .plot_utils import save_plot
 
@@ -52,6 +60,89 @@ def _run_class_selection_mask(
     )
     selected_runs = np.asarray(sorted(selected_mapping), dtype=int)
     return np.isin(runs, selected_runs), metadata
+
+
+def _root_quality_selection_mask(
+    arrays: dict[str, np.ndarray],
+    electron_parameters: dict[str, object],
+    cfg: ExclusiveFitConfig,
+    cohort_mask: np.ndarray | None,
+    *,
+    stability_parameters: dict[str, object] | None,
+    photon_direction_min_gap_deg: float | None,
+) -> tuple[np.ndarray, dict[str, object]]:
+    entries = int(np.asarray(arrays["electronP"]).size)
+    cohort = (
+        np.ones(entries, dtype=bool)
+        if cohort_mask is None else np.asarray(cohort_mask, dtype=bool)
+    )
+    electron_p, electron_support, _ = apply_supported_particle_correction(
+        arrays["electronP"], arrays["electronTheta"], arrays["electronPhi"],
+        arrays["electronDet"], arrays["electronSector"],
+        pid=11, parameters=electron_parameters,
+    )
+    physics_base, _ = _base_mask(arrays, electron_p, cfg)
+    cohort &= physics_base & electron_support
+    roots, valid = proton_momentum_roots_eppi0(
+        electron_p, arrays["electronTheta"], arrays["electronPhi"],
+        arrays["protonTheta"], arrays["protonPhi"], cfg.beam_energy,
+    )
+    measured = np.asarray(arrays["protonP"], dtype=float)
+    nominal_choice = _nearest_root_choice(roots, valid, measured)
+    ambiguous = np.sum(valid, axis=1) == 2
+    keep = np.ones(entries, dtype=bool)
+    metadata: dict[str, object] = {
+        "inputCohortEntries": int(np.count_nonzero(cohort)),
+        "ambiguousInputCohortEntries": int(np.count_nonzero(cohort & ambiguous)),
+    }
+    if stability_parameters is not None:
+        proton_sector = np.asarray(
+            arrays.get("protonSector", np.zeros(entries)), dtype=int
+        )
+        corrected, support, _ = apply_supported_particle_correction(
+            measured, arrays["protonTheta"], arrays["protonPhi"],
+            arrays["protonDet"], proton_sector,
+            pid=2212, parameters=stability_parameters,
+        )
+        corrected_choice = _nearest_root_choice(roots, valid, corrected)
+        flips = ambiguous & support & (corrected_choice != nominal_choice)
+        keep &= ~(cohort & flips)
+        eligible = cohort & ambiguous & support
+        metadata["stability"] = {
+            "supportedAmbiguousEntries": int(np.count_nonzero(eligible)),
+            "excludedBranchFlipEntries": int(np.count_nonzero(cohort & flips)),
+            "excludedBranchFlipFraction": (
+                float(np.count_nonzero(cohort & flips) / np.count_nonzero(eligible))
+                if np.any(eligible) else 0.0
+            ),
+        }
+    if photon_direction_min_gap_deg is not None:
+        angles, _ = photon_branch_metrics(
+            arrays, electron_p, roots, valid, cfg.beam_energy
+        )
+        finite = np.all(np.isfinite(angles), axis=1)
+        photon_choice = np.argmin(angles, axis=1)
+        gap = np.abs(angles[:, 1] - angles[:, 0])
+        decisive = ambiguous & finite & (gap >= photon_direction_min_gap_deg)
+        disagreements = decisive & (photon_choice != nominal_choice)
+        keep &= ~(cohort & disagreements)
+        eligible = cohort & decisive
+        metadata["photonDirection"] = {
+            "minimumGapDeg": photon_direction_min_gap_deg,
+            "decisiveEntries": int(np.count_nonzero(eligible)),
+            "excludedDisagreementEntries": int(
+                np.count_nonzero(cohort & disagreements)
+            ),
+            "excludedDisagreementFraction": (
+                float(
+                    np.count_nonzero(cohort & disagreements) /
+                    np.count_nonzero(eligible)
+                ) if np.any(eligible) else 0.0
+            ),
+        }
+    metadata["retainedCohortEntries"] = int(np.count_nonzero(cohort & keep))
+    metadata["excludedCohortEntries"] = int(np.count_nonzero(cohort & ~keep))
+    return keep, metadata
 
 
 def _run_blocks(run_numbers: np.ndarray, target_entries: int) -> list[dict[str, object]]:
@@ -398,6 +489,20 @@ def parse_args() -> argparse.Namespace:
         "--include-run-classes", nargs="+",
         help="retain only these run classes; requires --run-catalog",
     )
+    parser.add_argument(
+        "--root-stability-parameters", type=Path,
+        help=(
+            "exclude events whose nearest proton root changes after applying "
+            "this provisional proton correction"
+        ),
+    )
+    parser.add_argument(
+        "--exclude-photon-direction-disagreements-min-gap-deg", type=float,
+        help=(
+            "exclude events where the measured diphoton direction decisively "
+            "prefers the alternate root by at least this angular gap"
+        ),
+    )
     parser.add_argument("--models", nargs="+", choices=tuple(SURFACE_TERMS),
                         default=list(SURFACE_TERMS))
     parser.add_argument("--block-target-selected", type=int, default=250_000)
@@ -427,7 +532,13 @@ def main() -> None:
         raise ValueError("photon validation requires --proton-parameters")
     if args.include_run_classes and args.run_catalog is None:
         raise ValueError("--include-run-classes requires --run-catalog")
+    if (
+        args.exclude_photon_direction_disagreements_min_gap_deg is not None and
+        args.exclude_photon_direction_disagreements_min_gap_deg <= 0.0
+    ):
+        raise ValueError("photon-direction disagreement gap must be positive")
     arrays = load_eppi0_arrays(args.input_file, args.tree, args.max_rows)
+    electron_parameters = _read_parameters(args.electron_parameters)
     mask = None
     if args.selection_mask:
         mask = load_aligned_selection_mask(
@@ -455,9 +566,25 @@ def main() -> None:
         photon_design_condition_max=args.photon_design_condition_max,
         fd_by_sector=args.fd_by_sector,
     )
+    root_selection = None
+    if (
+        args.root_stability_parameters is not None or
+        args.exclude_photon_direction_disagreements_min_gap_deg is not None
+    ):
+        root_mask, root_selection = _root_quality_selection_mask(
+            arrays, electron_parameters, cfg, mask,
+            stability_parameters=(
+                _read_parameters(args.root_stability_parameters)
+                if args.root_stability_parameters is not None else None
+            ),
+            photon_direction_min_gap_deg=(
+                args.exclude_photon_direction_disagreements_min_gap_deg
+            ),
+        )
+        mask = root_mask if mask is None else (mask & root_mask)
     sample, selection = build_eppi0_particle_sample(
         arrays, cfg,
-        electron_parameters=_read_parameters(args.electron_parameters),
+        electron_parameters=electron_parameters,
         proton_parameters=(
             _read_parameters(args.proton_parameters)
             if args.proton_parameters else None
@@ -483,6 +610,9 @@ def main() -> None:
     if run_selection is not None:
         report["runSelection"] = run_selection
         parameters["runSelection"] = run_selection
+    if root_selection is not None:
+        report["rootSelection"] = root_selection
+        parameters["rootSelection"] = root_selection
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "run_validation_report.json").write_text(
         json.dumps(_json_safe(report), indent=2) + "\n"

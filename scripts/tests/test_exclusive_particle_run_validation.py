@@ -4,17 +4,79 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 
 from scripts.calibration.exclusive_particle_momentum import ExclusiveFitConfig
 from scripts.calibration.exclusive_particle_run_validation import (
+    _root_quality_selection_mask,
     _run_class_selection_mask,
     run_exclusive_validation,
 )
 
 
 class ExclusiveParticleRunValidationTests(unittest.TestCase):
+    def test_root_quality_filters_are_recorded_independently(self) -> None:
+        measured = np.asarray([1.2, 1.49, 1.8, 1.2])
+        arrays = {
+            "electronP": np.ones(4),
+            "electronTheta": np.ones(4),
+            "electronPhi": np.ones(4),
+            "electronDet": np.ones(4, dtype=int),
+            "electronSector": np.ones(4, dtype=int),
+            "protonP": measured,
+            "protonTheta": np.ones(4),
+            "protonPhi": np.ones(4),
+            "protonDet": np.ones(4, dtype=int),
+            "protonSector": np.ones(4, dtype=int),
+        }
+        roots = np.tile(np.asarray([[1.0, 2.0]]), (4, 1))
+        valid = np.ones(roots.shape, dtype=bool)
+        photon_angles = np.asarray([
+            [1.0, 10.0], [1.0, 10.0], [1.0, 10.0], [1.0, 1.2]
+        ])
+
+        def correction(*args, pid: int, **kwargs):
+            if pid == 11:
+                return np.ones(4), np.ones(4, dtype=bool), np.zeros(4)
+            corrected = measured.copy()
+            corrected[1] = 1.6
+            return corrected, np.ones(4, dtype=bool), corrected / measured - 1.0
+
+        with (
+            patch(
+                "scripts.calibration.exclusive_particle_run_validation."
+                "apply_supported_particle_correction",
+                side_effect=correction,
+            ),
+            patch(
+                "scripts.calibration.exclusive_particle_run_validation._base_mask",
+                return_value=(np.ones(4, dtype=bool), {}),
+            ),
+            patch(
+                "scripts.calibration.exclusive_particle_run_validation."
+                "proton_momentum_roots_eppi0",
+                return_value=(roots, valid),
+            ),
+            patch(
+                "scripts.calibration.exclusive_particle_run_validation."
+                "photon_branch_metrics",
+                return_value=(photon_angles, np.ones_like(photon_angles)),
+            ),
+        ):
+            keep, metadata = _root_quality_selection_mask(
+                arrays, {}, ExclusiveFitConfig(beam_energy=6.535, torus=1),
+                np.ones(4, dtype=bool), stability_parameters={},
+                photon_direction_min_gap_deg=1.0,
+            )
+        np.testing.assert_array_equal(keep, [True, False, False, True])
+        self.assertEqual(metadata["stability"]["excludedBranchFlipEntries"], 1)
+        self.assertEqual(
+            metadata["photonDirection"]["excludedDisagreementEntries"], 1
+        )
+        self.assertEqual(metadata["retainedCohortEntries"], 2)
+
     def test_run_class_selection_mask_preserves_array_alignment(self) -> None:
         with TemporaryDirectory() as directory:
             catalog = Path(directory) / "runs.json"
