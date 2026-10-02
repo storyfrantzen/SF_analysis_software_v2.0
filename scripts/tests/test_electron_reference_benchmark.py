@@ -67,6 +67,27 @@ class ElectronReferenceBenchmarkTests(unittest.TestCase):
         fractional = delta / momenta
         self.assertAlmostEqual(fractional[0], 2.0 * fractional[1])
 
+    def test_global_and_sector_local_phi_readings_are_distinct(self) -> None:
+        theta = np.deg2rad(np.asarray([10.0]))
+        global_phi = np.deg2rad(np.asarray([240.0]))
+        sector = np.asarray([5])
+        local = yijie_josh_rgk_6535_delta_p(
+            theta, global_phi, sector, phi_convention="sector-local"
+        )
+        global_unfolded = yijie_josh_rgk_6535_delta_p(
+            theta, global_phi, sector, phi_convention="global-unfolded"
+        )
+        self.assertFalse(np.allclose(local, global_unfolded))
+
+    def test_invalid_phi_convention_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "phi_convention"):
+            yijie_josh_rgk_6535_delta_p(
+                np.asarray([0.1]),
+                np.asarray([0.0]),
+                np.asarray([1]),
+                phi_convention="ambiguous",
+            )
+
     def test_invalid_sector_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "sectors"):
             yijie_josh_rgk_6535_delta_p(

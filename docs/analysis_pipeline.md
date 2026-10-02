@@ -771,12 +771,47 @@ the same electron momentum being calibrated.
 Before freezing the RGK electron correction, compare it directly with the
 independent 6.535-GeV prescription published by Y. Guo and J. Huang.  Their
 surface is evaluated in its native additive form,
-`p_corrected = p_reconstructed + deltaP(theta, phi)`.  Its global azimuth is
-first unfolded into `[-25, 335)` degrees and then converted to the sector-local
-coordinate by subtracting `60*(sector-1)` degrees.  It is not approximated by
-the local fractional-polynomial schema.  The elastic comparison uses the accepted cells
-from the local parameter file for all three methods and does not refit either
-surface:
+`p_corrected = p_reconstructed + deltaP(theta, phi)`.  The paper explicitly
+unfolds global azimuth into `[-25, 335)` degrees, but delegates its exact
+sector-dependent convention to an external calibration macro.  Consequently,
+do not treat either a global-unfolded or a sector-local reading of the printed
+coefficient table as authoritative without reproducing the paper's own elastic
+check.  It is not approximated by the local fractional-polynomial schema.
+
+The focused audit performs that check on both the inclusive-W and detected-ep
+candidate samples.  It evaluates no correction, the local support-gated
+correction, and both plausible readings of the published surface.  It uses the
+paper's exact electron-theta intervals `(6,7)`, `(7,8)`, `(8,9)`, `(9,10)`,
+`(10,11)`, `(11,13)`, `(13,15)`, and `(15,25)` degrees and produces the
+Appendix-B-style electron-only W-versus-global-phi plots.  Five-degree phi-cell
+peak profiles separately quantify the mean W offset, phi-dependent spread, and
+RMS from the proton mass on all selected events and on identical local-support
+events:
+
+```bash
+python3 scripts/audit_rgk_electron_reference.py \
+  --inclusive-input 6.535_rgk_elastic_electron_candidates_inclusive_run_spanning.root \
+  --exclusive-input 6.535_rgk_elastic_candidates_run_spanning.root \
+  --parameters /path/to/recommended_robust_parameters.json \
+  --run-catalog configs/efficiency/rgk/6.535/run_currents.json \
+  --include-run-classes P3 P4 \
+  --phi-cell-width-deg 5 --min-cell-entries 100 \
+  --output-dir calibration_plots/momentum/rgk_6p535_electron_reference_focused_audit \
+  --dataset-tag 6.535RGK_electron_reference_focused_audit
+```
+
+The principal outputs are `electron_reference_focused_audit.json`,
+`overall_phi_profile_summary.tsv`, `phi_profile_summary.tsv`,
+`sector_theta_core.tsv`, eight heatmaps per input sample, and
+all-selected/common-support peak-profile overviews.  The overall table reports
+attempted and successfully located peak cells so a correction that displaces
+the peak cannot look artificially good by losing its worst cells.  The P3 and
+P4 rows expose a current-period mismatch instead of allowing it to cancel in
+the combined sample.
+
+The older compact elastic comparison uses the accepted cells from the local
+parameter file for all three methods and does not refit either surface.  Its
+reference entry currently selects the sector-local interpretation explicitly:
 
 ```bash
 python3 scripts/compare_elastic_electron_reference.py \

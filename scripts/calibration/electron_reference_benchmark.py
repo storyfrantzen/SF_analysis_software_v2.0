@@ -71,8 +71,9 @@ REFERENCE_METADATA = {
     "angleUnits": "degrees",
     "deltaPMomentumUnits": "GeV",
     "phiConvention": (
-        "sector-local phi = unfolded global phi - 60*(sector-1); global phi is "
-        "first unfolded to -25 <= phi < 335 degrees"
+        "the paper unfolds global phi to -25 <= phi < 335 degrees but refers "
+        "to a sector-dependent calibration-macro convention; without that macro "
+        "the benchmark must test global-unfolded and sector-local interpretations"
     ),
     "coefficientColumns": ["c00", "c01", "c02", "c10", "c11", "c12"],
     "coefficientsBySector": {
@@ -105,11 +106,27 @@ def yijie_josh_rgk_6535_delta_p(
     theta_rad: np.ndarray,
     phi_rad: np.ndarray,
     sector: np.ndarray,
+    *,
+    phi_convention: str = "sector-local",
 ) -> np.ndarray:
-    """Evaluate the published 6.535-GeV additive electron correction in GeV."""
+    """Evaluate one explicit interpretation of the published correction.
+
+    The note gives the global unfolded range but delegates the precise
+    sector-dependent coordinate to an external calibration macro.  Keep the
+    convention explicit so a comparison cannot silently conflate the two
+    plausible readings.
+    """
+    if phi_convention == "sector-local":
+        reference_phi = reference_sector_phi(phi_rad, sector)
+    elif phi_convention == "global-unfolded":
+        reference_phi = unfold_reference_phi(phi_rad)
+    else:
+        raise ValueError(
+            "phi_convention must be 'sector-local' or 'global-unfolded'"
+        )
     theta_deg, phi_deg, sectors = np.broadcast_arrays(
         np.asarray(theta_rad, dtype=float) * RAD_TO_DEG,
-        reference_sector_phi(phi_rad, sector),
+        reference_phi,
         np.asarray(sector, dtype=int),
     )
     if np.any((sectors < 1) | (sectors > 6)):
@@ -322,6 +339,7 @@ def run_elastic_benchmark(
         "beamEnergyGeV": cfg.beam_energy,
         "selection": selection,
         "reference": REFERENCE_METADATA,
+        "referencePhiConvention": "sector-local",
         "runBlocks": [block.to_json() for block in blocks],
         "methods": {
             method: {
@@ -463,6 +481,7 @@ def _benchmark_eppi0(
         "beamEnergyGeV": float(parameters["beamEnergyGeV"]),
         "commonSupportSource": "accepted support cells of the local correction",
         "reference": REFERENCE_METADATA,
+        "referencePhiConvention": "sector-local",
         "methods": reports,
         "observableComparison": comparison,
     }
