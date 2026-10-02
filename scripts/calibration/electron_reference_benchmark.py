@@ -43,8 +43,9 @@ from .elastic_phase_space_coverage import summarize_exclusivity_cuts
 from .plot_utils import save_plot
 
 
-# Table 4 of Y. Guo and J. Huang, ``Beam Spin Asymmetry Measurement of
-# Deeply Virtual Compton Scattering with CLAS12 at 6.535 GeV and 7.546 GeV''.
+# Table 4 of J. A. Tan and Y. Wang et al., ``Measurement of the Deeply
+# Virtual Compton Scattering Beam Spin Asymmetry on the Proton at Beam
+# Energies of 6.5 and 7.5 GeV with the CLAS12 Detector''.
 # Rows are sectors 1--6. Columns are c00,c01,c02,c10,c11,c12 in Eqs. 17--19.
 YIJIE_JOSH_RGK_6535_COEFFICIENTS = np.asarray([
     [-0.0607704, 0.00947409, -2.79104e-4,
@@ -64,6 +65,7 @@ YIJIE_JOSH_RGK_6535_COEFFICIENTS = np.asarray([
 REFERENCE_METADATA = {
     "name": "yijie-josh-rgk-6535",
     "source": "YijieJoshDVCSBSA.pdf",
+    "authors": ["Joshua Artem Tan", "Yijie Wang"],
     "beamEnergyGeV": 6.535,
     "equations": "16-19",
     "coefficientTable": 4,
@@ -71,9 +73,10 @@ REFERENCE_METADATA = {
     "angleUnits": "degrees",
     "deltaPMomentumUnits": "GeV",
     "phiConvention": (
-        "the paper unfolds global phi to -25 <= phi < 335 degrees but refers "
-        "to a sector-dependent calibration-macro convention; without that macro "
-        "the benchmark must test global-unfolded and sector-local interpretations"
+        "evaluate the printed coefficient table with sector-continuous signed "
+        "global phi: sector centers 0, 60, 120, 180, -120, -60 degrees. "
+        "Unfold the same events to [-25, 335) only for the Appendix-B display. "
+        "This separates the correction coordinate from the display coordinate."
     ),
     "coefficientColumns": ["c00", "c01", "c02", "c10", "c11", "c12"],
     "coefficientsBySector": {
@@ -87,6 +90,27 @@ def unfold_reference_phi(phi_rad: np.ndarray) -> np.ndarray:
     """Map wrapped CLAS12 azimuth to the reference's continuous convention."""
     phi_deg = np.asarray(phi_rad, dtype=float) * RAD_TO_DEG
     return (phi_deg + 25.0) % 360.0 - 25.0
+
+
+def signed_reference_phi(phi_rad: np.ndarray) -> np.ndarray:
+    """Map azimuth to the signed global coordinate used by the table surface."""
+    phi_deg = np.asarray(phi_rad, dtype=float) * RAD_TO_DEG
+    return (phi_deg + 180.0) % 360.0 - 180.0
+
+
+def sector_continuous_reference_phi(
+    phi_rad: np.ndarray,
+    sector: np.ndarray,
+) -> np.ndarray:
+    """Use a continuous global-phi branch around each physical sector center."""
+    signed, sectors = np.broadcast_arrays(
+        signed_reference_phi(phi_rad), np.asarray(sector, dtype=int)
+    )
+    if np.any((sectors < 1) | (sectors > 6)):
+        raise ValueError("electron sectors must lie in [1, 6]")
+    centers = np.asarray([0.0, 60.0, 120.0, 180.0, -120.0, -60.0])
+    center = centers[sectors - 1]
+    return center + (signed - center + 180.0) % 360.0 - 180.0
 
 
 def reference_sector_phi(
@@ -107,22 +131,30 @@ def yijie_josh_rgk_6535_delta_p(
     phi_rad: np.ndarray,
     sector: np.ndarray,
     *,
-    phi_convention: str = "sector-local",
+    phi_convention: str = "sector-continuous-global",
+    coefficient_sector: np.ndarray | None = None,
 ) -> np.ndarray:
     """Evaluate one explicit interpretation of the published correction.
 
-    The note gives the global unfolded range but delegates the precise
-    sector-dependent coordinate to an external calibration macro.  Keep the
-    convention explicit so a comparison cannot silently conflate the two
-    plausible readings.
+    The Appendix-B horizontal axis is unfolded for display, but substituting
+    that display coordinate into the printed surface gives unphysical
+    corrections in sectors 5 and 6.  The table coefficients instead have the
+    expected scale when phi follows a sector-continuous signed global branch.
+    Keep the raw signed and two legacy interpretations explicit for convention
+    audits.
     """
-    if phi_convention == "sector-local":
+    if phi_convention == "sector-continuous-global":
+        reference_phi = sector_continuous_reference_phi(phi_rad, sector)
+    elif phi_convention == "signed-global":
+        reference_phi = signed_reference_phi(phi_rad)
+    elif phi_convention == "sector-local":
         reference_phi = reference_sector_phi(phi_rad, sector)
     elif phi_convention == "global-unfolded":
         reference_phi = unfold_reference_phi(phi_rad)
     else:
         raise ValueError(
-            "phi_convention must be 'sector-local' or 'global-unfolded'"
+            "phi_convention must be 'sector-continuous-global', "
+            "'signed-global', 'sector-local', or 'global-unfolded'"
         )
     theta_deg, phi_deg, sectors = np.broadcast_arrays(
         np.asarray(theta_rad, dtype=float) * RAD_TO_DEG,
@@ -131,7 +163,13 @@ def yijie_josh_rgk_6535_delta_p(
     )
     if np.any((sectors < 1) | (sectors > 6)):
         raise ValueError("electron sectors must lie in [1, 6]")
-    coefficients = YIJIE_JOSH_RGK_6535_COEFFICIENTS[sectors - 1]
+    coefficient_sectors = (
+        sectors if coefficient_sector is None
+        else np.broadcast_to(np.asarray(coefficient_sector, dtype=int), sectors.shape)
+    )
+    if np.any((coefficient_sectors < 1) | (coefficient_sectors > 6)):
+        raise ValueError("coefficient sectors must lie in [1, 6]")
+    coefficients = YIJIE_JOSH_RGK_6535_COEFFICIENTS[coefficient_sectors - 1]
     a0 = (
         coefficients[..., 0]
         + coefficients[..., 1] * theta_deg
@@ -331,7 +369,7 @@ def run_elastic_benchmark(
         }
     sign_values = np.concatenate(sign_pairs) if sign_pairs else np.asarray([], dtype=bool)
     return {
-        "schema": "elastic-electron-reference-benchmark/v1",
+        "schema": "elastic-electron-reference-benchmark/v2",
         "evaluationType": (
             "fixed surfaces evaluated without refitting on identical run blocks "
             "and the accepted support cells of the local correction"
@@ -339,7 +377,7 @@ def run_elastic_benchmark(
         "beamEnergyGeV": cfg.beam_energy,
         "selection": selection,
         "reference": REFERENCE_METADATA,
-        "referencePhiConvention": "sector-local",
+        "referencePhiConvention": "sector-continuous-global",
         "runBlocks": [block.to_json() for block in blocks],
         "methods": {
             method: {
@@ -443,7 +481,10 @@ def _benchmark_eppi0(
         "yijieJosh": {
             "override": reference_p,
             "label": "Yijie/Josh RGK 6.535-GeV correction",
-            "convention": "p_after = p_before + deltaP(theta, sector-local phi)",
+            "convention": (
+                "p_after = p_before + deltaP(theta, sector-continuous signed "
+                "global phi)"
+            ),
         },
     }
     reports: dict[str, object] = {}
@@ -477,11 +518,11 @@ def _benchmark_eppi0(
             for method in method_settings
         }
     return {
-        "schema": "eppi0-electron-reference-benchmark/v1",
+        "schema": "eppi0-electron-reference-benchmark/v2",
         "beamEnergyGeV": float(parameters["beamEnergyGeV"]),
         "commonSupportSource": "accepted support cells of the local correction",
         "reference": REFERENCE_METADATA,
-        "referencePhiConvention": "sector-local",
+        "referencePhiConvention": "sector-continuous-global",
         "methods": reports,
         "observableComparison": comparison,
     }

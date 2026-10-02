@@ -8,6 +8,8 @@ from scripts.calibration.electron_reference_benchmark import (
     YIJIE_JOSH_RGK_6535_COEFFICIENTS,
     reference_sector_phi,
     run_elastic_benchmark,
+    sector_continuous_reference_phi,
+    signed_reference_phi,
     unfold_reference_phi,
     yijie_josh_rgk_6535_delta_p,
 )
@@ -16,6 +18,23 @@ from scripts.calibration.elastic_run_validation import RunBlock
 
 
 class ElectronReferenceBenchmarkTests(unittest.TestCase):
+    def test_reference_signed_phi_keeps_sectors_five_and_six_negative(self) -> None:
+        wrapped = np.deg2rad(np.asarray([0.0, 60.0, 120.0, 180.0, 240.0, 300.0]))
+        np.testing.assert_allclose(
+            signed_reference_phi(wrapped),
+            [0.0, 60.0, 120.0, -180.0, -120.0, -60.0],
+            atol=1.0e-12,
+        )
+
+    def test_reference_phi_is_continuous_through_sector_four(self) -> None:
+        phi = np.deg2rad(np.asarray([179.0, -179.0, -120.0, -60.0]))
+        sector = np.asarray([4, 4, 5, 6])
+        np.testing.assert_allclose(
+            sector_continuous_reference_phi(phi, sector),
+            [179.0, 181.0, -120.0, -60.0],
+            atol=1.0e-12,
+        )
+
     def test_reference_phi_is_unfolded_across_sector_one_boundary(self) -> None:
         wrapped = np.deg2rad(np.asarray([-24.0, 0.0, 24.0, -60.0, -25.1]))
         np.testing.assert_allclose(
@@ -45,9 +64,9 @@ class ElectronReferenceBenchmarkTests(unittest.TestCase):
         result = yijie_josh_rgk_6535_delta_p(
             np.deg2rad(theta_deg), np.deg2rad(phi_deg), sectors
         )
-        sector_phi = np.asarray([2.0, 1.0, 0.0])
+        signed_phi = np.asarray([2.0, 61.0, -60.0])
         expected = []
-        for theta, phi, sector in zip(theta_deg, sector_phi, sectors):
+        for theta, phi, sector in zip(theta_deg, signed_phi, sectors):
             c00, c01, c02, c10, c11, c12 = (
                 YIJIE_JOSH_RGK_6535_COEFFICIENTS[sector - 1]
             )
@@ -77,7 +96,33 @@ class ElectronReferenceBenchmarkTests(unittest.TestCase):
         global_unfolded = yijie_josh_rgk_6535_delta_p(
             theta, global_phi, sector, phi_convention="global-unfolded"
         )
+        signed_global = yijie_josh_rgk_6535_delta_p(
+            theta, global_phi, sector, phi_convention="signed-global"
+        )
         self.assertFalse(np.allclose(local, global_unfolded))
+        self.assertFalse(np.allclose(signed_global, global_unfolded))
+        self.assertFalse(np.allclose(signed_global, local))
+
+    def test_reference_surface_has_expected_scale_at_sector_centers(self) -> None:
+        sectors = np.arange(1, 7)
+        phi = np.deg2rad(np.asarray([0.0, 60.0, 120.0, 180.0, 240.0, 300.0]))
+        theta = np.deg2rad(np.full(6, 9.5))
+        inferred = yijie_josh_rgk_6535_delta_p(theta, phi, sectors)
+        unfolded = yijie_josh_rgk_6535_delta_p(
+            theta, phi, sectors, phi_convention="global-unfolded"
+        )
+        self.assertLess(np.max(np.abs(inferred)), 0.01)
+        self.assertGreater(abs(unfolded[4]), 0.10)
+
+    def test_coefficient_sector_mapping_is_explicit(self) -> None:
+        theta = np.deg2rad(np.asarray([9.0]))
+        phi = np.deg2rad(np.asarray([0.0]))
+        observed = np.asarray([1])
+        identity = yijie_josh_rgk_6535_delta_p(theta, phi, observed)
+        shifted = yijie_josh_rgk_6535_delta_p(
+            theta, phi, observed, coefficient_sector=np.asarray([2])
+        )
+        self.assertFalse(np.allclose(identity, shifted))
 
     def test_invalid_phi_convention_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "phi_convention"):

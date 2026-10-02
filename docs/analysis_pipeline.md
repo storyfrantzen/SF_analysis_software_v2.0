@@ -769,18 +769,25 @@ is a systematic variation, not a free improvement, because W is computed from
 the same electron momentum being calibrated.
 
 Before freezing the RGK electron correction, compare it directly with the
-independent 6.535-GeV prescription published by Y. Guo and J. Huang.  Their
-surface is evaluated in its native additive form,
+independent 6.535-GeV prescription documented by J. A. Tan and Y. Wang et al.
+Their surface is evaluated in its native additive form,
 `p_corrected = p_reconstructed + deltaP(theta, phi)`.  The paper explicitly
-unfolds global azimuth into `[-25, 335)` degrees, but delegates its exact
-sector-dependent convention to an external calibration macro.  Consequently,
-do not treat either a global-unfolded or a sector-local reading of the printed
-coefficient table as authoritative without reproducing the paper's own elastic
-check.  It is not approximated by the local fractional-polynomial schema.
+shows azimuth unfolded into `[-25, 335)` degrees in Appendix B, but that is a
+display coordinate rather than the coordinate to substitute into Table 4.
+Evaluate the table with a sector-continuous signed global azimuth whose sector
+centers are `0, 60, 120, 180, -120, -60` degrees.  This is native signed phi
+except that sector 4 is kept continuous around `180` rather than split at the
+`+180/-180` branch.  Substituting the unfolded display coordinate makes sectors
+5 and 6 spuriously large.  The audit retains raw signed, global-unfolded, and
+sector-local readings as explicit convention controls.  The additive reference
+surface is not approximated by the local fractional-polynomial schema.
 
 The focused audit performs that check on both the inclusive-W and detected-ep
 candidate samples.  It evaluates no correction, the local support-gated
-correction, and both plausible readings of the published surface.  It uses the
+correction, the sector-continuous global-phi reference surface, and three
+convention controls.  It also scores every cyclic and reflected relabeling
+of the six sectors; the identity mapping should win if the ROOT sector labels
+match the coefficient table.  It uses the
 paper's exact electron-theta intervals `(6,7)`, `(7,8)`, `(8,9)`, `(9,10)`,
 `(10,11)`, `(11,13)`, `(13,15)`, and `(15,25)` degrees and produces the
 Appendix-B-style electron-only W-versus-global-phi plots.  Five-degree phi-cell
@@ -802,7 +809,8 @@ python3 scripts/audit_rgk_electron_reference.py \
 
 The principal outputs are `electron_reference_focused_audit.json`,
 `overall_phi_profile_summary.tsv`, `phi_profile_summary.tsv`,
-`sector_theta_core.tsv`, eight heatmaps per input sample, and
+`sector_theta_core.tsv`, `sector_mapping_scan.tsv`, eight heatmaps per input
+sample, and
 all-selected/common-support peak-profile overviews.  The overall table reports
 attempted and successfully located peak cells so a correction that displaces
 the peak cannot look artificially good by losing its worst cells.  The P3 and
@@ -811,7 +819,7 @@ the combined sample.
 
 The older compact elastic comparison uses the accepted cells from the local
 parameter file for all three methods and does not refit either surface.  Its
-reference entry currently selects the sector-local interpretation explicitly:
+reference entry uses the sector-continuous global-phi interpretation:
 
 ```bash
 python3 scripts/compare_elastic_electron_reference.py \

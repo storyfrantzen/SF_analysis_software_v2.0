@@ -8,6 +8,7 @@ from scripts.calibration.electron_reference_audit import (
     METHOD_LABELS,
     _profile_rows,
     electron_w,
+    sector_mapping_candidates,
 )
 from scripts.calibration.elastic_momentum import (
     PROTON_MASS_GEV,
@@ -17,6 +18,20 @@ from scripts.calibration.elastic_momentum import (
 
 
 class ElectronReferenceAuditTests(unittest.TestCase):
+    def test_sector_mapping_scan_covers_detector_symmetries(self) -> None:
+        candidates = sector_mapping_candidates()
+        mappings = {
+            tuple(item["coefficientSectorByObservedSector"])
+            for item in candidates
+        }
+        self.assertEqual(len(candidates), 12)
+        self.assertEqual(len(mappings), 12)
+        self.assertEqual(candidates[0]["name"], "identity")
+        self.assertEqual(
+            candidates[0]["coefficientSectorByObservedSector"],
+            [1, 2, 3, 4, 5, 6],
+        )
+
     def test_elastic_momentum_reconstructs_proton_mass(self) -> None:
         theta = np.deg2rad(np.asarray([6.0, 10.0, 15.0, 25.0]))
         momentum = elastic_electron_momentum(theta, 6.535)

@@ -12,6 +12,7 @@ import numpy as np
 from .electron_reference_benchmark import (
     REFERENCE_METADATA,
     _fit_config_from_parameters,
+    sector_continuous_reference_phi,
     unfold_reference_phi,
     yijie_josh_rgk_6535_delta_p,
 )
@@ -50,6 +51,8 @@ REFERENCE_THETA_BINS_DEG = (
 METHOD_LABELS = {
     "none": "none",
     "oursSupported": "ours (support-gated)",
+    "referenceSectorContinuous": "reference: sector-continuous global phi",
+    "referenceSigned": "reference control: raw signed phi",
     "referenceGlobal": "reference: global unfolded phi",
     "referenceSectorLocal": "reference: sector-local phi",
 }
@@ -57,6 +60,8 @@ METHOD_LABELS = {
 METHOD_COLORS = {
     "none": "black",
     "oursSupported": "#21618c",
+    "referenceSectorContinuous": "#239b56",
+    "referenceSigned": "#7d3c98",
     "referenceGlobal": "#c0392b",
     "referenceSectorLocal": "#d68910",
 }
@@ -95,6 +100,12 @@ def correction_prescriptions(
     ours, support, ours_fraction, _ = apply_supported_electron_correction(
         arrays, parameters
     )
+    sector_continuous_delta = yijie_josh_rgk_6535_delta_p(
+        theta, phi, sector, phi_convention="sector-continuous-global"
+    )
+    signed_delta = yijie_josh_rgk_6535_delta_p(
+        theta, phi, sector, phi_convention="signed-global"
+    )
     global_delta = yijie_josh_rgk_6535_delta_p(
         theta, phi, sector, phi_convention="global-unfolded"
     )
@@ -104,6 +115,8 @@ def correction_prescriptions(
     momenta = {
         "none": momentum.copy(),
         "oursSupported": ours,
+        "referenceSectorContinuous": momentum + sector_continuous_delta,
+        "referenceSigned": momentum + signed_delta,
         "referenceGlobal": momentum + global_delta,
         "referenceSectorLocal": momentum + local_delta,
     }
@@ -113,10 +126,35 @@ def correction_prescriptions(
     fractions = {
         "none": np.zeros(momentum.shape, dtype=float),
         "oursSupported": ours_fraction,
+        "referenceSectorContinuous": sector_continuous_delta / momentum,
+        "referenceSigned": signed_delta / momentum,
         "referenceGlobal": global_delta / momentum,
         "referenceSectorLocal": local_delta / momentum,
     }
     return momenta, support, fractions
+
+
+def sector_mapping_candidates() -> list[dict[str, object]]:
+    """Return every cyclic/reflected mapping of observed to table sectors."""
+    observed = np.arange(6, dtype=int)
+    candidates: list[dict[str, object]] = []
+    for offset in range(6):
+        mapping = (observed + offset) % 6 + 1
+        candidates.append({
+            "name": "identity" if offset == 0 else f"rotate_plus_{offset}",
+            "family": "rotation",
+            "offset": offset,
+            "coefficientSectorByObservedSector": mapping.tolist(),
+        })
+    for offset in range(6):
+        mapping = (offset - observed) % 6 + 1
+        candidates.append({
+            "name": f"reflection_{offset}",
+            "family": "reflection",
+            "offset": offset,
+            "coefficientSectorByObservedSector": mapping.tolist(),
+        })
+    return candidates
 
 
 def _summary(values: np.ndarray) -> dict[str, object]:
@@ -380,6 +418,101 @@ def _overall_profile_rows(
     )
 
 
+def _sector_mapping_audit(
+    *,
+    sample: str,
+    arrays: dict[str, np.ndarray],
+    theta_deg: np.ndarray,
+    global_phi_deg: np.ndarray,
+    sectors: np.ndarray,
+    support: np.ndarray,
+    cfg: ElasticFitConfig,
+    phi_cell_width_deg: float,
+) -> list[dict[str, object]]:
+    """Score all detector-symmetry sector relabelings with signed global phi."""
+    momentum = np.asarray(arrays["electronP"], dtype=float)
+    theta_rad = np.asarray(arrays["electronTheta"], dtype=float)
+    phi_rad = np.asarray(arrays["electronPhi"], dtype=float)
+    run_numbers = np.asarray(
+        arrays.get("runNum", np.zeros(momentum.shape)), dtype=int
+    )
+    reference_phi = sector_continuous_reference_phi(phi_rad, sectors)
+    rows: list[dict[str, object]] = []
+    for candidate in sector_mapping_candidates():
+        print(
+            f"[SECTOR MAP] {sample}: {candidate['name']}", flush=True
+        )
+        mapping = np.asarray(
+            candidate["coefficientSectorByObservedSector"], dtype=int
+        )
+        coefficient_sector = mapping[sectors - 1]
+        delta = yijie_josh_rgk_6535_delta_p(
+            theta_rad,
+            phi_rad,
+            sectors,
+            phi_convention="sector-continuous-global",
+            coefficient_sector=coefficient_sector,
+        )
+        corrected = momentum + delta
+        if np.any(~np.isfinite(corrected) | (corrected <= 0.0)):
+            raise ValueError(
+                f"sector mapping {candidate['name']} produced non-positive momentum"
+            )
+        method = str(candidate["name"])
+        profile_rows = _profile_rows(
+            sample=sample,
+            theta_deg=theta_deg,
+            global_phi_deg=global_phi_deg,
+            sectors=sectors,
+            run_numbers=run_numbers,
+            run_class_by_run=None,
+            w_by_method={
+                method: electron_w(corrected, theta_rad, cfg.beam_energy)
+            },
+            support=support,
+            cfg=cfg,
+            phi_cell_width_deg=phi_cell_width_deg,
+        )
+        summaries = {
+            str(item["cohort"]): item
+            for item in _overall_profile_rows(profile_rows)
+            if item["runClass"] == "all"
+        }
+        row = {
+            "sample": sample,
+            **candidate,
+            "referencePhiMinimumDeg": float(np.min(reference_phi)),
+            "referencePhiMaximumDeg": float(np.max(reference_phi)),
+        }
+        for cohort in ("allSelected", "commonSupport"):
+            summary = summaries.get(cohort, {})
+            prefix = "allSelected" if cohort == "allSelected" else "commonSupport"
+            row[f"{prefix}ValidatedPhiCells"] = summary.get(
+                "validatedPhiCells"
+            )
+            row[f"{prefix}PhiCellCenterRmsMeV"] = summary.get(
+                "phiCellCenterRmsMeV"
+            )
+            row[f"{prefix}MedianAbsPhiCellCenterMeV"] = summary.get(
+                "medianAbsPhiCellCenterMeV"
+            )
+            row[f"{prefix}MaxAbsPhiCellCenterMeV"] = summary.get(
+                "maxAbsPhiCellCenterMeV"
+            )
+        rows.append(row)
+    rows.sort(
+        key=lambda row: (
+            row["commonSupportPhiCellCenterRmsMeV"] is None,
+            row["commonSupportPhiCellCenterRmsMeV"]
+            if row["commonSupportPhiCellCenterRmsMeV"] is not None
+            else np.inf,
+        )
+    )
+    for rank, row in enumerate(rows, 1):
+        row["rankByCommonSupportRms"] = rank
+    return rows
+
+
 def _w_summary(values: np.ndarray, cfg: ElasticFitConfig) -> dict[str, object]:
     finite = np.asarray(values, dtype=float)
     finite = finite[np.isfinite(finite)]
@@ -541,6 +674,16 @@ def run_sample_audit(
         "profileSummary": aggregate_rows,
         "overallProfileSummary": _overall_profile_rows(profile_rows),
         "sectorThetaCore": core_rows,
+        "sectorMappingAudit": _sector_mapping_audit(
+            sample=sample,
+            arrays=selected,
+            theta_deg=theta_deg,
+            global_phi_deg=global_phi_deg,
+            sectors=sectors,
+            support=support,
+            cfg=cfg,
+            phi_cell_width_deg=phi_cell_width_deg,
+        ),
     }
     diagnostics = {
         "thetaDeg": theta_deg,
@@ -594,18 +737,21 @@ def _plot_heatmaps(
         ]
         maximum = max(float(np.max(histogram)) for histogram in histograms)
         vmax = np.log10(maximum + 1.0) if maximum > 0.0 else 1.0
-        fig = plt.figure(figsize=(18, 4.6))
+        fig = plt.figure(figsize=(4.4 * len(methods) + 1.0, 4.6))
         grid = fig.add_gridspec(
-            1, 5, width_ratios=(1.0, 1.0, 1.0, 1.0, 0.045), wspace=0.30
+            1,
+            len(methods) + 1,
+            width_ratios=tuple([1.0] * len(methods) + [0.045]),
+            wspace=0.30,
         )
         axes = np.asarray([
-            fig.add_subplot(grid[0, index]) for index in range(4)
+            fig.add_subplot(grid[0, index]) for index in range(len(methods))
         ])
         for axis in axes[1:]:
             axis.sharex(axes[0])
             axis.sharey(axes[0])
             axis.tick_params(labelleft=False)
-        color_axis = fig.add_subplot(grid[0, 4])
+        color_axis = fig.add_subplot(grid[0, len(methods)])
         mesh = None
         for axis, method, histogram in zip(axes, methods, histograms):
             mesh = axis.pcolormesh(
@@ -689,7 +835,7 @@ def _plot_profiles(
             labels,
             loc="upper center",
             bbox_to_anchor=(0.5, 0.875),
-            ncol=4,
+            ncol=min(5, len(METHOD_LABELS)),
             frameon=True,
         )
     save_plot(
@@ -731,8 +877,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Reproduce the RGK 6.535-GeV Appendix-B elastic W-versus-phi check "
-            "for no correction, the local correction, and both plausible "
-            "interpretations of the published reference phi convention."
+            "for no correction, the local correction, the sector-continuous "
+            "global-phi convention implied by the table, and three convention "
+            "controls. Also scan cyclic/reflected sector labels."
         )
     )
     parser.add_argument("--inclusive-input", nargs="+", type=Path, required=True)
@@ -774,6 +921,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     all_profile_rows: list[dict[str, object]] = []
     all_overall_profile_rows: list[dict[str, object]] = []
     all_core_rows: list[dict[str, object]] = []
+    all_sector_mapping_rows: list[dict[str, object]] = []
     for sample, paths, require_proton, selection_mode in sample_specs:
         print(
             f"[LOAD] {sample}: {', '.join(str(path) for path in paths)}",
@@ -805,14 +953,17 @@ def main(argv: Iterable[str] | None = None) -> None:
         all_profile_rows.extend(report["profileSummary"])
         all_overall_profile_rows.extend(report["overallProfileSummary"])
         all_core_rows.extend(report["sectorThetaCore"])
+        all_sector_mapping_rows.extend(report["sectorMappingAudit"])
+        best_mapping = report["sectorMappingAudit"][0]
         print(
             f"[AUDIT] {sample}: selected={report['selectedEntries']}; "
-            f"common support={100.0 * report['commonSupportFraction']:.2f}%",
+            f"common support={100.0 * report['commonSupportFraction']:.2f}%; "
+            f"best sector mapping={best_mapping['name']}",
             flush=True,
         )
 
     output = {
-        "schema": "rgk-electron-reference-focused-audit/v1",
+        "schema": "rgk-electron-reference-focused-audit/v2",
         "beamEnergyGeV": beam_energy,
         "reference": REFERENCE_METADATA,
         "referenceThetaBinsDeg": [list(values) for values in REFERENCE_THETA_BINS_DEG],
@@ -834,6 +985,9 @@ def main(argv: Iterable[str] | None = None) -> None:
         all_overall_profile_rows,
     )
     _write_rows(args.output_dir / "sector_theta_core.tsv", all_core_rows)
+    _write_rows(
+        args.output_dir / "sector_mapping_scan.tsv", all_sector_mapping_rows
+    )
     for sample, diagnostic in diagnostics.items():
         profile_rows = list(diagnostic["profileRows"])
         _write_rows(args.output_dir / f"{sample}_phi_cells.tsv", profile_rows)
