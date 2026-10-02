@@ -6,6 +6,7 @@ import numpy as np
 
 from scripts.calibration.electron_reference_benchmark import (
     YIJIE_JOSH_RGK_6535_COEFFICIENTS,
+    reference_sector_phi,
     run_elastic_benchmark,
     unfold_reference_phi,
     yijie_josh_rgk_6535_delta_p,
@@ -23,6 +24,20 @@ class ElectronReferenceBenchmarkTests(unittest.TestCase):
             atol=1.0e-12,
         )
 
+    def test_reference_phi_is_local_after_global_unfolding(self) -> None:
+        sectors = np.arange(1, 7)
+        global_phi = np.asarray([0.0, 60.0, 120.0, -180.0, -120.0, -60.0])
+        np.testing.assert_allclose(
+            reference_sector_phi(np.deg2rad(global_phi), sectors),
+            np.zeros(6),
+            atol=1.0e-12,
+        )
+        np.testing.assert_allclose(
+            reference_sector_phi(np.deg2rad([-20.0, -40.0]), [1, 6]),
+            [-20.0, 20.0],
+            atol=1.0e-12,
+        )
+
     def test_reference_formula_matches_table_polynomial(self) -> None:
         theta_deg = np.asarray([8.0, 10.0, 12.0])
         phi_deg = np.asarray([2.0, 61.0, -60.0])
@@ -30,9 +45,9 @@ class ElectronReferenceBenchmarkTests(unittest.TestCase):
         result = yijie_josh_rgk_6535_delta_p(
             np.deg2rad(theta_deg), np.deg2rad(phi_deg), sectors
         )
-        unfolded_phi = np.asarray([2.0, 61.0, 300.0])
+        sector_phi = np.asarray([2.0, 1.0, 0.0])
         expected = []
-        for theta, phi, sector in zip(theta_deg, unfolded_phi, sectors):
+        for theta, phi, sector in zip(theta_deg, sector_phi, sectors):
             c00, c01, c02, c10, c11, c12 = (
                 YIJIE_JOSH_RGK_6535_COEFFICIENTS[sector - 1]
             )

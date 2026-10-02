@@ -771,9 +771,10 @@ the same electron momentum being calibrated.
 Before freezing the RGK electron correction, compare it directly with the
 independent 6.535-GeV prescription published by Y. Guo and J. Huang.  Their
 surface is evaluated in its native additive form,
-`p_corrected = p_reconstructed + deltaP(theta, phi)`, with the global azimuth
-unfolded into `[-25, 335)` degrees.  It is not approximated by the local
-fractional-polynomial schema.  The elastic comparison uses the accepted cells
+`p_corrected = p_reconstructed + deltaP(theta, phi)`.  Its global azimuth is
+first unfolded into `[-25, 335)` degrees and then converted to the sector-local
+coordinate by subtracting `60*(sector-1)` degrees.  It is not approximated by
+the local fractional-polynomial schema.  The elastic comparison uses the accepted cells
 from the local parameter file for all three methods and does not refit either
 surface:
 

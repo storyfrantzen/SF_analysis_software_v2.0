@@ -70,7 +70,10 @@ REFERENCE_METADATA = {
     "correctionConvention": "p_corrected = p_reconstructed + deltaP",
     "angleUnits": "degrees",
     "deltaPMomentumUnits": "GeV",
-    "phiConvention": "global phi unfolded to -25 <= phi < 335 degrees",
+    "phiConvention": (
+        "sector-local phi = unfolded global phi - 60*(sector-1); global phi is "
+        "first unfolded to -25 <= phi < 335 degrees"
+    ),
     "coefficientColumns": ["c00", "c01", "c02", "c10", "c11", "c12"],
     "coefficientsBySector": {
         str(sector): values.tolist()
@@ -85,6 +88,19 @@ def unfold_reference_phi(phi_rad: np.ndarray) -> np.ndarray:
     return (phi_deg + 25.0) % 360.0 - 25.0
 
 
+def reference_sector_phi(
+    phi_rad: np.ndarray,
+    sector: np.ndarray,
+) -> np.ndarray:
+    """Return the sector-local azimuth used by the reference fit."""
+    unfolded, sectors = np.broadcast_arrays(
+        unfold_reference_phi(phi_rad), np.asarray(sector, dtype=int)
+    )
+    if np.any((sectors < 1) | (sectors > 6)):
+        raise ValueError("electron sectors must lie in [1, 6]")
+    return unfolded - 60.0 * (sectors - 1)
+
+
 def yijie_josh_rgk_6535_delta_p(
     theta_rad: np.ndarray,
     phi_rad: np.ndarray,
@@ -93,7 +109,7 @@ def yijie_josh_rgk_6535_delta_p(
     """Evaluate the published 6.535-GeV additive electron correction in GeV."""
     theta_deg, phi_deg, sectors = np.broadcast_arrays(
         np.asarray(theta_rad, dtype=float) * RAD_TO_DEG,
-        unfold_reference_phi(phi_rad),
+        reference_sector_phi(phi_rad, sector),
         np.asarray(sector, dtype=int),
     )
     if np.any((sectors < 1) | (sectors > 6)):
@@ -409,7 +425,7 @@ def _benchmark_eppi0(
         "yijieJosh": {
             "override": reference_p,
             "label": "Yijie/Josh RGK 6.535-GeV correction",
-            "convention": "p_after = p_before + deltaP(theta, unfolded global phi)",
+            "convention": "p_after = p_before + deltaP(theta, sector-local phi)",
         },
     }
     reports: dict[str, object] = {}
