@@ -8,6 +8,10 @@ from pathlib import Path
 import numpy as np
 
 from .elastic_momentum import evaluate_region, mode_seeded_core, region_support_mask
+from .elastic_run_validation import (
+    filter_arrays_by_run_classes,
+    load_run_catalog,
+)
 from .eppi0_momentum_validation import load_aligned_selection_mask, load_eppi0_arrays
 from .exclusive_particle_momentum import (
     SURFACE_TERMS,
@@ -31,6 +35,23 @@ def _json_safe(value: object) -> object:
     if isinstance(value, float) and not np.isfinite(value):
         return None
     return value
+
+
+def _run_class_selection_mask(
+    run_numbers: np.ndarray,
+    run_catalog: Path,
+    include_run_classes: list[str] | None,
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Build an aligned mask while reusing the elastic run-catalog checks."""
+    runs = np.asarray(run_numbers, dtype=int)
+    _, selected_mapping, metadata = filter_arrays_by_run_classes(
+        {"runNum": runs.copy()},
+        load_run_catalog(run_catalog),
+        include_run_classes,
+        catalog_path=run_catalog,
+    )
+    selected_runs = np.asarray(sorted(selected_mapping), dtype=int)
+    return np.isin(runs, selected_runs), metadata
 
 
 def _run_blocks(run_numbers: np.ndarray, target_entries: int) -> list[dict[str, object]]:
@@ -369,6 +390,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--proton-parameters", type=Path)
     parser.add_argument("--selection-mask", type=Path)
     parser.add_argument("--selection-mask-key", default="mask")
+    parser.add_argument(
+        "--run-catalog", type=Path,
+        help="JSON run catalog used to restrict the calibration run classes",
+    )
+    parser.add_argument(
+        "--include-run-classes", nargs="+",
+        help="retain only these run classes; requires --run-catalog",
+    )
     parser.add_argument("--models", nargs="+", choices=tuple(SURFACE_TERMS),
                         default=list(SURFACE_TERMS))
     parser.add_argument("--block-target-selected", type=int, default=250_000)
@@ -396,6 +425,8 @@ def main() -> None:
     args = parse_args()
     if args.particle == "photon" and args.proton_parameters is None:
         raise ValueError("photon validation requires --proton-parameters")
+    if args.include_run_classes and args.run_catalog is None:
+        raise ValueError("--include-run-classes requires --run-catalog")
     arrays = load_eppi0_arrays(args.input_file, args.tree, args.max_rows)
     mask = None
     if args.selection_mask:
@@ -403,6 +434,14 @@ def main() -> None:
             args.selection_mask, int(np.asarray(arrays["electronP"]).size),
             args.selection_mask_key, allow_prefix=args.max_rows is not None,
         )
+    run_selection = None
+    if args.run_catalog is not None:
+        if "runNum" not in arrays:
+            raise ValueError("candidate tree requires runNum for run-class filtering")
+        run_mask, run_selection = _run_class_selection_mask(
+            arrays["runNum"], args.run_catalog, args.include_run_classes,
+        )
+        mask = run_mask if mask is None else (mask & run_mask)
     cfg = ExclusiveFitConfig(
         beam_energy=args.beam_energy, torus=args.torus,
         momentum_bins=args.momentum_bins, theta_bins=args.theta_bins,
@@ -441,6 +480,9 @@ def main() -> None:
         str(args.proton_parameters) if args.proton_parameters else None
     )
     report["selectionMask"] = str(args.selection_mask) if args.selection_mask else None
+    if run_selection is not None:
+        report["runSelection"] = run_selection
+        parameters["runSelection"] = run_selection
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "run_validation_report.json").write_text(
         json.dumps(_json_safe(report), indent=2) + "\n"

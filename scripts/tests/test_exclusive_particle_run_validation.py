@@ -1,16 +1,37 @@
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
 
 from scripts.calibration.exclusive_particle_momentum import ExclusiveFitConfig
 from scripts.calibration.exclusive_particle_run_validation import (
+    _run_class_selection_mask,
     run_exclusive_validation,
 )
 
 
 class ExclusiveParticleRunValidationTests(unittest.TestCase):
+    def test_run_class_selection_mask_preserves_array_alignment(self) -> None:
+        with TemporaryDirectory() as directory:
+            catalog = Path(directory) / "runs.json"
+            catalog.write_text(json.dumps({
+                "runs": {
+                    "100": {"run_class": "L4"},
+                    "200": {"run_class": "P3"},
+                    "300": {"run_class": "P4"},
+                }
+            }))
+            mask, metadata = _run_class_selection_mask(
+                np.asarray([100, 200, 200, 300]), catalog, ["P3", "P4"]
+            )
+        np.testing.assert_array_equal(mask, [False, True, True, True])
+        self.assertEqual(metadata["selectedCandidateRows"], 3)
+        self.assertEqual(metadata["includedRunClasses"], ["P3", "P4"])
+
     def test_heldout_validation_selects_bilinear_surface(self) -> None:
         rng = np.random.default_rng(71)
         entries_per_run = 12_000

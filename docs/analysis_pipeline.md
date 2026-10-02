@@ -812,6 +812,8 @@ python3 scripts/validate_eppi0_momentum_runs.py \
   --beam-energy 6.535 --torus 1 --particle proton \
   --electron-parameters /path/to/validated_electron_parameters.json \
   --selection-mask /path/to/data_exclusivity.npy \
+  --run-catalog configs/efficiency/rgk/6.535/run_currents.json \
+  --include-run-classes P3 P4 \
   --models constant momentum-linear theta-linear momentum-theta \
   --output-dir calibration_plots/momentum/rgk_6p535_eppi0_proton_runs \
   --dataset-tag 6.535RGK_eppi0_proton_runs
@@ -827,6 +829,8 @@ python3 scripts/validate_eppi0_momentum_runs.py \
   --electron-parameters /path/to/validated_electron_parameters.json \
   --proton-parameters calibration_plots/momentum/rgk_6p535_eppi0_proton_runs/recommended_parameters.json \
   --selection-mask /path/to/data_exclusivity.npy \
+  --run-catalog configs/efficiency/rgk/6.535/run_currents.json \
+  --include-run-classes P3 P4 \
   --models constant momentum-linear theta-linear momentum-theta \
   --output-dir calibration_plots/momentum/rgk_6p535_eppi0_photon_runs \
   --dataset-tag 6.535RGK_eppi0_photon_runs
