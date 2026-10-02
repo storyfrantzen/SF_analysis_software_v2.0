@@ -738,6 +738,10 @@ def run_paired_validation(
     invariant_tolerance: float = 1.0e-10,
     reference_tolerance: float = 1.0e-7,
     correction_strength: float = 1.0,
+    electron_momentum_override: np.ndarray | None = None,
+    electron_support_override: np.ndarray | None = None,
+    electron_correction_label: str | None = None,
+    electron_correction_convention: str | None = None,
 ) -> tuple[dict[str, object], dict[str, np.ndarray]]:
     entries = int(np.asarray(arrays["electronP"]).size)
     if any(np.asarray(arrays[name]).size != entries for name in ROLE_COLUMNS):
@@ -752,7 +756,37 @@ def run_paired_validation(
     proton_p = np.asarray(arrays["protonP"], dtype=float)
     gamma1_p = np.asarray(arrays["gamma1P"], dtype=float)
     gamma2_p = np.asarray(arrays["gamma2P"], dtype=float)
-    if 11 in enabled_pids:
+    if electron_momentum_override is not None:
+        override = np.asarray(electron_momentum_override, dtype=float)
+        if override.shape != electron_p.shape:
+            raise ValueError(
+                "electron momentum override shape does not match electronP"
+            )
+        if electron_support_override is None:
+            electron_support = np.ones(entries, dtype=bool)
+        else:
+            electron_support = np.asarray(
+                electron_support_override, dtype=bool
+            )
+            if electron_support.shape != electron_p.shape:
+                raise ValueError(
+                    "electron support override shape does not match electronP"
+                )
+        if np.any(~np.isfinite(override) | (override <= 0.0)):
+            raise ValueError(
+                "electron momentum override contains a non-positive magnitude"
+            )
+        electron_correction = override / electron_p - 1.0
+        electron_correction = np.where(
+            electron_support, electron_correction, 0.0
+        )
+        corrected_p = electron_p * (1.0 + electron_correction)
+        enabled_pids.add(11)
+        local_phi = sector_local_phi(
+            np.asarray(arrays["electronPhi"], dtype=float),
+            np.asarray(arrays["electronSector"], dtype=int),
+        )
+    elif 11 in enabled_pids:
         corrected_p, electron_support, electron_correction, local_phi = (
             apply_supported_electron_correction(arrays, parameters)
         )
@@ -982,7 +1016,11 @@ def run_paired_validation(
         },
         "migration": migration,
         "correction": {
-            "convention": "p_after = p_before * (1 + fractionalCorrection)",
+            "label": electron_correction_label,
+            "convention": (
+                electron_correction_convention
+                or "p_after = p_before * (1 + fractionalCorrection)"
+            ),
             "strength": correction_strength,
             "supportedOnly": True,
             "enabledPids": sorted(enabled_pids),

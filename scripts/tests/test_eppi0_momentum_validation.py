@@ -177,6 +177,33 @@ class Eppi0MomentumValidationTests(unittest.TestCase):
             diagnostics["before_tPi0"] - diagnostics["before_t"],
         )
 
+    def test_external_electron_momentum_uses_supplied_support(self) -> None:
+        arrays = _arrays()
+        support = np.asarray([True, False, True, False, True, False])
+        override = np.asarray(arrays["electronP"]) + 0.05
+        report, diagnostics = run_paired_validation(
+            arrays,
+            _parameters(),
+            _broad_cuts(),
+            legacy_binning(),
+            external_selection_mask=np.ones(6, dtype=bool),
+            minimum_electron_p=0.0,
+            minimum_q2=0.0,
+            minimum_w=0.0,
+            electron_momentum_override=override,
+            electron_support_override=support,
+            electron_correction_label="test additive surface",
+            electron_correction_convention="p_after = p_before + 0.05 GeV",
+        )
+        np.testing.assert_array_equal(diagnostics["support"], support)
+        np.testing.assert_allclose(diagnostics["deltaElectronP"][support], 0.05)
+        np.testing.assert_allclose(diagnostics["deltaElectronP"][~support], 0.0)
+        self.assertEqual(report["correction"]["label"], "test additive surface")
+        self.assertEqual(
+            report["correction"]["convention"],
+            "p_after = p_before + 0.05 GeV",
+        )
+
     def test_individual_cut_migration_is_not_confounded_by_base_thresholds(self) -> None:
         arrays = _arrays()
         parameters = _parameters()

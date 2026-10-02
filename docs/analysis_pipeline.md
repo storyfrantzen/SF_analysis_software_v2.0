@@ -768,6 +768,47 @@ closure and angular support with the detected-`ep` result. A tighter W window
 is a systematic variation, not a free improvement, because W is computed from
 the same electron momentum being calibrated.
 
+Before freezing the RGK electron correction, compare it directly with the
+independent 6.535-GeV prescription published by Y. Guo and J. Huang.  Their
+surface is evaluated in its native additive form,
+`p_corrected = p_reconstructed + deltaP(theta, phi)`, with the global azimuth
+unfolded into `[-25, 335)` degrees.  It is not approximated by the local
+fractional-polynomial schema.  The elastic comparison uses the accepted cells
+from the local parameter file for all three methods and does not refit either
+surface:
+
+```bash
+python3 scripts/compare_elastic_electron_reference.py \
+  6.535_rgk_elastic_electron_candidates_inclusive_run_spanning.root \
+  --parameters /path/to/recommended_robust_parameters.json \
+  --run-catalog configs/efficiency/rgk/6.535/run_currents.json \
+  --include-run-classes P3 P4 --fold-by-run-class \
+  --output-dir calibration_plots/momentum/rgk_6p535_electron_reference_elastic \
+  --dataset-tag 6.535RGK_electron_reference_elastic
+```
+
+Then compare the same prescriptions on the identical strict `ep pi0` cohort
+and identical elastic support mask:
+
+```bash
+python3 scripts/compare_eppi0_electron_reference.py \
+  /path/to/6.535_rgk_eppi0_data_selected.root \
+  --parameters /path/to/recommended_robust_parameters.json \
+  --exclusivity-cuts /path/to/data_exclusivity.npz \
+  --analysis-config configs/analysis/rgk/6.535.json \
+  --selection-mask /path/to/data_exclusivity.npy \
+  --min-electron-p 1.0 --min-q2 1.0 --min-w 2.0 \
+  --output-dir calibration_plots/momentum/rgk_6p535_electron_reference_eppi0 \
+  --dataset-tag 6.535RGK_electron_reference_eppi0
+```
+
+Both reports include an explicit no-correction baseline.  Prefer the surface
+that improves elastic cell-center closure in both P3 and P4 and also improves
+the fixed-cohort `ep pi0` closure quantities without unacceptable selection
+migration.  A sign difference by itself is not a verdict, but a surface that
+loses to no correction on either comparison must not be promoted.  The
+published coefficient table and its provenance are embedded in each report.
+
 For the proton stage, the corrected electron defines
 `H = k + target - k'`. At fixed measured proton direction, the script solves
 `(H - p_proton)^2 = m_pi0^2` for the expected proton magnitude. If both
