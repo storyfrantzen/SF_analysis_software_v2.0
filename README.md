@@ -4,6 +4,15 @@ This project converts CLAS12 HIPO files into ROOT TTrees, builds configurable
 exclusive `epπ0` candidates, and provides a NumPy/SciPy response, unfolding,
 cross-section, and harmonic-analysis pipeline.
 
+## Start here
+
+For a new campaign or when returning to the repository after a break, use
+[the standard campaign template](docs/campaign_template.md). It identifies the
+maintained entry points, the `01_provenance` through `10_logs` work-directory
+layout, validation gates, artifact lineage, and the minimum completion
+checklist. Detailed tool and artifact documentation remains in
+[`analysis/README.md`](analysis/README.md).
+
 ## Build
 
 The C++ executables require ROOT and CLAS12ROOT. QADB support is enabled when
@@ -167,5 +176,6 @@ See `docs/analysis_pipeline.md` for the recommended modular layout.
 - `configs/post/` - ROOT post-processing configs
 - `configs/analysis/` - numerical analysis configs
 - `docs/` - design notes and setup references
-- `data/` - local input/output data products, ignored by git
+- `data/` - committed small reference tables plus local campaign inputs when
+  explicitly needed
 - `build/`, `work-build/`, `cmake-build-*` - local CMake build trees, ignored by git
