@@ -103,6 +103,31 @@ def expected_proton_momentum_eppi0(
     the equation.  If both quadratic roots are physical, measured proton
     momentum is used solely to choose the branch, not to set the solution.
     """
+    roots, valid = proton_momentum_roots_eppi0(
+        electron_momentum, electron_theta, electron_phi,
+        proton_theta, proton_phi, beam_energy,
+    )
+    ambiguity = np.sum(valid, axis=1) > 1
+    if measured_proton_momentum is None:
+        score = np.where(valid, -roots, np.inf)
+    else:
+        measured = np.asarray(measured_proton_momentum, dtype=float)
+        score = np.where(valid, np.abs(roots - measured[:, None]), np.inf)
+    choice = np.argmin(score, axis=1)
+    expected = roots[np.arange(roots.shape[0]), choice]
+    expected[~np.any(valid, axis=1)] = np.nan
+    return expected, ambiguity
+
+
+def proton_momentum_roots_eppi0(
+    electron_momentum: np.ndarray,
+    electron_theta: np.ndarray,
+    electron_phi: np.ndarray,
+    proton_theta: np.ndarray,
+    proton_phi: np.ndarray,
+    beam_energy: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return both roots and their physical-validity masks for the pi0 constraint."""
     electron = _four_vector(
         electron_momentum, electron_theta, electron_phi, ELECTRON_MASS_GEV
     )
@@ -132,16 +157,7 @@ def expected_proton_momentum_eppi0(
         (discriminant[:, None] >= 0.0) &
         (denominator[:, None] > 0.0)
     )
-    ambiguity = np.sum(valid, axis=1) > 1
-    if measured_proton_momentum is None:
-        score = np.where(valid, -roots, np.inf)
-    else:
-        measured = np.asarray(measured_proton_momentum, dtype=float)
-        score = np.where(valid, np.abs(roots - measured[:, None]), np.inf)
-    choice = np.argmin(score, axis=1)
-    expected = roots[np.arange(entries), choice]
-    expected[~np.any(valid, axis=1)] = np.nan
-    return expected, ambiguity
+    return roots, valid
 
 
 def expected_photon_energies_eppi0(

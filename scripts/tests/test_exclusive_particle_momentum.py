@@ -17,6 +17,7 @@ from scripts.calibration.exclusive_particle_momentum import (
     expected_photon_energies_eppi0,
     expected_proton_momentum_eppi0,
     fit_momentum_theta_region,
+    proton_momentum_roots_eppi0,
 )
 from scripts.calibration.elastic_momentum import apply_supported_particle_correction
 
@@ -51,6 +52,28 @@ class ExclusiveKinematicEstimatorTests(unittest.TestCase):
         np.testing.assert_allclose(
             _m2(missing), PI0_MASS_GEV**2, rtol=0.0, atol=2.0e-12
         )
+
+    def test_proton_root_helper_matches_selected_solution(self) -> None:
+        beam_energy = 6.535
+        electron_p = np.array([4.2, 3.6, 4.8])
+        electron_theta = np.deg2rad([18.0, 22.0, 14.0])
+        electron_phi = np.deg2rad([10.0, -25.0, 35.0])
+        proton_theta = np.deg2rad([32.0, 38.0, 27.0])
+        proton_phi = electron_phi + np.deg2rad([165.0, 175.0, 170.0])
+        measured = np.ones(3)
+        roots, valid = proton_momentum_roots_eppi0(
+            electron_p, electron_theta, electron_phi,
+            proton_theta, proton_phi, beam_energy,
+        )
+        selected, ambiguous = expected_proton_momentum_eppi0(
+            electron_p, electron_theta, electron_phi,
+            proton_theta, proton_phi, beam_energy, measured,
+        )
+        choice = np.argmin(np.where(valid, np.abs(roots - measured[:, None]), np.inf), axis=1)
+        expected = roots[np.arange(roots.shape[0]), choice]
+        expected[~np.any(valid, axis=1)] = np.nan
+        np.testing.assert_allclose(selected, expected, equal_nan=True)
+        np.testing.assert_array_equal(ambiguous, np.sum(valid, axis=1) > 1)
 
     def test_photon_energy_solution_recovers_exact_four_vector(self) -> None:
         theta1 = np.deg2rad(np.array([12.0, 20.0]))

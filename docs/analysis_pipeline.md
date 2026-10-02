@@ -843,6 +843,30 @@ chosen independently for every detector region. The recommended file remains
 a candidate pending cut, binning, run-period, model, and correction-strength
 variations.
 
+The missing-pi0 proton constraint can have two positive physical momentum
+solutions. Before promoting a proton surface, audit the separation and stability
+of those branches on the identical cohort. Supplying the provisional proton
+file additionally measures whether applying that surface changes the selected
+branch:
+
+```bash
+python3 scripts/audit_eppi0_proton_roots.py \
+  /path/to/eppi0_data_selected.root \
+  --beam-energy 6.535 --torus 1 \
+  --electron-parameters /path/to/validated_electron_parameters.json \
+  --proton-parameters calibration_plots/momentum/rgk_6p535_eppi0_proton_runs/recommended_parameters.json \
+  --selection-mask /path/to/data_exclusivity.npy \
+  --run-catalog configs/efficiency/rgk/6.535/run_currents.json \
+  --include-run-classes P3 P4 --perturbation-fraction 0.05 \
+  --output-dir calibration_plots/momentum/rgk_6p535_eppi0_proton_root_audit \
+  --dataset-tag 6.535RGK_eppi0_proton_root_audit
+```
+
+Review the branch-flip fractions for a symmetric momentum perturbation and for
+the provisional correction itself. A large or strongly region-dependent flip
+rate means the nearest-root residual is not stable enough to calibrate directly;
+use a local or simultaneous exclusivity fit instead.
+
 After validating each stage, merge the electron and ep-pi0 files:
 
 ```bash
