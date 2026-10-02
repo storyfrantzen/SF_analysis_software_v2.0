@@ -862,10 +862,15 @@ python3 scripts/audit_eppi0_proton_roots.py \
   --dataset-tag 6.535RGK_eppi0_proton_root_audit
 ```
 
-Review the branch-flip fractions for a symmetric momentum perturbation and for
+The audit plots the selected and rejected roots separately and compares the
+nearest-proton-momentum branch with a second choice made from the measured
+diphoton direction. It also reports a diphoton-momentum comparison as a more
+energy-scale-sensitive cross-check. Review those agreement fractions together
+with the branch-flip fractions for a symmetric momentum perturbation and for
 the provisional correction itself. A large or strongly region-dependent flip
-rate means the nearest-root residual is not stable enough to calibrate directly;
-use a local or simultaneous exclusivity fit instead.
+rate, or poor agreement for diphoton-direction-decisive events, means the
+nearest-root residual is not stable enough to calibrate directly; use a local
+or simultaneous exclusivity fit instead.
 
 After validating each stage, merge the electron and ep-pi0 files:
 

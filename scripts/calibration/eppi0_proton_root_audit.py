@@ -9,7 +9,14 @@ import numpy as np
 
 from .elastic_momentum import apply_supported_particle_correction
 from .elastic_run_validation import filter_arrays_by_run_classes, load_run_catalog
-from .eppi0_momentum_validation import load_aligned_selection_mask, load_eppi0_arrays
+from .eppi0_momentum_validation import (
+    ELECTRON_MASS_GEV,
+    PROTON_MASS_GEV,
+    _four_vector,
+    _unit_vectors,
+    load_aligned_selection_mask,
+    load_eppi0_arrays,
+)
 from .exclusive_particle_momentum import (
     ExclusiveFitConfig,
     _base_mask,
@@ -52,6 +59,58 @@ def _nearest_root_choice(
     return choice
 
 
+def photon_branch_metrics(
+    arrays: dict[str, np.ndarray],
+    electron_momentum: np.ndarray,
+    roots: np.ndarray,
+    valid: np.ndarray,
+    beam_energy: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compare each implied missing pi0 with the measured diphoton system."""
+    electron = _four_vector(
+        electron_momentum, arrays["electronTheta"], arrays["electronPhi"],
+        ELECTRON_MASS_GEV,
+    )
+    hadronic = np.zeros_like(electron)
+    hadronic[:, 0] = beam_energy + PROTON_MASS_GEV
+    hadronic[:, 3] = beam_energy
+    hadronic -= electron
+    proton_direction = _unit_vectors(arrays["protonTheta"], arrays["protonPhi"])
+    proton_energy = np.sqrt(np.square(roots) + PROTON_MASS_GEV**2)
+    proton = np.zeros((roots.shape[0], roots.shape[1], 4), dtype=float)
+    proton[:, :, 0] = proton_energy
+    proton[:, :, 1:] = roots[:, :, None] * proton_direction[:, None, :]
+    implied_pi0 = hadronic[:, None, :] - proton
+
+    gamma1 = _four_vector(
+        arrays["gamma1P"], arrays["gamma1Theta"], arrays["gamma1Phi"], 0.0
+    )
+    gamma2 = _four_vector(
+        arrays["gamma2P"], arrays["gamma2Theta"], arrays["gamma2Phi"], 0.0
+    )
+    diphoton = gamma1 + gamma2
+    observed_vector = diphoton[:, 1:]
+    observed_norm = np.linalg.norm(observed_vector, axis=1)
+    implied_vector = implied_pi0[:, :, 1:]
+    implied_norm = np.linalg.norm(implied_vector, axis=2)
+    denominator = implied_norm * observed_norm[:, None]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cosine = np.sum(
+            implied_vector * observed_vector[:, None, :], axis=2
+        ) / denominator
+    angle_deg = np.rad2deg(np.arccos(np.clip(cosine, -1.0, 1.0)))
+    momentum_residual = np.linalg.norm(
+        implied_vector - observed_vector[:, None, :], axis=2
+    )
+    invalid = (
+        ~valid | ~np.isfinite(angle_deg) | ~np.isfinite(momentum_residual) |
+        (denominator <= 0.0)
+    )
+    angle_deg[invalid] = np.inf
+    momentum_residual[invalid] = np.inf
+    return angle_deg, momentum_residual
+
+
 def summarize_root_region(
     roots: np.ndarray,
     valid: np.ndarray,
@@ -62,6 +121,8 @@ def summarize_root_region(
     corrected_momentum: np.ndarray | None = None,
     correction_support: np.ndarray | None = None,
     correction_fraction: np.ndarray | None = None,
+    photon_direction_angle_deg: np.ndarray | None = None,
+    photon_momentum_residual_gev: np.ndarray | None = None,
 ) -> dict[str, object]:
     rows = np.asarray(rows, dtype=bool)
     count = int(np.count_nonzero(rows))
@@ -144,6 +205,74 @@ def summarize_root_region(
             ),
         },
     }
+    if photon_direction_angle_deg is not None:
+        direction_angle = np.asarray(photon_direction_angle_deg, dtype=float)[rows]
+        direction_choice = np.argmin(direction_angle, axis=1)
+        direction_finite = np.all(np.isfinite(direction_angle), axis=1)
+        selected_direction_angle = np.full(region_measured.shape, np.nan)
+        alternate_direction_angle = np.full(region_measured.shape, np.nan)
+        branch_rows = ambiguous & direction_finite
+        indices = np.flatnonzero(branch_rows)
+        selected_direction_angle[indices] = direction_angle[
+            indices, nominal_choice[indices]
+        ]
+        alternate_direction_angle[indices] = direction_angle[
+            indices, 1 - nominal_choice[indices]
+        ]
+        direction_gap = np.abs(direction_angle[:, 1] - direction_angle[:, 0])
+        direction_entries = int(np.count_nonzero(branch_rows))
+        direction_result: dict[str, object] = {
+            "entries": direction_entries,
+            "choiceAgreementFraction": fraction(
+                branch_rows & (direction_choice == nominal_choice), direction_entries
+            ),
+            "nearestMomentumRootAngleDeg": _summary(
+                selected_direction_angle[branch_rows]
+            ),
+            "alternateRootAngleDeg": _summary(
+                alternate_direction_angle[branch_rows]
+            ),
+            "choiceAngleGapDeg": _summary(direction_gap[branch_rows]),
+            "nearestChoiceAdvantageDeg": _summary(
+                alternate_direction_angle[branch_rows] -
+                selected_direction_angle[branch_rows]
+            ),
+            "indecisiveFractionByGapDeg": {},
+            "decisiveChoiceAgreementByGapDeg": {},
+        }
+        for threshold in (0.1, 0.5, 1.0, 2.0, 5.0):
+            key = f"{threshold:.1f}"
+            decisive = branch_rows & (direction_gap >= threshold)
+            decisive_entries = int(np.count_nonzero(decisive))
+            direction_result["indecisiveFractionByGapDeg"][key] = fraction(
+                branch_rows & (direction_gap < threshold), direction_entries
+            )
+            direction_result["decisiveChoiceAgreementByGapDeg"][key] = (
+                fraction(
+                    decisive & (direction_choice == nominal_choice),
+                    decisive_entries,
+                ) if decisive_entries else None
+            )
+        result["photonDirectionCrossCheck"] = direction_result
+    if photon_momentum_residual_gev is not None:
+        momentum_residual = np.asarray(
+            photon_momentum_residual_gev, dtype=float
+        )[rows]
+        momentum_choice = np.argmin(momentum_residual, axis=1)
+        momentum_finite = np.all(np.isfinite(momentum_residual), axis=1)
+        branch_rows = ambiguous & momentum_finite
+        momentum_entries = int(np.count_nonzero(branch_rows))
+        result["photonMomentumCrossCheck"] = {
+            "entries": momentum_entries,
+            "choiceAgreementFraction": fraction(
+                branch_rows & (momentum_choice == nominal_choice),
+                momentum_entries,
+            ),
+            "choiceResidualGapGeV": _summary(
+                np.abs(momentum_residual[branch_rows, 1] -
+                       momentum_residual[branch_rows, 0])
+            ),
+        }
     if corrected_momentum is not None and correction_support is not None:
         region_corrected = np.asarray(corrected_momentum, dtype=float)[rows]
         region_support = np.asarray(correction_support, dtype=bool)[rows]
@@ -190,6 +319,7 @@ def _make_plots(
     measured: np.ndarray,
     detector: np.ndarray,
     base: np.ndarray,
+    photon_direction_angle_deg: np.ndarray,
     report: dict[str, object],
     output_dir: Path,
     dataset_tag: str,
@@ -201,6 +331,12 @@ def _make_plots(
     ordered = np.sort(np.where(valid, roots, np.inf), axis=1)
     separation = ordered[:, 1] - ordered[:, 0]
     boundary = np.abs(measured - 0.5 * (ordered[:, 0] + ordered[:, 1]))
+    nominal_choice = _nearest_root_choice(roots, valid, measured)
+    selected = np.full(measured.shape, np.nan)
+    alternate = np.full(measured.shape, np.nan)
+    indices = np.flatnonzero(ambiguous)
+    selected[indices] = roots[indices, nominal_choice[indices]]
+    alternate[indices] = roots[indices, 1 - nominal_choice[indices]]
     fig, axes = plt.subplots(2, 2, figsize=(12, 9))
     rng = np.random.default_rng(314159)
     for detector_id, color in ((1, "tab:blue"), (2, "tab:orange")):
@@ -208,57 +344,115 @@ def _make_plots(
         if rows.size > 40_000:
             rows = rng.choice(rows, 40_000, replace=False)
         axes[0, 0].scatter(
-            measured[rows], ordered[rows, 0], s=2, alpha=0.08,
-            color=color, label=f"det{detector_id} lower",
+            measured[rows], selected[rows], s=2, alpha=0.08,
+            color=color, label=f"det{detector_id}",
         )
-        axes[0, 0].scatter(
-            measured[rows], ordered[rows, 1], s=2, alpha=0.08,
-            color=color, marker="x", label=f"det{detector_id} upper",
+        axes[0, 1].scatter(
+            measured[rows], alternate[rows], s=2, alpha=0.08,
+            color=color, label=f"det{detector_id}",
         )
         all_rows = ambiguous & (detector == detector_id)
-        axes[0, 1].hist(
+        axes[1, 0].hist(
             separation[all_rows], bins=100, histtype="step", density=True,
             color=color, label=f"det{detector_id}",
         )
-        axes[1, 0].hist(
+        axes[1, 1].hist(
             boundary[all_rows], bins=100, histtype="step", density=True,
             color=color, label=f"det{detector_id}",
         )
-    axes[0, 0].set_xlabel("measured proton momentum [GeV]")
-    axes[0, 0].set_ylabel("kinematic root [GeV]")
-    axes[0, 0].legend(markerscale=3, fontsize=8)
-    axes[0, 0].set_title("two physical proton solutions")
-    axes[0, 1].set_xlabel("root separation [GeV]")
-    axes[0, 1].set_ylabel("density")
-    axes[0, 1].legend()
-    axes[0, 1].set_title("root separation")
-    axes[1, 0].set_xlabel("distance to branch boundary [GeV]")
+    finite_values = np.concatenate((measured[ambiguous], selected[ambiguous]))
+    diagonal_min = float(np.nanquantile(finite_values, 0.001))
+    diagonal_max = float(np.nanquantile(finite_values, 0.999))
+    for axis, title in (
+        (axes[0, 0], "selected nearest root"),
+        (axes[0, 1], "rejected alternate root"),
+    ):
+        axis.plot(
+            [diagonal_min, diagonal_max], [diagonal_min, diagonal_max],
+            color="black", linewidth=1, linestyle="--", label="root = measured",
+        )
+        axis.set_xlabel("measured proton momentum [GeV]")
+        axis.set_ylabel("kinematic root [GeV]")
+        axis.legend(markerscale=3, fontsize=8)
+        axis.set_title(title)
+    axes[1, 0].set_xlabel("root separation [GeV]")
     axes[1, 0].set_ylabel("density")
     axes[1, 0].legend()
-    axes[1, 0].set_title("branch-choice margin")
-
-    region_names = [name for name in ("det1", "det2") if name in report["regions"]]
-    x = np.arange(len(region_names))
-    minus = [
-        100.0 * report["regions"][name]["branchFlipFractionOfAmbiguous"][
-            "minusPerturbation"
-        ] for name in region_names
-    ]
-    plus = [
-        100.0 * report["regions"][name]["branchFlipFractionOfAmbiguous"][
-            "plusPerturbation"
-        ] for name in region_names
-    ]
-    width = 0.35
-    axes[1, 1].bar(x - width / 2, minus, width, label="momentum - perturbation")
-    axes[1, 1].bar(x + width / 2, plus, width, label="momentum + perturbation")
-    axes[1, 1].set_xticks(x, region_names)
-    axes[1, 1].set_ylabel("branch flips [%]")
-    axes[1, 1].set_title("branch stability")
-    axes[1, 1].legend(fontsize=8)
+    axes[1, 0].set_title("root separation")
+    axes[1, 1].set_xlabel("distance to branch boundary [GeV]")
+    axes[1, 1].set_ylabel("density")
+    axes[1, 1].legend()
+    axes[1, 1].set_title("branch-choice margin")
     save_plot(
         fig, output_dir / "proton_root_audit.png",
         "ep-pi0 proton kinematic-root audit", dataset_tag, beam_energy,
+    )
+    plt.close(fig)
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
+    for detector_id, color in ((1, "tab:blue"), (2, "tab:orange")):
+        rows = ambiguous & (detector == detector_id) & np.all(
+            np.isfinite(photon_direction_angle_deg), axis=1
+        )
+        row_indices = np.flatnonzero(rows)
+        nearest_angle = photon_direction_angle_deg[
+            row_indices, nominal_choice[row_indices]
+        ]
+        alternate_angle = photon_direction_angle_deg[
+            row_indices, 1 - nominal_choice[row_indices]
+        ]
+        axes[0].hist(
+            nearest_angle, bins=100, range=(0.0, 30.0), histtype="step",
+            density=True, color=color, label=f"det{detector_id} nearest root",
+        )
+        axes[0].hist(
+            alternate_angle, bins=100, range=(0.0, 30.0), histtype="step",
+            density=True, color=color, linestyle="--",
+            label=f"det{detector_id} alternate",
+        )
+        advantage = alternate_angle - nearest_angle
+        axes[1].hist(
+            advantage, bins=120, range=(-30.0, 30.0), histtype="step",
+            density=True, color=color, label=f"det{detector_id}",
+        )
+    axes[0].set_xlabel(r"angle(implied $\pi^0$, measured $\gamma\gamma$) [deg]")
+    axes[0].set_ylabel("density")
+    axes[0].set_title("independent diphoton-direction check")
+    axes[0].legend(fontsize=7)
+    axes[1].axvline(0.0, color="black", linewidth=1)
+    axes[1].set_xlabel("alternate angle - nearest-root angle [deg]")
+    axes[1].set_ylabel("density")
+    axes[1].set_title("positive favors nearest-momentum root")
+    axes[1].legend(fontsize=8)
+
+    region_names = [name for name in ("det1", "det2") if name in report["regions"]]
+    x = np.arange(len(region_names))
+    direction_agreement = [
+        100.0 * report["regions"][name]["photonDirectionCrossCheck"][
+            "choiceAgreementFraction"
+        ] for name in region_names
+    ]
+    momentum_agreement = [
+        100.0 * report["regions"][name]["photonMomentumCrossCheck"][
+            "choiceAgreementFraction"
+        ] for name in region_names
+    ]
+    width = 0.35
+    axes[2].bar(
+        x - width / 2, direction_agreement, width, label="diphoton direction"
+    )
+    axes[2].bar(
+        x + width / 2, momentum_agreement, width, label="diphoton momentum"
+    )
+    axes[2].set_xticks(x, region_names)
+    axes[2].set_ylim(0.0, 100.0)
+    axes[2].set_ylabel("agreement with nearest-p root [%]")
+    axes[2].set_title("independent branch agreement")
+    axes[2].legend(fontsize=8)
+    save_plot(
+        fig, output_dir / "proton_root_photon_agreement.png",
+        "ep-pi0 proton-root agreement with measured diphoton",
+        dataset_tag, beam_energy,
     )
     plt.close(fig)
 
@@ -331,6 +525,11 @@ def main() -> None:
         electron_p, arrays["electronTheta"], arrays["electronPhi"],
         arrays["protonTheta"], arrays["protonPhi"], args.beam_energy,
     )
+    photon_direction_angle_deg, photon_momentum_residual_gev = (
+        photon_branch_metrics(
+            arrays, electron_p, roots, valid, args.beam_energy
+        )
+    )
     measured = np.asarray(arrays["protonP"], dtype=float)
     detector = np.asarray(arrays["protonDet"], dtype=int)
     corrected = correction_support = correction = None
@@ -351,11 +550,13 @@ def main() -> None:
             corrected_momentum=corrected,
             correction_support=correction_support,
             correction_fraction=correction,
+            photon_direction_angle_deg=photon_direction_angle_deg,
+            photon_momentum_residual_gev=photon_momentum_residual_gev,
         )
         for name, rows in _region_rows(arrays, base)
     }
     report: dict[str, object] = {
-        "schema": "eppi0-proton-root-audit/v1",
+        "schema": "eppi0-proton-root-audit/v2",
         "datasetTag": args.dataset_tag,
         "beamEnergyGeV": args.beam_energy,
         "torus": args.torus,
@@ -386,10 +587,13 @@ def main() -> None:
             "region", "entries", "ambiguousRootFraction",
             "medianRootSeparationGeV", "medianBoundaryDistanceGeV",
             "flipMinus", "flipPlus", "flipEither", "provisionalFlip",
+            "photonDirectionAgreement", "photonMomentumAgreement",
         ])
         for name, values in regions.items():
             flips = values.get("branchFlipFractionOfAmbiguous", {})
             provisional = values.get("provisionalCorrection", {})
+            direction = values.get("photonDirectionCrossCheck", {})
+            photon_momentum = values.get("photonMomentumCrossCheck", {})
             writer.writerow([
                 name, values.get("entries"), values.get("ambiguousRootFraction"),
                 values.get("rootSeparationGeV", {}).get("median"),
@@ -397,9 +601,11 @@ def main() -> None:
                 flips.get("minusPerturbation"), flips.get("plusPerturbation"),
                 flips.get("eitherPerturbation"),
                 provisional.get("branchFlipFractionOfAmbiguousSupported"),
+                direction.get("choiceAgreementFraction"),
+                photon_momentum.get("choiceAgreementFraction"),
             ])
     _make_plots(
-        roots, valid, measured, detector, base, report,
+        roots, valid, measured, detector, base, photon_direction_angle_deg, report,
         args.output_dir, args.dataset_tag, args.beam_energy,
     )
     print(f"Wrote proton-root audit to {args.output_dir}")
@@ -408,12 +614,15 @@ def main() -> None:
             continue
         values = regions[name]
         flips = values["branchFlipFractionOfAmbiguous"]
+        direction = values["photonDirectionCrossCheck"]
         print(
             f"  {name}: entries={values['entries']}; "
             f"ambiguous={100.0 * values['ambiguousRootFraction']:.2f}%; "
             f"median separation={values['rootSeparationGeV']['median']:.4f} GeV; "
             f"flip(+/-{100.0 * args.perturbation_fraction:.1f}%)="
-            f"{100.0 * flips['eitherPerturbation']:.2f}%"
+            f"{100.0 * flips['eitherPerturbation']:.2f}%; "
+            f"photon-direction agreement="
+            f"{100.0 * direction['choiceAgreementFraction']:.2f}%"
         )
 
 
