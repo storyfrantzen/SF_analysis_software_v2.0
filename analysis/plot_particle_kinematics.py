@@ -67,6 +67,16 @@ def parse_args() -> argparse.Namespace:
         help="Write one full-page theta-versus-phi coverage plot for each requested particle",
     )
     parser.add_argument(
+        "--angular-layout",
+        choices=("theta-horizontal", "phi-horizontal"),
+        default="theta-horizontal",
+        help="Axis orientation for --angular-only (default: theta-horizontal)",
+    )
+    parser.add_argument("--angular-theta-bins", type=int, default=96)
+    parser.add_argument("--angular-phi-bins", type=int, default=96)
+    parser.add_argument("--angular-theta-range", nargs=2, type=float, metavar=("MIN", "MAX"))
+    parser.add_argument("--angular-phi-range", nargs=2, type=float, metavar=("MIN", "MAX"))
+    parser.add_argument(
         "--peak-window",
         metavar="BRANCH",
         help=(
@@ -124,6 +134,7 @@ def main() -> int:
     if args.selection_mask is not None and args.where:
         raise ValueError("--selection-mask cannot be combined with --where because filtered rows no longer align")
     validate_peak_arguments(args)
+    validate_angular_arguments(args)
 
     tree_name, input_rows, available = inspect_tree(args.input_root, args.tree, args.dictionary)
     prefixes = selected_prefixes(args.particle, available)
@@ -182,6 +193,11 @@ def main() -> int:
             particles,
             label=args.label,
             provenance=provenance,
+            layout=args.angular_layout,
+            theta_range=tuple(args.angular_theta_range) if args.angular_theta_range else None,
+            phi_range=tuple(args.angular_phi_range) if args.angular_phi_range else None,
+            theta_bins=args.angular_theta_bins,
+            phi_bins=args.angular_phi_bins,
         )
     else:
         pages, page_records = render_report(
@@ -208,6 +224,11 @@ def main() -> int:
             "peak_window": peak_window,
             "max_rows": args.max_rows,
             "report_mode": "angular-only" if args.angular_only else "full",
+            "angular_layout": args.angular_layout if args.angular_only else None,
+            "angular_theta_bins": args.angular_theta_bins if args.angular_only else None,
+            "angular_phi_bins": args.angular_phi_bins if args.angular_only else None,
+            "angular_theta_range_deg": args.angular_theta_range if args.angular_only else None,
+            "angular_phi_range_deg": args.angular_phi_range if args.angular_only else None,
             "beam_energy_GeV": args.beam_energy,
             "available_scalar_branches": available,
             "requested_particle_prefixes": prefixes,
@@ -307,6 +328,28 @@ def validate_peak_arguments(args: argparse.Namespace) -> None:
     ):
         if value is not None and (not np.isfinite(value) or value <= 0.0):
             raise ValueError(f"{name} must be positive")
+
+
+def validate_angular_arguments(args: argparse.Namespace) -> None:
+    configured = (
+        args.angular_layout != "theta-horizontal"
+        or args.angular_theta_bins != 96
+        or args.angular_phi_bins != 96
+        or args.angular_theta_range is not None
+        or args.angular_phi_range is not None
+    )
+    if configured and not args.angular_only:
+        raise ValueError("angular layout, range, and bin options require --angular-only")
+    if args.angular_theta_bins < 1 or args.angular_phi_bins < 1:
+        raise ValueError("angular bin counts must be positive")
+    for name, interval in (
+        ("--angular-theta-range", args.angular_theta_range),
+        ("--angular-phi-range", args.angular_phi_range),
+    ):
+        if interval is not None and not (
+            np.isfinite(interval[0]) and np.isfinite(interval[1]) and interval[1] > interval[0]
+        ):
+            raise ValueError(f"{name} must be a finite increasing interval")
 
 
 def peak_input_branches(

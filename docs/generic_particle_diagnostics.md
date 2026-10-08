@@ -63,6 +63,18 @@ for each requested particle. It can be combined with the fitted peak selection
 below, giving a compact elastic-coverage PDF with one large electron page and
 one large proton page.
 
+For a conventional six-sector display comparable to ROOT coverage plots, put
+azimuth on the horizontal axis and use explicit physical ranges and binning:
+
+```bash
+python3 analysis/plot_particle_kinematics.py elastic_ep.root \
+  --particle electron --particle proton --angular-only \
+  --angular-layout phi-horizontal \
+  --angular-phi-range 0 360 --angular-theta-range 0 40 \
+  --angular-phi-bins 360 --angular-theta-bins 160 \
+  --label "Elastic ep angular coverage" --output angular_coverage.pdf
+```
+
 For a reconstructed peak whose center may move because of detector alignment
 or calibration, use a fitted peak window. The broad `--peak-search` interval
 locates the signal but does not fix its center. The utility fits a signal plus

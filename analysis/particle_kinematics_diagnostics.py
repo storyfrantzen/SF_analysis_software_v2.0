@@ -257,6 +257,11 @@ def render_angular_coverage_report(
     *,
     label: str,
     provenance: Sequence[str],
+    layout: str = "theta-horizontal",
+    theta_range: tuple[float, float] | None = None,
+    phi_range: tuple[float, float] | None = None,
+    theta_bins: int = 96,
+    phi_bins: int = 96,
 ) -> tuple[int, list[dict[str, object]]]:
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(f".{output.name}.tmp")
@@ -266,23 +271,35 @@ def render_angular_coverage_report(
         for particle in particles:
             theta = degrees(_particle_values(arrays, particle, "theta"))
             phi = degrees(_particle_values(arrays, particle, "phi"))
-            figure, axis = plt.subplots(figsize=(11.0, 8.5))
+            if phi_range is not None and np.isclose(phi_range[1] - phi_range[0], 360.0):
+                phi = np.mod(phi - phi_range[0], 360.0) + phi_range[0]
+            phi_horizontal = layout == "phi-horizontal"
+            figure, axis = plt.subplots(figsize=(16.0, 6.0) if phi_horizontal else (11.0, 8.5))
             figure.patch.set_facecolor("white")
-            figure.subplots_adjust(left=0.105, right=0.89, bottom=0.12, top=0.84)
+            figure.subplots_adjust(left=0.08, right=0.91, bottom=0.14, top=0.80 if phi_horizontal else 0.84)
+            x = phi if phi_horizontal else theta
+            y = theta if phi_horizontal else phi
+            x_label = r"$\phi$ [deg]" if phi_horizontal else r"$\theta$ [deg]"
+            y_label = r"$\theta$ [deg]" if phi_horizontal else r"$\phi$ [deg]"
+            x_range = phi_range if phi_horizontal else theta_range
+            y_range = theta_range if phi_horizontal else phi_range
+            bins = (phi_bins, theta_bins) if phi_horizontal else (theta_bins, phi_bins)
             _hist2d(
                 figure,
                 axis,
-                theta,
-                phi,
+                x,
+                y,
                 f"{particle.name}: angular coverage",
-                r"$\theta$ [deg]",
-                r"$\phi$ [deg]",
-                y_range=(-180.0, 180.0),
-                bins=96,
+                x_label,
+                y_label,
+                x_range=x_range,
+                y_range=y_range,
+                bins=bins,
             )
             figure.suptitle(label, fontsize=17, weight="semibold", x=0.105, ha="left", y=0.95)
+            direction = r"$\theta$ versus $\phi$" if phi_horizontal else r"$\phi$ versus $\theta$"
             axis.set_title(
-                rf"{particle.name}: reconstructed $\theta$ versus $\phi$",
+                f"{particle.name}: reconstructed {direction}",
                 fontsize=14,
                 loc="left",
                 pad=12,
@@ -630,7 +647,7 @@ def _hist2d(
     x_range: tuple[float, float] | None = None,
     y_range: tuple[float, float] | None = None,
     equal_aspect: bool = False,
-    bins: int = 64,
+    bins: int | tuple[int, int] = 64,
 ) -> None:
     xx = np.asarray(x, dtype=float)
     yy = np.asarray(y, dtype=float)

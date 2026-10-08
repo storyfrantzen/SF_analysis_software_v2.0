@@ -150,6 +150,11 @@ class RenderingTests(unittest.TestCase):
                 [particle],
                 label="synthetic",
                 provenance=["unit test"],
+                layout="phi-horizontal",
+                theta_range=(0.0, 40.0),
+                phi_range=(0.0, 360.0),
+                theta_bins=80,
+                phi_bins=180,
             )
             self.assertEqual(pages, 1)
             self.assertEqual(records[0]["section"], "angular_coverage_large")
