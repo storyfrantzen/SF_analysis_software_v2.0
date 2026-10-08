@@ -19,7 +19,7 @@ from particle_kinematics_diagnostics import (
     required_branches,
     summary_for,
 )
-from plot_particle_kinematics import fit_peak_window
+from plot_particle_kinematics import fit_peak_window, peak_input_branches
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -89,6 +89,15 @@ class DerivedKinematicsTests(unittest.TestCase):
         self.assertGreater(int(np.count_nonzero(selection)), 10000)
         self.assertLess(result["lower"], result["center"])
         self.assertGreater(result["upper"], result["center"])
+
+    def test_peak_window_accepts_derived_w(self) -> None:
+        branches, source = peak_input_branches(
+            "W",
+            ["Q2", "nu", "electronP"],
+            6.395,
+        )
+        self.assertEqual(branches, ["Q2", "nu"])
+        self.assertEqual(source, "derived from Q2 and nu")
 
 
 class RenderingTests(unittest.TestCase):

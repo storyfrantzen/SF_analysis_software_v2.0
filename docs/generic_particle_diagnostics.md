@@ -78,7 +78,9 @@ python3 analysis/plot_particle_kinematics.py elastic_ep.root \
 
 `--peak-expected` seeds and validates the floating peak; it is not the center
 of the retained interval. The report should not be used when the fit fails its
-center, width, signal-fraction, or significance checks.
+center, width, signal-fraction, or significance checks. A requested `W` need
+not be stored in the tree: when `Q2` and `nu` are available, the utility derives
+`W` before fitting and records that source in the JSON sidecar.
 
 The sidecar `<output-stem>_summary.json` records the input, tree, row counts,
 particle prefixes, requested branches and groups, rendered pages, missing

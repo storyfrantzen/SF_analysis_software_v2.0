@@ -18,6 +18,7 @@ from eppi0.exclusivity_models import estimate_model  # noqa: E402
 from particle_kinematics_diagnostics import (  # noqa: E402
     BANK_ORDER,
     banks_with_content,
+    derive_event_arrays,
     discover_particle_prefixes,
     make_particle,
     render_report,
@@ -123,11 +124,14 @@ def main() -> int:
     particles = [make_particle(prefix, available) for prefix in prefixes]
     banks = selected_banks(args.bank, particles, available)
     branches = required_branches(particles, banks, available)
+    peak_value_source = None
     if args.peak_window:
-        if args.peak_window not in available:
-            raise ValueError(f"peak-window branch is absent from the tree: {args.peak_window}")
-        if args.peak_window not in branches:
-            branches.append(args.peak_window)
+        peak_inputs, peak_value_source = peak_input_branches(
+            args.peak_window,
+            available,
+            args.beam_energy,
+        )
+        branches.extend(name for name in peak_inputs if name not in branches)
     if not branches:
         raise RuntimeError("No scalar branches are available for the requested particles and banks")
     arrays, rows_after_filter = read_arrays(
@@ -142,9 +146,11 @@ def main() -> int:
     rows_before_peak = array_rows(arrays)
     peak_window = None
     if args.peak_window:
+        derived_arrays = derive_event_arrays(arrays, args.beam_energy)
         peak_selection, peak_window = fit_peak_window(
-            arrays[args.peak_window],
+            derived_arrays[args.peak_window],
             branch=args.peak_window,
+            value_source=peak_value_source,
             search=tuple(args.peak_search),
             expected_center=args.peak_expected,
             n_sigma=args.peak_n_sigma,
@@ -287,10 +293,28 @@ def validate_peak_arguments(args: argparse.Namespace) -> None:
             raise ValueError(f"{name} must be positive")
 
 
+def peak_input_branches(
+    branch: str,
+    available: list[str],
+    beam_energy: float | None,
+) -> tuple[list[str], str]:
+    names = set(available)
+    if branch in names:
+        return [branch], "stored branch"
+    if branch == "W" and {"Q2", "nu"}.issubset(names):
+        return ["Q2", "nu"], "derived from Q2 and nu"
+    if branch == "y" and "nu" in names and beam_energy is not None:
+        return ["nu"], "derived from nu and beam energy"
+    raise ValueError(
+        f"peak-window quantity {branch!r} is neither stored nor derivable from available branches"
+    )
+
+
 def fit_peak_window(
     values: np.ndarray,
     *,
     branch: str,
+    value_source: str = "stored branch",
     search: tuple[float, float],
     expected_center: float | None,
     n_sigma: float,
@@ -328,6 +352,7 @@ def fit_peak_window(
     selection = np.isfinite(raw) & (raw >= lower) & (raw <= upper)
     record: dict[str, object] = {
         "branch": branch,
+        "value_source": value_source,
         "search_lower": search_lower,
         "search_upper": search_upper,
         "expected_center": expected_center,
