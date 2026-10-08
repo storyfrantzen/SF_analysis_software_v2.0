@@ -15,6 +15,7 @@ from particle_kinematics_diagnostics import (
     derive_event_arrays,
     discover_particle_prefixes,
     make_particle,
+    render_angular_coverage_report,
     render_report,
     required_branches,
     summary_for,
@@ -101,10 +102,10 @@ class DerivedKinematicsTests(unittest.TestCase):
 
 
 class RenderingTests(unittest.TestCase):
-    def test_minimal_report_and_summary_are_nonempty(self) -> None:
-        count = 800
+    @staticmethod
+    def _arrays(count: int = 800) -> dict[str, np.ndarray]:
         rng = np.random.default_rng(14)
-        arrays = {
+        return {
             "Q2": rng.uniform(1.0, 4.0, count),
             "nu": rng.uniform(1.0, 3.0, count),
             "xB": rng.uniform(0.1, 0.6, count),
@@ -115,6 +116,10 @@ class RenderingTests(unittest.TestCase):
             "electronXPCAL": rng.normal(0.0, 120.0, count),
             "electronYPCAL": rng.normal(0.0, 120.0, count),
         }
+
+    def test_minimal_report_and_summary_are_nonempty(self) -> None:
+        count = 800
+        arrays = self._arrays(count)
         particle = make_particle("electron", arrays)
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "diagnostics.pdf"
@@ -133,6 +138,22 @@ class RenderingTests(unittest.TestCase):
             summary = summary_for(arrays, [particle], ["dis", "kinematics", "pcal"], records)
             self.assertEqual(summary["rows"], count)
             self.assertIn("pcal", summary["particles"]["electron"]["rendered_sections"])
+
+    def test_large_angular_report_uses_one_page_per_particle(self) -> None:
+        arrays = self._arrays()
+        particle = make_particle("electron", arrays)
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "angular.pdf"
+            pages, records = render_angular_coverage_report(
+                output,
+                arrays,
+                [particle],
+                label="synthetic",
+                provenance=["unit test"],
+            )
+            self.assertEqual(pages, 1)
+            self.assertEqual(records[0]["section"], "angular_coverage_large")
+            self.assertGreater(output.stat().st_size, 1000)
 
 
 if __name__ == "__main__":

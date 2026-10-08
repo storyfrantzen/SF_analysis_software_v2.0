@@ -250,6 +250,55 @@ def render_report(
     return len(page_records), page_records
 
 
+def render_angular_coverage_report(
+    output: Path,
+    arrays: Mapping[str, Array],
+    particles: Sequence[Particle],
+    *,
+    label: str,
+    provenance: Sequence[str],
+) -> tuple[int, list[dict[str, object]]]:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.tmp")
+    temporary.unlink(missing_ok=True)
+    records: list[dict[str, object]] = []
+    with PdfPages(temporary) as pdf:
+        for particle in particles:
+            theta = degrees(_particle_values(arrays, particle, "theta"))
+            phi = degrees(_particle_values(arrays, particle, "phi"))
+            figure, axis = plt.subplots(figsize=(11.0, 8.5))
+            figure.patch.set_facecolor("white")
+            figure.subplots_adjust(left=0.105, right=0.89, bottom=0.12, top=0.84)
+            _hist2d(
+                figure,
+                axis,
+                theta,
+                phi,
+                f"{particle.name}: angular coverage",
+                r"$\theta$ [deg]",
+                r"$\phi$ [deg]",
+                y_range=(-180.0, 180.0),
+                bins=96,
+            )
+            figure.suptitle(label, fontsize=17, weight="semibold", x=0.105, ha="left", y=0.95)
+            axis.set_title(
+                rf"{particle.name}: reconstructed $\theta$ versus $\phi$",
+                fontsize=14,
+                loc="left",
+                pad=12,
+            )
+            axis.tick_params(labelsize=11)
+            axis.xaxis.label.set_size(13)
+            axis.yaxis.label.set_size(13)
+            footer = " | ".join(provenance)
+            figure.text(0.105, 0.045, textwrap.shorten(footer, width=155, placeholder=" ..."), fontsize=7.5)
+            pdf.savefig(figure)
+            plt.close(figure)
+            records.append({"section": "angular_coverage_large", "particle": particle.name})
+    temporary.replace(output)
+    return len(records), records
+
+
 def _new_page(title: str, subtitle: str = "") -> tuple[plt.Figure, Array]:
     figure, axes = plt.subplots(2, 3, figsize=(11.0, 8.5))
     figure.patch.set_facecolor("white")
@@ -581,6 +630,7 @@ def _hist2d(
     x_range: tuple[float, float] | None = None,
     y_range: tuple[float, float] | None = None,
     equal_aspect: bool = False,
+    bins: int = 64,
 ) -> None:
     xx = np.asarray(x, dtype=float)
     yy = np.asarray(y, dtype=float)
@@ -595,9 +645,9 @@ def _hist2d(
     view = (xx >= xr[0]) & (xx <= xr[1]) & (yy >= yr[0]) & (yy <= yr[1])
     xx, yy = xx[view], yy[view]
     if xx.size:
-        counts, _, _ = np.histogram2d(xx, yy, bins=64, range=(xr, yr))
+        counts, _, _ = np.histogram2d(xx, yy, bins=bins, range=(xr, yr))
         maximum = max(float(counts.max()), 1.01)
-        image = axis.hist2d(xx, yy, bins=64, range=(xr, yr), cmap="viridis", norm=LogNorm(vmin=1.0, vmax=maximum))[3]
+        image = axis.hist2d(xx, yy, bins=bins, range=(xr, yr), cmap="viridis", norm=LogNorm(vmin=1.0, vmax=maximum))[3]
         colorbar = figure.colorbar(image, ax=axis, pad=0.018, fraction=0.045)
         colorbar.ax.tick_params(labelsize=6)
     axis.set_title(title, fontsize=9.5, loc="left", weight="semibold")
@@ -664,7 +714,7 @@ def summary_for(
             }
         )
         rendered_banks = set(rendered)
-        if "sector_shapes" in rendered_banks:
+        if rendered_banks & {"sector_shapes", "angular_coverage_large"}:
             rendered_banks.add("kinematics")
         missing_banks = (set(requested_banks) & set(BANK_KEYS)) - rendered_banks
         particle_records[particle.name] = {

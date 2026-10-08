@@ -21,6 +21,7 @@ from particle_kinematics_diagnostics import (  # noqa: E402
     derive_event_arrays,
     discover_particle_prefixes,
     make_particle,
+    render_angular_coverage_report,
     render_report,
     required_branches,
     summary_for,
@@ -60,6 +61,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--where", help="Optional ROOT RDataFrame filter expression")
     parser.add_argument("--selection-mask", type=Path, help="Boolean NPY mask aligned to unfiltered input rows")
     parser.add_argument("--max-rows", type=int, help="Read at most this many rows after --where")
+    parser.add_argument(
+        "--angular-only",
+        action="store_true",
+        help="Write one full-page theta-versus-phi coverage plot for each requested particle",
+    )
     parser.add_argument(
         "--peak-window",
         metavar="BRANCH",
@@ -122,7 +128,7 @@ def main() -> int:
     tree_name, input_rows, available = inspect_tree(args.input_root, args.tree, args.dictionary)
     prefixes = selected_prefixes(args.particle, available)
     particles = [make_particle(prefix, available) for prefix in prefixes]
-    banks = selected_banks(args.bank, particles, available)
+    banks = ["kinematics"] if args.angular_only else selected_banks(args.bank, particles, available)
     branches = required_branches(particles, banks, available)
     peak_value_source = None
     if args.peak_window:
@@ -169,15 +175,24 @@ def main() -> int:
         peak_provenance(peak_window),
         f"Maximum rows: {args.max_rows if args.max_rows is not None else 'none'}",
     ]
-    pages, page_records = render_report(
-        args.output,
-        arrays,
-        particles,
-        banks,
-        label=args.label,
-        provenance=provenance,
-        beam_energy=args.beam_energy,
-    )
+    if args.angular_only:
+        pages, page_records = render_angular_coverage_report(
+            args.output,
+            arrays,
+            particles,
+            label=args.label,
+            provenance=provenance,
+        )
+    else:
+        pages, page_records = render_report(
+            args.output,
+            arrays,
+            particles,
+            banks,
+            label=args.label,
+            provenance=provenance,
+            beam_energy=args.beam_energy,
+        )
     summary = summary_for(arrays, particles, banks, page_records)
     summary.update(
         {
@@ -192,6 +207,7 @@ def main() -> int:
             "where": args.where,
             "peak_window": peak_window,
             "max_rows": args.max_rows,
+            "report_mode": "angular-only" if args.angular_only else "full",
             "beam_energy_GeV": args.beam_energy,
             "available_scalar_branches": available,
             "requested_particle_prefixes": prefixes,

@@ -58,6 +58,11 @@ cannot be combined because a filtered RDataFrame no longer has the row
 alignment of the external mask. `--max-rows` provides a deterministic cap for
 large exploratory samples.
 
+Use `--angular-only` to write one landscape-sized `theta` versus `phi` page
+for each requested particle. It can be combined with the fitted peak selection
+below, giving a compact elastic-coverage PDF with one large electron page and
+one large proton page.
+
 For a reconstructed peak whose center may move because of detector alignment
 or calibration, use a fitted peak window. The broad `--peak-search` interval
 locates the signal but does not fix its center. The utility fits a signal plus
