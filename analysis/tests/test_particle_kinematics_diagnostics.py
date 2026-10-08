@@ -19,6 +19,7 @@ from particle_kinematics_diagnostics import (
     required_branches,
     summary_for,
 )
+from plot_particle_kinematics import fit_peak_window
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -67,6 +68,27 @@ class DerivedKinematicsTests(unittest.TestCase):
         expected_w2 = 0.9382720813**2 + 2.0 * 0.9382720813 * 1.5 - 1.0
         self.assertAlmostEqual(float(result["W"][0]), expected_w2**0.5)
         self.assertAlmostEqual(float(result["y"][0]), 0.25)
+
+    def test_fitted_peak_window_tracks_shifted_signal(self) -> None:
+        rng = np.random.default_rng(23)
+        signal = rng.normal(0.976, 0.024, 12000)
+        background = rng.uniform(0.72, 1.20, 5000)
+        values = np.concatenate((signal, background))
+        selection, result = fit_peak_window(
+            values,
+            branch="W",
+            search=(0.72, 1.20),
+            expected_center=0.9382720813,
+            n_sigma=3.0,
+            maximum_center_deviation=0.15,
+            maximum_sigma=0.12,
+            minimum_events=200,
+        )
+        self.assertAlmostEqual(result["center"], 0.976, delta=0.01)
+        self.assertAlmostEqual(result["sigma"], 0.024, delta=0.01)
+        self.assertGreater(int(np.count_nonzero(selection)), 10000)
+        self.assertLess(result["lower"], result["center"])
+        self.assertGreater(result["upper"], result["center"])
 
 
 class RenderingTests(unittest.TestCase):

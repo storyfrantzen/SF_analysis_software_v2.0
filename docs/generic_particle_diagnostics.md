@@ -58,6 +58,28 @@ cannot be combined because a filtered RDataFrame no longer has the row
 alignment of the external mask. `--max-rows` provides a deterministic cap for
 large exploratory samples.
 
+For a reconstructed peak whose center may move because of detector alignment
+or calibration, use a fitted peak window. The broad `--peak-search` interval
+locates the signal but does not fix its center. The utility fits a signal plus
+background model, lets the signal center and width float, and retains the
+requested Gaussian-equivalent containment. Fit diagnostics and the numerical
+window are saved in the JSON sidecar and printed in the log:
+
+```bash
+python3 analysis/plot_particle_kinematics.py elastic_ep.root \
+  --particle electron --particle proton \
+  --peak-window W --peak-search 0.72 1.20 \
+  --peak-expected 0.9382720813 \
+  --peak-maximum-center-deviation 0.15 \
+  --peak-maximum-sigma 0.12 --peak-n-sigma 3 \
+  --label "Peak-selected elastic ep candidates" \
+  --output elastic_ep_coverage.pdf
+```
+
+`--peak-expected` seeds and validates the floating peak; it is not the center
+of the retained interval. The report should not be used when the fit fails its
+center, width, signal-fraction, or significance checks.
+
 The sidecar `<output-stem>_summary.json` records the input, tree, row counts,
 particle prefixes, requested branches and groups, rendered pages, missing
 groups, angle conventions, and optional input hash.
