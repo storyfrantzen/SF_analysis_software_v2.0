@@ -1,7 +1,9 @@
 #!/bin/bash
 # Build AAO-radiative generated/reconstructed diagnostics with the maintained
-# SF analysis candidate selection.  Supply AREPO, AAOHIPODIR, and AAOOUT with
-# sbatch --export; no repository files are modified by the job.
+# SF analysis candidate selection. Supply AREPO, AAOHIPODIR, and AAOOUT with
+# sbatch --export. AAO_TORUS selects -1/torus-1 (default) or +1/torus+1;
+# AAO_LABEL can override the generated plot label. The job does not modify the
+# repository.
 
 #SBATCH --account=clas12
 #SBATCH --partition=production
@@ -16,17 +18,35 @@ set -euo pipefail
 : "${AAOHIPODIR:?export the AAO radiative HIPO directory}"
 : "${AAOOUT:?export a dedicated output directory}"
 AAO_MAX_FILES=${AAO_MAX_FILES:-200}
+AAO_TORUS=${AAO_TORUS:--1}
+
+case "$AAO_TORUS" in
+    -1|torus-1)
+        torus_tag="torus-1"
+        polarity_label="inbending"
+        ;;
+    +1|1|torus+1)
+        torus_tag="torus+1"
+        polarity_label="outbending"
+        ;;
+    *)
+        echo "FATAL: AAO_TORUS must be -1, +1, torus-1, or torus+1" >&2
+        exit 2
+        ;;
+esac
+
+AAO_LABEL=${AAO_LABEL:-"AAO radiative, RGA Fall 2018 ${polarity_label}, candidate-level detected"}
 
 source /etc/profile.d/modules.sh
 module use /cvmfs/oasis.opensciencegrid.org/jlab/scicomp/sw/el9/modulefiles
 module use /scigroup/cvmfs/hallb/clas12/sw/modulefiles
 module load clas12/5.4
 
-processing_config="$AREPO/configs/processing/rga/10.604/eppi0_genrec_diagnostic_torus-1.json"
-post_config="$AREPO/configs/diagnostics/rga/10.604/eppi0_genrec_candidate_torus-1.json"
+processing_config="$AREPO/configs/processing/rga/10.604/eppi0_genrec_diagnostic_${torus_tag}.json"
+post_config="$AREPO/configs/diagnostics/rga/10.604/eppi0_genrec_candidate_${torus_tag}.json"
 analysis_config="$AREPO/configs/analysis/rga/10.604.json"
-converter_root="$AAOOUT/10.604_rga_fa18_torus-1_eppi0_genrec_diagnostic.root"
-selected_root="$AAOOUT/10.604_rga_fa18_torus-1_eppi0_genrec_candidates.root"
+converter_root="$AAOOUT/10.604_rga_fa18_${torus_tag}_eppi0_genrec_diagnostic.root"
+selected_root="$AAOOUT/10.604_rga_fa18_${torus_tag}_eppi0_genrec_candidates.root"
 event_sample="$AAOOUT/aao_rad_event_sample.npz"
 plot_dir="$AAOOUT/plots"
 event_pdf="$plot_dir/reconstructed_event_kinematics.pdf"
@@ -63,7 +83,7 @@ do
     fi
 done
 
-find "$AAOHIPODIR" -type f -name '*.hipo' -print | sort > "$all_hipo_files"
+find -L "$AAOHIPODIR" -type f -name '*.hipo' -print | sort > "$all_hipo_files"
 sed -n "1,${AAO_MAX_FILES}p" "$all_hipo_files" > "$hipo_manifest"
 selected_files=$(wc -l < "$hipo_manifest")
 if [ "$selected_files" -ne "$AAO_MAX_FILES" ]; then
@@ -98,7 +118,7 @@ python3 "$AREPO/analysis/plot_event_kinematics.py" \
     --output "$event_pdf" \
     --gemc-event-sample "$event_sample" \
     --gemc-output-dir "$plot_dir" \
-    --label "AAO radiative, RGA Fall 2018 inbending, candidate-level detected" \
+    --label "$AAO_LABEL" \
     > "$AAOOUT/plot_gen_rec.log" 2>&1
 
 for output in \
