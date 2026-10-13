@@ -1484,6 +1484,23 @@ The matched-particle efficiency used by this projection is deliberately
 simpler than the maintained candidate and exclusivity selection. Treat its
 event-count estimate as a planning diagnostic rather than response closure.
 
+## Photon-efficiency map sensitivity
+
+`klimenko_photon_map_sensitivity.py` applies the bin values transcribed from
+the published Klimenko FD-photon efficiency figure to an existing event-sample
+NPZ. It reports the covered fraction and the resulting event-weight scale by
+photon topology:
+
+```bash
+python3 analysis/klimenko_photon_map_sensitivity.py \
+  event_sample.npz results/klimenko_sensitivity \
+  --label "RGA photon-map sensitivity"
+```
+
+This utility uses piecewise-constant values digitized from a figure. It is a
+bounded sensitivity check, not the production photon-efficiency correction,
+which must use the delivered map and its validity metadata.
+
 ## Bin-centering correction
 
 `bin-centering` computes `C_BC = <d4sigma>_physical_selected_bin /
