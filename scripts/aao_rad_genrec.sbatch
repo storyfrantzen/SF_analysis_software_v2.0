@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build AAO-radiative generated/reconstructed diagnostics with the maintained
 # SF analysis candidate selection. Supply AREPO, AAOHIPODIR, and AAOOUT with
-# sbatch --export. AAO_TORUS selects -1/torus-1 (default) or +1/torus+1;
+# sbatch --export. AAO_TORUS selects +1/torus+1 (default) or -1/torus-1;
 # AAO_LABEL can override the generated plot label. The job does not modify the
 # repository.
 
@@ -18,7 +18,7 @@ set -euo pipefail
 : "${AAOHIPODIR:?export the AAO radiative HIPO directory}"
 : "${AAOOUT:?export a dedicated output directory}"
 AAO_MAX_FILES=${AAO_MAX_FILES:-200}
-AAO_TORUS=${AAO_TORUS:--1}
+AAO_TORUS=${AAO_TORUS:-+1}
 
 case "$AAO_TORUS" in
     -1|torus-1)
