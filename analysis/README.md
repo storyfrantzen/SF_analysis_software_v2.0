@@ -1338,6 +1338,152 @@ pages. With `--quilt`, one stitched `Q2`-by-`xB` `C_rad`-vs-phi page per `-t`
 bin is inserted before the detailed pages. Use `--quilt-scale-mode global` for
 a common y scale across every panel on a page.
 
+To test whether a localized AAO phi structure is produced by finite-cell
+averaging or migration in the final LUND coordinates, stream the existing
+Born and radiative manifests once through progressively narrower cells:
+
+```bash
+python3 analysis/aao_nested_cell_radiative_correction.py \
+  --born-manifest manifests/aao_born_2000.list \
+  --radiative-manifest manifests/aao_rad_2000.list \
+  --normalization-artifact results/C_rad_AAO.npz \
+  --config configs/diagnostics/rga/10.604/aao_vcut_bump_cell_1x1x1x12.json \
+  --output results/aao_nested_cells
+```
+
+The defaults contract around `(Q2,xB,-t)=(1.5,0.30,0.30)` from the original
+`[1,2] x [0.25,0.38] x [0.2,0.4]` cell. Repeat `--cell
+LABEL:Q2LO:Q2HI:XBLO:XBHIGH:TLO:THIGH` to supply another nested sequence. The
+artifact retains Born, soft-radiative, and hard-radiative counts and
+cluster-`sumw2`; reports the central-to-edge correction for every cell; and
+plots both `C_rad(phi)` and the unit-normalized radiative/Born shape ratio.
+This final-coordinate study is deliberately separate from a subsequent test
+using the generator's internal hard-scattering coordinates.
+
+That final test uses AAO's deterministic fixed-trial survey output, which
+retains the hard-parent and completed final-state coordinates on the same
+weighted proposal.  Run one or more survey replicas, then compare the paired
+coordinates with:
+
+```bash
+python3 analysis/aao_internal_final_migration_test.py \
+  --survey survey_replica000 \
+  --survey survey_replica001 \
+  --config configs/diagnostics/rga/10.604/aao_vcut_bump_cell_1x1x1x12.json \
+  --output results/aao_internal_final_migration
+```
+
+The report conditions on the same broad, medium, and narrow *final* cells and
+shows the cross-section-weighted hard-parent-to-final phi migration.  For the
+events ending at final `150 < phi < 210 deg`, it reports the fractions whose
+hard parent was central, occupied the same `(Q2,xB,-t)` cell, and occupied the
+same phi bin.  Results are split into native AAO soft (`intreg=6`) and resolved
+(`intreg=1..5`) branches.  Survey weights, rather than raw proposal counts,
+must be used for every interpretation.
+
+For an AAO mode-3 calibration, test whether its internal hadronic azimuth and
+the Trento azimuth reconstructed from the final generated four-vectors use the
+same convention with:
+
+```bash
+python3 analysis/aao_calibration_phi_convention.py \
+  --calibration mm020=/path/to/mm020/cal75/envelope_calibration.json \
+  --calibration mm100=/path/to/mm100/cal75/envelope_calibration.json \
+  --born-reference /path/to/aao_final_lund_vscan.npz \
+  --output results/aao_phi_convention
+```
+
+The Born reference can be either the soft/hard decomposition NPZ or the final
+LUND v-cut-scan NPZ for the same cell. The utility uses
+`integrand_corrected` as the calibration weight and the full proposal count
+for normalization. It compares the nominal final-state
+`phi_observed_deg` correction with the internal `phi_cm_deg` correction and an
+explicit `(phi_observed_deg + 180 deg) mod 360 deg` diagnostic. It also writes
+the weighted internal-to-observed migration matrix and wrapped angular
+difference. The two remapped curves are diagnostics, not replacement
+corrections unless the downstream analysis convention is independently shown
+to match that mapping.
+
+The hard-photon AAO branch can be tested without editing the checked-out
+generator or producing LUND events. The following controlled A/B diagnostic
+copies and builds a separate executable in `VARIANT`, activates the
+`sigu + epsilon*sigl` interference denominator used by the soft branch, and
+runs one existing mode-3 calibration replica with exactly the same immutable
+input and seed:
+
+```bash
+python3 analysis/aao_hard_interference_ab_test.py build \
+  --source external/aao_gen/aao_rad --output "$VARIANT"
+python3 analysis/aao_hard_interference_ab_test.py run \
+  --baseline-report "$BASELINE/envelope_calibration.json" \
+  --variant-executable "$VARIANT/build/aao_rad" \
+  --born-reference "$BORN_REFERENCE" --replicas 1 --output "$AB_OUTPUT"
+```
+
+The comparison is diagnostic only. It records source and executable hashes,
+retains each variant calibration CSV and normalization sidecar, checks paired
+trial/coordinate agreement, and produces baseline-versus-variant `C_rad` and
+radiative-cross-section-ratio plots. Do not use the variant for production
+without generator-author review.
+
+The same utility supports narrowly scoped follow-up variants through
+`build --variant-kind`: `control` rebuilds an unchanged copy of the current
+source and must reproduce the retained baseline before the patched variants
+are interpreted; `external-off` keeps the nominal incoming/outgoing
+external-loss random draws and rejection loops but removes their electron
+energy shifts; `denominator-external-off` combines that test with the soft-like
+hard denominator; `interference-off` removes the hard-branch phi modulation;
+and `denominator-phi-plus-180` reverses the hard cos(phi) and sin(phi) terms
+after applying the denominator change. The `run` command also accepts
+`--minimum-photon-energy` for a soft/hard-separator stability test and
+`--electron-helicity-flag` for a lower-priority helicity control. These are
+diagnostic counterfactuals, not production generator settings.
+
+Two companion utilities inspect retained AAO LUND production without changing
+its normalization. Split a mode-3 radiative correction into native soft and
+resolved-photon contributions with:
+
+```bash
+python3 analysis/aao_soft_hard_radiative_correction.py \
+  --born-manifest born.list --radiative-manifest radiative.list \
+  --normalization-artifact C_rad_AAO.npz \
+  --config configs/analysis/rga/10.604.json \
+  --output results/aao_soft_hard
+```
+
+The soft and hard terms share the original proposal normalization, so their
+binwise corrections add to the total correction. To test sensitivity to a
+final-state inelasticity cut without renormalizing the retained tail, use:
+
+```bash
+python3 analysis/aao_vcut_cell_scan.py \
+  --born-manifest born.list --radiative-manifest radiative.list \
+  --normalization-artifact C_rad_AAO.npz \
+  --config configs/analysis/rga/10.604.json \
+  --output results/aao_vcut_scan
+```
+
+For a fast unweighted inspection of either Born or radiative LUND kinematics,
+use `scripts/aao_lund_kinematics.py INPUT OUTPUT.png --ebeam ENERGY`. This plot
+is a generator diagnostic and does not replace weighted correction artifacts.
+
+## GEMC statistics planning
+
+`project_gemc_mc_statistics.py` projects the generated-event count needed for
+target precision and phi coverage from compact matched-particle float32
+ntuples. It is intended for production planning before a large GEMC request:
+
+```bash
+python3 analysis/project_gemc_mc_statistics.py \
+  --sample born /path/to/born.f32 none \
+  --binning provisional configs/analysis/rgk/6.395.json \
+  --output-dir results/gemc_statistics_projection
+```
+
+The matched-particle efficiency used by this projection is deliberately
+simpler than the maintained candidate and exclusivity selection. Treat its
+event-count estimate as a planning diagnostic rather than response closure.
+
 ## Bin-centering correction
 
 `bin-centering` computes `C_BC = <d4sigma>_physical_selected_bin /
