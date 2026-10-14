@@ -230,16 +230,14 @@ remaining top-level artifact directories as follows:
 | `build_rga_ft_2188af0/` | 8.1 MiB / 284 files | All ignored | Removed with explicit user authorization after log-archive verification. |
 | `cmake-build-qadb360/` | 13 MiB / 319 files | All ignored | Removed with explicit user authorization after log-archive verification. |
 | `calibration_plots/` | 8.7 MiB / 40 files | All tracked | Retain as source-controlled calibration/reference output. |
-| `generator_validation/` | 820 KiB / 22 files | 5 tracked, 17 ignored | Retain intact for now. It mixes a committed validation record with ignored run logs and therefore is not a whole-directory cleanup target. |
+| `generator_validation/` | 144 KiB / 6 files after review | All tracked | Retain the committed AAO sampling-validation bundle and its new README. Historical logs and bulk products are preserved in external archives. |
 | `logs/` | 50 MiB reported by `du` / 97 files | All ignored | Moved to a dated external archive and verified before the build trees were removed. The file manifest records 270,252,175 logical bytes. |
 | `manifests/` | Empty | No tracked, untracked, or ignored files | Removed. Its former contents remain listed in the checksum-verified repository recovery archive. |
 
-The three build trees are disposable caches and do not require archival. The
-tracked calibration plots and the mixed generator-validation tree must not be
-removed as part of a broad ignored-file cleanup. The 16 visible `*.log` files
-inside `generator_validation/` can be reviewed as a separate, explicitly
-enumerated batch later; their small size does not justify mixing that work into
-the whole-directory cleanup.
+The three build trees were disposable caches and did not require archival. The
+tracked calibration plots remain source-controlled. The mixed
+`generator_validation/` tree was excluded from broad cleanup and handled later
+as the separately enumerated batch documented below.
 
 ## Completed second cleanup batch
 
@@ -260,6 +258,40 @@ After verification, the three reproducible ignored build trees and the empty
 `manifests/` directory were removed. `calibration_plots/` and
 `generator_validation/` were deliberately left untouched. Git status retained
 only the expected configuration and cleanup-document changes.
+
+## Completed generator-validation cleanup batch
+
+The final focused review found five tracked files in the dated AAO
+sampling-model validation bundle, sixteen ignored `*.log` files, one ignored
+Python bytecode file, and empty historical output directories. The tracked
+bundle remains intact and `generator_validation/README.md` now explains its
+scope and provenance.
+
+The sixteen logs were copied with their original relative paths to:
+
+```text
+/work/clas12/storyf/repo_archives/SF_analysis_software_v2.0_generator_validation_logs_20261014/
+```
+
+The campaign-manifest utility records all sixteen logs plus the contemporaneous
+Farm module-list snapshot. Every entry has a curated description, role, tags,
+notes, size, timestamp, and SHA-256 checksum. The same catalog preserves the
+scoped Farm environment and the explicit `repo`, `archive`, and
+`source_subtree` paths in a sourceable `tcsh` restoration script. Two logs are
+documented as empty placeholders, one as a failed diagnostic attempt, and the
+remaining logs as successful radiative-correction, diagnostic, smoke-test, or
+normalization-audit records.
+
+The corresponding larger NPZ, CSV, PDF, normalization, guard, and helper
+artifacts were already included under `parent/generator_validation/` in the
+checksum-verified remaining-artifacts archive. Its `source_inventory.tsv`
+provides a path-level index without requiring extraction.
+
+Only after the new catalog passed strict description and checksum validation
+were the sixteen source logs removed. The reproducible
+`run_rga_crad_pipeline.cpython-313.pyc` cache was deleted without archival, and
+the resulting empty historical directories were removed. No tracked physics
+record or AAO submodule content changed.
 
 ## Validation results
 

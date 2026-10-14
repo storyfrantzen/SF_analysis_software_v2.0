@@ -85,7 +85,7 @@ production pipelines.
 | `visualizer/` | Interactive ROOT-tree cut-study application |
 | `external/aao_gen/` | Pinned AAO submodule retained for reproducibility, not new generator development |
 | `calibration_plots/` | Source-controlled calibration/reference plots retained by the cleanup review |
-| `generator_validation/` | Mixed historical validation record under separate cleanup review; not a destination for new bulk output |
+| `generator_validation/` | Small committed AAO sampling-validation reference; historical logs and bulk products are archived externally, and new output does not belong here |
 | `docs/` | Maintained workflow, schema, design, and audit documentation |
 | `build/` | Ignored reproducible CMake build tree |
 
