@@ -1,0 +1,62 @@
+{
+    "torus": 1,
+    "saveFailedCandidates": false,
+
+    "fiducialCuts": [],
+
+    "channel": {
+        "name": "eppi0",
+        "particles": [
+            {
+                "role": "electron",
+                "pid": 11,
+                "count": 1,
+                "detectors": [1],
+                "cuts": [
+                    { "name": "electron.trigger", "op": "firstPidInstance" },
+                    { "name": "electron.min_p", "op": "minP", "min": 1.0 }
+                ]
+            },
+            {
+                "role": "proton",
+                "pid": 2212,
+                "count": 1,
+                "detectors": [1, 2],
+                "cuts": [
+                    { "name": "proton.min_p", "op": "minP", "min": 0.3 },
+                    { "name": "proton.vertex", "op": "vertexDiff", "refRole": "electron", "max": 20.0 }
+                ]
+            },
+            {
+                "role": "gamma",
+                "pid": 22,
+                "count": 2,
+                "detectors": [0, 1],
+                "cuts": [
+                    { "name": "gamma.min_p", "op": "minP", "min": 0.4 },
+                    { "name": "gamma.beta", "op": "betaRange", "min": 0.9, "max": 1.1 }
+                ]
+            }
+        ],
+        "composites": [
+            {
+                "role": "pi0",
+                "type": "pairMass",
+                "daughters": ["gamma", "gamma"],
+                "mass": 0.1349768,
+                "window": 0.15
+            }
+        ]
+    },
+
+    "candidateSelection": {
+        "method": "pi0MassThenMissingPt"
+    },
+
+    "exclusivity": {
+        "maxAbsMissingEnergy": 2.0,
+        "minElectronPhotonAngleDeg": 4.0,
+        "minPhotonPhotonAngleDeg": 1.0,
+        "maxPi0ConeAngleDeg": 4.0
+    }
+}

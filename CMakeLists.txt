@@ -160,7 +160,11 @@ if(BUILD_TESTING)
     ${POST_PROCESSING_SOURCES}
     $<TARGET_OBJECTS:ROOTBranchesDictObjects>
   )
-  target_compile_definitions(test_post_cuts PRIVATE POST_PROCESSING_ONLY)
+  target_compile_definitions(
+    test_post_cuts PRIVATE
+    POST_PROCESSING_ONLY
+    SF_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+  )
   target_link_libraries(
     test_post_cuts
     ${ROOT_LIBRARIES}

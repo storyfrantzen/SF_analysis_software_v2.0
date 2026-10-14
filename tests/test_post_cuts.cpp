@@ -1,12 +1,53 @@
 #include <cmath>
+#include <exception>
 #include <iostream>
 #include <map>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "Cuts.h"
 
 namespace {
+bool validateSpring2024Config(const std::string& relativePath,
+                              double expectedEnergy,
+                              const std::string& expectedOutput) {
+    const std::string path = std::string(SF_SOURCE_DIR) + "/" + relativePath;
+    try {
+        const PostCutConfig cfg = PostCutConfig::fromFile(path);
+        if (std::abs(cfg.beamEnergy - expectedEnergy) > 1.0e-12) {
+            std::cerr << path << " resolved beam energy " << cfg.beamEnergy
+                      << " instead of " << expectedEnergy << "\n";
+            return false;
+        }
+        if (cfg.torus != 1) {
+            std::cerr << path << " did not inherit Spring 2024 torus +1\n";
+            return false;
+        }
+        if (cfg.outputFile != expectedOutput) {
+            std::cerr << path << " resolved output file '" << cfg.outputFile
+                      << "' instead of '" << expectedOutput << "'\n";
+            return false;
+        }
+        if (cfg.channel.name != "eppi0" ||
+            !cfg.channel.findRole("electron") ||
+            !cfg.channel.findRole("proton") ||
+            !cfg.channel.findRole("gamma") ||
+            !cfg.channel.findComposite("pi0")) {
+            std::cerr << path << " did not inherit the complete EPPI0 channel\n";
+            return false;
+        }
+        if (cfg.candidateSelection.method != "pi0MassThenMissingPt") {
+            std::cerr << path << " did not inherit the candidate-selection method\n";
+            return false;
+        }
+    } catch (const std::exception& error) {
+        std::cerr << "Failed to load " << path << ": " << error.what() << "\n";
+        return false;
+    }
+    return true;
+}
+
 bool evaluateVz(double vz, double min, double max, const std::string& mode = "require") {
     PostCutConfig cfg;
     ParticleRoleSpec electron;
@@ -103,6 +144,42 @@ bool evaluateElasticW(double momentum, double theta, double maxAbsW) {
 }
 
 int main() {
+    const std::vector<std::tuple<std::string, double, std::string>> spring2024Configs = {
+        {
+            "configs/post/rgk/6.395/eppi0_base_baseline_uncalibrated.json",
+            6.395,
+            "post_processed.root"
+        },
+        {
+            "configs/post/rgk/6.395/eppi0_data_baseline_uncalibrated.json",
+            6.395,
+            "6.395_rgk_sp24_eppi0_data_baseline_uncalibrated_selected.root"
+        },
+        {
+            "configs/post/rgk/6.395/eppi0_GEMC_born_0nA_baseline_uncalibrated.json",
+            6.395,
+            "6.395_rgk_sp24_eppi0_GEMC_born_0nA_baseline_uncalibrated_selected.root"
+        },
+        {
+            "configs/post/rgk/8.477/eppi0_base_baseline_uncalibrated.json",
+            8.477,
+            "post_processed.root"
+        },
+        {
+            "configs/post/rgk/8.477/eppi0_data_baseline_uncalibrated.json",
+            8.477,
+            "8.477_rgk_sp24_eppi0_data_baseline_uncalibrated_selected.root"
+        },
+        {
+            "configs/post/rgk/8.477/eppi0_GEMC_born_0nA_baseline_uncalibrated.json",
+            8.477,
+            "8.477_rgk_sp24_eppi0_GEMC_born_0nA_baseline_uncalibrated_selected.root"
+        }
+    };
+    for (const auto& [path, energy, output] : spring2024Configs) {
+        if (!validateSpring2024Config(path, energy, output)) return 1;
+    }
+
     if (!evaluateVz(-18.0, -18.0, 10.0)) {
         std::cerr << "vzRange must include its lower boundary\n";
         return 1;

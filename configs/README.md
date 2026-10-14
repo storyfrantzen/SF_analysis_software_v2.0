@@ -13,6 +13,11 @@ Calibration-only workflows live one level deeper in a `calibration/`
 subdirectory. No uncategorized executable configs are kept at the roots of
 `processing/`, `post/`, or `analysis/`.
 
+Shared, non-executable post-processing parents that deliberately span beam
+energies live under a named period directory. The Spring 2024 baseline parent
+is `post/rgk/spring2024/eppi0_base_baseline_uncalibrated.json`; the executable
+6.395 and 8.477 GeV bases extend it and supply their own `beamEnergy`.
+
 Processing configurations control HIPO input reduction, QADB, reconstructed
 skims, MC matching, generated-event storage, row-level PID storage filters, and
 kinematic corrections. Post configurations define candidate construction and
@@ -747,7 +752,10 @@ raw reconstructed kinematics and do not borrow the Fall 2018 6.535 GeV proton
 energy-loss correction. The post-processing bases omit detector fiducials,
 sampling-fraction requirements, CVT phi vetoes, and the FD electron-sector
 photon veto. They retain only basic particle, topology, mass, and loose
-exclusivity requirements suitable for baseline sample characterization.
+exclusivity requirements suitable for baseline sample characterization. Both
+energy-specific post-processing bases inherit those shared requirements from
+`post/rgk/spring2024/eppi0_base_baseline_uncalibrated.json` and override only
+`beamEnergy`, preventing the provisional selections from drifting apart.
 
 Use an explicit manifest to make the exact full input set reproducible:
 
