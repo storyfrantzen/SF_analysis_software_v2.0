@@ -7,10 +7,11 @@ cross-section, and harmonic-analysis pipeline.
 ## Start here
 
 For a new campaign or when returning to the repository after a break, use
-[the standard campaign template](docs/campaign_template.md). It identifies the
-maintained entry points, the `01_provenance` through `10_logs` work-directory
-layout, validation gates, artifact lineage, and the minimum completion
-checklist. Detailed tool and artifact documentation remains in
+[the repository map](docs/repository_map.md) to choose the maintained entry
+point, then follow [the standard campaign template](docs/campaign_template.md)
+for the `01_provenance` through `10_logs` work-directory layout, validation
+gates, artifact lineage, and minimum completion checklist. Detailed tool and
+artifact documentation remains in
 [`analysis/README.md`](analysis/README.md). The
 [campaign artifact manifest](docs/campaign_artifact_manifest.md) preserves
 campaign filenames, descriptions, checksums, and restorable shell paths and
@@ -28,7 +29,7 @@ cmake --build build -j
 
 See `docs/jlab-module-setup.csh` for the JLab environment setup.
 
-## Current executable
+## Core compiled commands
 
 ```bash
 hipo2root <config.json> <hipo_file_or_directory>... [max_files] [progress_events]

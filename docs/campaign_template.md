@@ -12,8 +12,8 @@ exports belong in a campaign work directory outside the clone.
 
 When returning after a break, start with these files:
 
-1. this document for the campaign sequence and artifact layout;
-2. `README.md` for the executable and repository overview;
+1. `docs/repository_map.md` to choose the maintained entry point;
+2. this document for the campaign sequence and artifact layout;
 3. `configs/README.md` for configuration inheritance and calibration inputs;
 4. `analysis/README.md` for detailed command options and artifact schemas;
 5. `docs/analysis_pipeline.md` for the detector-correction and selection
