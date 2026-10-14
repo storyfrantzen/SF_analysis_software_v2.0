@@ -1,0 +1,29 @@
+{
+    "outputFile": "10.604_rga_fa18_torus+1_gemc_sidis_electrons.root",
+
+    "beamEnergy": 10.604,
+    "torus": 1,
+    "maxEvents": 100000000,
+
+    "qadb": {
+        "enabled": false
+    },
+
+    "inputValidation": {
+        "enabled": true,
+        "skipMalformed": true
+    },
+
+    "finalState": [
+        { "pid": 11, "count": 1, "mode": "atleast" }
+    ],
+    "outputPids": [11],
+    "inclusive": true,
+
+    "enableSkim": true,
+    "Q2_min": 1.0,
+    "W_min": 2.0,
+    "electron_p_min": 1.5,
+
+    "fillMC": false
+}

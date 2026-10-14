@@ -1,4 +1,4 @@
-"""Charge-normalized RGK data-yield study as a function of beam current."""
+"""Charge-normalized data-yield study as a function of beam current."""
 
 from __future__ import annotations
 
@@ -6,9 +6,25 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 import numpy as np
+
+from .background_subtraction import METHOD as BACKGROUND_METHOD
+from .background_subtraction import estimate_mgg_background
+from .exclusivity import load_cuts, topology_ids_from_groups
+from .topology import detector_topology_id
+
+
+SUPPORTED_TOPOLOGY_GROUP_IDS = (4, 5, 6, 8, 9, 10)
+TOPOLOGY_GROUP_LABELS = {
+    4: "pFD_fdfd",
+    5: "pFD_fdft",
+    6: "pFD_ftft",
+    8: "pCD_fdfd",
+    9: "pCD_fdft",
+    10: "pCD_ftft",
+}
 
 
 @dataclass
@@ -19,7 +35,11 @@ class RunYield:
     current_quality: str | None
     nominal_current_nA: float | None
     candidate_events: int
-    signal_events: int
+    signal_events: float
+    signal_statistical_variance: float
+    signal_region_events: int
+    sideband_events: int
+    estimated_background_events: float
     charge_c: float
     charge_nC: float
     total_events: int | None
@@ -27,6 +47,8 @@ class RunYield:
     failed_qadb_events: int | None
     yield_events_per_nC: float | None
     statistical_uncertainty_events_per_nC: float | None
+    group_charge_fraction: float | None
+    group_yield_pull: float | None
     included: bool
     exclusion_reason: str
 
@@ -37,7 +59,11 @@ class CurrentGroupYield:
     runs: int
     run_numbers: list[int]
     effective_current_nA: float
-    signal_events: int
+    signal_events: float
+    signal_statistical_variance: float
+    signal_region_events: int
+    sideband_events: int
+    estimated_background_events: float
     charge_c: float
     charge_nC: float
     yield_events_per_nC: float
@@ -57,6 +83,7 @@ class LinearYieldFit:
     ndf: int
     points: int
     fit_level: str
+    fit_model: str = "single_intercept_absolute_slope"
 
     def predict(self, current_nA: np.ndarray | float) -> np.ndarray:
         current = np.asarray(current_nA, dtype=float)
@@ -76,6 +103,74 @@ class LinearYieldFit:
         variance = float(gradient @ covariance @ gradient)
         uncertainty = float(np.sqrt(max(variance, 0.0)))
         return float(efficiency), uncertainty
+
+
+@dataclass
+class SharedFractionalYieldFit:
+    """One zero-current normalization per period and one fractional current slope."""
+
+    period_intercepts_events_per_nC: dict[str, float]
+    period_intercept_uncertainties_events_per_nC: dict[str, float]
+    fractional_slope_per_nA: float
+    fractional_slope_uncertainty_per_nA: float
+    parameter_names: list[str]
+    covariance: list[list[float]]
+    period_classes: dict[str, list[str]]
+    class_periods: dict[str, str]
+    chi2: float
+    ndf: int
+    points: int
+    fit_level: str
+    fit_model: str = "shared_fractional_slope_separate_intercepts"
+
+    def period_for_class(self, run_class: str) -> str:
+        try:
+            return self.class_periods[run_class]
+        except KeyError as exc:
+            raise ValueError(
+                f"run class '{run_class}' is not assigned to a shared-slope period"
+            ) from exc
+
+    def intercept_for_class(self, run_class: str) -> float:
+        return self.period_intercepts_events_per_nC[
+            self.period_for_class(run_class)
+        ]
+
+    def predict(self, current_nA: np.ndarray | float, *, period: str) -> np.ndarray:
+        current = np.asarray(current_nA, dtype=float)
+        try:
+            intercept = self.period_intercepts_events_per_nC[period]
+        except KeyError as exc:
+            raise ValueError(f"unknown shared-slope period '{period}'") from exc
+        return intercept * (1.0 + self.fractional_slope_per_nA * current)
+
+    def prediction_uncertainty(
+        self, current_nA: np.ndarray | float, *, period: str
+    ) -> np.ndarray:
+        current = np.atleast_1d(np.asarray(current_nA, dtype=float))
+        try:
+            period_index = self.parameter_names.index(f"intercept:{period}")
+            intercept = self.period_intercepts_events_per_nC[period]
+        except (KeyError, ValueError) as exc:
+            raise ValueError(f"unknown shared-slope period '{period}'") from exc
+        beta_index = self.parameter_names.index("fractional_slope_per_nA")
+        gradient = np.zeros((current.size, len(self.parameter_names)), dtype=float)
+        gradient[:, period_index] = 1.0 + self.fractional_slope_per_nA * current
+        gradient[:, beta_index] = intercept * current
+        covariance = np.asarray(self.covariance, dtype=float)
+        variance = np.einsum("ij,jk,ik->i", gradient, covariance, gradient)
+        result = np.sqrt(np.maximum(variance, 0.0))
+        return result if np.ndim(current_nA) else result[0]
+
+    def relative_efficiency(
+        self, current_nA: np.ndarray | float
+    ) -> tuple[np.ndarray | float, np.ndarray | float]:
+        current = np.asarray(current_nA, dtype=float)
+        efficiency = 1.0 + self.fractional_slope_per_nA * current
+        uncertainty = np.abs(current) * self.fractional_slope_uncertainty_per_nA
+        if np.ndim(current_nA):
+            return efficiency, uncertainty
+        return float(efficiency), float(uncertainty)
 
 
 def load_current_manifest(path: Path) -> tuple[dict, dict[int, dict]]:
@@ -143,6 +238,19 @@ def _optional_run_map(sample, key: str, charge_runs: np.ndarray) -> dict[int, in
     return {run: int(value) for run, value in mapped.items()}
 
 
+def _sum_by_run(runs: np.ndarray, values: np.ndarray) -> dict[int, float]:
+    runs = np.asarray(runs, dtype=np.int64)
+    values = np.asarray(values, dtype=float)
+    if runs.ndim != 1 or values.shape != runs.shape:
+        raise ValueError("per-run accumulation arrays must be one-dimensional and aligned")
+    unique_runs, inverse = np.unique(runs, return_inverse=True)
+    totals = np.bincount(inverse, weights=values, minlength=unique_runs.size)
+    return {
+        int(run): float(total)
+        for run, total in zip(unique_runs, totals, strict=True)
+    }
+
+
 def build_run_yields(
     sample_path: Path,
     manifest_path: Path,
@@ -153,15 +261,38 @@ def build_run_yields(
     include_qualities: Iterable[str] = ("unflagged",),
     include_runs: Iterable[int] = (),
     exclude_runs: Iterable[int] = (),
+    minimum_group_charge_fraction: float = 0.0,
+    low_yield_sigma_threshold: float = 5.0,
+    background_cuts_path: Path | None = None,
+    background_alpha_bootstrap: int = 200,
+    background_seed: int | None = 12345,
+    topology_group_ids: Iterable[int] = (),
 ) -> tuple[list[RunYield], dict]:
     include_class_set = set(include_classes)
     include_quality_set = set(include_qualities)
     include_run_set = {int(run) for run in include_runs}
     exclude_run_set = {int(run) for run in exclude_runs}
+    minimum_group_charge_fraction = float(minimum_group_charge_fraction)
+    if not 0.0 <= minimum_group_charge_fraction < 1.0:
+        raise ValueError("minimum_group_charge_fraction must be in [0,1)")
+    low_yield_sigma_threshold = float(low_yield_sigma_threshold)
+    if not np.isfinite(low_yield_sigma_threshold) or low_yield_sigma_threshold < 0.0:
+        raise ValueError("low_yield_sigma_threshold must be finite and nonnegative")
     if not include_class_set and not include_run_set:
         raise ValueError("at least one included run class or explicit run is required")
+    selected_topology_groups = tuple(
+        sorted({int(group_id) for group_id in topology_group_ids})
+    )
+    unsupported_topology_groups = sorted(
+        set(selected_topology_groups).difference(SUPPORTED_TOPOLOGY_GROUP_IDS)
+    )
+    if unsupported_topology_groups:
+        raise ValueError(
+            "unsupported topology-group IDs: "
+            + ", ".join(str(value) for value in unsupported_topology_groups)
+        )
 
-    _, manifest_runs = load_current_manifest(manifest_path)
+    manifest, manifest_runs = load_current_manifest(manifest_path)
     with np.load(sample_path, allow_pickle=False) as sample:
         required = {"run", "beam_charge_run", "beam_charge_by_run_c"}
         missing = sorted(required.difference(sample.files))
@@ -170,11 +301,135 @@ def build_run_yields(
         event_runs = np.asarray(sample["run"], dtype=np.int64)
         if event_runs.ndim != 1:
             raise ValueError("sample run array must be one-dimensional")
-        mask = (
+        topology_mask = np.ones(event_runs.size, dtype=bool)
+        if selected_topology_groups:
+            topology_required = {"rec_proton_detector", "rec_ft_photon_count"}
+            topology_missing = sorted(topology_required.difference(sample.files))
+            if topology_missing:
+                raise ValueError(
+                    "topology-group selection requires compact-data arrays: "
+                    + ", ".join(topology_missing)
+                )
+            event_topology_groups = detector_topology_id(
+                np.asarray(sample["rec_proton_detector"]),
+                np.asarray(sample["rec_ft_photon_count"]),
+            )
+            if event_topology_groups.shape != event_runs.shape:
+                raise ValueError("sample topology arrays must match the run array")
+            topology_mask = np.isin(
+                event_topology_groups, np.asarray(selected_topology_groups)
+            )
+        fixed_mask = (
             load_selection_mask(selection_mask_path, event_runs.size, selection_mask_key)
             if selection_mask_path is not None
             else np.ones(event_runs.size, dtype=bool)
         )
+        background_metadata = None
+        if background_cuts_path is not None:
+            cuts = load_cuts(str(background_cuts_path))
+            if selected_topology_groups:
+                cut_topology_groups = topology_ids_from_groups(
+                    cuts.group_ids, cuts.global_mode
+                )
+                missing_cut_groups = sorted(
+                    set(selected_topology_groups).difference(
+                        int(value) for value in cut_topology_groups
+                    )
+                )
+                if missing_cut_groups:
+                    raise ValueError(
+                        "requested topology groups are absent from the retained "
+                        "background-cut table: "
+                        + ", ".join(str(value) for value in missing_cut_groups)
+                    )
+            background_required = {
+                *cuts.variables,
+                "rec_proton_detector",
+                "rec_ft_photon_count",
+            }
+            background_missing = sorted(background_required.difference(sample.files))
+            if background_missing:
+                raise ValueError(
+                    "background-subtracted current study requires compact-data arrays: "
+                    + ", ".join(background_missing)
+                )
+            base_mask = (
+                np.asarray(sample["rec_selected"], dtype=bool)
+                if "rec_selected" in sample.files
+                else np.ones(event_runs.size, dtype=bool)
+            )
+            if base_mask.shape != event_runs.shape:
+                raise ValueError("sample rec_selected array must match the run array")
+            dummy_index = np.zeros(event_runs.size, dtype=np.int64)
+            background = estimate_mgg_background(
+                cuts=cuts,
+                values={name: np.asarray(sample[name]) for name in cuts.variables},
+                proton_detector=np.asarray(sample["rec_proton_detector"]),
+                ft_photons=np.asarray(sample["rec_ft_photon_count"]),
+                iq2=dummy_index,
+                ixb=dummy_index,
+                it=dummy_index,
+                rec_flat=dummy_index,
+                base_mask=base_mask,
+                event_weights=np.ones(event_runs.size, dtype=float),
+                number_of_bins=1,
+                alpha_bootstrap=background_alpha_bootstrap,
+                seed=background_seed,
+            )
+            if selection_mask_path is not None and not np.array_equal(
+                base_mask & fixed_mask, background.signal_region_mask
+            ):
+                disagreement = int(
+                    np.count_nonzero(
+                        (base_mask & fixed_mask) != background.signal_region_mask
+                    )
+                )
+                raise ValueError(
+                    "--selection-mask disagrees with the signal region derived from "
+                    f"--background-cuts for {disagreement} events"
+                )
+            signal_region_mask = background.signal_region_mask & topology_mask
+            sideband_mask = background.sideband_mask & topology_mask
+            signal_event_weights = np.where(
+                topology_mask, background.net_event_weights, 0.0
+            )
+            signal_variance_weights = signal_event_weights**2
+            yield_mode = "mgg_sideband_subtracted"
+            background_metadata = {
+                "method": BACKGROUND_METHOD,
+                "cuts": str(Path(background_cuts_path).resolve()),
+                "alpha_bootstrap": int(background_alpha_bootstrap),
+                "seed": background_seed,
+                "selected_group_ids": list(selected_topology_groups),
+                "selected_group_labels": [
+                    TOPOLOGY_GROUP_LABELS[value]
+                    for value in selected_topology_groups
+                ],
+                "group_ids": background.group_ids.tolist(),
+                "signal_lower": background.signal_lower.tolist(),
+                "signal_upper": background.signal_upper.tolist(),
+                "fit_lower": background.fit_lower.tolist(),
+                "fit_upper": background.fit_upper.tolist(),
+                "alpha": background.alpha.tolist(),
+                "alpha_uncertainty": background.alpha_uncertainty.tolist(),
+                "fit_model": background.fit_model.tolist(),
+                "fit_entries": background.fit_entries.tolist(),
+                "statistical_variance": (
+                    "Poisson signal-plus-alpha-squared-sideband counting variance; "
+                    "the common transfer-factor fit uncertainty is retained separately "
+                    "as a correlated systematic"
+                ),
+            }
+        else:
+            signal_region_mask = fixed_mask & topology_mask
+            sideband_mask = np.zeros(event_runs.size, dtype=bool)
+            signal_event_weights = signal_region_mask.astype(float)
+            signal_variance_weights = signal_region_mask.astype(float)
+            yield_mode = (
+                "fixed_selection_mask"
+                if selection_mask_path is not None
+                else "all_selected_candidates"
+            )
         charge_runs = np.asarray(sample["beam_charge_run"], dtype=np.int64)
         charges_c = np.asarray(sample["beam_charge_by_run_c"], dtype=float)
         charge_map = {
@@ -191,7 +446,10 @@ def build_run_yields(
         )
 
     candidate_counts = Counter(int(run) for run in event_runs)
-    signal_counts = Counter(int(run) for run in event_runs[mask])
+    signal_counts = _sum_by_run(event_runs, signal_event_weights)
+    signal_variances = _sum_by_run(event_runs, signal_variance_weights)
+    signal_region_counts = Counter(int(run) for run in event_runs[signal_region_mask])
+    sideband_counts = Counter(int(run) for run in event_runs[sideband_mask])
     missing_charge_runs = sorted(set(candidate_counts).difference(charge_map))
     if missing_charge_runs:
         raise ValueError(
@@ -230,10 +488,14 @@ def build_run_yields(
             reasons.append("nonpositive_charge")
         charge_nC = charge_c * 1.0e9
         candidates = int(candidate_counts.get(run, 0))
-        signals = int(signal_counts.get(run, 0))
+        signals = float(signal_counts.get(run, 0.0))
+        signal_variance = float(signal_variances.get(run, 0.0))
+        signal_region = int(signal_region_counts.get(run, 0))
+        sideband = int(sideband_counts.get(run, 0))
+        estimated_background = float(signal_region - signals)
         if charge_nC > 0.0:
             yield_value = signals / charge_nC
-            uncertainty = np.sqrt(max(signals, 1)) / charge_nC
+            uncertainty = np.sqrt(max(signal_variance, 1.0)) / charge_nC
         else:
             yield_value = None
             uncertainty = None
@@ -246,6 +508,10 @@ def build_run_yields(
                 nominal_current_nA=nominal_current,
                 candidate_events=candidates,
                 signal_events=signals,
+                signal_statistical_variance=signal_variance,
+                signal_region_events=signal_region,
+                sideband_events=sideband,
+                estimated_background_events=estimated_background,
                 charge_c=charge_c,
                 charge_nC=charge_nC,
                 total_events=total_events.get(run),
@@ -253,10 +519,19 @@ def build_run_yields(
                 failed_qadb_events=failed_events.get(run),
                 yield_events_per_nC=yield_value,
                 statistical_uncertainty_events_per_nC=uncertainty,
+                group_charge_fraction=None,
+                group_yield_pull=None,
                 included=not reasons,
                 exclusion_reason=";".join(reasons),
             )
         )
+
+    low_contribution_runs = apply_minimum_group_charge_fraction(
+        records, minimum_group_charge_fraction
+    )
+    low_yield_runs = apply_low_yield_outlier_rejection(
+        records, low_yield_sigma_threshold
+    )
 
     run_charge_sum_c = float(sum(charge_map.values()))
     charge_difference_c = (
@@ -266,15 +541,158 @@ def build_run_yields(
     )
     validation = {
         "candidate_events": int(event_runs.size),
-        "signal_events": int(mask.sum()),
+        "topology_candidate_events": int(np.count_nonzero(topology_mask)),
+        "topology_group_ids": list(selected_topology_groups),
+        "topology_group_labels": [
+            TOPOLOGY_GROUP_LABELS[value] for value in selected_topology_groups
+        ],
+        "yield_mode": yield_mode,
+        "signal_events": float(signal_event_weights.sum()),
+        "signal_statistical_variance": float(signal_variance_weights.sum()),
+        "signal_region_events": int(signal_region_mask.sum()),
+        "sideband_events": int(sideband_mask.sum()),
+        "estimated_background_events": float(
+            signal_region_mask.sum() - signal_event_weights.sum()
+        ),
+        "background_subtraction": background_metadata,
         "charge_rows": len(charge_map),
         "run_charge_sum_c": run_charge_sum_c,
         "stored_total_charge_c": stored_total_charge_c,
         "charge_difference_c": charge_difference_c,
         "selected_runs_missing_charge": missing_charge_runs,
         "charge_runs_missing_manifest": sorted(set(charge_map).difference(manifest_runs)),
+        "dataset": manifest.get("dataset", {}),
+        "minimum_group_charge_fraction": minimum_group_charge_fraction,
+        "runs_below_minimum_group_charge_fraction": low_contribution_runs,
+        "low_yield_sigma_threshold": low_yield_sigma_threshold,
+        "runs_below_group_yield_threshold": low_yield_runs,
     }
     return records, validation
+
+
+def apply_minimum_group_charge_fraction(
+    records: Iterable[RunYield], minimum_fraction: float
+) -> list[int]:
+    """Reject otherwise eligible runs carrying too little of their group's charge.
+
+    Fractions are calculated once from all runs that pass the ordinary class,
+    current-quality, and explicit-run filters.  This preserves an auditable
+    denominator and avoids order-dependent iterative removal.
+    """
+    minimum_fraction = float(minimum_fraction)
+    if not 0.0 <= minimum_fraction < 1.0:
+        raise ValueError("minimum_fraction must be in [0,1)")
+    grouped: dict[str, list[RunYield]] = {}
+    for record in records:
+        if record.included:
+            if record.run_class is None:
+                raise ValueError(f"included run {record.run} has no run class")
+            grouped.setdefault(record.run_class, []).append(record)
+
+    rejected: list[int] = []
+    for name, members in grouped.items():
+        total_charge = float(sum(member.charge_c for member in members))
+        if total_charge <= 0.0:
+            raise ValueError(f"current group {name} has nonpositive eligible charge")
+        for member in members:
+            fraction = member.charge_c / total_charge
+            member.group_charge_fraction = float(fraction)
+            if fraction < minimum_fraction:
+                member.included = False
+                reason = "below_minimum_group_charge_fraction"
+                member.exclusion_reason = (
+                    f"{member.exclusion_reason};{reason}"
+                    if member.exclusion_reason
+                    else reason
+                )
+                rejected.append(member.run)
+    return sorted(rejected)
+
+
+def apply_low_yield_outlier_rejection(
+    records: Iterable[RunYield], sigma_threshold: float = 5.0
+) -> list[int]:
+    """Reject runs significantly below their current group's yield.
+
+    Each run is compared with the charge-aggregated yield of the other eligible
+    runs in its class.  The pull denominator combines the run's statistical
+    uncertainty with the statistical uncertainty of that leave-one-out group
+    mean.  Removing the lowest failing run and repeating makes the result
+    deterministic while preventing a low run from diluting its own discrepancy.
+
+    A threshold of zero disables this filter.  Groups containing only one run
+    cannot define an independent reference and are left unchanged.
+    """
+    sigma_threshold = float(sigma_threshold)
+    if not np.isfinite(sigma_threshold) or sigma_threshold < 0.0:
+        raise ValueError("sigma_threshold must be finite and nonnegative")
+    if sigma_threshold == 0.0:
+        return []
+
+    grouped: dict[str, list[RunYield]] = {}
+    for record in records:
+        if record.included:
+            if record.run_class is None:
+                raise ValueError(f"included run {record.run} has no run class")
+            grouped.setdefault(record.run_class, []).append(record)
+
+    rejected: list[int] = []
+    for name, initial_members in grouped.items():
+        members = list(initial_members)
+        while len(members) >= 2:
+            pulls: dict[int, float] = {}
+            for member in members:
+                others = [other for other in members if other is not member]
+                reference_charge_nC = float(sum(other.charge_nC for other in others))
+                if reference_charge_nC <= 0.0:
+                    raise ValueError(
+                        f"current group {name} has nonpositive leave-one-out charge"
+                    )
+                reference_signal = float(sum(other.signal_events for other in others))
+                reference_variance = float(
+                    sum(other.signal_statistical_variance for other in others)
+                )
+                reference_yield = reference_signal / reference_charge_nC
+                reference_uncertainty = (
+                    np.sqrt(max(reference_variance, 1.0)) / reference_charge_nC
+                )
+                if (
+                    member.yield_events_per_nC is None
+                    or member.statistical_uncertainty_events_per_nC is None
+                ):
+                    raise ValueError(
+                        f"included run {member.run} has no finite yield information"
+                    )
+                combined_uncertainty = float(
+                    np.hypot(
+                        member.statistical_uncertainty_events_per_nC,
+                        reference_uncertainty,
+                    )
+                )
+                if not np.isfinite(combined_uncertainty) or combined_uncertainty <= 0.0:
+                    raise ValueError(
+                        f"included run {member.run} has invalid yield uncertainty"
+                    )
+                pull = (
+                    member.yield_events_per_nC - reference_yield
+                ) / combined_uncertainty
+                member.group_yield_pull = float(pull)
+                pulls[member.run] = float(pull)
+
+            worst = min(members, key=lambda member: pulls[member.run])
+            if pulls[worst.run] >= -sigma_threshold:
+                break
+            worst.included = False
+            reason = "below_group_mean_yield_threshold"
+            worst.exclusion_reason = (
+                f"{worst.exclusion_reason};{reason}"
+                if worst.exclusion_reason
+                else reason
+            )
+            rejected.append(worst.run)
+            members.remove(worst)
+
+    return sorted(rejected)
 
 
 def aggregate_current_groups(records: Iterable[RunYield]) -> list[CurrentGroupYield]:
@@ -291,7 +709,15 @@ def aggregate_current_groups(records: Iterable[RunYield]) -> list[CurrentGroupYi
         charge_nC = charge_c * 1.0e9
         if charge_nC <= 0.0:
             raise ValueError(f"current group {name} has nonpositive charge")
-        signals = int(sum(member.signal_events for member in members))
+        signals = float(sum(member.signal_events for member in members))
+        signal_variance = float(
+            sum(member.signal_statistical_variance for member in members)
+        )
+        signal_region = int(sum(member.signal_region_events for member in members))
+        sideband = int(sum(member.sideband_events for member in members))
+        estimated_background = float(
+            sum(member.estimated_background_events for member in members)
+        )
         current = float(
             sum(member.charge_c * float(member.current_nA) for member in members)
             / charge_c
@@ -303,10 +729,16 @@ def aggregate_current_groups(records: Iterable[RunYield]) -> list[CurrentGroupYi
                 run_numbers=[member.run for member in members],
                 effective_current_nA=current,
                 signal_events=signals,
+                signal_statistical_variance=signal_variance,
+                signal_region_events=signal_region,
+                sideband_events=sideband,
+                estimated_background_events=estimated_background,
                 charge_c=charge_c,
                 charge_nC=charge_nC,
                 yield_events_per_nC=signals / charge_nC,
-                statistical_uncertainty_events_per_nC=np.sqrt(max(signals, 1))
+                statistical_uncertainty_events_per_nC=np.sqrt(
+                    max(signal_variance, 1.0)
+                )
                 / charge_nC,
             )
         )
@@ -371,8 +803,185 @@ def fit_linear_yield(
     )
 
 
+def fit_shared_fractional_yield(
+    records: Iterable[RunYield],
+    groups: Iterable[CurrentGroupYield],
+    *,
+    period_classes: Mapping[str, Iterable[str]],
+    fit_level: str = "groups",
+) -> SharedFractionalYieldFit:
+    """Fit ``Y_period(I) = A_period * (1 + beta * I)`` jointly.
+
+    The supplied period mapping is deliberately explicit: run-class names alone do
+    not reliably encode changes in target, trigger, detector state, or normalization.
+    """
+
+    normalized_period_classes: dict[str, list[str]] = {}
+    class_periods: dict[str, str] = {}
+    for raw_period, raw_classes in period_classes.items():
+        period = str(raw_period).strip()
+        classes = [str(value).strip() for value in raw_classes if str(value).strip()]
+        if not period:
+            raise ValueError("shared-slope period names must not be empty")
+        if not classes:
+            raise ValueError(f"shared-slope period '{period}' contains no run classes")
+        if period in normalized_period_classes:
+            raise ValueError(f"duplicate shared-slope period '{period}'")
+        for run_class in classes:
+            if run_class in class_periods:
+                raise ValueError(
+                    f"run class '{run_class}' is assigned to both "
+                    f"'{class_periods[run_class]}' and '{period}'"
+                )
+            class_periods[run_class] = period
+        normalized_period_classes[period] = classes
+
+    periods = list(normalized_period_classes)
+    if len(periods) < 2:
+        raise ValueError("the shared fractional-slope model requires at least two periods")
+
+    if fit_level == "groups":
+        points = list(groups)
+        point_classes = [point.group for point in points]
+        current = np.asarray([point.effective_current_nA for point in points], dtype=float)
+        values = np.asarray([point.yield_events_per_nC for point in points], dtype=float)
+        uncertainties = np.asarray(
+            [point.statistical_uncertainty_events_per_nC for point in points], dtype=float
+        )
+    elif fit_level == "runs":
+        points = [record for record in records if record.included]
+        point_classes = [record.run_class for record in points]
+        current = np.asarray([record.current_nA for record in points], dtype=float)
+        values = np.asarray([record.yield_events_per_nC for record in points], dtype=float)
+        uncertainties = np.asarray(
+            [record.statistical_uncertainty_events_per_nC for record in points], dtype=float
+        )
+    else:
+        raise ValueError("fit_level must be 'groups' or 'runs'")
+
+    missing_classes = sorted(
+        {str(value) for value in point_classes if value is None or value not in class_periods}
+    )
+    if missing_classes:
+        raise ValueError(
+            "included fit classes are absent from --shared-slope-period mappings: "
+            + ", ".join(missing_classes)
+        )
+    point_periods = [class_periods[str(value)] for value in point_classes]
+    unused_periods = [period for period in periods if period not in point_periods]
+    if unused_periods:
+        raise ValueError(
+            "shared-slope periods contain no included fit points: "
+            + ", ".join(unused_periods)
+        )
+
+    parameter_count = len(periods) + 1
+    if current.size < parameter_count:
+        raise ValueError(
+            f"the shared-slope fit needs at least {parameter_count} points for "
+            f"{len(periods)} period intercepts and one slope"
+        )
+    if np.unique(current).size < 2:
+        raise ValueError("fit points must contain at least two distinct currents")
+    if not (
+        np.all(np.isfinite(current))
+        and np.all(np.isfinite(values))
+        and np.all(np.isfinite(uncertainties))
+        and np.all(uncertainties > 0.0)
+        and np.all(values > 0.0)
+    ):
+        raise ValueError("fit inputs contain invalid values or uncertainties")
+
+    period_indices = np.asarray([periods.index(period) for period in point_periods])
+    inverse_variance = 1.0 / uncertainties**2
+    initial_intercepts = np.asarray(
+        [
+            np.average(
+                values[period_indices == index],
+                weights=inverse_variance[period_indices == index],
+            )
+            for index in range(len(periods))
+        ],
+        dtype=float,
+    )
+    fractional_slope_seeds: list[float] = []
+    for index in range(len(initial_intercepts)):
+        selected = period_indices == index
+        if np.count_nonzero(selected) >= 2 and np.unique(current[selected]).size >= 2:
+            absolute_slope, absolute_intercept = np.polyfit(
+                current[selected], values[selected], 1
+            )
+            if np.isfinite(absolute_intercept) and absolute_intercept > 0.0:
+                fractional_slope_seeds.append(float(absolute_slope / absolute_intercept))
+    initial_beta = float(np.median(fractional_slope_seeds)) if fractional_slope_seeds else 0.0
+    maximum_current = float(np.max(current))
+    beta_lower = -0.999 / maximum_current if maximum_current > 0.0 else -np.inf
+    initial_beta = max(initial_beta, beta_lower + 1.0e-8)
+    initial = np.concatenate((initial_intercepts, [initial_beta]))
+
+    def residual(parameters: np.ndarray) -> np.ndarray:
+        intercepts = parameters[:-1]
+        beta = parameters[-1]
+        model = intercepts[period_indices] * (1.0 + beta * current)
+        return (model - values) / uncertainties
+
+    def jacobian(parameters: np.ndarray) -> np.ndarray:
+        intercepts = parameters[:-1]
+        beta = parameters[-1]
+        result = np.zeros((current.size, parameter_count), dtype=float)
+        result[np.arange(current.size), period_indices] = (
+            1.0 + beta * current
+        ) / uncertainties
+        result[:, -1] = intercepts[period_indices] * current / uncertainties
+        return result
+
+    from scipy.optimize import least_squares
+
+    lower = np.concatenate((np.full(len(periods), np.finfo(float).tiny), [beta_lower]))
+    upper = np.full(parameter_count, np.inf)
+    optimized = least_squares(
+        residual,
+        initial,
+        jac=jacobian,
+        bounds=(lower, upper),
+        x_scale="jac",
+    )
+    if not optimized.success:
+        raise ValueError(f"shared fractional-slope fit failed: {optimized.message}")
+    normal = optimized.jac.T @ optimized.jac
+    if np.linalg.matrix_rank(normal) < parameter_count:
+        raise ValueError("shared fractional-slope covariance is singular")
+    covariance = np.linalg.inv(normal)
+    parameters = optimized.x
+    intercepts = parameters[:-1]
+    beta = float(parameters[-1])
+    return SharedFractionalYieldFit(
+        period_intercepts_events_per_nC={
+            period: float(intercepts[index]) for index, period in enumerate(periods)
+        },
+        period_intercept_uncertainties_events_per_nC={
+            period: float(np.sqrt(max(covariance[index, index], 0.0)))
+            for index, period in enumerate(periods)
+        },
+        fractional_slope_per_nA=beta,
+        fractional_slope_uncertainty_per_nA=float(
+            np.sqrt(max(covariance[-1, -1], 0.0))
+        ),
+        parameter_names=[f"intercept:{period}" for period in periods]
+        + ["fractional_slope_per_nA"],
+        covariance=covariance.tolist(),
+        period_classes=normalized_period_classes,
+        class_periods=class_periods,
+        chi2=float(np.sum(residual(parameters) ** 2)),
+        ndf=int(current.size - parameter_count),
+        points=int(current.size),
+        fit_level=fit_level,
+    )
+
+
 def attach_relative_efficiencies(
-    groups: Iterable[CurrentGroupYield], fit: LinearYieldFit
+    groups: Iterable[CurrentGroupYield],
+    fit: LinearYieldFit | SharedFractionalYieldFit,
 ) -> None:
     for group in groups:
         efficiency, uncertainty = fit.relative_efficiency(group.effective_current_nA)

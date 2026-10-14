@@ -13,6 +13,8 @@ using json = nlohmann::json;
 
 namespace {
 constexpr double kPi = 3.14159265358979323846;
+constexpr double kElectronMassGeV = 0.00051099895;
+constexpr double kProtonMassGeV = 0.9382720813;
 
 bool isFinite(double value) {
     return std::isfinite(value);
@@ -41,6 +43,12 @@ bool detectorAllowed(int det, const std::vector<int>& allowedDetectors) {
         if (det == allowed) return true;
     }
     return false;
+}
+
+double detectorMomentum(const RecBranches& particle) {
+    return isFinite(particle.p_raw) && particle.p_raw > 0.0
+        ? particle.p_raw
+        : particle.p;
 }
 
 PrimitiveCutSpec makeCut(const std::string& name,
@@ -496,8 +504,16 @@ CutDecision Cuts::evaluateParticle(const RecBranches& p,
         } else if (cut.op == "betaRange") {
             apply(isFinite(p.beta) && isFinite(cut.min) && isFinite(cut.max) &&
                   p.beta >= cut.min && p.beta <= cut.max);
+        } else if (cut.op == "vzRange") {
+            apply(isFinite(p.vz) && isFinite(cut.min) && isFinite(cut.max) &&
+                  p.vz >= cut.min && p.vz <= cut.max);
         } else if (cut.op == "minCalEnergy") {
-            const double calEnergy = p.E_PCAL + p.E_ECIN + p.E_ECOUT;
+            double calEnergy = NAN;
+            if (p.det == 0) {
+                calEnergy = p.E_FTCAL;
+            } else if (p.det == 1) {
+                calEnergy = p.E_PCAL + p.E_ECIN + p.E_ECOUT;
+            }
             apply(isFinite(calEnergy) && isFinite(cut.min) && calEnergy >= cut.min);
         } else if (cut.op == "firstPidInstance") {
             apply(isFirstPidInstance(p, eventParticles));
@@ -507,7 +523,9 @@ CutDecision Cuts::evaluateParticle(const RecBranches& p,
             apply(p.det != cut.detector);
         } else if (cut.op == "rejectSameSectorAsRole") {
             const auto ref = selected.find(cut.refRole);
-            apply(ref == selected.end() || !ref->second || p.sector != ref->second->sector);
+            const bool comparableFDPair = ref != selected.end() && ref->second &&
+                                          p.det == 1 && ref->second->det == 1;
+            apply(!comparableFDPair || p.sector != ref->second->sector);
         } else if (cut.op == "vertexDiff") {
             const auto ref = selected.find(cut.refRole);
             const bool pass = ref == selected.end() || !ref->second ||
@@ -522,13 +540,29 @@ CutDecision Cuts::evaluateParticle(const RecBranches& p,
         } else if (cut.op == "minPcalEnergy") {
             apply(p.det != 1 || passSFMinPcalCut(p.E_PCAL));
         } else if (cut.op == "samplingFractionDiagonal") {
-            apply(p.det != 1 || passSFTriangleCut(p.E_PCAL, p.E_ECIN, p.p));
+            const double sfMomentum = detectorMomentum(p);
+            apply(p.det != 1 || passSFTriangleCut(p.E_PCAL, p.E_ECIN, sfMomentum));
         } else if (cut.op == "samplingFractionSigma") {
-            const double sf = (p.E_PCAL + p.E_ECIN + p.E_ECOUT) / p.p;
+            const double sfMomentum = detectorMomentum(p);
+            const double sf = (p.E_PCAL + p.E_ECIN + p.E_ECOUT) / sfMomentum;
             apply(p.det != 1 ||
-                  (!sfCoeffs_.empty() && passSFSigmaCut(p.sector, sf, p.p)));
+                  (!sfCoeffs_.empty() && passSFSigmaCut(p.sector, sf, sfMomentum)));
         } else if (cut.op == "samplingFraction") {
             apply(evaluateSamplingFraction(p).pass);
+        } else if (cut.op == "elasticWWindow") {
+            const double momentum = p.p;
+            const double energy = std::sqrt(
+                momentum * momentum + kElectronMassGeV * kElectronMassGeV
+            );
+            const double q2 = 2.0 * cfg_.beamEnergy *
+                (energy - momentum * std::cos(p.theta)) -
+                kElectronMassGeV * kElectronMassGeV;
+            const double w2 = kProtonMassGeV * kProtonMassGeV +
+                2.0 * kProtonMassGeV * (cfg_.beamEnergy - energy) - q2;
+            const double w = w2 >= 0.0 ? std::sqrt(w2) : NAN;
+            apply(p.pid == 11 && isFinite(momentum) && momentum > 0.0 &&
+                  isFinite(p.theta) && isFinite(cut.max) && cut.max > 0.0 &&
+                  isFinite(w) && std::abs(w - kProtonMassGeV) <= cut.max);
         } else {
             apply(false);
         }
@@ -687,11 +721,12 @@ bool Cuts::passesSamplingFraction(const RecBranches& e) const {
 CutDecision Cuts::evaluateSamplingFraction(const RecBranches& e) const {
     CutDecision decision;
     if (!cfg_.sfEnabled || sfCoeffs_.empty() || e.det != 1) return decision;
+    const double sfMomentum = detectorMomentum(e);
     decision.require(passSFMinPcalCut(e.E_PCAL), "sampling_fraction.min_pcal");
-    const double sf = (e.E_PCAL + e.E_ECIN + e.E_ECOUT) / e.p;
-    decision.require(passSFTriangleCut(e.E_PCAL, e.E_ECIN, e.p),
+    const double sf = (e.E_PCAL + e.E_ECIN + e.E_ECOUT) / sfMomentum;
+    decision.require(passSFTriangleCut(e.E_PCAL, e.E_ECIN, sfMomentum),
                      "sampling_fraction.triangle");
-    decision.require(passSFSigmaCut(e.sector, sf, e.p),
+    decision.require(passSFSigmaCut(e.sector, sf, sfMomentum),
                      "sampling_fraction.sigma");
     return decision;
 }

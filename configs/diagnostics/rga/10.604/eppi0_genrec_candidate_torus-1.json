@@ -1,0 +1,48 @@
+{
+    "outputMode": "candidates",
+    "outputFile": "10.604_rga_fa18_torus-1_eppi0_genrec_candidates.root",
+    "beamEnergy": 10.604,
+    "torus": -1,
+    "saveFailedCandidates": true,
+
+    "channel": {
+        "name": "eppi0_genrec_diagnostic",
+        "particles": [
+            {
+                "role": "electron",
+                "pid": 11,
+                "count": 1,
+                "cuts": [
+                    { "name": "electron.trigger", "op": "firstPidInstance" }
+                ]
+            },
+            {
+                "role": "proton",
+                "pid": 2212,
+                "count": 1,
+                "cuts": []
+            },
+            {
+                "role": "gamma",
+                "pid": 22,
+                "count": 2,
+                "detectors": [0, 1],
+                "cuts": [
+                    { "name": "gamma.positive_p", "op": "minP", "min": 0.000001 }
+                ]
+            }
+        ],
+        "composites": [
+            {
+                "role": "pi0",
+                "type": "pairMass",
+                "daughters": ["gamma", "gamma"],
+                "mass": 0.1349768
+            }
+        ]
+    },
+
+    "candidateSelection": {
+        "method": "compositeDistance"
+    }
+}

@@ -1,0 +1,9 @@
+{
+    "extends": "elastic_candidates_base_torus-1.json",
+    "outputFile": "10.604_rga_fa18_torus-1_elastic_candidates_run_spanning.root",
+    "samplingFraction": {
+        "sigma": {
+            "paramsFile": "../../../../../parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_torus-1_data.json"
+        }
+    }
+}

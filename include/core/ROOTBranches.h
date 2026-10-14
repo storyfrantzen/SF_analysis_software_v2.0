@@ -77,6 +77,11 @@ struct RecBranches : public TObject {
     double delta_p     = 0.0;
     double delta_theta = 0.0;
     double delta_phi   = 0.0;
+    double delta_p_energy_loss = 0.0;
+    double delta_p_momentum_correction = 0.0;
+    bool momentum_correction_applied = false;
+    // Deprecated compatibility alias for delta_p_momentum_correction.
+    double delta_p_elastic = 0.0;
     double beta   = NAN;
     double chi2pid = NAN;
 
@@ -94,6 +99,7 @@ struct RecBranches : public TObject {
     // ── FT (det == 0 only, else NAN) ──────────────────────
     double xFT    = NAN;
     double yFT    = NAN;
+    double E_FTCAL = NAN;
 
     // ── FD DC trajectory (det == 1 only, else NAN) ────────
     double xDC1   = NAN,  yDC1  = NAN;
@@ -125,7 +131,7 @@ struct RecBranches : public TObject {
               double pCorr, double thetaCorr, double phiCorr);
     #endif
 
-    ClassDef(RecBranches, 5);
+    ClassDef(RecBranches, 8);
 };
 
 // ─── GenBranches ─────────────────────────────────────────────────────────────────

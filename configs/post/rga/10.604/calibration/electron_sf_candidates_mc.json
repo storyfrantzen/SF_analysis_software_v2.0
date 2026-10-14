@@ -1,7 +1,0 @@
-{
-    "extends": "electron_sf_candidates_base.json",
-    "outputFile": "10.604_rga_gemc_electron_sf_candidates.root",
-    "channel": {
-        "name": "electron_sf_gemc"
-    }
-}

@@ -210,27 +210,27 @@ stage_data_exclusivity() {
 stage_convert_mc() {
     local log_file=$1
     run_in_root_dir "$log_file" "$BUILD_DIR/hipo2root" \
-        "$REPO_ROOT/configs/processing/rgk/6.535/eppi0_mc_acceptance.json" \
+        "$REPO_ROOT/configs/processing/rgk/6.535/eppi0_GEMC.json" \
         "$MC_INPUT" "$MAX_FILES" "$PROGRESS_EVENTS"
 }
 
 stage_select_mc() {
     local log_file=$1
     run_in_root_dir "$log_file" "$BUILD_DIR/post_process" \
-        "$REPO_ROOT/configs/post/rgk/6.535/eppi0_mc_acceptance.json" \
-        "$ROOT_DIR/6.535_rgk_eppi0_mc_acceptance.root" "$PROGRESS_EVENTS"
+        "$REPO_ROOT/configs/post/rgk/6.535/eppi0_GEMC.json" \
+        "$ROOT_DIR/6.535_rgk_eppi0_GEMC.root" "$PROGRESS_EVENTS"
 }
 
 stage_check_mc_keys() {
     local log_file=$1
     run_command "$log_file" python3 "$REPO_ROOT/analysis/check_event_keys.py" \
-        "$ROOT_DIR/6.535_rgk_eppi0_mc_acceptance.root"
+        "$ROOT_DIR/6.535_rgk_eppi0_GEMC.root"
 }
 
 stage_mc_exclusivity() {
     local log_file=$1
     run_command "$log_file" python3 "$REPO_ROOT/analysis/derive_exclusivity.py" \
-        "$ROOT_DIR/6.535_rgk_eppi0_mc_acceptance_selected.root" \
+        "$ROOT_DIR/6.535_rgk_eppi0_GEMC_selected.root" \
         --format selected-root \
         --dictionary "$BUILD_DIR/libROOTBranchesDict.so" \
         --config "$REPO_ROOT/configs/analysis/rgk/6.535.json" \
@@ -241,8 +241,8 @@ stage_mc_exclusivity() {
 stage_response() {
     local log_file=$1
     run_command "$log_file" python3 "$REPO_ROOT/analysis/run_analysis.py" response-root \
-        "$ROOT_DIR/6.535_rgk_eppi0_mc_acceptance.root" \
-        "$ROOT_DIR/6.535_rgk_eppi0_mc_acceptance_selected.root" \
+        "$ROOT_DIR/6.535_rgk_eppi0_GEMC.root" \
+        "$ROOT_DIR/6.535_rgk_eppi0_GEMC_selected.root" \
         --config "$REPO_ROOT/configs/analysis/rgk/6.535.json" \
         --output-dir "$RESULTS_DIR/response" \
         --dictionary "$BUILD_DIR/libROOTBranchesDict.so" \
@@ -325,6 +325,18 @@ stage_plots() {
         --output-dir "$RESULTS_DIR/plots/harmonics" --quilt
 }
 
+stage_campaign_diagnostics() {
+    local log_file=$1
+    run_command "$log_file" python3 "$REPO_ROOT/analysis/run_analysis.py" \
+        campaign-diagnostics \
+        "$RESULTS_DIR/unfolding.npz" \
+        "$RESULTS_DIR/cross_section.npz" \
+        "$RESULTS_DIR/harmonics.npz" \
+        --response-meta "$RESULTS_DIR/response/response_meta.npz" \
+        --title "RGK 6.535 GeV campaign diagnostic" \
+        --output "$RESULTS_DIR/campaign_diagnostics.md"
+}
+
 if ((DRY_RUN == 0)); then
     mkdir -p "$BUILD_DIR" "$ROOT_DIR" "$RESULTS_DIR" "$LOG_DIR" "$STATE_DIR" "$PROVENANCE_DIR"
     provenance_lines=(
@@ -360,11 +372,11 @@ if ((DRY_RUN == 0)); then
         cp "$REPO_ROOT/configs/analysis/rgk/6.535.json" "$PROVENANCE_DIR/analysis-config.json"
         cp "$REPO_ROOT/configs/processing/rgk/6.535/eppi0_data.json" \
             "$PROVENANCE_DIR/processing-data-config.json"
-        cp "$REPO_ROOT/configs/processing/rgk/6.535/eppi0_mc_acceptance.json" \
+        cp "$REPO_ROOT/configs/processing/rgk/6.535/eppi0_GEMC.json" \
             "$PROVENANCE_DIR/processing-mc-config.json"
         cp "$REPO_ROOT/configs/post/rgk/6.535/eppi0_data.json" \
             "$PROVENANCE_DIR/post-data-config.json"
-        cp "$REPO_ROOT/configs/post/rgk/6.535/eppi0_mc_acceptance.json" \
+        cp "$REPO_ROOT/configs/post/rgk/6.535/eppi0_GEMC.json" \
             "$PROVENANCE_DIR/post-mc-config.json"
         cp "$REPO_ROOT/parameters/proton_energy_loss/6.535RGK_INCLUSIVE_GEMC_100M.json" \
             "$PROVENANCE_DIR/proton-energy-loss.json"
@@ -393,5 +405,6 @@ run_stage 13_bin_centering stage_bin_centering
 run_stage 14_cross_section stage_cross_section
 run_stage 15_harmonics stage_harmonics
 run_stage 16_plots stage_plots
+run_stage 17_campaign_diagnostics stage_campaign_diagnostics
 
 printf '\nRGK 6.535 GeV pipeline complete.\nResults: %s\nLogs: %s\n' "$RESULTS_DIR" "$LOG_DIR"

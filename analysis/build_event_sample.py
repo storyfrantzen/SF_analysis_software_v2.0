@@ -20,6 +20,7 @@ from eppi0.event_sample import (
     join_reconstructed,
 )
 from eppi0.root_trees import G_EVENTS, R_PARTICLES, S_EVENTS, resolve
+from eppi0.topology import ft_photon_count
 
 
 GEN_COLUMNS = [
@@ -79,7 +80,14 @@ REC_COLUMN_ALIASES = {
     "t": "rec_minus_t",
     "t_pi0": "rec_minus_t_pi0",
     "trentoPhi": "rec_trento_phi",
+    "eDet": "rec_electron_detector",
+    "electronDet": "rec_electron_detector",
     "pDet": "rec_proton_detector",
+    "protonDet": "rec_proton_detector",
+    "g1Det": "rec_gamma1_detector",
+    "gamma1Det": "rec_gamma1_detector",
+    "g2Det": "rec_gamma2_detector",
+    "gamma2Det": "rec_gamma2_detector",
     "m_gg": "rec_m_gg",
     "m2_miss": "rec_m2_miss",
     "m2_epX": "rec_m2_epX",
@@ -235,7 +243,7 @@ def main() -> int:
             "unmatched_selected_events": stats["unmatched_selected_events"],
             "invalid_generated_matches": stats["invalid_generated_matches"],
             "reconstructed_columns": sorted(rec_values),
-            "schema_version": 7,
+            "schema_version": 8,
         }
         write_sample(args.output, sample, metadata)
         print(f"Generated events scanned: {stats['generated_events_scanned']}")
@@ -326,7 +334,7 @@ def main() -> int:
         "generated_events": int(generated.run.size),
         "selected_reconstructed_events": int(sample["rec_selected"].sum()),
         "reconstructed_columns": sorted(rec_values),
-        "schema_version": 6,
+        "schema_version": 7,
     }
     write_sample(args.output, sample, metadata)
     print(f"Generated events: {generated.run.size}")
@@ -556,6 +564,10 @@ def reconstructed_columns(rec: dict[str, np.ndarray], columns: list[str]) -> dic
             continue
         output_name = REC_COLUMN_ALIASES.get(name, f"rec_{name}")
         output.setdefault(output_name, rec[name])
+    if "rec_gamma1_detector" in output and "rec_gamma2_detector" in output:
+        output["rec_ft_photon_count"] = ft_photon_count(
+            output["rec_gamma1_detector"], output["rec_gamma2_detector"]
+        )
     return output
 
 

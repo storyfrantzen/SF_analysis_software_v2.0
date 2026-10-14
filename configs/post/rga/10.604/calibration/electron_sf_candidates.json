@@ -1,4 +1,0 @@
-{
-    "extends": "electron_sf_candidates_base.json",
-    "outputFile": "10.604_rga_electron_sf_candidates.root"
-}

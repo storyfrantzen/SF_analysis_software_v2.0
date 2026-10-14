@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+from dataclasses import replace
 import io
 import json
 import sys
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 from scipy.sparse import csr_matrix, eye, save_npz
@@ -17,19 +19,45 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from eppi0.binning import AnalysisBinning, from_config, legacy_binning
 from eppi0.bin_centering import compute_bin_centering, physical_mask
+from eppi0.background_subtraction import estimate_mgg_background
 from eppi0.cross_section import (
     integrated_luminosity_fb,
     physical_bin_volumes,
     virtual_photon_flux,
 )
+from eppi0.current_efficiency import (
+    RelativeLinearEfficiency,
+    correction_artifact,
+)
+from eppi0.campaign_diagnostics import render_campaign_diagnostics
 from eppi0.event_sample import (
     build_generated_sample,
     generated_particle_columns,
     generated_sample_from_tree,
     join_reconstructed,
 )
-from eppi0.exclusivity import apply_cuts, derive_cuts
-from eppi0.harmonics import fit_phi
+from eppi0.exclusivity import (
+    apply_cuts,
+    derive_cuts,
+    estimate_window,
+    load_cuts,
+    save_cuts,
+)
+from eppi0.exclusivity_diagnostics import (
+    _comparison_layout,
+    comparison_page_counts,
+    render_comparison_diagnostics,
+    render_diagnostics,
+)
+from eppi0.exclusivity_models import estimate_model, maximum_fit_parameters
+from eppi0.harmonics import (
+    QUALITY_COVARIANCE_ILL_CONDITIONED,
+    QUALITY_NEGATIVE_CROSS_SECTION,
+    QUALITY_SPARSE,
+    fit_grid,
+    fit_phi,
+    minimum_harmonic_cross_section,
+)
 from eppi0.response import build_response, build_response_from_counts
 from eppi0.radiative_correction import (
     _lund_files,
@@ -39,8 +67,16 @@ from eppi0.radiative_correction import (
 )
 from eppi0.root_response import _truth_inside_mask
 from eppi0.phase_space import AnalysisPhaseSpace
-from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes
+from eppi0.topology import INVALID_TOPOLOGY, detector_topology_id, ft_photon_count
+from eppi0.unfolding import (
+    bootstrap_ensemble,
+    bootstrap_uncertainty,
+    diagonal_phi_covariance,
+    iterative_bayes,
+    phi_block_covariance,
+)
 from run_analysis import (
+    command_radiative_correction,
     command_response,
     command_unfold,
     command_response_plots,
@@ -50,7 +86,10 @@ from run_analysis import (
     _normalization_npz_fields,
     _read_generator_integrated_cross_section,
     _read_generator_normalization_summary,
+    _response_topology_composition,
+    _topology_alpha,
 )
+from derive_exclusivity import derivation_settings, render_diagnostics_isolated
 from build_event_sample import (
     reconstructed_columns,
     reverse_join_selected_events,
@@ -85,6 +124,48 @@ class BinningTests(unittest.TestCase):
         bins = legacy_binning()
         values = np.arange(bins.size)
         np.testing.assert_array_equal(bins.flatten_values(bins.unflatten(values)), values)
+
+
+class ResponseTopologyTests(unittest.TestCase):
+    def test_detector_topology_id_validates_detector_combinations(self) -> None:
+        result = detector_topology_id(
+            np.array([1, 1, 2, 2, 0]),
+            np.array([0, 2, 1, 2, 0]),
+        )
+        np.testing.assert_array_equal(result, [4, 6, 9, 10, INVALID_TOPOLOGY])
+
+    def test_response_topology_composition_finds_dominant_fraction(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "response_meta.npz"
+            np.savez_compressed(
+                path,
+                reconstructed_topology_ids=np.array([4, 8]),
+                reconstructed_topology_counts=np.array(
+                    [[3.0, 2.0, 0.0], [1.0, 2.0, 0.0]]
+                ),
+            )
+            with np.load(path, allow_pickle=False) as metadata:
+                composition = _response_topology_composition(
+                    metadata,
+                    (1, 1, 1, 3),
+                    np.array([4.0, 4.0, 0.0]),
+                )
+
+        self.assertIsNotNone(composition)
+        np.testing.assert_array_equal(composition.topology_ids, [4, 8])
+        np.testing.assert_array_equal(
+            composition.dominant_topology[0, 0, 0],
+            [4, 4, INVALID_TOPOLOGY],
+        )
+        np.testing.assert_allclose(
+            composition.dominance[0, 0, 0], [0.75, 0.5, 0.0]
+        )
+        np.testing.assert_allclose(
+            composition.fractions[:, 0, 0, 0, :],
+            [[0.75, 0.5, 0.0], [0.25, 0.5, 0.0]],
+        )
+        self.assertLess(_topology_alpha(0.5), _topology_alpha(0.75))
+        self.assertLess(_topology_alpha(1.0), 1.0)
 
 
 class ResponseTests(unittest.TestCase):
@@ -134,7 +215,7 @@ class ResponseTests(unittest.TestCase):
                             "minus_t": [0.1, 0.3],
                             "phi_deg": [0.0, 360.0],
                         },
-                        "phase_space": {"y_max": 0.3},
+                        "phase_space": {"electron_p_min": 5.0},
                     }
                 ),
                 encoding="utf-8",
@@ -171,7 +252,7 @@ class ResponseTests(unittest.TestCase):
             q2=np.array([1.2, 1.2, 1.2]),
             xb=np.array([0.2, 0.8, 0.8]),
             number_of_bins=1,
-            phase_space=AnalysisPhaseSpace(y_max=0.3),
+            phase_space=AnalysisPhaseSpace(electron_p_min=5.0),
             beam_energy=6.535,
         )
         np.testing.assert_array_equal(mask, [False, True, False])
@@ -370,6 +451,10 @@ class EventSampleTests(unittest.TestCase):
             "electronP": np.array([3.0, 3.2]),
             "protonP": np.array([1.0, 1.1]),
             "gamma1P": np.array([0.8, 0.9]),
+            "eDet": np.array([1, 0]),
+            "pDet": np.array([1, 2]),
+            "g1Det": np.array([1, 0]),
+            "g2Det": np.array([1, 1]),
         }
         values = reconstructed_columns(rec, list(rec))
         self.assertNotIn("rec_runNum", values)
@@ -380,6 +465,11 @@ class EventSampleTests(unittest.TestCase):
         np.testing.assert_allclose(values["rec_electronP"], [3.0, 3.2])
         np.testing.assert_allclose(values["rec_protonP"], [1.0, 1.1])
         np.testing.assert_allclose(values["rec_gamma1P"], [0.8, 0.9])
+        np.testing.assert_array_equal(values["rec_electron_detector"], [1, 0])
+        np.testing.assert_array_equal(values["rec_proton_detector"], [1, 2])
+        np.testing.assert_array_equal(values["rec_gamma1_detector"], [1, 0])
+        np.testing.assert_array_equal(values["rec_gamma2_detector"], [1, 1])
+        np.testing.assert_array_equal(values["rec_ft_photon_count"], [0, 1])
 
     def test_generated_particle_columns_align_to_generated_events(self) -> None:
         run = np.full(8, 11)
@@ -426,27 +516,935 @@ class EventSampleTests(unittest.TestCase):
 
 
 class ExclusivityTests(unittest.TestCase):
+    def _fit_model(
+        self,
+        variable: str,
+        values: np.ndarray,
+        expected_center: float | None,
+        physical_lower: float | None,
+    ):
+        estimate, reason = estimate_model(
+            values,
+            variable,
+            3.0,
+            50,
+            5.0,
+            100,
+            1.0e-5,
+            160,
+            0.1,
+            3.0,
+            expected_center,
+            physical_lower,
+            1.0,
+            1.0,
+        )
+        self.assertIsNotNone(estimate, reason)
+        return estimate
+
+    def test_ft_photon_count_is_order_independent(self) -> None:
+        counts = ft_photon_count(
+            np.array([1, 0, 1, 0, 2]),
+            np.array([1, 1, 0, 0, 1]),
+        )
+        np.testing.assert_array_equal(counts, [0, 1, 1, 2, INVALID_TOPOLOGY])
+
+    def test_analysis_config_records_exclusivity_policy(self) -> None:
+        optional_arguments = (
+            "global_cuts",
+            "n_sigma",
+            "minimum_events",
+            "fit_window_sigma",
+            "fit_max_iterations",
+            "fit_convergence",
+            "fit_histogram_bins",
+            "minimum_signal_fraction",
+            "minimum_peak_significance",
+            "maximum_local_sigma_ratio",
+            "maximum_local_center_shift_sigma",
+            "continuous_refinement",
+            "nminus1_audit_boundary_tolerance",
+        )
+        arguments = SimpleNamespace(
+            config=Path("configs/analysis/rga/10.604.json"),
+            **{name: None for name in optional_arguments},
+        )
+        settings = derivation_settings(arguments)
+        self.assertTrue(settings["global_mode"])
+        self.assertNotIn("global_cuts", settings)
+        self.assertEqual(settings["cut_components"]["rec_E_miss"], "core")
+        self.assertEqual(settings["cut_components"]["rec_pT_miss"], "signal")
+        self.assertEqual(settings["nminus1_audit_boundary_tolerance"], 0.02)
+
     def test_global_cut_table_can_be_reused(self) -> None:
         rng = np.random.default_rng(4)
         count = 200
         values = {
-            name: rng.normal(0.0, 1.0, count)
-            for name in (
-                "rec_m_gg", "rec_pT_miss", "rec_m2_epX", "rec_m_eggX", "rec_E_miss", "rec_m2_miss"
+            "rec_m_gg": rng.normal(0.135, 0.01, count),
+            "rec_pT_miss": rng.normal(0.1, 0.02, count),
+            "rec_m2_epX": rng.normal(0.018, 0.05, count),
+            "rec_m_eggX": rng.normal(0.938, 0.05, count),
+            "rec_E_miss": rng.normal(0.0, 0.1, count),
+            "rec_m2_miss": rng.normal(0.0, 0.05, count),
+        }
+        detector = np.ones(count, dtype=int)
+        ft_photons = np.zeros(count, dtype=int)
+        zeros = np.zeros(count, dtype=int)
+        cuts = derive_cuts(
+            values, detector, ft_photons, zeros, zeros, zeros,
+            topologies=(1,), minimum_events=20, global_mode=True,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cuts.npz"
+            save_cuts(str(path), cuts)
+            cuts = load_cuts(str(path))
+        mask = apply_cuts(cuts, values, detector, ft_photons, zeros, zeros, zeros)
+        self.assertEqual(cuts.group_ids.tolist(), [4])
+        self.assertEqual(cuts.populated_group_ids.tolist(), [4])
+        self.assertEqual(cuts.dropped_group_ids.size, 0)
+        self.assertAlmostEqual(cuts.signal_containment, 0.9973002039)
+        self.assertEqual(
+            cuts.fit_parameter_names.shape,
+            (1, 6, maximum_fit_parameters()),
+        )
+        self.assertTrue(np.any(cuts.fit_parameter_names != ""))
+        self.assertEqual(cuts.window_source.tolist(), [["global"] * 6])
+        self.assertTrue(np.all(cuts.extrapolated_cut_entries == 0))
+        self.assertTrue(np.all(cuts.lower >= cuts.fit_lower))
+        self.assertTrue(np.all(cuts.upper <= cuts.fit_upper))
+        self.assertEqual(cuts.nminus1_audit_success.shape, (1, 6))
+        self.assertTrue(cuts.nminus1_audit_complete)
+        self.assertTrue(np.all(cuts.nminus1_audit_success))
+        self.assertTrue(np.all(np.isfinite(cuts.nminus1_audit_lower)))
+        self.assertTrue(np.all(np.isfinite(cuts.nminus1_audit_upper)))
+        self.assertGreaterEqual(cuts.nminus1_audit_maximum_boundary_change, 0.0)
+        self.assertAlmostEqual(cuts.nminus1_audit_boundary_tolerance, 0.02)
+        self.assertTrue(cuts.continuous_refinement)
+        self.assertGreater(mask.sum(), count // 2)
+
+    def test_mass_and_transverse_momentum_use_physical_signal_models(self) -> None:
+        rng = np.random.default_rng(59)
+        mgg = np.concatenate(
+            (rng.normal(0.135, 0.010, 8000), rng.uniform(0.07, 0.20, 2000))
+        )
+        mgg_fit = self._fit_model("rec_m_gg", mgg, 0.1349768, 0.0)
+        self.assertEqual(mgg_fit.fit_model, "gaussian+sideband-linear")
+        self.assertAlmostEqual(mgg_fit.center, 0.135, delta=0.005)
+
+        px = rng.normal(0.025, 0.015, 9000)
+        py = rng.normal(0.0, 0.015, 9000)
+        pt = np.concatenate((np.hypot(px, py), rng.uniform(0.0, 0.18, 1200)))
+        pt_fit = self._fit_model("rec_pT_miss", pt, None, 0.0)
+        self.assertIn(pt_fit.fit_model, ("rice+linear", "rayleigh+linear"))
+        self.assertEqual(pt_fit.lower, 0.0)
+        self.assertGreater(pt_fit.upper, pt_fit.center)
+
+    def test_missing_mass_uses_split_gaussian_only_when_supported(self) -> None:
+        rng = np.random.default_rng(61)
+        symmetric = np.concatenate(
+            (rng.normal(0.938, 0.05, 9000), rng.uniform(0.5, 1.4, 1000))
+        )
+        symmetric_fit = self._fit_model("rec_m_eggX", symmetric, 0.9382721, 0.0)
+        self.assertEqual(symmetric_fit.fit_model, "gaussian+linear")
+
+        left, right = 0.025, 0.090
+        count = 12000
+        choose_left = rng.random(count) < left / (left + right)
+        residual = np.where(
+            choose_left,
+            -np.abs(rng.normal(0.0, left, count)),
+            np.abs(rng.normal(0.0, right, count)),
+        )
+        asymmetric = np.concatenate(
+            (0.938 + residual, rng.uniform(0.45, 1.55, 1000))
+        )
+        asymmetric_fit = self._fit_model(
+            "rec_m_eggX", asymmetric, 0.9382721, 0.0
+        )
+        self.assertEqual(asymmetric_fit.fit_model, "split-gaussian+linear")
+        self.assertGreater(
+            asymmetric_fit.upper - asymmetric_fit.center,
+            asymmetric_fit.center - asymmetric_fit.lower,
+        )
+
+    def test_missing_energy_and_missing_mass_squared_use_asymmetric_models(self) -> None:
+        rng = np.random.default_rng(67)
+        missing_energy = np.concatenate(
+            (
+                rng.normal(0.0, 0.05, 6500),
+                rng.normal(0.0, 0.05, 2000) + rng.exponential(0.15, 2000),
+                rng.uniform(-0.5, 0.7, 1500),
             )
+        )
+        energy_fit = self._fit_model("rec_E_miss", missing_energy, 0.0, None)
+        self.assertEqual(
+            energy_fit.fit_model, "gaussian+positive-exgaussian+linear"
+        )
+        self.assertAlmostEqual(
+            energy_fit.upper - energy_fit.center,
+            energy_fit.center - energy_fit.lower,
+            delta=1.0e-9,
+        )
+        self.assertGreater(energy_fit.signal_fraction, energy_fit.cut_component_fraction)
+
+        left, right = 0.008, 0.025
+        count = 12000
+        choose_left = rng.random(count) < left / (left + right)
+        missing_mass_squared = np.where(
+            choose_left,
+            -rng.exponential(left, count),
+            rng.exponential(right, count),
+        )
+        missing_mass_squared = np.concatenate(
+            (missing_mass_squared, rng.uniform(-0.15, 0.20, 1200))
+        )
+        mass_squared_fit = self._fit_model(
+            "rec_m2_miss", missing_mass_squared, 0.0, None
+        )
+        self.assertEqual(
+            mass_squared_fit.fit_model, "asymmetric-laplace+linear"
+        )
+        self.assertGreater(
+            mass_squared_fit.upper - mass_squared_fit.center,
+            mass_squared_fit.center - mass_squared_fit.lower,
+        )
+
+    def test_global_mode_is_default_and_records_dropped_topologies(self) -> None:
+        rng = np.random.default_rng(53)
+        dense = rng.normal(0.0, 0.1, 200)
+        sparse = rng.normal(1.0, 0.1, 10)
+        values = {"toy_peak": np.concatenate((dense, sparse))}
+        detector = np.ones(210, dtype=int)
+        ft_photons = np.concatenate(
+            (np.zeros(200, dtype=int), np.ones(10, dtype=int))
+        )
+        iq2 = np.concatenate(
+            (np.zeros(100, dtype=int), np.ones(100, dtype=int), np.zeros(10, dtype=int))
+        )
+        zeros = np.zeros(210, dtype=int)
+        cuts = derive_cuts(
+            values,
+            detector,
+            ft_photons,
+            iq2,
+            zeros,
+            zeros,
+            variables=("toy_peak",),
+            topologies=(1,),
+            minimum_events=50,
+        )
+        self.assertTrue(cuts.global_mode)
+        self.assertEqual(cuts.group_ids.tolist(), [4])
+        self.assertEqual(cuts.populated_group_ids.tolist(), [4, 5])
+        self.assertEqual(cuts.dropped_group_ids.tolist(), [5])
+        self.assertEqual(cuts.dropped_variables.tolist(), ["toy_peak"])
+        self.assertIn("too few finite entries", cuts.dropped_reasons[0])
+
+    def test_cut_windows_are_distinct_for_zero_one_and_two_ft_photons(self) -> None:
+        rng = np.random.default_rng(17)
+        rows_per_topology = 100
+        ft_photons = np.repeat(np.arange(3), rows_per_topology)
+        values = {
+            "toy_peak": np.concatenate(
+                [rng.normal(10.0 * topology, 0.1, rows_per_topology) for topology in range(3)]
+            )
+        }
+        detector = np.ones(ft_photons.size, dtype=int)
+        zeros = np.zeros(ft_photons.size, dtype=int)
+        cuts = derive_cuts(
+            values,
+            detector,
+            ft_photons,
+            zeros,
+            zeros,
+            zeros,
+            variables=("toy_peak",),
+            topologies=(1,),
+            minimum_events=20,
+            global_mode=False,
+        )
+        self.assertEqual(cuts.group_ids.size, 3)
+
+        target_values = {"toy_peak": np.array([0.0, 10.0, 20.0, 0.0])}
+        target_ft_photons = np.array([0, 1, 2, 2])
+        target_detector = np.ones(4, dtype=int)
+        target_bins = np.zeros(4, dtype=int)
+        mask = apply_cuts(
+            cuts,
+            target_values,
+            target_detector,
+            target_ft_photons,
+            target_bins,
+            target_bins,
+            target_bins,
+        )
+        np.testing.assert_array_equal(mask, [True, True, True, False])
+
+    def test_gaussian_core_window_rejects_broad_background_tails(self) -> None:
+        rng = np.random.default_rng(23)
+        signal = rng.normal(0.02, 0.06, 5000)
+        background = rng.uniform(-2.0, 3.0, 2000)
+        window = estimate_window(
+            np.concatenate((signal, background)),
+            n_sigma=3.0,
+            minimum_events=50,
+            expected_center=0.02,
+        )
+        self.assertIsNotNone(window)
+        lower, upper = window
+        self.assertGreater(0.5 * (upper - lower), 0.12)
+        self.assertLess(0.5 * (upper - lower), 0.22)
+        self.assertAlmostEqual(0.5 * (lower + upper), 0.02, delta=0.03)
+
+    def test_gaussian_core_window_rejects_sloped_background(self) -> None:
+        rng = np.random.default_rng(31)
+        signal = rng.normal(0.02, 0.06, 5000)
+        background = rng.triangular(-2.0, 3.0, 3.0, 2500)
+        window = estimate_window(
+            np.concatenate((signal, background)),
+            n_sigma=3.0,
+            minimum_events=50,
+            expected_center=0.02,
+        )
+        self.assertIsNotNone(window)
+        lower, upper = window
+        self.assertGreater(0.5 * (upper - lower), 0.12)
+        self.assertLess(0.5 * (upper - lower), 0.22)
+        self.assertAlmostEqual(0.5 * (lower + upper), 0.02, delta=0.03)
+
+    def test_background_without_signal_is_rejected(self) -> None:
+        rng = np.random.default_rng(37)
+        background = rng.triangular(-2.0, 3.0, 3.0, 7000)
+        window = estimate_window(
+            background,
+            n_sigma=3.0,
+            minimum_events=50,
+            expected_center=0.02,
+            maximum_center_deviation=0.20,
+            maximum_sigma=0.20,
+        )
+        self.assertIsNone(window)
+
+    def test_missing_mass_squared_broad_component_is_nuisance(self) -> None:
+        rng = np.random.default_rng(71)
+        values = np.concatenate(
+            (
+                rng.laplace(0.0, 0.008, 8000),
+                rng.laplace(0.0, 0.05, 5000),
+                rng.uniform(-0.3, 0.3, 1000),
+            )
+        )
+        estimate = self._fit_model("rec_m2_miss", values, 0.0, None)
+        self.assertIn("broad-laplace", estimate.fit_model)
+        self.assertGreater(estimate.nuisance_fraction, 0.1)
+        self.assertLess(estimate.upper - estimate.lower, 0.15)
+        self.assertGreater(estimate.fit_upper - estimate.fit_lower, 0.3)
+
+    def test_bootstrap_and_nminus1_audit_are_variable_order_independent(self) -> None:
+        rng = np.random.default_rng(73)
+        count = 5000
+        common_tail = rng.random(count) < 0.15
+        m2_epx = rng.normal(0.018, 0.055, count)
+        m_eggx = rng.normal(0.938, 0.045, count)
+        m2_epx[common_tail] += rng.normal(0.5, 0.15, common_tail.sum())
+        m_eggx[common_tail] += rng.normal(-0.35, 0.12, common_tail.sum())
+        values = {"rec_m2_epX": m2_epx, "rec_m_eggX": m_eggx}
+        detector = np.ones(count, dtype=int)
+        zeros = np.zeros(count, dtype=int)
+
+        forward = derive_cuts(
+            values,
+            detector,
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            variables=("rec_m2_epX", "rec_m_eggX"),
+            topologies=(1,),
+            global_mode=True,
+            continuous_refinement=False,
+        )
+        reverse = derive_cuts(
+            values,
+            detector,
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            variables=("rec_m_eggX", "rec_m2_epX"),
+            topologies=(1,),
+            global_mode=True,
+            continuous_refinement=False,
+        )
+        self.assertEqual(forward.group_ids.tolist(), reverse.group_ids.tolist())
+        reverse_positions = [reverse.variables.index(name) for name in forward.variables]
+        np.testing.assert_allclose(
+            forward.lower,
+            reverse.lower[:, reverse_positions],
+            rtol=0.0,
+            atol=1.0e-12,
+        )
+        np.testing.assert_allclose(
+            forward.upper,
+            reverse.upper[:, reverse_positions],
+            rtol=0.0,
+            atol=1.0e-12,
+        )
+        np.testing.assert_allclose(
+            forward.nminus1_audit_lower,
+            reverse.nminus1_audit_lower[:, reverse_positions],
+            rtol=0.0,
+            atol=1.0e-12,
+        )
+        np.testing.assert_allclose(
+            forward.nminus1_audit_upper,
+            reverse.nminus1_audit_upper[:, reverse_positions],
+            rtol=0.0,
+            atol=1.0e-12,
+        )
+
+    def test_nminus1_audit_tolerance_does_not_change_nominal_windows(self) -> None:
+        rng = np.random.default_rng(83)
+        count = 5000
+        common_tail = rng.random(count) < 0.20
+        m2_epx = rng.normal(0.018, 0.055, count)
+        m_eggx = rng.normal(0.938, 0.045, count)
+        m2_epx[common_tail] += rng.normal(0.45, 0.12, common_tail.sum())
+        m_eggx[common_tail] += rng.normal(-0.30, 0.10, common_tail.sum())
+        values = {"rec_m2_epX": m2_epx, "rec_m_eggX": m_eggx}
+        detector = np.ones(count, dtype=int)
+        zeros = np.zeros(count, dtype=int)
+
+        strict = derive_cuts(
+            values,
+            detector,
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            variables=("rec_m2_epX", "rec_m_eggX"),
+            topologies=(1,),
+            global_mode=True,
+            nminus1_audit_boundary_tolerance=1.0e-4,
+            continuous_refinement=False,
+        )
+        loose = derive_cuts(
+            values,
+            detector,
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            variables=("rec_m2_epX", "rec_m_eggX"),
+            topologies=(1,),
+            global_mode=True,
+            nminus1_audit_boundary_tolerance=0.9,
+            continuous_refinement=False,
+        )
+        np.testing.assert_array_equal(strict.group_ids, loose.group_ids)
+        np.testing.assert_allclose(strict.lower, loose.lower, rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(strict.upper, loose.upper, rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(
+            strict.nminus1_audit_lower,
+            loose.nminus1_audit_lower,
+            rtol=0.0,
+            atol=0.0,
+        )
+        np.testing.assert_allclose(
+            strict.nminus1_audit_upper,
+            loose.nminus1_audit_upper,
+            rtol=0.0,
+            atol=0.0,
+        )
+        self.assertTrue(strict.nminus1_audit_complete)
+        self.assertFalse(strict.nminus1_audit_within_tolerance)
+        self.assertTrue(loose.nminus1_audit_within_tolerance)
+
+    def test_exclusivity_diagnostic_pdf_uses_stored_histograms(self) -> None:
+        rng = np.random.default_rng(79)
+        count = 400
+        values = {
+            "rec_m_gg": rng.normal(0.135, 0.01, count),
+            "rec_pT_miss": np.hypot(
+                rng.normal(0.0, 0.02, count), rng.normal(0.0, 0.02, count)
+            ),
+            "rec_m2_epX": rng.normal(0.018, 0.05, count),
+            "rec_m_eggX": rng.normal(0.938, 0.05, count),
+            "rec_E_miss": rng.normal(0.0, 0.1, count),
+            "rec_m2_miss": rng.laplace(0.0, 0.02, count),
         }
         detector = np.ones(count, dtype=int)
         zeros = np.zeros(count, dtype=int)
         cuts = derive_cuts(
-            values, detector, zeros, zeros, zeros,
-            topologies=(1,), minimum_events=20, global_mode=True,
+            values,
+            detector,
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            topologies=(1,),
+            minimum_events=20,
+            global_mode=True,
         )
-        mask = apply_cuts(cuts, values, detector, zeros, zeros, zeros)
-        self.assertEqual(cuts.group_ids.tolist(), [1])
-        self.assertGreater(mask.sum(), count // 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "diagnostics.pdf"
+            import matplotlib
+
+            hostile_style = {
+                "savefig.transparent": True,
+                "figure.facecolor": "none",
+                "axes.facecolor": "none",
+                "text.color": "white",
+                "axes.labelcolor": "white",
+                "axes.edgecolor": "white",
+                "xtick.color": "white",
+                "ytick.color": "white",
+            }
+            with matplotlib.rc_context(rc=hostile_style):
+                rendered = render_diagnostics(cuts, output)
+            self.assertEqual(rendered, (4,))
+            self.assertGreater(output.stat().st_size, 1000)
+            import re
+
+            media_boxes = re.findall(
+                rb"/MediaBox\s*\[\s*0\s+0\s+([0-9.eE+-]+)\s+"
+                rb"([0-9.eE+-]+)\s*\]",
+                output.read_bytes(),
+            )
+            self.assertEqual(len(media_boxes), 2)
+            for width, height in media_boxes:
+                self.assertLess(float(width), 1200.0)
+                self.assertLess(float(height), 700.0)
+
+    def test_exclusivity_diagnostic_subprocess_uses_saved_cut_table(self) -> None:
+        rng = np.random.default_rng(97)
+        count = 400
+        values = {
+            "rec_m_gg": rng.normal(0.135, 0.01, count),
+            "rec_pT_miss": np.hypot(
+                rng.normal(0.0, 0.02, count), rng.normal(0.0, 0.02, count)
+            ),
+            "rec_m2_epX": rng.normal(0.018, 0.05, count),
+            "rec_m_eggX": rng.normal(0.938, 0.05, count),
+            "rec_E_miss": rng.normal(0.0, 0.1, count),
+            "rec_m2_miss": rng.laplace(0.0, 0.02, count),
+        }
+        detector = np.ones(count, dtype=int)
+        zeros = np.zeros(count, dtype=int)
+        cuts = derive_cuts(
+            values,
+            detector,
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            topologies=(1,),
+            minimum_events=20,
+            global_mode=True,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            cut_path = Path(tmp) / "cuts.npz"
+            output = Path(tmp) / "diagnostics.pdf"
+            save_cuts(str(cut_path), cuts)
+            render_diagnostics_isolated(cut_path, output)
+            self.assertGreater(output.stat().st_size, 1000)
+
+    def test_paired_exclusivity_diagnostics_use_variable_pages(self) -> None:
+        rng = np.random.default_rng(101)
+        count = 800
+        detector = np.concatenate(
+            (np.ones(count // 2, dtype=int), np.full(count // 2, 2, dtype=int))
+        )
+        ft_photons = np.concatenate(
+            (np.zeros(count // 2, dtype=int), np.ones(count // 2, dtype=int))
+        )
+        zeros = np.zeros(count, dtype=int)
+
+        def sample(scale: float) -> dict[str, np.ndarray]:
+            return {
+                "rec_m_gg": rng.normal(0.135, 0.010 * scale, count),
+                "rec_pT_miss": np.hypot(
+                    rng.normal(0.0, 0.020 * scale, count),
+                    rng.normal(0.0, 0.020 * scale, count),
+                ),
+                "rec_m2_epX": rng.normal(0.018, 0.050 * scale, count),
+                "rec_m_eggX": rng.normal(0.938, 0.050 * scale, count),
+                "rec_E_miss": rng.normal(0.0, 0.100 * scale, count),
+                "rec_m2_miss": rng.laplace(0.0, 0.020 * scale, count),
+            }
+
+        data_cuts = derive_cuts(
+            sample(1.0),
+            detector,
+            ft_photons,
+            zeros,
+            zeros,
+            zeros,
+            minimum_events=20,
+            global_mode=True,
+        )
+        gemc_cuts = derive_cuts(
+            sample(0.8),
+            detector,
+            ft_photons,
+            zeros,
+            zeros,
+            zeros,
+            minimum_events=20,
+            global_mode=True,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "comparison.pdf"
+            variables = render_comparison_diagnostics(
+                data_cuts, gemc_cuts, output
+            )
+            self.assertEqual(variables, tuple(data_cuts.variables))
+            self.assertGreater(output.stat().st_size, 1000)
+            import re
+
+            media_boxes = re.findall(rb"/MediaBox\s*\[", output.read_bytes())
+            self.assertEqual(len(media_boxes), len(data_cuts.variables))
+
+            self.assertGreaterEqual(data_cuts.group_ids.size, 2)
+            dropped_data_cuts = replace(
+                data_cuts,
+                group_ids=data_cuts.group_ids[:1],
+                dropped_group_ids=data_cuts.group_ids[1:2],
+                dropped_variables=np.array(["rec_pT_miss"]),
+                dropped_reasons=np.array(["test retention-threshold failure"]),
+            )
+            appendix_output = Path(tmp) / "comparison_with_appendix.pdf"
+            render_comparison_diagnostics(
+                dropped_data_cuts, gemc_cuts, appendix_output
+            )
+            appendix_media_boxes = re.findall(
+                rb"/MediaBox\s*\[", appendix_output.read_bytes()
+            )
+            self.assertEqual(
+                len(appendix_media_boxes), 2 * len(data_cuts.variables)
+            )
+            self.assertEqual(
+                comparison_page_counts(dropped_data_cuts, gemc_cuts),
+                (len(data_cuts.variables), len(data_cuts.variables)),
+            )
+
+    def test_paired_diagnostics_separate_retained_and_failed_topologies(self) -> None:
+        data_cuts = SimpleNamespace(
+            global_mode=True,
+            variables=("rec_m_gg",),
+            group_ids=np.array([4]),
+            populated_group_ids=np.array([4, 8]),
+        )
+        gemc_cuts = SimpleNamespace(
+            global_mode=True,
+            variables=("rec_m_gg",),
+            group_ids=np.array([4, 8]),
+            populated_group_ids=np.array([4, 8]),
+        )
+
+        variables, retained, dropped = _comparison_layout(data_cuts, gemc_cuts)
+        self.assertEqual(variables, ("rec_m_gg",))
+        self.assertEqual(retained, (4,))
+        self.assertEqual(dropped, (8,))
+
+    def test_core_plus_broad_tail_recovers_narrow_resolution(self) -> None:
+        rng = np.random.default_rng(41)
+        core = rng.normal(0.02, 0.06, 4000)
+        tail = rng.normal(0.07, 0.22, 5000)
+        background = rng.uniform(-2.0, 3.0, 1000)
+        window = estimate_window(
+            np.concatenate((core, tail, background)),
+            n_sigma=3.0,
+            minimum_events=50,
+            expected_center=0.018,
+            maximum_center_deviation=0.20,
+            maximum_sigma=0.20,
+        )
+        self.assertIsNotNone(window)
+        lower, upper = window
+        self.assertGreater(0.5 * (upper - lower), 0.12)
+        self.assertLess(0.5 * (upper - lower), 0.23)
+        self.assertAlmostEqual(0.5 * (lower + upper), 0.02, delta=0.04)
+
+    def test_expected_center_validation_does_not_scale_with_bad_width(self) -> None:
+        rng = np.random.default_rng(43)
+        wrong_peak = rng.normal(3.5, 1.4, 4000)
+        window = estimate_window(
+            wrong_peak,
+            n_sigma=3.0,
+            minimum_events=50,
+            expected_center=0.018,
+            maximum_center_deviation=0.20,
+            maximum_sigma=0.20,
+        )
+        self.assertIsNone(window)
+
+    def test_sparse_group_uses_same_topology_fallback(self) -> None:
+        rng = np.random.default_rng(29)
+        dense = rng.normal(0.0, 0.1, 400)
+        sparse = rng.normal(0.0, 0.1, 10)
+        values = {"toy_peak": np.concatenate((dense, sparse))}
+        detector = np.ones(410, dtype=int)
+        ft_photons = np.zeros(410, dtype=int)
+        iq2 = np.concatenate((np.zeros(400, dtype=int), np.ones(10, dtype=int)))
+        zeros = np.zeros(410, dtype=int)
+        cuts = derive_cuts(
+            values,
+            detector,
+            ft_photons,
+            iq2,
+            zeros,
+            zeros,
+            variables=("toy_peak",),
+            topologies=(1,),
+            minimum_events=50,
+            global_mode=False,
+        )
+        self.assertEqual(cuts.group_ids.size, 2)
+        self.assertEqual(cuts.window_source[0, 0], "local")
+        self.assertEqual(cuts.window_source[1, 0], "topology_fallback")
+        self.assertTrue(np.all(np.isfinite(cuts.lower)))
+        self.assertTrue(np.all(np.isfinite(cuts.upper)))
+
+    def test_broad_local_hump_uses_topology_consistency_fallback(self) -> None:
+        rng = np.random.default_rng(47)
+        narrow = rng.normal(0.02, 0.06, 1500)
+        broad = rng.normal(0.10, 0.24, 300)
+        values = {"toy_peak": np.concatenate((narrow, broad))}
+        detector = np.ones(1800, dtype=int)
+        ft_photons = np.zeros(1800, dtype=int)
+        iq2 = np.concatenate((np.zeros(1500, dtype=int), np.ones(300, dtype=int)))
+        zeros = np.zeros(1800, dtype=int)
+        cuts = derive_cuts(
+            values,
+            detector,
+            ft_photons,
+            iq2,
+            zeros,
+            zeros,
+            variables=("toy_peak",),
+            topologies=(1,),
+            minimum_events=50,
+            global_mode=False,
+        )
+        self.assertEqual(cuts.group_ids.size, 2)
+        self.assertEqual(cuts.window_source[0, 0], "local")
+        self.assertEqual(
+            cuts.window_source[1, 0], "topology_consistency_fallback"
+        )
+        self.assertLess(cuts.sigmas[1, 0], 0.12)
+
+    def test_tail_based_cut_table_requires_rederivation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tail_based_cuts.npz"
+            np.savez_compressed(
+                path,
+                variables=np.array(["rec_m_gg"]),
+                group_ids=np.array([4]),
+                lower=np.array([[0.0]]),
+                upper=np.array([[1.0]]),
+                global_mode=True,
+                n_sigma=3.0,
+                minimum_events=50,
+                grouping="proton-detector+ft-photon-count-v1",
+            )
+            with self.assertRaisesRegex(ValueError, "predates signal-background fitting"):
+                load_cuts(str(path))
+
+    def test_previous_fitted_cut_tables_require_rederivation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            for estimator in (
+                "mode-seeded-iterative-gaussian-core-v1",
+                "binned-gaussian-linear-background-mixture-v2",
+                "binned-gaussian-core-tail-background-mixture-v3",
+                "binned-gaussian-core-tail-background-mixture-v4",
+                "topology-variable-signal-models-v5",
+                "topology-variable-signal-models-iterative-v6",
+                "topology-variable-signal-models-iterative-v7",
+            ):
+                path = Path(tmp) / f"{estimator}.npz"
+                np.savez_compressed(
+                    path,
+                    variables=np.array(["rec_m_gg"]),
+                    group_ids=np.array([4]),
+                    lower=np.array([[0.0]]),
+                    upper=np.array([[1.0]]),
+                    global_mode=True,
+                    n_sigma=3.0,
+                    minimum_events=50,
+                    grouping="proton-detector+ft-photon-count-v1",
+                    estimator=estimator,
+                )
+                with self.assertRaisesRegex(
+                    ValueError, "unsupported exclusivity estimator"
+                ):
+                    load_cuts(str(path))
+
+    def test_legacy_cut_table_requires_rederivation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy_cuts.npz"
+            np.savez_compressed(
+                path,
+                variables=np.array(["rec_m_gg"]),
+                group_ids=np.array([1]),
+                lower=np.array([[0.0]]),
+                upper=np.array([[1.0]]),
+                global_mode=True,
+                n_sigma=3.0,
+                minimum_events=50,
+            )
+            with self.assertRaisesRegex(ValueError, "predates FT-photon topology"):
+                load_cuts(str(path))
 
 
 class UnfoldingTests(unittest.TestCase):
+    def test_mgg_background_is_estimated_before_unfolding(self) -> None:
+        rng = np.random.default_rng(19)
+        signal = rng.normal(0.135, 0.009, 12_000)
+        background = rng.uniform(0.04, 0.24, 4_000)
+        masses = np.concatenate((signal, background))
+        rng.shuffle(masses)
+        count = masses.size
+        zeros = np.zeros(count, dtype=np.int64)
+        detectors = np.ones(count, dtype=np.int64)
+        cuts = derive_cuts(
+            {"rec_m_gg": masses},
+            detectors,
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            variables=("rec_m_gg",),
+            topologies=(1,),
+            photon_topologies=(0,),
+            minimum_events=50,
+            fit_histogram_bins=100,
+            minimum_signal_fraction=0.05,
+        )
+        estimate = estimate_mgg_background(
+            cuts=cuts,
+            values={"rec_m_gg": masses},
+            proton_detector=detectors,
+            ft_photons=zeros,
+            iq2=zeros,
+            ixb=zeros,
+            it=zeros,
+            rec_flat=np.arange(count) % 2,
+            base_mask=np.ones(count, dtype=bool),
+            event_weights=np.ones(count),
+            number_of_bins=2,
+            alpha_bootstrap=20,
+            seed=23,
+        )
+
+        self.assertEqual(estimate.group_ids.tolist(), [4])
+        self.assertGreater(float(estimate.estimated_background.sum()), 500.0)
+        self.assertLess(
+            float(estimate.background_subtracted.sum()),
+            float(estimate.signal_region.sum()),
+        )
+        np.testing.assert_allclose(
+            estimate.background_subtracted,
+            estimate.signal_region - estimate.estimated_background,
+        )
+        self.assertTrue(np.all(estimate.alpha > 0.0))
+        self.assertTrue(np.all(estimate.alpha_uncertainty > 0.0))
+
+    def test_unfold_records_and_uses_background_subtraction(self) -> None:
+        rng = np.random.default_rng(29)
+        masses = np.concatenate(
+            (rng.normal(0.135, 0.009, 9_000), rng.uniform(0.04, 0.24, 3_000))
+        )
+        rng.shuffle(masses)
+        count = masses.size
+        zeros = np.zeros(count, dtype=np.int64)
+        detectors = np.ones(count, dtype=np.int64)
+        cuts = derive_cuts(
+            {"rec_m_gg": masses},
+            detectors,
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            variables=("rec_m_gg",),
+            topologies=(1,),
+            photon_topologies=(0,),
+            minimum_events=50,
+            fit_histogram_bins=100,
+            minimum_signal_fraction=0.05,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            config_path = tmpdir / "analysis.json"
+            data_path = tmpdir / "data.npz"
+            matrix_path = tmpdir / "response.npz"
+            meta_path = tmpdir / "response_meta.npz"
+            cuts_path = tmpdir / "data_exclusivity.npz"
+            output_path = tmpdir / "unfolding.npz"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "beam_energy": 6.535,
+                        "minimum_acceptance": 0.005,
+                        "binning": {
+                            "Q2": [1.0, 1.5],
+                            "xB": [0.1, 0.3],
+                            "minus_t": [0.1, 0.3],
+                            "phi_deg": [0.0, 180.0, 360.0],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            phi = np.where(np.arange(count) % 2, np.pi, 0.1)
+            np.savez_compressed(
+                data_path,
+                rec_Q2=np.full(count, 1.2),
+                rec_xB=np.full(count, 0.2),
+                rec_minus_t=np.full(count, 0.2),
+                rec_trento_phi=phi,
+                rec_selected=np.ones(count, dtype=bool),
+                rec_m_gg=masses,
+                rec_proton_detector=detectors,
+                rec_ft_photon_count=zeros,
+                beam_charge_c=np.asarray(1.0e-9),
+            )
+            save_npz(matrix_path, eye(2, format="csr"))
+            np.savez_compressed(
+                meta_path,
+                efficiency=np.ones(2),
+                feed_in_fraction=0.0,
+                feed_in_shape=np.zeros(2),
+                response_variance_sum=np.zeros(2),
+            )
+            save_cuts(str(cuts_path), cuts)
+            args = argparse.Namespace(
+                data=data_path,
+                response_matrix=matrix_path,
+                response_meta=meta_path,
+                config=config_path,
+                output=output_path,
+                selection_mask=None,
+                background_cuts=cuts_path,
+                background_alpha_bootstrap=20,
+                background_negative_policy="error",
+                iterations=0,
+                bootstrap=0,
+                seed=31,
+                radiative_correction=None,
+                current_efficiency_correction=None,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_unfold(args)
+            with np.load(output_path, allow_pickle=False) as result:
+                self.assertTrue(bool(result["background_subtraction_applied"]))
+                self.assertGreater(float(result["estimated_background"].sum()), 0.0)
+                self.assertLess(
+                    float(result["measured"].sum()),
+                    float(result["measured_signal_region"].sum()),
+                )
+                np.testing.assert_allclose(result["unfolded"], result["measured"])
+
     def test_identity_response_returns_measured_spectrum(self) -> None:
         response = csr_matrix(np.eye(3))
         measured = np.array([10.0, 20.0, 30.0])
@@ -460,6 +1458,227 @@ class UnfoldingTests(unittest.TestCase):
         second = bootstrap_uncertainty(*args, experiments=20, seed=7)
         np.testing.assert_allclose(first[0], second[0])
         np.testing.assert_allclose(first[1], second[1])
+
+    def test_data_derived_prior_is_recomputed_for_bootstrap_coverage(self) -> None:
+        response = csr_matrix(np.array([[0.55, 0.18], [0.20, 0.57]]))
+        efficiency = np.asarray(response.sum(axis=0)).ravel()
+        truth = np.array([100.0, 35.0])
+        expected_measured = np.asarray(response.dot(truth)).ravel()
+        prior = expected_measured / efficiency
+
+        fixed_prior = bootstrap_ensemble(
+            response,
+            expected_measured,
+            efficiency,
+            1,
+            prior,
+            minimum_acceptance=0.0,
+            experiments=6000,
+            seed=11,
+        )
+        full_estimator = bootstrap_ensemble(
+            response,
+            expected_measured,
+            efficiency,
+            1,
+            prior,
+            minimum_acceptance=0.0,
+            experiments=6000,
+            seed=11,
+            recompute_data_prior=True,
+        )
+
+        rng = np.random.default_rng(91)
+        repeated_estimates = []
+        for measured in rng.poisson(expected_measured, size=(6000, 2)):
+            measured = measured.astype(float)
+            repeated_estimates.append(
+                iterative_bayes(
+                    response,
+                    measured,
+                    efficiency,
+                    1,
+                    prior=measured / efficiency,
+                    minimum_acceptance=0.0,
+                ).unfolded
+            )
+        empirical_covariance = np.cov(np.asarray(repeated_estimates), rowvar=False)
+        full_covariance = np.cov(full_estimator, rowvar=False)
+        fixed_covariance = np.cov(fixed_prior, rowvar=False)
+
+        np.testing.assert_allclose(
+            np.diag(full_covariance), np.diag(empirical_covariance), rtol=0.12
+        )
+        self.assertLess(fixed_covariance[0, 0], 0.75 * empirical_covariance[0, 0])
+        self.assertLess(fixed_covariance[1, 1], 0.75 * empirical_covariance[1, 1])
+        self.assertLess(full_covariance[0, 1], 0.0)
+        self.assertGreater(fixed_covariance[0, 1], 0.0)
+
+    def test_phi_block_covariance_keeps_cells_separate(self) -> None:
+        binning = AnalysisBinning(
+            [1.0, 2.0], [0.1, 0.2], [0.1, 0.2], [0.0, 180.0, 360.0]
+        )
+        samples = np.asarray(
+            [
+                [1.0, 2.0],
+                [2.0, 4.0],
+                [3.0, 6.0],
+            ]
+        )
+        covariance = phi_block_covariance(samples, binning)
+        self.assertEqual(covariance.shape, (1, 2, 2))
+        np.testing.assert_allclose(covariance[0], np.cov(samples, rowvar=False))
+
+    def test_phi_covariance_respects_legacy_t_fastest_flat_order(self) -> None:
+        binning = AnalysisBinning(
+            [1.0, 2.0],
+            [0.1, 0.2],
+            [0.1, 0.2, 0.3],
+            [0.0, 180.0, 360.0],
+        )
+        # Legacy flat order is [phi0-t0, phi0-t1, phi1-t0, phi1-t1].
+        samples = np.asarray(
+            [
+                [1.0, 10.0, 2.0, 20.0],
+                [2.0, 11.0, 4.0, 18.0],
+                [3.0, 12.0, 6.0, 16.0],
+            ]
+        )
+        covariance = phi_block_covariance(samples, binning)
+        self.assertEqual(covariance.shape, (2, 2, 2))
+        np.testing.assert_allclose(
+            covariance[0], np.cov(samples[:, [0, 2]], rowvar=False)
+        )
+        np.testing.assert_allclose(
+            covariance[1], np.cov(samples[:, [1, 3]], rowvar=False)
+        )
+        covariance_variance_flat = binning.flatten_values(
+            np.diagonal(covariance, axis1=-2, axis2=-1).reshape(binning.shape)
+        )
+        np.testing.assert_allclose(
+            covariance_variance_flat, np.var(samples, axis=0, ddof=1)
+        )
+
+        variance = np.asarray([1.0, 10.0, 2.0, 20.0])
+        diagonal = diagonal_phi_covariance(variance, binning)
+        np.testing.assert_allclose(np.diag(diagonal[0]), [1.0, 2.0])
+        np.testing.assert_allclose(np.diag(diagonal[1]), [10.0, 20.0])
+
+    def test_zero_iteration_records_raw_and_feed_in_subtracted_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            config_path = tmpdir / "analysis.json"
+            data_path = tmpdir / "data.npz"
+            matrix_path = tmpdir / "response.npz"
+            meta_path = tmpdir / "response_meta.npz"
+            output_path = tmpdir / "unfolding.npz"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "beam_energy": 6.535,
+                        "minimum_acceptance": 0.005,
+                        "binning": {
+                            "Q2": [1.0, 1.5],
+                            "xB": [0.1, 0.3],
+                            "minus_t": [0.1, 0.3],
+                            "phi_deg": [0.0, 360.0],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            np.savez_compressed(
+                data_path,
+                rec_Q2=np.full(4, 1.2),
+                rec_xB=np.full(4, 0.2),
+                rec_minus_t=np.full(4, 0.2),
+                rec_trento_phi=np.full(4, 0.1),
+                rec_selected=np.ones(4, dtype=bool),
+            )
+            save_npz(matrix_path, csr_matrix([[0.5]]))
+            np.savez_compressed(
+                meta_path,
+                efficiency=np.asarray([0.5]),
+                feed_in_fraction=0.25,
+                feed_in_shape=np.asarray([1.0]),
+                response_variance_sum=np.zeros(1),
+                truth_total=np.asarray([12.0]),
+                reconstructed_total=np.asarray([8.0]),
+            )
+            args = argparse.Namespace(
+                data=data_path,
+                response_matrix=matrix_path,
+                response_meta=meta_path,
+                config=config_path,
+                output=output_path,
+                selection_mask=None,
+                iterations=0,
+                bootstrap=0,
+                seed=12345,
+                radiative_correction=None,
+                current_efficiency_correction=None,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_unfold(args)
+            with np.load(output_path, allow_pickle=False) as result:
+                np.testing.assert_allclose(result["measured"], [4.0])
+                np.testing.assert_allclose(result["feed_in_corrected_measured"], [3.0])
+                np.testing.assert_allclose(result["acceptance_corrected"], [8.0])
+                np.testing.assert_allclose(result["acceptance_corrected_raw"], [8.0])
+                np.testing.assert_allclose(
+                    result["acceptance_corrected_feed_in_subtracted"], [6.0]
+                )
+                np.testing.assert_allclose(result["unfolded"], [8.0])
+                self.assertEqual(str(result["unfolding_method"]), "bin_by_bin_efficiency")
+                self.assertEqual(
+                    str(result["unfolding_input_definition"]),
+                    "measured_without_feed_in_subtraction",
+                )
+                self.assertFalse(bool(result["feed_in_subtraction_applied_to_unfolded"]))
+                np.testing.assert_allclose(
+                    np.diagonal(
+                        result["corrected_covariance_phi"], axis1=-2, axis2=-1
+                    ).reshape(-1),
+                    result["corrected_uncertainty"] ** 2,
+                )
+
+            args.iterations = 1
+            args.bootstrap = 5
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_unfold(args)
+            with np.load(output_path, allow_pickle=False) as result:
+                np.testing.assert_allclose(result["unfolded"], [6.0])
+                self.assertEqual(str(result["unfolding_method"]), "iterative_bayes")
+                self.assertEqual(
+                    str(result["unfolding_input_definition"]),
+                    "feed_in_subtracted_measured",
+                )
+                self.assertTrue(bool(result["feed_in_subtraction_applied_to_unfolded"]))
+                np.testing.assert_allclose(
+                    np.diagonal(
+                        result["corrected_covariance_phi"], axis1=-2, axis2=-1
+                    ).reshape(-1),
+                    result["corrected_uncertainty"] ** 2,
+                )
+
+            args.response_uncertainty = "count-bootstrap"
+            args.bootstrap = 100
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_unfold(args)
+            with np.load(output_path, allow_pickle=False) as result:
+                self.assertEqual(
+                    str(result["response_uncertainty_method"]), "count-bootstrap"
+                )
+                self.assertEqual(
+                    int(result["response_count_bootstrap_experiments"]), 100
+                )
+                self.assertGreater(float(result["sigma_total"][0]), 0.0)
+                np.testing.assert_allclose(
+                    np.diagonal(
+                        result["corrected_covariance_phi"], axis1=-2, axis2=-1
+                    ).reshape(-1),
+                    result["corrected_uncertainty"] ** 2,
+                )
 
     def test_unfold_divides_by_radiative_correction(self) -> None:
         config = Path("configs/analysis/rgk/6.535.json")
@@ -495,10 +1714,12 @@ class UnfoldingTests(unittest.TestCase):
             )
             c_rad_flat = np.ones(binning.size)
             c_rad_flat[flat] = 2.0
+            delta_c_flat = np.zeros(binning.size)
+            delta_c_flat[flat] = 0.2
             np.savez_compressed(
                 correction_path,
                 C_rad=binning.unflatten(c_rad_flat),
-                delta_C=np.zeros(binning.shape),
+                delta_C=binning.unflatten(delta_c_flat),
                 reliable=np.ones(binning.shape, dtype=bool),
             )
             args = argparse.Namespace(
@@ -518,6 +1739,162 @@ class UnfoldingTests(unittest.TestCase):
             result = np.load(output_path, allow_pickle=False)
         self.assertEqual(result["unfolded"][flat], 1.0)
         self.assertEqual(result["corrected_yield"][flat], 0.5)
+        self.assertEqual(result["sigma_total"][flat], 1.0)
+        self.assertAlmostEqual(
+            result["corrected_uncertainty"][flat],
+            np.hypot(1.0 / 2.0, 1.0 * 0.2 / 2.0**2),
+        )
+
+    def test_unfold_applies_run_current_weights_and_weighted_statistics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            config_path = tmpdir / "analysis.json"
+            data_path = tmpdir / "data.npz"
+            matrix_path = tmpdir / "response.npz"
+            meta_path = tmpdir / "response_meta.npz"
+            correction_path = tmpdir / "current_efficiency_correction.json"
+            output_path = tmpdir / "unfolding.npz"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "beam_energy": 6.535,
+                        "minimum_acceptance": 0.005,
+                        "binning": {
+                            "Q2": [1.0, 1.5],
+                            "xB": [0.1, 0.3],
+                            "minus_t": [0.1, 0.3],
+                            "phi_deg": [0.0, 360.0],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            np.savez_compressed(
+                data_path,
+                run=np.asarray([1001, 1002]),
+                rec_Q2=np.asarray([1.2, 1.4]),
+                rec_xB=np.asarray([0.2, 0.2]),
+                rec_minus_t=np.asarray([0.2, 0.2]),
+                rec_trento_phi=np.asarray([0.1, 0.1]),
+                rec_selected=np.asarray([True, True]),
+                beam_charge_c=np.asarray(2.0e-9),
+            )
+            save_npz(matrix_path, eye(1, format="csr"))
+            np.savez_compressed(
+                meta_path,
+                efficiency=np.ones(1),
+                feed_in_fraction=0.0,
+                feed_in_shape=np.zeros(1),
+                response_variance_sum=np.zeros(1),
+            )
+            data_model = RelativeLinearEfficiency(
+                100.0, -1.0, ((0.0, 0.0), (0.0, 0.0))
+            )
+            gemc_model = RelativeLinearEfficiency(
+                0.8, -0.002, ((0.0, 0.0), (0.0, 0.0))
+            )
+            records = [
+                SimpleNamespace(
+                    run=1001,
+                    current_nA=0.0,
+                    charge_c=1.0e-9,
+                    run_class="L5",
+                    current_quality="unflagged",
+                    included=True,
+                    exclusion_reason="",
+                ),
+                SimpleNamespace(
+                    run=1002,
+                    current_nA=60.0,
+                    charge_c=1.0e-9,
+                    run_class="P3",
+                    current_quality="unflagged",
+                    included=True,
+                    exclusion_reason="",
+                ),
+            ]
+            payload = correction_artifact(
+                data_model=data_model,
+                gemc_model=gemc_model,
+                reference_current_nA=60.0,
+                reference_label="merged_60nA",
+                reference_response_meta=meta_path,
+                run_records=records,
+                sources={},
+            )
+            correction_path.write_text(json.dumps(payload), encoding="utf-8")
+            args = argparse.Namespace(
+                data=data_path,
+                response_matrix=matrix_path,
+                response_meta=meta_path,
+                config=config_path,
+                output=output_path,
+                selection_mask=None,
+                iterations=0,
+                bootstrap=0,
+                seed=12345,
+                radiative_correction=None,
+                current_efficiency_correction=correction_path,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_unfold(args)
+            with np.load(output_path, allow_pickle=False) as result:
+                measured = float(result["measured"][0])
+                variance = float(result["measured_variance"][0])
+                q2_mean = float(result["Q2_mean"][0])
+                applied = bool(result["current_efficiency_applied"])
+
+            excluded_correction_path = tmpdir / "excluded_current_efficiency.json"
+            excluded_output_path = tmpdir / "excluded_unfolding.npz"
+            excluded_payload = correction_artifact(
+                data_model=data_model,
+                gemc_model=gemc_model,
+                reference_current_nA=60.0,
+                reference_label="merged_60nA",
+                reference_response_meta=meta_path,
+                run_records=records,
+                sources={},
+                analysis_excluded_runs=(1001,),
+            )
+            excluded_correction_path.write_text(
+                json.dumps(excluded_payload), encoding="utf-8"
+            )
+            args.output = excluded_output_path
+            args.current_efficiency_correction = excluded_correction_path
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_unfold(args)
+            with np.load(excluded_output_path, allow_pickle=False) as result:
+                excluded_measured = float(result["measured"][0])
+                excluded_variance = float(result["measured_variance"][0])
+                excluded_q2_mean = float(result["Q2_mean"][0])
+                excluded_charge = float(result["beam_charge_c"])
+                original_charge = float(result["beam_charge_original_c"])
+                excluded_unweighted = float(result["measured_unweighted"][0])
+                excluded_events = int(
+                    result["current_efficiency_excluded_event_count"]
+                )
+                excluded_runs = result["current_efficiency_excluded_runs"].tolist()
+
+        low_current_weight = 0.85
+        high_current_weight = 0.85 / 0.4
+        self.assertAlmostEqual(measured, low_current_weight + high_current_weight)
+        self.assertAlmostEqual(
+            variance, low_current_weight**2 + high_current_weight**2
+        )
+        self.assertAlmostEqual(
+            q2_mean,
+            (1.2 * low_current_weight + 1.4 * high_current_weight)
+            / (low_current_weight + high_current_weight),
+        )
+        self.assertTrue(applied)
+        self.assertAlmostEqual(excluded_measured, high_current_weight)
+        self.assertAlmostEqual(excluded_variance, high_current_weight**2)
+        self.assertAlmostEqual(excluded_q2_mean, 1.4)
+        self.assertAlmostEqual(excluded_charge, 1.0e-9)
+        self.assertAlmostEqual(original_charge, 2.0e-9)
+        self.assertEqual(excluded_unweighted, 1.0)
+        self.assertEqual(excluded_events, 1)
+        self.assertEqual(excluded_runs, [1001])
 
 
 class RadiativeCorrectionTests(unittest.TestCase):
@@ -534,6 +1911,36 @@ class RadiativeCorrectionTests(unittest.TestCase):
         self.assertTrue(np.isfinite(result.generated_q2_min))
         self.assertTrue(np.isfinite(result.generated_eprime_max))
 
+    def test_lund_histogram_groups_exact_consecutive_multiplicity_copies(self) -> None:
+        bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mode3.lund"
+            event = _lund_event(pi0=True)
+            path.write_text(3 * event, encoding="utf-8")
+            result = histogram_lund(path, bins, beam_energy=6.535, chunk_size=1)
+        self.assertEqual(result.topology_events, 3)
+        self.assertEqual(result.topology_clusters, 1)
+        self.assertEqual(result.in_range, 3)
+        self.assertEqual(result.in_range_clusters, 1)
+        self.assertEqual(result.maximum_cluster_multiplicity, 3)
+        self.assertEqual(result.counts.sum(), 3.0)
+        self.assertEqual(result.cluster_weight_square_sum.sum(), 9.0)
+        self.assertEqual(result.effective_counts.sum(), 1.0)
+
+    def test_lund_histogram_does_not_merge_distinct_full_event_records(self) -> None:
+        bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "distinct.lund"
+            path.write_text(
+                _lund_event(pi0=False) + _lund_event(pi0=True),
+                encoding="utf-8",
+            )
+            result = histogram_lund(path, bins, beam_energy=6.535, chunk_size=1)
+        self.assertEqual(result.topology_events, 2)
+        self.assertEqual(result.topology_clusters, 2)
+        self.assertEqual(result.cluster_weight_square_sum.sum(), 2.0)
+        self.assertEqual(result.effective_counts.sum(), 2.0)
+
     def test_lund_histogram_applies_analysis_phase_space(self) -> None:
         bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
         with tempfile.TemporaryDirectory() as tmp:
@@ -544,7 +1951,7 @@ class RadiativeCorrectionTests(unittest.TestCase):
                 bins,
                 beam_energy=6.535,
                 chunk_size=1,
-                phase_space=AnalysisPhaseSpace(y_max=0.3),
+                phase_space=AnalysisPhaseSpace(electron_p_min=5.0),
             )
         self.assertEqual(result.events_seen, 1)
         self.assertEqual(result.topology_events, 1)
@@ -616,6 +2023,102 @@ class RadiativeCorrectionTests(unittest.TestCase):
         np.testing.assert_allclose(result.c_rad[result.reliable], [0.5])
         self.assertEqual(result.normalization_ratio, 0.5)
 
+    def test_radiative_correction_uses_cluster_aware_uncertainty_and_support(self) -> None:
+        bins = AnalysisBinning([1.0, 1.5], [0.2, 0.3], [0.2, 0.3], [0.0, 180.0, 360.0])
+        with tempfile.TemporaryDirectory() as tmp:
+            born = Path(tmp) / "born.lund"
+            rad = Path(tmp) / "rad.lund"
+            born.write_text(3 * _lund_event(pi0=False), encoding="utf-8")
+            rad.write_text(3 * _lund_event(pi0=True), encoding="utf-8")
+            result = compute_radiative_correction(
+                born,
+                rad,
+                bins,
+                beam_energy=6.535,
+                min_counts=1,
+                chunk_size=1,
+            )
+        self.assertEqual(np.count_nonzero(result.reliable), 1)
+        np.testing.assert_allclose(result.c_rad[result.reliable], [1.0])
+        expected = np.sqrt(2.0 * (9.0 + 0.5) / (3.0 + 0.5) ** 2)
+        np.testing.assert_allclose(result.delta_c[result.reliable], [expected])
+        self.assertGreater(expected, np.sqrt(2.0 / 3.5))
+
+        # Three output records came from only one independent proposal cluster,
+        # so a minimum of two effective observations must reject the bin.
+        with tempfile.TemporaryDirectory() as tmp:
+            born = Path(tmp) / "born.lund"
+            rad = Path(tmp) / "rad.lund"
+            born.write_text(3 * _lund_event(pi0=False), encoding="utf-8")
+            rad.write_text(3 * _lund_event(pi0=True), encoding="utf-8")
+            result = compute_radiative_correction(
+                born,
+                rad,
+                bins,
+                beam_energy=6.535,
+                min_counts=2,
+                chunk_size=1,
+            )
+        self.assertEqual(np.count_nonzero(result.reliable), 0)
+        np.testing.assert_array_equal(result.support_status[result.support_overlap], [6])
+
+    def test_radiative_correction_artifact_records_cluster_statistics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            config = tmpdir / "config.json"
+            born = tmpdir / "born.lund"
+            rad = tmpdir / "rad.lund"
+            output = tmpdir / "C_rad.npz"
+            config.write_text(
+                json.dumps(
+                    {
+                        "beam_energy": 6.535,
+                        "binning": {
+                            "Q2": [1.0, 1.5],
+                            "xB": [0.2, 0.3],
+                            "minus_t": [0.2, 0.3],
+                            "phi_deg": [0.0, 180.0, 360.0],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            born.write_text(2 * _lund_event(pi0=False), encoding="utf-8")
+            rad.write_text(2 * _lund_event(pi0=True), encoding="utf-8")
+            args = argparse.Namespace(
+                born=born,
+                radiative=rad,
+                config=config,
+                output=output,
+                chunk_size=1,
+                max_events=None,
+                max_files=None,
+                min_counts=1,
+                normalization_ratio=None,
+                born_integrated_cross_section=None,
+                radiative_integrated_cross_section=None,
+                born_normalization_file=None,
+                radiative_normalization_file=None,
+                max_normalization_files=None,
+                progress_chunks=0,
+                diagnostic_pdf=None,
+                diagnostic_csv=None,
+                diagnostic_quilt=False,
+                diagnostic_quilt_scale_mode="panel",
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_radiative_correction(args)
+            with np.load(output, allow_pickle=False) as artifact:
+                self.assertEqual(
+                    str(artifact["uncertainty_model"]),
+                    "consecutive-exact-lund-clusters-v1",
+                )
+                self.assertEqual(float(np.sum(artifact["H_born"])), 2.0)
+                self.assertEqual(float(np.sum(artifact["H_born_cluster_sumw2"])), 4.0)
+                self.assertEqual(float(np.sum(artifact["H_born_effective"])), 1.0)
+                self.assertEqual(int(artifact["born_topology_clusters"]), 1)
+                self.assertEqual(int(artifact["born_maximum_cluster_multiplicity"]), 2)
+
     def test_generator_integrated_cross_section_parser_reads_norm_and_sum(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             norm = Path(tmp) / "aao_norad.norm"
@@ -666,6 +2169,107 @@ class RadiativeCorrectionTests(unittest.TestCase):
             )
             self.assertEqual(npz_fields["born_normalization_generators"][0], "aao_norad")
 
+            safe_mode3 = Path(tmp) / "safe_mode3.norm"
+            safe_mode3.write_text(
+                "\n".join([
+                    "generator=aao_rad",
+                    "sig_sum=0.0007",
+                    "events=5002",
+                    "mcall_max=4",
+                    "sampling_mode=3",
+                    "mode3_schema=aao-rad-mode3-v2",
+                    "mode3_direct_fraction=0.75",
+                    "mode3_duplicate_events=2",
+                    "",
+                ]),
+                encoding="utf-8",
+            )
+            safe = _read_generator_normalization_summary(safe_mode3)
+            self.assertEqual(safe.records[0].sampling_mode, 3.0)
+            self.assertEqual(safe.records[0].mode3_direct_fraction, 0.75)
+            safe_fields = _normalization_npz_fields("radiative", safe)
+            np.testing.assert_allclose(
+                safe_fields["radiative_normalization_mode3_duplicate_events"],
+                [2.0],
+            )
+
+            safe_born_mode3 = Path(tmp) / "safe_born_mode3.norm"
+            safe_born_mode3.write_text(
+                "\n".join([
+                    "generator=aao_norad",
+                    "sig_sum=0.00038",
+                    "events=5002",
+                    "mcall_max=4",
+                    "sampling_mode=3",
+                    "mode3_schema=aao-norad-mode3-v2",
+                    "mode3_target_events=5000",
+                    "mode3_event_overshoot=2",
+                    "mode3_complete_final_multiplicity=1",
+                    "",
+                ]),
+                encoding="utf-8",
+            )
+            safe_born = _read_generator_normalization_summary(safe_born_mode3)
+            self.assertEqual(
+                safe_born.records[0].mode3_schema, "aao-norad-mode3-v2"
+            )
+            safe_born_fields = _normalization_npz_fields("born", safe_born)
+            np.testing.assert_allclose(
+                safe_born_fields["born_normalization_mode3_event_overshoot"],
+                [2.0],
+            )
+
+            inconsistent_born_mode3 = Path(tmp) / "inconsistent_born_mode3.norm"
+            inconsistent_born_mode3.write_text(
+                safe_born_mode3.read_text(encoding="utf-8").replace(
+                    "mode3_event_overshoot=2", "mode3_event_overshoot=1"
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "counts are inconsistent"):
+                _read_generator_normalization_summary(inconsistent_born_mode3)
+
+            legacy_born_mode3 = Path(tmp) / "legacy_born_mode3.norm"
+            legacy_born_mode3.write_text(
+                "generator=aao_norad\nsig_sum=0.00038\nevents=5000\n"
+                "mcall_max=2\nsampling_mode=3\n",
+                encoding="utf-8",
+            )
+            legacy_born = _read_generator_normalization_summary(legacy_born_mode3)
+            self.assertEqual(legacy_born.records[0].mode3_schema, "")
+
+            unsafe_multiplicity = Path(tmp) / "unsafe_multiplicity.norm"
+            unsafe_multiplicity.write_text(
+                "sig_sum=5.784\nevents=5000\nmcall_max=40930660\n"
+                "sampling_mode=3\nmode3_schema=aao-rad-mode3-v2\n"
+                "mode3_direct_fraction=0.75\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                ValueError, "final-multiplicity truncation signature"
+            ):
+                _read_generator_normalization_summary(unsafe_multiplicity)
+
+            unsafe_support = Path(tmp) / "unsafe_support.norm"
+            unsafe_support.write_text(
+                "sig_sum=0.0007\nevents=5000\nmcall_max=2\n"
+                "sampling_mode=3\nmode3_schema=aao-rad-mode3-v2\n"
+                "mode3_direct_fraction=1.0\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "bounded full-support"):
+                _read_generator_normalization_summary(unsafe_support)
+
+            legacy_mode3 = Path(tmp) / "legacy_mode3.norm"
+            legacy_mode3.write_text(
+                "sig_sum=0.0007\nevents=5000\nmcall_max=3\n"
+                "sampling_mode=3\nmode3_schema=aao-rad-mode3-v1\n"
+                "mode3_direct_fraction=0.75\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "cannot prove"):
+                _read_generator_normalization_summary(legacy_mode3)
+
             legacy = Path(tmp) / "legacy"
             legacy.mkdir()
             (legacy / "job1.sum").write_text("sig_sum=2.0\n", encoding="utf-8")
@@ -692,6 +2296,20 @@ class RadiativeCorrectionTests(unittest.TestCase):
             [0, 1, 2, 4, 5, 3, 6],
         )
 
+    def test_support_status_codes_can_use_effective_cluster_counts(self) -> None:
+        born = np.array([20.0, 20.0, 20.0])
+        rad = np.array([20.0, 20.0, 20.0])
+        np.testing.assert_array_equal(
+            support_status_codes(
+                born,
+                rad,
+                min_counts=5,
+                born_effective_counts=np.array([4.0, 8.0, 4.0]),
+                radiative_effective_counts=np.array([8.0, 4.0, 4.0]),
+            ),
+            [4, 5, 6],
+        )
+
 
 class NormalizationTests(unittest.TestCase):
     def test_luminosity_and_flux_are_positive(self) -> None:
@@ -711,7 +2329,7 @@ class NormalizationTests(unittest.TestCase):
             6.535,
             q2_minimum=0.0,
             w_minimum=1.0,
-            y_maximum=1.0,
+            electron_p_minimum=0.0,
             integration_points=100,
         )
         rectangular = 0.02 * 0.01 * 2.0 * 2.0 * np.pi
@@ -734,12 +2352,16 @@ class NormalizationTests(unittest.TestCase):
                         "target_molar_mass_g": 1.008,
                         "pi0_to_gg_branching_ratio": 0.988,
                         "minimum_acceptance": 0.005,
-                        "phase_space": {"Q2_min": 1.0, "W_min": 2.0, "y_max": 0.8},
+                        "phase_space": {
+                            "Q2_min": 1.0,
+                            "W_min": 2.0,
+                            "electron_p_min": 1.0,
+                        },
                         "binning": {
                             "Q2": [1.2, 1.4],
                             "xB": [0.2, 0.3],
                             "minus_t": [0.2, 0.3],
-                            "phi_deg": [0.0, 180.0],
+                            "phi_deg": [0.0, 180.0, 360.0],
                         },
                     }
                 ),
@@ -748,13 +2370,25 @@ class NormalizationTests(unittest.TestCase):
             np.savez_compressed(
                 unfolding_path,
                 beam_charge_c=1.0e-3,
-                efficiency=np.asarray([1.0]),
-                corrected_yield=np.asarray([100.0]),
-                corrected_uncertainty=np.asarray([10.0]),
-                Q2_mean=np.asarray([1.35]),
-                xB_mean=np.asarray([0.28]),
+                efficiency=np.asarray([1.0, 1.0]),
+                corrected_yield=np.asarray([100.0, 100.0]),
+                corrected_uncertainty=np.asarray([10.0, 10.0]),
+                corrected_covariance_phi=np.asarray(
+                    [[[[[100.0, 20.0], [20.0, 100.0]]]]]
+                ),
+                radiative_reliable=np.asarray([True, False]),
+                Q2_mean=np.asarray([1.35, 1.35]),
+                xB_mean=np.asarray([0.28, 0.28]),
+                current_efficiency_applied=np.asarray(True),
+                current_efficiency_D_reference=np.asarray(0.98),
+                current_efficiency_model_json=np.asarray('{"schema_version": 1}'),
+                background_subtraction_applied=np.asarray(True),
+                background_subtraction_method=np.asarray(
+                    "topology-mgg-nminus1-sideband-v1"
+                ),
+                background_alpha=np.asarray([0.2]),
             )
-            shape = (1, 1, 1, 1)
+            shape = (1, 1, 1, 2)
             np.savez_compressed(
                 centering_path,
                 C_BC=np.full(shape, 2.0),
@@ -777,14 +2411,47 @@ class NormalizationTests(unittest.TestCase):
         expected = (
             100.0
             * 1.0e-6
-            / (float(output["luminosity_fb"]) * 0.988 * output["bin_volume"].item() * flux)
+            / (
+                float(output["luminosity_fb"])
+                * 0.988
+                * output["bin_volume"][0, 0, 0, 0]
+                * flux
+            )
             / 2.0
         )
-        self.assertAlmostEqual(output["reduced_cross_section"].item(), expected)
-        self.assertEqual(output["flux_q2_mean"].item(), 1.25)
-        self.assertEqual(output["flux_xb_mean"].item(), 0.24)
-        self.assertEqual(output["uncentered_q2_mean"].item(), 1.35)
-        self.assertEqual(output["uncentered_xb_mean"].item(), 0.28)
+        self.assertAlmostEqual(output["reduced_cross_section"][0, 0, 0, 0], expected)
+        self.assertTrue(np.isnan(output["reduced_cross_section"][0, 0, 0, 1]))
+        self.assertAlmostEqual(
+            output["covariance_phi"][0, 0, 0, 0, 0],
+            output["uncertainty"][0, 0, 0, 0] ** 2,
+        )
+        self.assertTrue(np.isnan(output["covariance_phi"][0, 0, 0, 0, 1]))
+        np.testing.assert_allclose(output["flux_q2_mean"], [1.25, 1.25])
+        np.testing.assert_allclose(output["flux_xb_mean"], [0.24, 0.24])
+        np.testing.assert_allclose(output["uncentered_q2_mean"], [1.35, 1.35])
+        np.testing.assert_allclose(output["uncentered_xb_mean"], [0.28, 0.28])
+        self.assertTrue(output["current_efficiency_applied"].item())
+        self.assertEqual(output["current_efficiency_D_reference"].item(), 0.98)
+        self.assertEqual(
+            output["current_efficiency_model_json"].item(), '{"schema_version": 1}'
+        )
+        self.assertTrue(output["background_subtraction_applied"].item())
+        self.assertEqual(
+            output["background_subtraction_method"].item(),
+            "topology-mgg-nminus1-sideband-v1",
+        )
+        np.testing.assert_allclose(output["background_alpha"], [0.2])
+        self.assertTrue(np.all(output["acceptance_validity_mask"]))
+        np.testing.assert_array_equal(
+            output["radiative_validity_mask"], [[[[True, False]]]]
+        )
+        self.assertTrue(np.all(output["bin_centering_validity_mask"]))
+        self.assertTrue(np.all(output["yield_validity_mask"]))
+        self.assertTrue(np.all(output["uncertainty_validity_mask"]))
+        self.assertTrue(np.all(output["normalization_validity_mask"]))
+        np.testing.assert_array_equal(
+            output["final_validity_mask"], [[[[True, False]]]]
+        )
 
 
 class BinCenteringTests(unittest.TestCase):
@@ -819,7 +2486,7 @@ class BinCenteringTests(unittest.TestCase):
             6.535,
             flat_d4sigma,
             samples_per_dimension=2,
-            phase_space=AnalysisPhaseSpace(y_max=0.35),
+            phase_space=AnalysisPhaseSpace(electron_p_min=4.2),
         )
         self.assertGreater(int(unrestricted.n_physical.sum()), int(restricted.n_physical.sum()))
         self.assertGreater(int(restricted.n_physical.sum()), 0)
@@ -946,6 +2613,203 @@ class HarmonicTests(unittest.TestCase):
         fit = fit_phi(phi, values, np.full(phi.size, 0.1))
         self.assertIsNotNone(fit)
         np.testing.assert_allclose(fit.parameters, expected, atol=1e-12)
+
+    def test_correlated_harmonic_fit_uses_generalized_least_squares(self) -> None:
+        phi = np.arange(9.0, 360.0, 18.0)
+        radians = np.deg2rad(phi)
+        design = np.column_stack(
+            (np.ones(phi.size), np.cos(radians), np.cos(2.0 * radians))
+        )
+        expected = np.array([4.0, 1.2, -0.4])
+        covariance_y = 0.004 * np.ones((phi.size, phi.size)) + 0.006 * np.eye(phi.size)
+        fit = fit_phi(
+            phi,
+            design @ expected,
+            np.sqrt(np.diag(covariance_y)),
+            measurement_covariance=covariance_y,
+        )
+        self.assertIsNotNone(fit)
+        inverse = np.linalg.inv(covariance_y)
+        expected_covariance = np.linalg.inv(design.T @ inverse @ design)
+        np.testing.assert_allclose(fit.parameters, expected, atol=1e-12)
+        np.testing.assert_allclose(fit.covariance, expected_covariance, atol=1e-12)
+
+        finite_sample_fit = fit_phi(
+            phi,
+            design @ expected,
+            np.sqrt(np.diag(covariance_y)),
+            measurement_covariance=covariance_y,
+            measurement_covariance_samples=100,
+        )
+        self.assertIsNotNone(finite_sample_fit)
+        correction = (100 - phi.size - 2) / 99
+        self.assertAlmostEqual(
+            finite_sample_fit.measurement_precision_correction, correction
+        )
+        np.testing.assert_allclose(
+            finite_sample_fit.covariance,
+            expected_covariance / correction,
+            atol=1e-12,
+        )
+
+    def test_exact_harmonic_minimum_checks_endpoints_and_vertex(self) -> None:
+        self.assertAlmostEqual(minimum_harmonic_cross_section([4.0, 1.0, 0.0]), 3.0)
+        # 2 x^2 - 2 x + 2 has its minimum 1.5 at x = 0.5.
+        self.assertAlmostEqual(minimum_harmonic_cross_section([3.0, -2.0, 1.0]), 1.5)
+
+    def test_harmonic_quality_guards_preserve_raw_fit_and_flag_rejections(self) -> None:
+        phi_edges = np.linspace(0.0, 360.0, 21)
+        phi = 0.5 * (phi_edges[:-1] + phi_edges[1:])
+        radians = np.deg2rad(phi)
+        uncertainty = np.full((1, 1, 1, phi.size), 0.1)
+
+        positive = 4.0 + 0.5 * np.cos(radians) + 0.2 * np.cos(2.0 * radians)
+        accepted = fit_grid(
+            positive.reshape(1, 1, 1, -1),
+            uncertainty,
+            phi_edges,
+        )
+        self.assertTrue(accepted["fit_success"].item())
+        self.assertTrue(accepted["quality_mask"].item())
+        self.assertEqual(accepted["quality_status"].item(), 0)
+
+        sparse_mask = np.zeros_like(uncertainty, dtype=bool)
+        sparse_mask[..., :8] = True
+        sparse = fit_grid(
+            positive.reshape(1, 1, 1, -1),
+            uncertainty,
+            phi_edges,
+            validity_mask=sparse_mask,
+        )
+        self.assertTrue(sparse["fit_success"].item())
+        self.assertFalse(sparse["quality_mask"].item())
+        self.assertNotEqual(sparse["quality_status"].item() & QUALITY_SPARSE, 0)
+
+        negative = 1.0 + 2.0 * np.cos(radians)
+        rejected = fit_grid(
+            negative.reshape(1, 1, 1, -1),
+            uncertainty,
+            phi_edges,
+        )
+        self.assertTrue(rejected["fit_success"].item())
+        self.assertLess(rejected["minimum_fitted_cross_section"].item(), 0.0)
+        self.assertNotEqual(
+            rejected["quality_status"].item() & QUALITY_NEGATIVE_CROSS_SECTION,
+            0,
+        )
+
+        ill_conditioned = fit_grid(
+            positive.reshape(1, 1, 1, -1),
+            uncertainty,
+            phi_edges,
+            maximum_covariance_condition=1.0,
+        )
+        self.assertNotEqual(
+            ill_conditioned["quality_status"].item()
+            & QUALITY_COVARIANCE_ILL_CONDITIONED,
+            0,
+        )
+
+
+class CampaignDiagnosticTests(unittest.TestCase):
+    def test_campaign_report_contains_attrition_quality_and_response_support(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            unfolding_path = root / "unfolding.npz"
+            cross_section_path = root / "cross_section.npz"
+            harmonics_path = root / "harmonics.npz"
+            response_path = root / "response_meta.npz"
+            q2_edges = np.array([1.0, 2.0])
+            xb_edges = np.array([0.1, 0.2])
+            t_edges = np.array([0.1, 0.3])
+            phi_edges = np.linspace(0.0, 360.0, 5)
+            shape = (1, 1, 1, 4)
+            acceptance = np.array([True, True, False, False]).reshape(shape)
+            uncertainty_valid = acceptance.copy()
+            all_valid = np.ones(shape, dtype=bool)
+
+            np.savez_compressed(
+                unfolding_path,
+                efficiency=np.array([0.02, 0.01, 0.001, 0.0]),
+                radiative_reliable=np.ones(4, dtype=bool),
+                corrected_yield=np.array([10.0, 8.0, 0.0, 0.0]),
+                corrected_uncertainty=np.array([2.0, 3.0, 0.0, 0.0]),
+                measured=np.array([2.0, 1.0, 0.0, 0.0]),
+                measured_signal_region=np.array([2.2, 1.1, 0.0, 0.0]),
+                estimated_background=np.array([0.2, 0.1, 0.0, 0.0]),
+                background_clipped_deficit=np.zeros(4),
+                unfolded=np.array([9.0, 7.0, 0.0, 0.0]),
+                beam_charge_original_c=2.0,
+                beam_charge_c=1.8,
+                current_efficiency_applied=True,
+                current_efficiency_reference_current_nA=60.0,
+                current_efficiency_D_reference=0.96,
+                current_efficiency_excluded_runs=np.array([99]),
+                current_efficiency_excluded_event_count=4,
+                background_subtraction_applied=True,
+                background_negative_policy="clip",
+            )
+            np.savez_compressed(
+                cross_section_path,
+                reduced_cross_section=np.array([1.0, 2.0, np.nan, np.nan]).reshape(shape),
+                uncertainty=np.array([0.2, 0.6, np.nan, np.nan]).reshape(shape),
+                bin_volume=np.ones(shape),
+                luminosity_fb=3.5,
+                minimum_acceptance=0.005,
+                acceptance_validity_mask=acceptance,
+                radiative_validity_mask=all_valid,
+                bin_centering_validity_mask=all_valid,
+                yield_validity_mask=all_valid,
+                uncertainty_validity_mask=uncertainty_valid,
+                normalization_validity_mask=all_valid,
+                final_validity_mask=acceptance,
+                q2_edges=q2_edges,
+                xb_edges=xb_edges,
+                t_edges=t_edges,
+                phi_edges=phi_edges,
+            )
+            np.savez_compressed(
+                harmonics_path,
+                parameters=np.array([[[[1.0, 0.1, 0.0]]]]),
+                covariance=np.eye(3).reshape(1, 1, 1, 3, 3),
+                parameter_uncertainties=np.ones((1, 1, 1, 3)),
+                chi2_ndf=np.array([[[1.2]]]),
+                points=np.array([[[4]]]),
+                fit_success=np.array([[[True]]]),
+                quality_mask=np.array([[[False]]]),
+                quality_status=np.array([[[QUALITY_SPARSE]]], dtype=np.uint16),
+                quality_reason_names=np.array(["sparse_phi_coverage"]),
+                quality_reason_bits=np.array([QUALITY_SPARSE], dtype=np.uint16),
+                quality_minimum_points=12,
+                quality_maximum_chi2_ndf=3.0,
+                quality_maximum_covariance_condition=1.0e4,
+                quality_maximum_relative_A_uncertainty=0.5,
+                quality_requires_nonnegative=True,
+            )
+            np.savez_compressed(
+                response_path,
+                truth_total=np.array([100.0, 50.0, 5.0, 0.0]),
+                reconstructed_total=np.array([2.0, 1.0, 0.0, 0.0]),
+                efficiency=np.array([0.02, 0.01, 0.001, 0.0]),
+                response_variance_sum=np.array([1.0e-4, 1.0e-4, 1.0e-5, 0.0]),
+            )
+
+            report = render_campaign_diagnostics(
+                unfolding_path,
+                cross_section_path,
+                harmonics_path,
+                response_meta_path=response_path,
+                title="Synthetic campaign",
+                software_revision="abc123",
+                invocation="synthetic invocation",
+            )
+            self.assertIn("# Synthetic campaign", report)
+            self.assertIn("Final valid bins (all requirements) | 2 / 4", report)
+            self.assertIn("Production-quality harmonic fits: **0**", report)
+            self.assertIn("## Response-MC support", report)
+            self.assertIn("Physical bins failing the acceptance requirement | 2", report)
+            self.assertIn("## Automated triage", report)
+            self.assertIn("## Analyst sign-off checklist", report)
 
 
 if __name__ == "__main__":

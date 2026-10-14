@@ -1,0 +1,36 @@
+{
+    "outputFile": "6.535_rgk_eppi0_GEMC.root",
+
+    "beamEnergy": 6.535,
+    "kinematicCorrections": "../../../../parameters/proton_energy_loss/6.535RGK_INCLUSIVE_GEMC_100M.json",
+
+    "qadb": {
+        "enabled": false
+    },
+
+    "inputValidation": {
+        "enabled": true,
+        "skipMalformed": true
+    },
+
+    "generatedEventTree": {
+        "enabled": true
+    },
+
+    "finalState": [
+        { "pid": 11, "count": 1, "mode": "atleast" },
+        { "pid": 2212, "count": 1, "mode": "atleast" },
+        { "pid": 22, "count": 2, "mode": "atleast" }
+    ],
+    "inclusive": true,
+
+    "enableSkim": true,
+    "Q2_min": 1.0,
+    "W_min": 2.0,
+    "electron_p_min": 0.3,
+
+    "fillMC": true,
+    "matchMC": true,
+    "saveUnmatchedMC": false,
+    "matchMaxAngleDeg": 3.0
+}

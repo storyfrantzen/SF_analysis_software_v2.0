@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 import re
+import shlex
+import subprocess
 import sys
 
 import numpy as np
@@ -15,24 +18,143 @@ from scipy.sparse import load_npz, save_npz
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from eppi0.binning import from_config
-from eppi0.bin_centering import AaoExecutableEvaluator, compute_bin_centering
+from eppi0.binning import AnalysisBinning, from_config
+from eppi0.bin_centering import (
+    AAO_CROSS_SECTION_CONVERSION,
+    AAO_RAW_CROSS_SECTION_UNITS,
+    AAO_REDUCED_CROSS_SECTION_UNITS,
+    AaoExecutableEvaluator,
+    compute_bin_centering,
+)
+from eppi0.background_subtraction import METHOD as BACKGROUND_METHOD
+from eppi0.background_subtraction import estimate_mgg_background
+from eppi0.campaign_diagnostics import render_campaign_diagnostics
 from eppi0.cross_section import (
     DEFAULT_VOLUME_INTEGRATION_POINTS,
     Target,
     integrated_luminosity_fb,
     physical_bin_volumes,
     reduced_cross_section,
+    virtual_photon_flux,
 )
+from eppi0.current_efficiency import (
+    load_current_efficiency_correction,
+    response_meta_sha256,
+)
+from eppi0.exclusivity import load_cuts
 from eppi0.response import build_response
-from eppi0.radiative_correction import compute_radiative_correction
+from eppi0.radiative_correction import (
+    CLUSTER_UNCERTAINTY_MODEL,
+    compute_radiative_correction,
+)
 from eppi0.root_response import build_response_from_root
-from eppi0.harmonics import fit_grid
+from eppi0.harmonics import (
+    DEFAULT_MAXIMUM_CHI2_NDF,
+    DEFAULT_MAXIMUM_COVARIANCE_CONDITION,
+    DEFAULT_MAXIMUM_RELATIVE_A_UNCERTAINTY,
+    DEFAULT_MINIMUM_POINTS,
+    QUALITY_REASON_BITS,
+    QUALITY_REASON_NAMES,
+    fit_grid,
+)
+from eppi0.model_comparison import (
+    ModelGridResult,
+    TabulatedModelEvaluator,
+    average_model_over_bins,
+)
+from eppi0.model_plots import render_model_comparison
 from eppi0.phase_space import AnalysisPhaseSpace
-from eppi0.unfolding import bootstrap_uncertainty, iterative_bayes, subtract_feed_in
+from eppi0.structure_functions import (
+    STRUCTURE_FUNCTION_NAMES,
+    epsilon_from_xb_q2,
+    harmonic_reference_coordinates,
+    harmonic_to_structure_functions,
+)
+from eppi0.topology import INVALID_TOPOLOGY
+from eppi0.unfolding import (
+    bootstrap_ensemble,
+    diagonal_phi_covariance,
+    iterative_bayes,
+    joint_count_bootstrap_ensemble,
+    phi_block_covariance,
+    subtract_feed_in,
+)
 
 
 C_RAD_DIAGNOSTIC_PLOT_RANGE = (0.0, 2.0)
+
+TOPOLOGY_COLORS = {
+    4: "#4e79a7",
+    5: "#59a14f",
+    6: "#76b7b2",
+    8: "#f28e2b",
+    9: "#e15759",
+    10: "#b07aa1",
+    INVALID_TOPOLOGY: "#9d9d9d",
+}
+
+
+@dataclass(frozen=True)
+class ResponseTopologyComposition:
+    topology_ids: np.ndarray
+    fractions: np.ndarray
+    dominant_topology: np.ndarray
+    dominance: np.ndarray
+
+CURRENT_EFFICIENCY_PROVENANCE_FIELDS = (
+    "current_efficiency_applied",
+    "current_efficiency_artifact",
+    "current_efficiency_reference_current_nA",
+    "current_efficiency_eta_mc_reference",
+    "current_efficiency_D_reference",
+    "current_efficiency_weight_min",
+    "current_efficiency_weight_max",
+    "current_efficiency_original_beam_charge_c",
+    "current_efficiency_analysis_beam_charge_c",
+    "current_efficiency_excluded_runs",
+    "current_efficiency_excluded_event_count",
+    "current_efficiency_model_json",
+)
+
+BACKGROUND_PROVENANCE_FIELDS = (
+    "background_subtraction_applied",
+    "background_subtraction_method",
+    "background_cuts_artifact",
+    "background_cuts_sha256",
+    "background_negative_policy",
+    "background_negative_bins",
+    "background_negative_supported_bins",
+    "background_alpha_bootstrap",
+    "background_group_ids",
+    "background_signal_lower",
+    "background_signal_upper",
+    "background_fit_lower",
+    "background_fit_upper",
+    "background_alpha",
+    "background_alpha_uncertainty",
+    "background_fit_model",
+    "background_fit_entries",
+    "background_fit_bic",
+    "background_fit_deviance",
+    "background_fit_ndof",
+)
+
+CROSS_SECTION_VALIDITY_FIELDS = (
+    "minimum_acceptance",
+    "acceptance_validity_mask",
+    "radiative_validity_mask",
+    "bin_centering_validity_mask",
+    "yield_validity_mask",
+    "uncertainty_validity_mask",
+    "normalization_validity_mask",
+    "final_validity_mask",
+    "final_validity_definition",
+)
+
+MODE3_MINIMUM_LEGACY_FRACTION = 0.05
+MODE3_MAXIMUM_DIRECT_FRACTION = 1.0 - MODE3_MINIMUM_LEGACY_FRACTION
+SAFE_RADIATIVE_MODE3_SCHEMA = "aao-rad-mode3-v2"
+SAFE_BORN_MODE3_SCHEMA = "aao-norad-mode3-v2"
 
 
 @dataclass(frozen=True)
@@ -45,6 +167,13 @@ class GeneratorNormalizationRecord:
     nevent: float | None = None
     mcall_max: float | None = None
     sigr_max: float | None = None
+    sampling_mode: float | None = None
+    mode3_direct_fraction: float | None = None
+    mode3_duplicate_events: float | None = None
+    mode3_target_events: float | None = None
+    mode3_event_overshoot: float | None = None
+    mode3_complete_final_multiplicity: float | None = None
+    mode3_schema: str = ""
     generator: str = ""
     units: str = ""
 
@@ -102,9 +231,50 @@ def parser() -> argparse.ArgumentParser:
     unfold.add_argument("--config", type=Path, required=True)
     unfold.add_argument("--output", type=Path, required=True)
     unfold.add_argument("--selection-mask", type=Path)
+    unfold.add_argument(
+        "--background-cuts",
+        type=Path,
+        help=(
+            "Global data exclusivity-cut NPZ used to estimate topology-specific "
+            "m_gg sideband background before feed-in subtraction and unfolding"
+        ),
+    )
+    unfold.add_argument(
+        "--background-alpha-bootstrap",
+        type=int,
+        default=200,
+        help="Poisson refits used for each sideband transfer-factor uncertainty",
+    )
+    unfold.add_argument(
+        "--background-negative-policy",
+        choices=("error", "clip"),
+        default="error",
+        help=(
+            "Action when sideband subtraction makes a REC bin connected to retained "
+            "truth space negative; default error avoids silently biasing unfolding"
+        ),
+    )
     unfold.add_argument("--iterations", type=int, default=25)
     unfold.add_argument("--bootstrap", type=int, default=200)
+    unfold.add_argument(
+        "--response-uncertainty",
+        choices=("analytic-diagonal", "count-bootstrap"),
+        default="analytic-diagonal",
+        help=(
+            "Propagate finite-response statistics with the legacy analytic "
+            "diagonal approximation or the closure-certified joint count "
+            "bootstrap (requires integer response counts)"
+        ),
+    )
     unfold.add_argument("--seed", type=int, default=12345)
+    unfold.add_argument(
+        "--current-efficiency-correction",
+        type=Path,
+        help=(
+            "JSON from study_data_efficiency.py; apply eta_MC(I_ref)/eta_data(I_run) "
+            "event weights before unfolding"
+        ),
+    )
     unfold.add_argument("--radiative-correction", type=Path,
                         help="Legacy-compatible NPZ containing C_rad, delta_C, and reliable")
 
@@ -123,7 +293,15 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         help="Use at most this many LUND files from each input for quick smoke tests",
     )
-    radcorr.add_argument("--min-counts", type=int, default=5)
+    radcorr.add_argument(
+        "--min-counts",
+        type=int,
+        default=5,
+        help=(
+            "Minimum Kish effective count in both samples for a reliable bin; "
+            "exact consecutive multiplicity copies count as one proposal cluster"
+        ),
+    )
     radcorr.add_argument(
         "--progress-chunks",
         type=int,
@@ -203,6 +381,27 @@ def parser() -> argparse.ArgumentParser:
         choices=("global", "panel"),
         default="panel",
         help="Use one y scale per -t quilt or independently scale every panel (default: panel)",
+    )
+    radcorr_plots.add_argument(
+        "--overlay-correction",
+        type=Path,
+        help=(
+            "Second correction artifact to overlay on the quilt pages; its 4D "
+            "shape and every bin edge must match the primary artifact"
+        ),
+    )
+    radcorr_plots.add_argument(
+        "--primary-label",
+        help="Legend label for the primary correction (default: filename stem)",
+    )
+    radcorr_plots.add_argument(
+        "--overlay-label",
+        help="Legend label for the overlaid correction (default: filename stem)",
+    )
+    radcorr_plots.add_argument(
+        "--overlay-only",
+        action="store_true",
+        help="Write only the comparison quilt pages (requires --overlay-correction)",
     )
 
     xsec = commands.add_parser("cross-section", help="Normalize unfolded yields")
@@ -299,14 +498,137 @@ def parser() -> argparse.ArgumentParser:
         help="Use one y scale per -t quilt or independently scale every panel (default: panel)",
     )
 
-    harmonics = commands.add_parser("fit-harmonics", help="Fit A + B cos(phi) + C cos(2 phi)")
+    harmonics = commands.add_parser(
+        "fit-harmonics",
+        help="Fit A + B cos(phi) + C cos(2 phi) with auditable quality guards",
+    )
     harmonics.add_argument("cross_section", type=Path)
     harmonics.add_argument("--output", type=Path, required=True)
+    harmonics.add_argument(
+        "--minimum-points",
+        type=int,
+        default=DEFAULT_MINIMUM_POINTS,
+        help=f"Minimum valid phi bins for a production-quality fit (default: {DEFAULT_MINIMUM_POINTS})",
+    )
+    harmonics.add_argument(
+        "--maximum-chi2-ndf",
+        type=float,
+        default=DEFAULT_MAXIMUM_CHI2_NDF,
+        help=f"Maximum chi2/ndf for a production-quality fit (default: {DEFAULT_MAXIMUM_CHI2_NDF:g})",
+    )
+    harmonics.add_argument(
+        "--maximum-covariance-condition",
+        type=float,
+        default=DEFAULT_MAXIMUM_COVARIANCE_CONDITION,
+        help=(
+            "Maximum covariance-matrix condition number for a production-quality "
+            f"fit (default: {DEFAULT_MAXIMUM_COVARIANCE_CONDITION:g})"
+        ),
+    )
+    harmonics.add_argument(
+        "--maximum-relative-a-uncertainty",
+        type=float,
+        default=DEFAULT_MAXIMUM_RELATIVE_A_UNCERTAINTY,
+        help=(
+            "Maximum sigma_A/abs(A) for a production-quality fit "
+            f"(default: {DEFAULT_MAXIMUM_RELATIVE_A_UNCERTAINTY:g})"
+        ),
+    )
+    harmonics.add_argument(
+        "--allow-negative-fits",
+        action="store_true",
+        help="Do not reject fits whose harmonic curve becomes negative for some phi",
+    )
+
+    structure_functions = commands.add_parser(
+        "structure-functions",
+        help="Convert A, B, C harmonics and full covariance to sigma_U, sigma_LT, sigma_TT",
+    )
+    structure_functions.add_argument("harmonics", type=Path)
+    structure_functions.add_argument("--cross-section", type=Path, required=True)
+    structure_functions.add_argument("--config", type=Path, required=True)
+    structure_functions.add_argument("--output", type=Path, required=True)
+    structure_functions.add_argument(
+        "--include-quality-rejected",
+        action="store_true",
+        help=(
+            "Export numerically successful fits even when the production quality "
+            "mask rejects them"
+        ),
+    )
+
+    model_prediction = commands.add_parser(
+        "model-prediction",
+        help="Forward-average AAO or tabulated theory through the analysis bins and fit harmonics",
+    )
+    model_prediction.add_argument("--config", type=Path, required=True)
+    model_prediction.add_argument("--cross-section", type=Path, required=True)
+    model_prediction.add_argument("--output", type=Path, required=True)
+    model_prediction.add_argument("--model-name", required=True)
+    source = model_prediction.add_mutually_exclusive_group(required=True)
+    source.add_argument("--aao-exe", type=Path, help="Path to the aao_xsec executable")
+    source.add_argument("--table", type=Path, help="CSV model table")
+    model_prediction.add_argument(
+        "--interpolation",
+        choices=("linear", "nearest"),
+        default="linear",
+        help="Interpolation used for tabulated model input (default: linear)",
+    )
+    model_prediction.add_argument(
+        "--N", type=int, default=4, help="Midpoint samples per dimension"
+    )
+    model_prediction.add_argument("--workers", type=int)
+    model_prediction.add_argument("--chunk-size", type=int, default=64)
+    model_prediction.add_argument("--progress-chunks", type=int, default=10)
+    model_prediction.add_argument("--bin-start", type=int, default=0)
+    model_prediction.add_argument("--bin-stop", type=int)
+    model_prediction.add_argument("--bin-chunks", type=int)
+    model_prediction.add_argument("--bin-chunk-index", type=int)
+    model_prediction.add_argument("--theory", type=int, default=5)
+    model_prediction.add_argument("--channel", type=int, default=1)
+    model_prediction.add_argument("--resonance", type=int, default=0)
+    model_prediction.add_argument("--max-failure-fraction", type=float, default=0.0)
+    model_prediction.add_argument("--verbose-failures", action="store_true")
+    model_prediction.add_argument(
+        "--all-bins",
+        action="store_true",
+        help="Evaluate every configured bin instead of only data-valid bins",
+    )
+
+    model_prediction_merge = commands.add_parser(
+        "model-prediction-merge",
+        help="Merge partial model-prediction artifacts and refit the complete harmonic grid",
+    )
+    model_prediction_merge.add_argument("partials", nargs="+", type=Path)
+    model_prediction_merge.add_argument("--output", type=Path, required=True)
+
+    model_comparison = commands.add_parser(
+        "model-comparison-plots",
+        help=(
+            "Overlay forward-averaged model artifacts on cross sections, harmonics, "
+            "and structure functions"
+        ),
+    )
+    model_comparison.add_argument("cross_section", type=Path)
+    model_comparison.add_argument("harmonics", type=Path)
+    model_comparison.add_argument("models", nargs="+", type=Path)
+    model_comparison.add_argument("--config", type=Path, required=True)
+    model_comparison.add_argument("--output-dir", type=Path, required=True)
+    model_comparison.add_argument(
+        "--include-quality-rejected",
+        action="store_true",
+        help="Compare numerically successful data fits even when quality-rejected",
+    )
 
     harmonic_plots = commands.add_parser("harmonic-plots", help="Plot harmonic-fit diagnostics")
     harmonic_plots.add_argument("harmonics", type=Path)
     harmonic_plots.add_argument("--output-dir", type=Path, required=True)
     harmonic_plots.add_argument("--min-points", type=int, default=4)
+    harmonic_plots.add_argument(
+        "--include-quality-rejected",
+        action="store_true",
+        help="Plot every numerically successful raw fit instead of only quality-accepted fits",
+    )
     harmonic_plots.add_argument(
         "--quilt",
         action="store_true",
@@ -334,6 +656,11 @@ def parser() -> argparse.ArgumentParser:
     xsec_plots.add_argument("--output-dir", type=Path, required=True)
     xsec_plots.add_argument("--min-points", type=int, default=4)
     xsec_plots.add_argument(
+        "--include-quality-rejected",
+        action="store_true",
+        help="Plot every numerically successful raw fit instead of only quality-accepted fits",
+    )
+    xsec_plots.add_argument(
         "--quilt",
         action="store_true",
         help="Prepend one stitched Q2-by-xB reduced-cross-section quilt per -t bin",
@@ -344,6 +671,28 @@ def parser() -> argparse.ArgumentParser:
         default="panel",
         help="Use one y scale per -t quilt or independently scale every panel (default: panel)",
     )
+
+    campaign_diagnostics = commands.add_parser(
+        "campaign-diagnostics",
+        help="Write a numerical Markdown audit from final campaign artifacts",
+    )
+    campaign_diagnostics.add_argument("unfolding", type=Path)
+    campaign_diagnostics.add_argument("cross_section", type=Path)
+    campaign_diagnostics.add_argument("harmonics", type=Path)
+    campaign_diagnostics.add_argument(
+        "--response-meta",
+        type=Path,
+        help=(
+            "Optional response_meta.npz used to quantify generated support and "
+            "response-MC statistical limitations"
+        ),
+    )
+    campaign_diagnostics.add_argument(
+        "--title",
+        default="EPPI0 campaign diagnostic",
+        help="Campaign-specific Markdown title",
+    )
+    campaign_diagnostics.add_argument("--output", type=Path, required=True)
 
     acceptance = commands.add_parser("acceptance-plots", help="Plot acceptance diagnostics from response metadata")
     acceptance.add_argument("response_meta", type=Path)
@@ -373,8 +722,21 @@ def parser() -> argparse.ArgumentParser:
     acceptance.add_argument(
         "--quilt-scale-mode",
         choices=("global", "panel"),
-        default="global",
-        help="Use one y scale per -t quilt or independently scale every panel (default: global)",
+        default="panel",
+        help=(
+            "Use one y scale per -t quilt or independently scale every panel so an "
+            "isolated outlier does not compress the full quilt (default: panel)"
+        ),
+    )
+    acceptance.add_argument(
+        "--topology-display",
+        choices=("dominant", "stacked", "none"),
+        default="dominant",
+        help=(
+            "Show the dominant topology as translucent bin backgrounds, a normalized "
+            "stacked topology-composition strip, or no topology annotation "
+            "(default: dominant)"
+        ),
     )
     response_plots = commands.add_parser(
         "response-plots",
@@ -471,6 +833,25 @@ def command_response_root(args: argparse.Namespace) -> None:
         beam_energy=float(config["beam_energy"]),
     )
     response = summary.response
+    topology_fields = {}
+    if summary.reconstructed_topology_ids.size:
+        topology_fields = {
+            "reconstructed_topology_ids": summary.reconstructed_topology_ids,
+            "reconstructed_topology_counts": summary.reconstructed_topology_counts,
+            "accepted_topology_counts": summary.accepted_topology_counts,
+            "reconstructed_topology_definition": (
+                "4 * reconstructed proton detector ID + reconstructed FT photon count"
+            ),
+            "reconstructed_topology_count_definition": (
+                "generated-event-weighted selected REC events by reconstructed 4D bin "
+                "after the response selection mask and generated-event match"
+            ),
+            "accepted_topology_count_definition": (
+                "generated-event-weighted selected REC events by generated 4D truth "
+                "bin and reconstructed topology, restricted to generated events in "
+                "the analysis phase space and excluding feed-in"
+            ),
+        }
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     matrix_path = args.output_dir / "response_matrix.npz"
@@ -496,6 +877,7 @@ def command_response_root(args: argparse.Namespace) -> None:
             if not phase_space.enabled
             else f"4D bin and {phase_space.description()}"
         ),
+        **topology_fields,
         **phase_space.as_npz_fields(),
     )
     print(f"Generated rows scanned: {summary.generated_rows}")
@@ -503,11 +885,46 @@ def command_response_root(args: argparse.Namespace) -> None:
     print(f"Matched selected rows: {summary.matched_selected_rows}")
     print(f"Truth events in range: {response.truth_total.sum():.0f}")
     print(f"Selected REC events in range: {response.reconstructed_total.sum():.0f}")
+    if summary.reconstructed_topology_ids.size:
+        print(
+            "Reconstructed topology IDs: "
+            + ", ".join(str(int(item)) for item in summary.reconstructed_topology_ids)
+        )
     print(f"Feed-in fraction: {response.feed_in_fraction:.6f}")
     if phase_space.enabled:
         print(f"Analysis phase space: 4D bin and {phase_space.description()}")
     print(f"Wrote {matrix_path}")
     print(f"Wrote {metadata_path}")
+
+
+def _signed_bin_means(
+    binning,
+    flat: np.ndarray,
+    values: dict[str, np.ndarray],
+    weights: np.ndarray,
+    size: int,
+) -> dict[str, np.ndarray]:
+    """Compute sideband-subtracted bin means from signed event weights."""
+    flat = np.asarray(flat, dtype=np.int64)
+    weights = np.asarray(weights, dtype=float)
+    valid_bin = (flat >= 0) & (flat < size) & np.isfinite(weights)
+    denominator = np.bincount(
+        flat[valid_bin], weights=weights[valid_bin], minlength=size
+    )
+    output = {}
+    for name, raw in values.items():
+        raw = np.asarray(raw, dtype=float)
+        valid = valid_bin & np.isfinite(raw)
+        numerator = np.bincount(
+            flat[valid], weights=weights[valid] * raw[valid], minlength=size
+        )
+        output[name] = np.divide(
+            numerator,
+            denominator,
+            out=np.full(size, np.nan),
+            where=denominator > 0.0,
+        )
+    return output
 
 
 def command_unfold(args: argparse.Namespace) -> None:
@@ -517,29 +934,210 @@ def command_unfold(args: argparse.Namespace) -> None:
     binning = from_config(args.config)
     config = load_config(args.config)
     minimum_acceptance = float(config.get("minimum_acceptance", 0.005))
+    response_uncertainty_method = getattr(
+        args, "response_uncertainty", "analytic-diagonal"
+    )
+    if response_uncertainty_method == "count-bootstrap" and args.bootstrap < 2:
+        raise ValueError("count-bootstrap response uncertainty requires --bootstrap >= 2")
     rec_flat = binning.coordinates_to_flat(
         data["rec_Q2"], data["rec_xB"], data["rec_minus_t"], data["rec_trento_phi"]
     )
-    selected = rec_flat >= 0
+    base_selected = rec_flat >= 0
     if "rec_selected" in data.files:
-        selected &= np.asarray(data["rec_selected"], dtype=bool)
-    if args.selection_mask:
-        selected &= _load_mask(args.selection_mask, selected.size)
-    measured = np.bincount(rec_flat[selected], minlength=binning.size).astype(float)
-    efficiency = metadata["efficiency"]
+        base_selected &= np.asarray(data["rec_selected"], dtype=bool)
+    selection_mask = (
+        _load_mask(args.selection_mask, base_selected.size)
+        if args.selection_mask
+        else None
+    )
+    current_efficiency_path = getattr(args, "current_efficiency_correction", None)
+    current_efficiency = None
+    event_weights = np.ones(base_selected.size, dtype=float)
+    current_efficiency_excluded_event_count = 0
+    if current_efficiency_path is not None:
+        current_efficiency = load_current_efficiency_correction(current_efficiency_path)
+        actual_response_hash = response_meta_sha256(args.response_meta)
+        if actual_response_hash != current_efficiency.reference_response_meta_sha256:
+            raise ValueError(
+                "the response metadata does not match the current-efficiency reference "
+                f"sample ({current_efficiency.reference_label}, "
+                f"{current_efficiency.reference_current_nA:g} nA)"
+            )
+        if "run" not in data.files:
+            raise ValueError(
+                "--current-efficiency-correction requires a data sample with a run array"
+            )
+        event_runs = np.asarray(data["run"], dtype=np.int64)
+        if event_runs.shape != base_selected.shape:
+            raise ValueError("data run array shape does not match reconstructed events")
+        selected_rows = np.flatnonzero(base_selected)
+        selected_run_weights = current_efficiency.event_weights(event_runs[selected_rows])
+        event_weights[selected_rows] = selected_run_weights
+        excluded_rows = selected_rows[selected_run_weights == 0.0]
+        current_efficiency_excluded_event_count = int(excluded_rows.size)
+        base_selected[excluded_rows] = False
+
+    background_cuts_path = getattr(args, "background_cuts", None)
+    background = None
+    if background_cuts_path is not None:
+        cuts = load_cuts(str(background_cuts_path))
+        required = {
+            *cuts.variables,
+            "rec_proton_detector",
+            "rec_ft_photon_count",
+        }
+        missing = sorted(required.difference(data.files))
+        if missing:
+            raise ValueError(
+                "--background-cuts requires compact-data arrays: "
+                + ", ".join(missing)
+            )
+        iq2, ixb, it, _ = binning.indices(
+            data["rec_Q2"],
+            data["rec_xB"],
+            data["rec_minus_t"],
+            data["rec_trento_phi"],
+        )
+        background = estimate_mgg_background(
+            cuts=cuts,
+            values={name: data[name] for name in cuts.variables},
+            proton_detector=data["rec_proton_detector"],
+            ft_photons=data["rec_ft_photon_count"],
+            iq2=iq2,
+            ixb=ixb,
+            it=it,
+            rec_flat=rec_flat,
+            base_mask=base_selected,
+            event_weights=event_weights,
+            number_of_bins=binning.size,
+            alpha_bootstrap=getattr(args, "background_alpha_bootstrap", 200),
+            seed=args.seed,
+        )
+        selected = background.signal_region_mask
+        if selection_mask is not None and not np.array_equal(
+            base_selected & selection_mask, selected
+        ):
+            disagreement = int(
+                np.count_nonzero((base_selected & selection_mask) != selected)
+            )
+            raise ValueError(
+                "--selection-mask disagrees with the signal region derived from "
+                f"--background-cuts for {disagreement} events; omit the mask or "
+                "supply the mask generated from the same cut table"
+            )
+        measured_unweighted = background.signal_region_unweighted.copy()
+        measured_signal_region = background.signal_region.copy()
+        measured_signal_region_variance = background.signal_region_variance.copy()
+        measured_sideband = background.sideband.copy()
+        measured_sideband_unweighted = background.sideband_unweighted.copy()
+        measured_sideband_variance = background.sideband_variance.copy()
+        estimated_background = background.estimated_background.copy()
+        estimated_background_variance = (
+            background.estimated_background_variance.copy()
+        )
+        background_subtracted_unclipped = background.background_subtracted.copy()
+        measured = background_subtracted_unclipped.copy()
+        measured_variance = background.background_subtracted_variance.copy()
+        mean_mask = background.signal_region_mask | background.sideband_mask
+        means = _signed_bin_means(
+            binning,
+            rec_flat[mean_mask],
+            {
+                "Q2": data["rec_Q2"][mean_mask],
+                "xB": data["rec_xB"][mean_mask],
+                "minus_t": data["rec_minus_t"][mean_mask],
+                "phi": np.mod(data["rec_trento_phi"][mean_mask], 2.0 * np.pi)
+                * 180.0
+                / np.pi,
+            },
+            background.net_event_weights[mean_mask],
+            binning.size,
+        )
+    else:
+        selected = base_selected.copy()
+        if selection_mask is not None:
+            selected &= selection_mask
+        selected_weights = event_weights[selected]
+        measured_unweighted = np.bincount(
+            rec_flat[selected], minlength=binning.size
+        ).astype(float)
+        measured = np.bincount(
+            rec_flat[selected], weights=selected_weights, minlength=binning.size
+        ).astype(float)
+        measured_variance = np.bincount(
+            rec_flat[selected],
+            weights=selected_weights**2,
+            minlength=binning.size,
+        ).astype(float)
+        measured_signal_region = measured.copy()
+        measured_signal_region_variance = measured_variance.copy()
+        measured_sideband = np.zeros(binning.size, dtype=float)
+        measured_sideband_unweighted = np.zeros(binning.size, dtype=float)
+        measured_sideband_variance = np.zeros(binning.size, dtype=float)
+        estimated_background = np.zeros(binning.size, dtype=float)
+        estimated_background_variance = np.zeros(binning.size, dtype=float)
+        background_subtracted_unclipped = measured.copy()
+        means = binning.bin_means(
+            rec_flat[selected],
+            {
+                "Q2": data["rec_Q2"][selected],
+                "xB": data["rec_xB"][selected],
+                "minus_t": data["rec_minus_t"][selected],
+                "phi": np.mod(data["rec_trento_phi"][selected], 2.0 * np.pi)
+                * 180.0
+                / np.pi,
+            },
+            weights=selected_weights,
+        )
+
+    efficiency = np.asarray(metadata["efficiency"], dtype=float)
+    negative = measured < -1.0e-12
+    retained_truth = efficiency > minimum_acceptance
+    supported_rec = np.asarray(response[:, retained_truth].sum(axis=1)).ravel() > 0.0
+    supported_negative = negative & supported_rec
+    negative_policy = getattr(args, "background_negative_policy", "error")
+    if background is not None and np.any(supported_negative) and negative_policy == "error":
+        minimum = float(np.min(measured[supported_negative]))
+        raise ValueError(
+            "m_gg sideband subtraction produced "
+            f"{int(np.count_nonzero(supported_negative))} negative REC bins connected "
+            f"to retained truth space (minimum {minimum:.6g}); inspect the sideband "
+            "model or rerun explicitly with "
+            "--background-negative-policy clip"
+        )
+    background_clipped_deficit = np.maximum(-measured, 0.0)
+    if np.any(negative):
+        measured = np.maximum(measured, 0.0)
+
     corrected = subtract_feed_in(
         measured, float(metadata["feed_in_fraction"]), metadata["feed_in_shape"]
     )
     acceptance_corrected = np.divide(
         measured, efficiency, out=np.zeros_like(measured), where=efficiency > minimum_acceptance
     )
+    acceptance_corrected_feed_in_subtracted = np.divide(
+        corrected,
+        efficiency,
+        out=np.zeros_like(corrected),
+        where=efficiency > minimum_acceptance,
+    )
     if args.iterations == 0:
         unfolded = acceptance_corrected.copy()
+        unfolding_method = "bin_by_bin_efficiency"
+        unfolding_input_definition = "measured_without_feed_in_subtraction"
         kl = np.empty(0)
         sigma_stat = np.divide(
-            np.sqrt(measured), efficiency, out=np.zeros_like(measured), where=efficiency > minimum_acceptance
+            np.sqrt(measured_variance),
+            efficiency,
+            out=np.zeros_like(measured),
+            where=efficiency > minimum_acceptance,
+        )
+        statistical_covariance_phi = diagonal_phi_covariance(
+            sigma_stat * sigma_stat, binning
         )
     else:
+        unfolding_method = "iterative_bayes"
+        unfolding_input_definition = "feed_in_subtracted_measured"
         result = iterative_bayes(
             response,
             corrected,
@@ -549,7 +1147,7 @@ def command_unfold(args: argparse.Namespace) -> None:
             minimum_acceptance=minimum_acceptance,
         )
         unfolded, kl = result.unfolded, result.kl_divergence
-        _, sigma_stat = bootstrap_uncertainty(
+        bootstrap_samples = bootstrap_ensemble(
             response,
             measured,
             efficiency,
@@ -560,14 +1158,88 @@ def command_unfold(args: argparse.Namespace) -> None:
             seed=args.seed,
             feed_in_fraction=float(metadata["feed_in_fraction"]),
             feed_in_shape=metadata["feed_in_shape"],
+            measured_variance=measured_variance,
+            recompute_data_prior=True,
         )
-    sensitivity = np.divide(
-        unfolded, efficiency, out=np.zeros_like(unfolded), where=efficiency > minimum_acceptance
-    )
-    sigma_mc = sensitivity * np.sqrt(metadata["response_variance_sum"])
-    sigma_total = np.hypot(sigma_stat, sigma_mc)
+        sigma_stat = bootstrap_samples.std(axis=0, ddof=1)
+        statistical_covariance_phi = phi_block_covariance(
+            bootstrap_samples, binning
+        )
+    if response_uncertainty_method == "count-bootstrap":
+        required_response_fields = {"truth_total", "reconstructed_total"}
+        missing_response_fields = sorted(
+            required_response_fields.difference(metadata.files)
+        )
+        if missing_response_fields:
+            raise ValueError(
+                "count-bootstrap response uncertainty requires response metadata: "
+                + ", ".join(missing_response_fields)
+            )
+        joint_samples = joint_count_bootstrap_ensemble(
+            response,
+            metadata["truth_total"],
+            metadata["reconstructed_total"],
+            float(metadata["feed_in_fraction"]),
+            metadata["feed_in_shape"],
+            measured,
+            measured_variance,
+            args.iterations,
+            minimum_acceptance=minimum_acceptance,
+            experiments=args.bootstrap,
+            seed=args.seed + 104_729,
+            progress_label="production unfolding",
+        )
+        total_covariance_phi = phi_block_covariance(
+            joint_samples, binning
+        )
+        total_variance = binning.flatten_values(
+            np.diagonal(total_covariance_phi, axis1=-2, axis2=-1).reshape(
+                binning.shape
+            )
+        )
+        sigma_total = np.sqrt(np.clip(total_variance, 0.0, None))
+        response_covariance_phi = (
+            total_covariance_phi - statistical_covariance_phi
+        )
+        response_variance = binning.flatten_values(
+            np.diagonal(response_covariance_phi, axis1=-2, axis2=-1).reshape(
+                binning.shape
+            )
+        )
+        sigma_mc = np.sqrt(np.clip(response_variance, 0.0, None))
+        response_covariance_definition = (
+            "joint data-and-response count-bootstrap covariance minus the "
+            "measured-spectrum-only bootstrap covariance; retained as a diagnostic "
+            "decomposition while total_covariance_phi is the production covariance"
+        )
+        covariance_phi_definition = (
+            "closure-certified joint count-bootstrap covariance within each "
+            "(Q2,xB,-t) phi block; radiative-correction variance added to the "
+            "diagonal after unfolding"
+        )
+    else:
+        sensitivity = np.divide(
+            unfolded,
+            efficiency,
+            out=np.zeros_like(unfolded),
+            where=efficiency > minimum_acceptance,
+        )
+        sigma_mc = sensitivity * np.sqrt(metadata["response_variance_sum"])
+        sigma_total = np.hypot(sigma_stat, sigma_mc)
+        response_covariance_phi = diagonal_phi_covariance(
+            sigma_mc * sigma_mc, binning
+        )
+        total_covariance_phi = statistical_covariance_phi + response_covariance_phi
+        response_covariance_definition = (
+            "analytic response-probability variance added on the diagonal"
+        )
+        covariance_phi_definition = (
+            "bootstrap statistical covariance within each (Q2,xB,-t) phi block; "
+            "response-MC and radiative-correction variances added to the diagonal"
+        )
     corrected_yield = unfolded.copy()
     corrected_uncertainty = sigma_total.copy()
+    corrected_covariance_phi = total_covariance_phi.copy()
     radiative_reliable = np.ones(binning.size, dtype=bool)
     if args.radiative_correction:
         correction = np.load(args.radiative_correction, allow_pickle=False)
@@ -592,35 +1264,113 @@ def command_unfold(args: argparse.Namespace) -> None:
             out=np.zeros_like(unfolded),
             where=radiative_valid,
         )
+        unfolded_sigma_after_radiative_correction = np.divide(
+            sigma_total,
+            factor,
+            out=np.zeros_like(sigma_total),
+            where=radiative_valid,
+        )
         corrected_uncertainty = np.where(
-            radiative_valid, np.hypot(sigma_total, radiative_sigma), 0.0
+            radiative_valid,
+            np.hypot(unfolded_sigma_after_radiative_correction, radiative_sigma),
+            0.0,
+        )
+        factor_blocks = binning.unflatten(factor).reshape(-1, binning.shape[-1])
+        valid_blocks = binning.unflatten(radiative_valid).reshape(
+            -1, binning.shape[-1]
+        )
+        inverse_factor = np.divide(
+            1.0,
+            factor_blocks,
+            out=np.zeros_like(factor_blocks),
+            where=valid_blocks,
+        )
+        corrected_covariance_phi = (
+            total_covariance_phi
+            * inverse_factor[..., :, None]
+            * inverse_factor[..., None, :]
+        )
+        corrected_covariance_phi += diagonal_phi_covariance(
+            radiative_sigma * radiative_sigma, binning
         )
 
-    means = binning.bin_means(
-        rec_flat[selected],
-        {
-            "Q2": data["rec_Q2"][selected],
-            "xB": data["rec_xB"][selected],
-            "minus_t": data["rec_minus_t"][selected],
-            "phi": np.mod(data["rec_trento_phi"][selected], 2.0 * np.pi) * 180.0 / np.pi,
-        },
+    original_beam_charge = (
+        float(data["beam_charge_c"]) if "beam_charge_c" in data.files else np.nan
     )
-    beam_charge = float(data["beam_charge_c"]) if "beam_charge_c" in data.files else np.nan
+    beam_charge = (
+        float(current_efficiency.analysis_beam_charge_c)
+        if current_efficiency is not None
+        and current_efficiency.analysis_beam_charge_c is not None
+        else original_beam_charge
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         args.output,
         measured=measured,
+        measured_unweighted=measured_unweighted,
+        measured_variance=measured_variance,
+        measured_signal_region=measured_signal_region,
+        measured_signal_region_variance=measured_signal_region_variance,
+        measured_sideband=measured_sideband,
+        measured_sideband_unweighted=measured_sideband_unweighted,
+        measured_sideband_variance=measured_sideband_variance,
+        estimated_background=estimated_background,
+        estimated_background_variance=estimated_background_variance,
+        background_subtracted_unclipped=background_subtracted_unclipped,
+        background_clipped_deficit=background_clipped_deficit,
+        feed_in_corrected_measured=corrected,
+        feed_in_fraction=float(metadata["feed_in_fraction"]),
+        feed_in_shape=metadata["feed_in_shape"],
         acceptance_corrected=acceptance_corrected,
+        acceptance_corrected_raw=acceptance_corrected,
+        acceptance_corrected_feed_in_subtracted=(
+            acceptance_corrected_feed_in_subtracted
+        ),
         unfolded=unfolded,
+        unfolding_method=unfolding_method,
+        unfolding_input_definition=unfolding_input_definition,
+        feed_in_subtraction_applied_to_unfolded=args.iterations > 0,
         sigma_stat=sigma_stat,
+        statistical_covariance_phi=statistical_covariance_phi.reshape(
+            binning.shape[:-1] + (binning.shape[-1], binning.shape[-1])
+        ),
         sigma_mc=sigma_mc,
+        response_covariance_phi=response_covariance_phi.reshape(
+            binning.shape[:-1] + (binning.shape[-1], binning.shape[-1])
+        ),
         sigma_total=sigma_total,
+        total_covariance_phi=total_covariance_phi.reshape(
+            binning.shape[:-1] + (binning.shape[-1], binning.shape[-1])
+        ),
         corrected_yield=corrected_yield,
         corrected_uncertainty=corrected_uncertainty,
+        corrected_covariance_phi=corrected_covariance_phi.reshape(
+            binning.shape[:-1] + (binning.shape[-1], binning.shape[-1])
+        ),
+        covariance_phi_definition=covariance_phi_definition,
+        response_covariance_definition=response_covariance_definition,
+        response_uncertainty_method=response_uncertainty_method,
+        response_count_bootstrap_experiments=(
+            int(args.bootstrap)
+            if response_uncertainty_method == "count-bootstrap"
+            else 0
+        ),
+        covariance_phi_bootstrap_experiments=(
+            int(args.bootstrap)
+            if args.iterations > 0
+            or response_uncertainty_method == "count-bootstrap"
+            else 0
+        ),
+        bootstrap_prior_definition=(
+            "acceptance-corrected fluctuated measured spectrum recomputed per replica"
+            if args.iterations > 0
+            else "not applicable to zero-iteration bin-by-bin correction"
+        ),
         radiative_reliable=radiative_reliable,
         kl_divergence=kl,
         efficiency=efficiency,
         beam_charge_c=beam_charge,
+        beam_charge_original_c=original_beam_charge,
         Q2_mean=means["Q2"],
         xB_mean=means["xB"],
         minus_t_mean=means["minus_t"],
@@ -632,8 +1382,181 @@ def command_unfold(args: argparse.Namespace) -> None:
         iterations=args.iterations,
         bootstrap=args.bootstrap,
         random_seed=args.seed,
+        background_subtraction_applied=background is not None,
+        background_subtraction_method=(BACKGROUND_METHOD if background is not None else ""),
+        background_cuts_artifact=(
+            str(Path(background_cuts_path).resolve())
+            if background_cuts_path is not None
+            else ""
+        ),
+        background_cuts_sha256=(
+            response_meta_sha256(background_cuts_path)
+            if background_cuts_path is not None
+            else ""
+        ),
+        background_negative_policy=(negative_policy if background is not None else ""),
+        background_negative_bins=int(np.count_nonzero(negative)),
+        background_negative_supported_bins=int(np.count_nonzero(supported_negative)),
+        background_alpha_bootstrap=(
+            getattr(args, "background_alpha_bootstrap", 200)
+            if background is not None
+            else 0
+        ),
+        background_group_ids=(
+            background.group_ids if background is not None else np.empty(0, dtype=np.int64)
+        ),
+        background_signal_lower=(
+            background.signal_lower if background is not None else np.empty(0)
+        ),
+        background_signal_upper=(
+            background.signal_upper if background is not None else np.empty(0)
+        ),
+        background_fit_lower=(
+            background.fit_lower if background is not None else np.empty(0)
+        ),
+        background_fit_upper=(
+            background.fit_upper if background is not None else np.empty(0)
+        ),
+        background_alpha=(
+            background.alpha if background is not None else np.empty(0)
+        ),
+        background_alpha_uncertainty=(
+            background.alpha_uncertainty if background is not None else np.empty(0)
+        ),
+        background_fit_model=(
+            background.fit_model if background is not None else np.empty(0, dtype="<U1")
+        ),
+        background_fit_entries=(
+            background.fit_entries
+            if background is not None
+            else np.empty(0, dtype=np.int64)
+        ),
+        background_fit_bic=(
+            background.fit_bic if background is not None else np.empty(0)
+        ),
+        background_fit_deviance=(
+            background.fit_deviance if background is not None else np.empty(0)
+        ),
+        background_fit_ndof=(
+            background.fit_ndof
+            if background is not None
+            else np.empty(0, dtype=np.int64)
+        ),
+        background_signal_region_by_group=(
+            background.signal_region_by_group
+            if background is not None
+            else np.empty((0, binning.size))
+        ),
+        background_sideband_by_group=(
+            background.sideband_by_group
+            if background is not None
+            else np.empty((0, binning.size))
+        ),
+        background_sideband_variance_by_group=(
+            background.sideband_variance_by_group
+            if background is not None
+            else np.empty((0, binning.size))
+        ),
+        estimated_background_by_group=(
+            background.estimated_background_by_group
+            if background is not None
+            else np.empty((0, binning.size))
+        ),
+        estimated_background_variance_by_group=(
+            background.estimated_background_variance_by_group
+            if background is not None
+            else np.empty((0, binning.size))
+        ),
+        current_efficiency_applied=current_efficiency is not None,
+        current_efficiency_artifact=(
+            str(Path(current_efficiency_path).resolve())
+            if current_efficiency_path is not None
+            else ""
+        ),
+        current_efficiency_reference_current_nA=(
+            current_efficiency.reference_current_nA
+            if current_efficiency is not None
+            else np.nan
+        ),
+        current_efficiency_eta_mc_reference=(
+            current_efficiency.eta_mc_reference
+            if current_efficiency is not None
+            else np.nan
+        ),
+        current_efficiency_D_reference=(
+            current_efficiency.d_reference if current_efficiency is not None else np.nan
+        ),
+        current_efficiency_weight_min=float(event_weights[selected].min())
+        if np.any(selected)
+        else np.nan,
+        current_efficiency_weight_max=float(event_weights[selected].max())
+        if np.any(selected)
+        else np.nan,
+        current_efficiency_original_beam_charge_c=(
+            current_efficiency.original_beam_charge_c
+            if current_efficiency is not None
+            and current_efficiency.original_beam_charge_c is not None
+            else original_beam_charge
+        ),
+        current_efficiency_analysis_beam_charge_c=(
+            current_efficiency.analysis_beam_charge_c
+            if current_efficiency is not None
+            and current_efficiency.analysis_beam_charge_c is not None
+            else beam_charge
+        ),
+        current_efficiency_excluded_runs=(
+            np.asarray(current_efficiency.excluded_runs, dtype=np.int64)
+            if current_efficiency is not None
+            else np.empty(0, dtype=np.int64)
+        ),
+        current_efficiency_excluded_event_count=(
+            current_efficiency_excluded_event_count
+        ),
+        current_efficiency_model_json=(
+            json.dumps(current_efficiency.payload, sort_keys=True)
+            if current_efficiency is not None
+            else ""
+        ),
     )
-    print(f"Measured in-range events: {measured.sum():.0f}")
+    print(f"Measured in-range events: {measured_unweighted.sum():.0f}")
+    if background is not None:
+        print(
+            "m_gg background subtraction: "
+            f"signal-region={measured_signal_region.sum():.8g}, "
+            f"background={estimated_background.sum():.8g}, "
+            f"subtracted={background_subtracted_unclipped.sum():.8g}"
+        )
+        if np.any(negative):
+            print(
+                "WARNING: clipped "
+                f"{int(np.count_nonzero(negative))} negative REC bins; total "
+                f"clipped deficit={background_clipped_deficit.sum():.8g}"
+            )
+    if current_efficiency is not None:
+        print(
+            "Current-efficiency weighted yield: "
+            f"{measured.sum():.8g} (I_ref={current_efficiency.reference_current_nA:g} nA)"
+        )
+        if current_efficiency.excluded_runs:
+            print(
+                "Downstream run exclusions: "
+                f"runs={len(current_efficiency.excluded_runs)}, "
+                f"in-range events={current_efficiency_excluded_event_count}, "
+                f"analysis charge={beam_charge:.8g} C"
+            )
+    print(
+        "Unfolding uncertainty: "
+        + (
+            f"joint data-and-response count bootstrap ({args.bootstrap} replicas)"
+            if response_uncertainty_method == "count-bootstrap"
+            else "measured bootstrap plus analytic response diagonal"
+        )
+    )
+    print(
+        "Stored phi-block covariance: "
+        f"{int(np.prod(binning.shape[:-1]))} cells x "
+        f"{binning.shape[-1]}x{binning.shape[-1]} phi bins"
+    )
     print(f"Wrote {args.output}")
 
 
@@ -673,11 +1596,21 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         args.output,
         C_rad=result.c_rad,
         delta_C=result.delta_c,
+        C_rad_raw=result.c_rad_raw,
+        delta_C_raw=result.delta_c_raw,
         reliable=result.reliable,
         support_overlap=result.support_overlap,
         support_status=result.support_status,
         H_born=binning.unflatten(result.born.counts),
         H_rad=binning.unflatten(result.radiative.counts),
+        H_born_cluster_sumw2=binning.unflatten(
+            result.born.cluster_weight_square_sum
+        ),
+        H_rad_cluster_sumw2=binning.unflatten(
+            result.radiative.cluster_weight_square_sum
+        ),
+        H_born_effective=binning.unflatten(result.born.effective_counts),
+        H_rad_effective=binning.unflatten(result.radiative.effective_counts),
         born_q2_min=result.born.q2_min,
         born_q2_max=result.born.q2_max,
         born_eprime_min=result.born.eprime_min,
@@ -712,8 +1645,18 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         radiative_events_seen=result.radiative.events_seen,
         born_topology_events=result.born.topology_events,
         radiative_topology_events=result.radiative.topology_events,
+        born_topology_clusters=result.born.topology_clusters,
+        radiative_topology_clusters=result.radiative.topology_clusters,
         born_in_range=result.born.in_range,
         radiative_in_range=result.radiative.in_range,
+        born_in_range_clusters=result.born.in_range_clusters,
+        radiative_in_range_clusters=result.radiative.in_range_clusters,
+        born_maximum_cluster_multiplicity=result.born.maximum_cluster_multiplicity,
+        radiative_maximum_cluster_multiplicity=(
+            result.radiative.maximum_cluster_multiplicity
+        ),
+        uncertainty_model=CLUSTER_UNCERTAINTY_MODEL,
+        reliability_count_definition="kish-effective-count-per-bin",
         born_generated_q2_range=np.asarray([result.born.generated_q2_min, result.born.generated_q2_max]),
         radiative_generated_q2_range=np.asarray([
             result.radiative.generated_q2_min, result.radiative.generated_q2_max,
@@ -749,12 +1692,24 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
     print(
         "Born events: "
         f"seen={result.born.events_seen}, topology={result.born.topology_events}, "
-        f"in-range={result.born.in_range}"
+        f"in-range={result.born.in_range}, "
+        f"topology-clusters={result.born.topology_clusters}, "
+        f"in-range-clusters={result.born.in_range_clusters}, "
+        f"maximum-cluster-multiplicity={result.born.maximum_cluster_multiplicity}"
     )
     print(
         "Radiative events: "
         f"seen={result.radiative.events_seen}, topology={result.radiative.topology_events}, "
-        f"in-range={result.radiative.in_range}"
+        f"in-range={result.radiative.in_range}, "
+        f"topology-clusters={result.radiative.topology_clusters}, "
+        f"in-range-clusters={result.radiative.in_range_clusters}, "
+        f"maximum-cluster-multiplicity={result.radiative.maximum_cluster_multiplicity}"
+    )
+    print(
+        "Cluster-aware effective support: "
+        f"born={np.sum(result.born.effective_counts):.8g}, "
+        f"radiative={np.sum(result.radiative.effective_counts):.8g}; "
+        f"uncertainty_model={CLUSTER_UNCERTAINTY_MODEL}"
     )
     print(
         "Born generated ranges: "
@@ -766,7 +1721,10 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         f"Q2={result.radiative.generated_q2_min:.6g}-{result.radiative.generated_q2_max:.6g}, "
         f"Eprime={result.radiative.generated_eprime_min:.6g}-{result.radiative.generated_eprime_max:.6g}"
     )
-    print(f"Reliable bins: {reliable_bins}/{total_bins} with min_counts={args.min_counts}")
+    print(
+        f"Reliable bins: {reliable_bins}/{total_bins} with "
+        f"minimum per-bin effective cluster count={args.min_counts}"
+    )
     print(
         "Support bins: "
         f"overlap={int(np.count_nonzero(result.support_overlap))}, "
@@ -901,7 +1859,7 @@ def _normalization_sidecar_files(path: Path, suffix: str, *, max_files: int | No
 def _read_generator_normalization_record(path: Path) -> GeneratorNormalizationRecord:
     text = path.read_text(encoding="utf-8", errors="replace")
     fields = _parse_generator_key_values(text)
-    return GeneratorNormalizationRecord(
+    record = GeneratorNormalizationRecord(
         path=path,
         sig_sum=_parse_generator_integrated_cross_section(text, path),
         events=_optional_positive_generator_float(fields, "events", path),
@@ -910,9 +1868,171 @@ def _read_generator_normalization_record(path: Path) -> GeneratorNormalizationRe
         nevent=_optional_positive_generator_float(fields, "nevent", path),
         mcall_max=_optional_positive_generator_float(fields, "mcall_max", path),
         sigr_max=_optional_positive_generator_float(fields, "sigr_max", path),
+        sampling_mode=_optional_nonnegative_generator_float(
+            fields, "sampling_mode", path
+        ),
+        mode3_direct_fraction=_optional_nonnegative_generator_float(
+            fields, "mode3_direct_fraction", path
+        ),
+        mode3_duplicate_events=_optional_nonnegative_generator_float(
+            fields, "mode3_duplicate_events", path
+        ),
+        mode3_target_events=_optional_positive_generator_float(
+            fields, "mode3_target_events", path
+        ),
+        mode3_event_overshoot=_optional_nonnegative_generator_float(
+            fields, "mode3_event_overshoot", path
+        ),
+        mode3_complete_final_multiplicity=_optional_nonnegative_generator_float(
+            fields, "mode3_complete_final_multiplicity", path
+        ),
+        mode3_schema=fields.get("mode3_schema", ""),
         generator=fields.get("generator", ""),
         units=fields.get("integrated_cross_section_units", ""),
     )
+    _validate_generator_normalization_record(record)
+    return record
+
+
+def _validate_generator_normalization_record(
+    record: GeneratorNormalizationRecord,
+) -> None:
+    """Reject mode-3 sidecars that cannot represent an unbiased event stream."""
+
+    is_mode3 = (
+        record.sampling_mode is not None
+        and math.isclose(record.sampling_mode, 3.0)
+    ) or bool(record.mode3_schema)
+    if not is_mode3:
+        return
+    is_born = record.generator == "aao_norad" or record.mode3_schema.startswith(
+        "aao-norad-mode3-"
+    )
+    if is_born and not record.mode3_schema:
+        missing = [
+            name for name in ("events", "mcall_max")
+            if getattr(record, name) is None
+        ]
+        if missing:
+            raise ValueError(
+                f"Legacy Born mode-3 normalization in {record.path} lacks "
+                f"required completion metadata {', '.join(missing)}."
+            )
+        assert record.events is not None
+        assert record.mcall_max is not None
+        if record.mcall_max > record.events:
+            raise ValueError(
+                f"Unsafe legacy Born mode-3 normalization in {record.path}: "
+                f"mcall_max={record.mcall_max:.8g} exceeds emitted events="
+                f"{record.events:.8g}."
+            )
+        # Legacy aao_norad emitted every multiplicity block before checking the
+        # requested event limit, so completed sidecars remain unbiased.  The v2
+        # schema additionally proves that pathological job-sized blocks were
+        # rejected before they could exhaust resources.
+        return
+    expected_schema = (
+        SAFE_BORN_MODE3_SCHEMA if is_born else SAFE_RADIATIVE_MODE3_SCHEMA
+    )
+    if record.mode3_schema != expected_schema:
+        version = record.mode3_schema or "missing"
+        if is_born:
+            raise ValueError(
+                f"Unsafe Born mode-3 normalization in {record.path}: "
+                f"unrecognized schema={version!r}; expected {expected_schema}."
+            )
+        raise ValueError(
+            f"Unsafe mode-3 normalization in {record.path}: schema={version!r} "
+            f"predates {expected_schema}, which preserves the complete final "
+            "stochastic multiplicity. Regenerate this sample; the old sidecar "
+            "cannot prove that its final event block was untruncated."
+        )
+    if is_born:
+        missing = [
+            name
+            for name in (
+                "events",
+                "mcall_max",
+                "mode3_target_events",
+                "mode3_event_overshoot",
+                "mode3_complete_final_multiplicity",
+            )
+            if getattr(record, name) is None
+        ]
+        if missing:
+            raise ValueError(
+                f"Unsafe Born mode-3 normalization in {record.path}: v2 sidecar "
+                f"lacks required safety metadata {', '.join(missing)}."
+            )
+        assert record.events is not None
+        assert record.mcall_max is not None
+        assert record.mode3_target_events is not None
+        assert record.mode3_event_overshoot is not None
+        assert record.mode3_complete_final_multiplicity is not None
+        expected_overshoot = record.events - record.mode3_target_events
+        if expected_overshoot < 0.0 or not math.isclose(
+            expected_overshoot,
+            record.mode3_event_overshoot,
+            rel_tol=0.0,
+            abs_tol=1.0e-9,
+        ):
+            raise ValueError(
+                f"Unsafe Born mode-3 normalization in {record.path}: emitted, "
+                "target, and overshoot event counts are inconsistent."
+            )
+        if not math.isclose(
+            record.mode3_complete_final_multiplicity,
+            1.0,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        ):
+            raise ValueError(
+                f"Unsafe Born mode-3 normalization in {record.path}: complete "
+                "final stochastic multiplicity is not certified."
+            )
+        if record.mcall_max > record.mode3_target_events:
+            raise ValueError(
+                f"Unsafe Born mode-3 normalization in {record.path}: mcall_max="
+                f"{record.mcall_max:.8g} exceeds requested job capacity="
+                f"{record.mode3_target_events:.8g}."
+            )
+        if record.mode3_event_overshoot >= record.mcall_max:
+            raise ValueError(
+                f"Unsafe Born mode-3 normalization in {record.path}: final "
+                "overshoot is not smaller than mcall_max."
+            )
+        return
+    missing = [
+        name
+        for name in ("events", "mcall_max", "mode3_direct_fraction")
+        if getattr(record, name) is None
+    ]
+    if missing:
+        raise ValueError(
+            f"Unsafe mode-3 normalization in {record.path}: v2 sidecar lacks "
+            f"required safety metadata {', '.join(missing)}."
+        )
+    if (
+        record.mode3_direct_fraction is not None
+        and record.mode3_direct_fraction > MODE3_MAXIMUM_DIRECT_FRACTION + 1.0e-12
+    ):
+        raise ValueError(
+            f"Unsafe mode-3 normalization in {record.path}: direct fraction "
+            f"{record.mode3_direct_fraction:.8g} leaves less than "
+            f"{MODE3_MINIMUM_LEGACY_FRACTION:.0%} legacy support. Regenerate "
+            "with the bounded full-support proposal mixture."
+        )
+    if (
+        record.events is not None
+        and record.mcall_max is not None
+        and record.mcall_max > record.events
+    ):
+        raise ValueError(
+            f"Unsafe mode-3 normalization in {record.path}: mcall_max="
+            f"{record.mcall_max:.8g} exceeds emitted events={record.events:.8g}. "
+            "This is the legacy final-multiplicity truncation signature; "
+            "do not pool or use this sample."
+        )
 
 
 def _parse_generator_integrated_cross_section(text: str, path: Path) -> float:
@@ -950,6 +2070,20 @@ def _optional_positive_generator_float(
     if value is None:
         return None
     return _positive_finite_float(value, key, path)
+
+
+def _optional_nonnegative_generator_float(
+    fields: dict[str, str],
+    key: str,
+    path: Path,
+) -> float | None:
+    value = fields.get(key)
+    if value is None:
+        return None
+    parsed = float(value.replace("D", "E").replace("d", "e"))
+    if not np.isfinite(parsed) or parsed < 0.0:
+        raise ValueError(f"{key} in {path} must be nonnegative and finite")
+    return parsed
 
 
 def _parse_generator_events(text: str, path: Path) -> float | None:
@@ -996,6 +2130,25 @@ def _normalization_npz_fields(
         f"{label}_normalization_nevent": floats("nevent"),
         f"{label}_normalization_mcall_max": floats("mcall_max"),
         f"{label}_normalization_sigr_max": floats("sigr_max"),
+        f"{label}_normalization_sampling_mode": floats("sampling_mode"),
+        f"{label}_normalization_mode3_direct_fraction": floats(
+            "mode3_direct_fraction"
+        ),
+        f"{label}_normalization_mode3_duplicate_events": floats(
+            "mode3_duplicate_events"
+        ),
+        f"{label}_normalization_mode3_target_events": floats(
+            "mode3_target_events"
+        ),
+        f"{label}_normalization_mode3_event_overshoot": floats(
+            "mode3_event_overshoot"
+        ),
+        f"{label}_normalization_mode3_complete_final_multiplicity": floats(
+            "mode3_complete_final_multiplicity"
+        ),
+        f"{label}_normalization_mode3_schema": np.asarray(
+            [record.mode3_schema for record in records]
+        ),
     }
 
 
@@ -1006,6 +2159,10 @@ def command_radiative_correction_plots(args: argparse.Namespace) -> None:
         csv_path=args.csv,
         include_quilt=args.quilt,
         quilt_scale_mode=args.quilt_scale_mode,
+        overlay_correction_path=args.overlay_correction,
+        primary_label=args.primary_label,
+        overlay_label=args.overlay_label,
+        overlay_only=args.overlay_only,
     )
     print(f"Wrote radiative-correction diagnostic PDF with {pages} pages: {args.output}")
 
@@ -1016,7 +2173,13 @@ def _plot_radiative_correction_diagnostics(
     csv_path: Path | None = None,
     include_quilt: bool = False,
     quilt_scale_mode: str = "panel",
+    overlay_correction_path: Path | None = None,
+    primary_label: str | None = None,
+    overlay_label: str | None = None,
+    overlay_only: bool = False,
 ) -> int:
+    if overlay_only and overlay_correction_path is None:
+        raise ValueError("--overlay-only requires --overlay-correction")
     _prepare_matplotlib_cache()
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
@@ -1027,6 +2190,14 @@ def _plot_radiative_correction_diagnostics(
     reliable = np.asarray(correction["reliable"], dtype=bool)
     h_born = np.asarray(correction["H_born"], dtype=float)
     h_rad = np.asarray(correction["H_rad"], dtype=float)
+    h_born_effective = np.asarray(
+        correction["H_born_effective"] if "H_born_effective" in correction.files else h_born,
+        dtype=float,
+    )
+    h_rad_effective = np.asarray(
+        correction["H_rad_effective"] if "H_rad_effective" in correction.files else h_rad,
+        dtype=float,
+    )
     q2_edges = _npz_first(correction, "q2_edges", "Q2_edges")
     xb_edges = _npz_first(correction, "xb_edges", "Xb_edges")
     t_edges = _npz_first(correction, "t_edges")
@@ -1035,7 +2206,13 @@ def _plot_radiative_correction_diagnostics(
     if "support_status" in correction.files:
         support_status = np.asarray(correction["support_status"], dtype=np.uint8)
     else:
-        support_status = _support_status_codes_for_plotting(h_born, h_rad, min_counts)
+        support_status = _support_status_codes_for_plotting(
+            h_born,
+            h_rad,
+            min_counts,
+            born_effective_counts=h_born_effective,
+            radiative_effective_counts=h_rad_effective,
+        )
     if "support_overlap" in correction.files:
         support_overlap = np.asarray(correction["support_overlap"], dtype=bool)
     else:
@@ -1053,10 +2230,53 @@ def _plot_radiative_correction_diagnostics(
         ("reliable", reliable),
         ("H_born", h_born),
         ("H_rad", h_rad),
+        ("H_born_effective", h_born_effective),
+        ("H_rad_effective", h_rad_effective),
         ("support_status", support_status),
     ):
         if values.shape != expected_shape:
             raise ValueError(f"{name} has shape {values.shape}; expected {expected_shape}")
+
+    overlay_series = None
+    if overlay_correction_path is not None:
+        overlay = np.load(overlay_correction_path, allow_pickle=False)
+        overlay_c_rad = np.asarray(overlay["C_rad"], dtype=float)
+        overlay_delta_c = np.asarray(overlay["delta_C"], dtype=float)
+        overlay_reliable = np.asarray(overlay["reliable"], dtype=bool)
+        for edge_name, primary_edges in (
+            ("q2_edges", q2_edges),
+            ("xb_edges", xb_edges),
+            ("t_edges", t_edges),
+            ("phi_edges", phi_edges),
+        ):
+            overlay_edges = _npz_first(
+                overlay,
+                edge_name,
+                "Q2_edges" if edge_name == "q2_edges" else (
+                    "Xb_edges" if edge_name == "xb_edges" else edge_name
+                ),
+            )
+            if (
+                overlay_edges.shape != primary_edges.shape
+                or not np.allclose(overlay_edges, primary_edges, rtol=0.0, atol=1.0e-12)
+            ):
+                raise ValueError(
+                    f"overlay {edge_name} does not match the primary correction"
+                )
+        for name, values in (
+            ("C_rad", overlay_c_rad),
+            ("delta_C", overlay_delta_c),
+            ("reliable", overlay_reliable),
+        ):
+            if values.shape != expected_shape:
+                raise ValueError(
+                    f"overlay {name} has shape {values.shape}; expected {expected_shape}"
+                )
+        overlay_series = (
+            overlay_c_rad,
+            overlay_delta_c,
+            overlay_reliable,
+        )
 
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
     if csv_path is not None:
@@ -1084,109 +2304,139 @@ def _plot_radiative_correction_diagnostics(
     csv_lines = [
         "iq2,q2_low,q2_high,ixb,xb_low,xb_high,it,t_low,t_high,"
         "reliable_phi_bins,overlap_phi_bins,born_sum,radiative_sum,"
+        "born_effective_sum,radiative_effective_sum,"
         "mean_c_rad,median_c_rad,min_c_rad,max_c_rad,mean_delta_c"
     ]
 
     pages = 0
     with PdfPages(pdf_path) as pdf:
-        _plot_radcorr_summary_page(
-            pdf,
-            correction_path,
-            c_rad,
-            delta_c,
-            reliable,
-            support_overlap,
-            support_status,
-            h_born,
-            h_rad,
-            correction,
-            min_counts,
-        )
-        pages += 1
+        if not overlay_only:
+            _plot_radcorr_summary_page(
+                pdf,
+                correction_path,
+                c_rad,
+                delta_c,
+                reliable,
+                support_overlap,
+                support_status,
+                h_born,
+                h_rad,
+                h_born_effective,
+                h_rad_effective,
+                correction,
+                min_counts,
+            )
+            pages += 1
 
-        _plot_radcorr_status_page(pdf, support_status, status_labels, status_colors)
-        pages += 1
+            _plot_radcorr_status_page(pdf, support_status, status_labels, status_colors)
+            pages += 1
 
-        _plot_radcorr_histograms(pdf, c_rad, delta_c, reliable)
-        pages += 1
+            _plot_radcorr_histograms(pdf, c_rad, delta_c, reliable)
+            pages += 1
 
-        _plot_radcorr_q2_xb_projection(pdf, c_rad, reliable, q2_edges, xb_edges)
-        pages += 1
+            _plot_radcorr_q2_xb_projection(pdf, c_rad, reliable, q2_edges, xb_edges)
+            pages += 1
 
-        _plot_radcorr_t_phi_projection(pdf, c_rad, reliable, t_edges, phi_edges)
-        pages += 1
+            _plot_radcorr_t_phi_projection(pdf, c_rad, reliable, t_edges, phi_edges)
+            pages += 1
 
-        if include_quilt:
+            if include_quilt:
+                pages += _plot_quantity_quilts_vs_phi(
+                    pdf,
+                    {"C_rad": (c_rad, delta_c, reliable)},
+                    phi_edges,
+                    q2_edges,
+                    xb_edges,
+                    t_edges,
+                    title="Radiative correction vs phi quilt",
+                    ylabel="C_rad",
+                    scale_mode=quilt_scale_mode,
+                    reference_lines=(1.0,),
+                )
+
+        if overlay_series is not None:
+            primary_name = primary_label or correction_path.stem
+            comparison_name = overlay_label or overlay_correction_path.stem
             pages += _plot_quantity_quilts_vs_phi(
                 pdf,
-                {"C_rad": (c_rad, delta_c, reliable)},
+                {
+                    primary_name: (c_rad, delta_c, reliable),
+                    comparison_name: overlay_series,
+                },
                 phi_edges,
                 q2_edges,
                 xb_edges,
                 t_edges,
-                title="Radiative correction vs phi quilt",
-                ylabel="C_rad",
+                title="Radiative-correction comparison vs phi",
+                ylabel="C_rad = sigma_rad / sigma_Born",
                 scale_mode=quilt_scale_mode,
                 reference_lines=(1.0,),
             )
 
-        for iq2 in range(c_rad.shape[0]):
-            for ixb in range(c_rad.shape[1]):
-                for it in range(c_rad.shape[2]):
-                    born_phi = h_born[iq2, ixb, it, :]
-                    rad_phi = h_rad[iq2, ixb, it, :]
-                    if not np.any((born_phi > 0.0) | (rad_phi > 0.0)):
-                        continue
-                    reliable_phi = reliable[iq2, ixb, it, :]
-                    overlap_phi = support_overlap[iq2, ixb, it, :]
-                    values = c_rad[iq2, ixb, it, :]
-                    errors = delta_c[iq2, ixb, it, :]
-                    status_phi = support_status[iq2, ixb, it, :]
-                    _plot_radcorr_phi_page(
-                        pdf,
-                        phi_centers,
-                        values,
-                        errors,
-                        reliable_phi,
-                        status_phi,
-                        born_phi,
-                        rad_phi,
-                        q2_edges,
-                        xb_edges,
-                        t_edges,
-                        iq2,
-                        ixb,
-                        it,
-                        status_labels,
-                        status_colors,
-                    )
-                    pages += 1
-                    good = reliable_phi & np.isfinite(values)
-                    csv_lines.append(
-                        ",".join(
-                            str(item)
-                            for item in (
-                                iq2,
-                                q2_edges[iq2],
-                                q2_edges[iq2 + 1],
-                                ixb,
-                                xb_edges[ixb],
-                                xb_edges[ixb + 1],
-                                it,
-                                t_edges[it],
-                                t_edges[it + 1],
-                                int(np.count_nonzero(reliable_phi)),
-                                int(np.count_nonzero(overlap_phi)),
-                                float(np.sum(born_phi)),
-                                float(np.sum(rad_phi)),
-                                float(np.nanmean(values[good])) if np.any(good) else np.nan,
-                                float(np.nanmedian(values[good])) if np.any(good) else np.nan,
-                                float(np.nanmin(values[good])) if np.any(good) else np.nan,
-                                float(np.nanmax(values[good])) if np.any(good) else np.nan,
-                                float(np.nanmean(errors[good])) if np.any(good) else np.nan,
+        if not overlay_only:
+            for iq2 in range(c_rad.shape[0]):
+                for ixb in range(c_rad.shape[1]):
+                    for it in range(c_rad.shape[2]):
+                        born_phi = h_born[iq2, ixb, it, :]
+                        rad_phi = h_rad[iq2, ixb, it, :]
+                        born_effective_phi = h_born_effective[iq2, ixb, it, :]
+                        rad_effective_phi = h_rad_effective[iq2, ixb, it, :]
+                        if not np.any((born_phi > 0.0) | (rad_phi > 0.0)):
+                            continue
+                        reliable_phi = reliable[iq2, ixb, it, :]
+                        overlap_phi = support_overlap[iq2, ixb, it, :]
+                        values = c_rad[iq2, ixb, it, :]
+                        errors = delta_c[iq2, ixb, it, :]
+                        status_phi = support_status[iq2, ixb, it, :]
+                        _plot_radcorr_phi_page(
+                            pdf,
+                            phi_centers,
+                            values,
+                            errors,
+                            reliable_phi,
+                            status_phi,
+                            born_phi,
+                            rad_phi,
+                            born_effective_phi,
+                            rad_effective_phi,
+                            q2_edges,
+                            xb_edges,
+                            t_edges,
+                            iq2,
+                            ixb,
+                            it,
+                            status_labels,
+                            status_colors,
+                        )
+                        pages += 1
+                        good = reliable_phi & np.isfinite(values)
+                        csv_lines.append(
+                            ",".join(
+                                str(item)
+                                for item in (
+                                    iq2,
+                                    q2_edges[iq2],
+                                    q2_edges[iq2 + 1],
+                                    ixb,
+                                    xb_edges[ixb],
+                                    xb_edges[ixb + 1],
+                                    it,
+                                    t_edges[it],
+                                    t_edges[it + 1],
+                                    int(np.count_nonzero(reliable_phi)),
+                                    int(np.count_nonzero(overlap_phi)),
+                                    float(np.sum(born_phi)),
+                                    float(np.sum(rad_phi)),
+                                    float(np.sum(born_effective_phi)),
+                                    float(np.sum(rad_effective_phi)),
+                                    float(np.nanmean(values[good])) if np.any(good) else np.nan,
+                                    float(np.nanmedian(values[good])) if np.any(good) else np.nan,
+                                    float(np.nanmin(values[good])) if np.any(good) else np.nan,
+                                    float(np.nanmax(values[good])) if np.any(good) else np.nan,
+                                    float(np.nanmean(errors[good])) if np.any(good) else np.nan,
+                                )
                             )
                         )
-                    )
 
     if csv_path is not None:
         csv_path.write_text("\n".join(csv_lines) + "\n", encoding="utf-8")
@@ -1204,11 +2454,18 @@ def _support_status_codes_for_plotting(
     born_counts: np.ndarray,
     radiative_counts: np.ndarray,
     min_counts: int,
+    *,
+    born_effective_counts: np.ndarray | None = None,
+    radiative_effective_counts: np.ndarray | None = None,
 ) -> np.ndarray:
+    if born_effective_counts is None:
+        born_effective_counts = born_counts
+    if radiative_effective_counts is None:
+        radiative_effective_counts = radiative_counts
     born_nonzero = born_counts > 0.0
     rad_nonzero = radiative_counts > 0.0
-    born_low = born_counts < min_counts
-    rad_low = radiative_counts < min_counts
+    born_low = born_effective_counts < min_counts
+    rad_low = radiative_effective_counts < min_counts
     status = np.zeros(born_counts.shape, dtype=np.uint8)
     status[~born_nonzero & ~rad_nonzero] = 1
     status[born_nonzero & ~rad_nonzero] = 2
@@ -1230,6 +2487,8 @@ def _plot_radcorr_summary_page(
     support_status: np.ndarray,
     h_born: np.ndarray,
     h_rad: np.ndarray,
+    h_born_effective: np.ndarray,
+    h_rad_effective: np.ndarray,
     correction,
     min_counts: int,
 ) -> None:
@@ -1245,9 +2504,16 @@ def _plot_radcorr_summary_page(
         f"Total bins: {c_rad.size}",
         f"Reliable phi bins: {np.count_nonzero(reliable)}",
         f"Overlap phi bins: {np.count_nonzero(support_overlap)}",
-        f"min_counts: {min_counts}",
+        f"minimum effective counts: {min_counts}",
         f"Born total in-range count: {np.sum(h_born):.8g}",
         f"Radiative total in-range count: {np.sum(h_rad):.8g}",
+        f"Born summed per-bin effective count: {np.sum(h_born_effective):.8g}",
+        f"Radiative summed per-bin effective count: {np.sum(h_rad_effective):.8g}",
+        f"Uncertainty model: {_npz_string(correction, 'uncertainty_model', 'legacy-independent-event-poisson')}",
+        f"Born topology clusters: {_optional_scalar(correction, 'born_topology_clusters'):.8g}",
+        f"Radiative topology clusters: {_optional_scalar(correction, 'radiative_topology_clusters'):.8g}",
+        f"Born maximum cluster multiplicity: {_optional_scalar(correction, 'born_maximum_cluster_multiplicity'):.8g}",
+        f"Radiative maximum cluster multiplicity: {_optional_scalar(correction, 'radiative_maximum_cluster_multiplicity'):.8g}",
         f"Normalization ratio: {_optional_scalar(correction, 'normalization_ratio'):.8g}",
         f"Born integrated cross section: {_optional_scalar(correction, 'born_integrated_cross_section'):.8g}",
         f"Radiative integrated cross section: {_optional_scalar(correction, 'radiative_integrated_cross_section'):.8g}",
@@ -1261,7 +2527,8 @@ def _plot_radcorr_summary_page(
         _range_line(correction, "radiative_generated_eprime_range", "Radiative generated Eprime"),
         "",
         "support_status codes: 0 reliable, 1 both empty, 2 born only,",
-        "3 radiative only, 4 low born, 5 low radiative, 6 low both.",
+        "3 radiative only, 4 low effective born, 5 low effective radiative,",
+        "6 low effective support in both.",
     ]
     counts = np.bincount(support_status.ravel(), minlength=7)
     lines.append("")
@@ -1478,6 +2745,8 @@ def _plot_radcorr_phi_page(
     status,
     born_counts,
     rad_counts,
+    born_effective_counts,
+    rad_effective_counts,
     q2_edges,
     xb_edges,
     t_edges,
@@ -1534,10 +2803,30 @@ def _plot_radcorr_phi_page(
 
     cax.plot(phi_centers, born_counts, "o-", color="#4c78a8", markersize=3, linewidth=1.0, label="born")
     cax.plot(phi_centers, rad_counts, "s-", color="#f58518", markersize=3, linewidth=1.0, label="radiative")
+    if not (
+        np.allclose(born_effective_counts, born_counts)
+        and np.allclose(rad_effective_counts, rad_counts)
+    ):
+        cax.plot(
+            phi_centers,
+            born_effective_counts,
+            "--",
+            color="#4c78a8",
+            linewidth=1.0,
+            label="born effective",
+        )
+        cax.plot(
+            phi_centers,
+            rad_effective_counts,
+            "--",
+            color="#f58518",
+            linewidth=1.0,
+            label="radiative effective",
+        )
     if np.nanmax(np.r_[born_counts, rad_counts]) > 0:
         cax.set_yscale("symlog", linthresh=1.0)
     cax.set_xlabel("phi bin center [deg]")
-    cax.set_ylabel("Generated counts")
+    cax.set_ylabel("Generated / effective counts")
     cax.grid(True, alpha=0.25)
     cax.legend(loc="best", fontsize="small")
     cax.set_xlim(float(phi_centers[0]), float(phi_centers[-1]))
@@ -1705,6 +2994,9 @@ def _save_bin_centering_artifact(
         theory=theory,
         channel=channel,
         resonance=resonance,
+        aao_raw_cross_section_units=AAO_RAW_CROSS_SECTION_UNITS,
+        aao_reduced_cross_section_units=AAO_REDUCED_CROSS_SECTION_UNITS,
+        aao_cross_section_conversion=AAO_CROSS_SECTION_CONVERSION,
         bin_start=bin_start,
         bin_stop=bin_stop,
         total_3d_bins=total_3d_bins,
@@ -1761,9 +3053,12 @@ def command_bin_centering_merge(args: argparse.Namespace) -> None:
         "theory",
         "channel",
         "resonance",
+        "aao_raw_cross_section_units",
+        "aao_reduced_cross_section_units",
+        "aao_cross_section_conversion",
         "phase_space_Q2_min",
         "phase_space_W_min",
-        "phase_space_y_max",
+        "phase_space_electron_p_min",
     )
 
     for path, partial in zip(args.partials, partials):
@@ -1776,6 +3071,9 @@ def command_bin_centering_merge(args: argparse.Namespace) -> None:
             values = np.asarray(partial[edge_name], dtype=float)
             if values.shape != expected.shape or not np.allclose(values, expected):
                 raise ValueError(f"{path} {edge_name} does not match the first partial")
+        for key in metadata_keys:
+            if not _matching_npz_field(first, partial, key):
+                raise ValueError(f"{path} metadata {key} does not match the first partial")
         computed = (
             np.asarray(partial["computed"], dtype=bool)
             if "computed" in partial.files
@@ -2002,7 +3300,11 @@ def command_cross_section(args: argparse.Namespace) -> None:
             beam_energy,
             q2_minimum=1.0 if phase_space.q2_min is None else phase_space.q2_min,
             w_minimum=2.0 if phase_space.w_min is None else phase_space.w_min,
-            y_maximum=0.8 if phase_space.y_max is None else phase_space.y_max,
+            electron_p_minimum=(
+                0.0
+                if phase_space.electron_p_min is None
+                else phase_space.electron_p_min
+            ),
         )
     )
     # Construct center arrays through the binning itself to avoid order mistakes.
@@ -2014,7 +3316,22 @@ def command_cross_section(args: argparse.Namespace) -> None:
     xb_fallback[flat_positions.ravel()] = ((binning.xb_edges[:-1] + binning.xb_edges[1:]) / 2.0)[ixb].ravel()
     q2_means = np.where(np.isfinite(result["Q2_mean"]), result["Q2_mean"], q2_fallback)
     xb_means = np.where(np.isfinite(result["xB_mean"]), result["xB_mean"], xb_fallback)
-    valid = result["efficiency"] > float(config.get("minimum_acceptance", 0.005))
+    minimum_acceptance = float(config.get("minimum_acceptance", 0.005))
+    efficiency = np.asarray(result["efficiency"], dtype=float)
+    if efficiency.shape != (binning.size,):
+        raise ValueError(
+            f"unfolding efficiency has shape {efficiency.shape}; expected {(binning.size,)}"
+        )
+    acceptance_valid = np.isfinite(efficiency) & (efficiency > minimum_acceptance)
+    if "radiative_reliable" in result.files:
+        radiative_valid = np.asarray(result["radiative_reliable"], dtype=bool)
+        if radiative_valid.shape != (binning.size,):
+            raise ValueError(
+                "unfolding radiative_reliable mask has shape "
+                f"{radiative_valid.shape}; expected {(binning.size,)}"
+            )
+    else:
+        radiative_valid = np.ones(binning.size, dtype=bool)
     flux_q2 = q2_means.copy()
     flux_xb = xb_means.copy()
     bin_centering_cbc = None
@@ -2022,7 +3339,7 @@ def command_cross_section(args: argparse.Namespace) -> None:
     bin_centering_q2_center = None
     bin_centering_xb_center = None
     cbc_flat = None
-    apply_mask = None
+    apply_mask = np.ones(binning.size, dtype=bool)
     if args.bin_centering:
         bin_centering = np.load(args.bin_centering, allow_pickle=False)
         required = ("C_BC", "reliable", "q2_center", "xB_center")
@@ -2058,14 +3375,35 @@ def command_cross_section(args: argparse.Namespace) -> None:
             & (q2_center_flat > 0.0)
             & (xb_center_flat > 0.0)
         )
-        valid &= apply_mask
         flux_q2 = np.where(apply_mask, q2_center_flat, q2_means)
         flux_xb = np.where(apply_mask, xb_center_flat, xb_means)
-    yields = result["corrected_yield"] if "corrected_yield" in result.files else result["unfolded"]
+    yields = np.asarray(
+        result["corrected_yield"] if "corrected_yield" in result.files else result["unfolded"],
+        dtype=float,
+    )
     yield_uncertainty = (
-        result["corrected_uncertainty"]
+        np.asarray(result["corrected_uncertainty"], dtype=float)
         if "corrected_uncertainty" in result.files
-        else result["sigma_total"]
+        else np.asarray(result["sigma_total"], dtype=float)
+    )
+    if yields.shape != (binning.size,) or yield_uncertainty.shape != (binning.size,):
+        raise ValueError("unfolded yield and uncertainty must match the configured binning")
+    yield_valid = np.isfinite(yields) & (yields >= 0.0)
+    uncertainty_valid = np.isfinite(yield_uncertainty) & (yield_uncertainty > 0.0)
+    flux = virtual_photon_flux(flux_q2, flux_xb, beam_energy)
+    normalization_valid = (
+        np.isfinite(volumes)
+        & (volumes > 0.0)
+        & np.isfinite(flux)
+        & (flux > 0.0)
+    )
+    final_valid = (
+        acceptance_valid
+        & radiative_valid
+        & apply_mask
+        & yield_valid
+        & uncertainty_valid
+        & normalization_valid
     )
     values, errors = reduced_cross_section(
         yields,
@@ -2076,13 +3414,52 @@ def command_cross_section(args: argparse.Namespace) -> None:
         luminosity,
         beam_energy,
         branching_ratio=float(config["pi0_to_gg_branching_ratio"]),
-        valid=valid,
+        valid=final_valid,
     )
-    if cbc_flat is not None and apply_mask is not None:
+    if cbc_flat is not None:
         values = np.divide(values, cbc_flat, out=np.zeros_like(values), where=apply_mask)
         errors = np.divide(errors, cbc_flat, out=np.zeros_like(errors), where=apply_mask)
     values /= args.global_normalization
     errors /= args.global_normalization
+    cross_section_covariance_phi = None
+    if "corrected_covariance_phi" in result.files:
+        yield_covariance_phi = np.asarray(
+            result["corrected_covariance_phi"], dtype=float
+        ).reshape((-1, binning.shape[-1], binning.shape[-1]))
+        expected_covariance_shape = (
+            int(np.prod(binning.shape[:-1])),
+            binning.shape[-1],
+            binning.shape[-1],
+        )
+        if yield_covariance_phi.shape != expected_covariance_shape:
+            raise ValueError(
+                "unfolding corrected_covariance_phi does not match the configured binning"
+            )
+        normalization_scale_flat = np.divide(
+            errors,
+            yield_uncertainty,
+            out=np.zeros_like(errors),
+            where=final_valid & (yield_uncertainty > 0.0),
+        )
+        normalization_scale = binning.unflatten(normalization_scale_flat).reshape(
+            -1, binning.shape[-1]
+        )
+        cross_section_covariance_phi = (
+            yield_covariance_phi
+            * normalization_scale[..., :, None]
+            * normalization_scale[..., None, :]
+        )
+        valid_blocks = binning.unflatten(final_valid).reshape(
+            -1, binning.shape[-1]
+        )
+        cross_section_covariance_phi = np.where(
+            valid_blocks[..., :, None] & valid_blocks[..., None, :],
+            cross_section_covariance_phi,
+            np.nan,
+        ).reshape(binning.shape[:-1] + (binning.shape[-1], binning.shape[-1]))
+    # Invalid bins remain explicitly masked and cannot masquerade as measured zeros.
+    values = np.where(final_valid, values, np.nan)
+    errors = np.where(final_valid, errors, np.nan)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(
         reduced_cross_section=binning.unflatten(values),
@@ -2102,6 +3479,19 @@ def command_cross_section(args: argparse.Namespace) -> None:
         reduced_cross_section_units="nb/(GeV^2 rad)",
         luminosity_fb=luminosity,
         global_normalization=args.global_normalization,
+        minimum_acceptance=minimum_acceptance,
+        acceptance_validity_mask=binning.unflatten(acceptance_valid),
+        radiative_validity_mask=binning.unflatten(radiative_valid),
+        bin_centering_validity_mask=binning.unflatten(apply_mask),
+        yield_validity_mask=binning.unflatten(yield_valid),
+        uncertainty_validity_mask=binning.unflatten(uncertainty_valid),
+        normalization_validity_mask=binning.unflatten(normalization_valid),
+        final_validity_mask=binning.unflatten(final_valid),
+        final_validity_definition=(
+            "acceptance above minimum, reliable radiative correction, reliable bin "
+            "centering, finite nonnegative corrected yield, finite positive propagated "
+            "uncertainty, and positive physical volume and virtual-photon flux"
+        ),
         q2_edges=binning.q2_edges,
         xb_edges=binning.xb_edges,
         t_edges=binning.t_edges,
@@ -2115,6 +3505,21 @@ def command_cross_section(args: argparse.Namespace) -> None:
         ),
         **phase_space.as_npz_fields(),
     )
+    if cross_section_covariance_phi is not None:
+        payload.update(
+            covariance_phi=cross_section_covariance_phi,
+            covariance_phi_definition=(
+                "cross-section covariance among phi bins within each (Q2,xB,-t) "
+                "cell, propagated from unfolding corrected_covariance_phi"
+            ),
+            covariance_phi_bootstrap_experiments=int(
+                np.asarray(
+                    result["covariance_phi_bootstrap_experiments"]
+                    if "covariance_phi_bootstrap_experiments" in result.files
+                    else 0
+                ).item()
+            ),
+        )
     if (
         bin_centering_cbc is not None
         and bin_centering_reliable is not None
@@ -2132,31 +3537,689 @@ def command_cross_section(args: argparse.Namespace) -> None:
                 "and uncertainty divided by C_BC"
             ),
         )
+    for name in (
+        *CURRENT_EFFICIENCY_PROVENANCE_FIELDS,
+        *BACKGROUND_PROVENANCE_FIELDS,
+    ):
+        if name in result.files:
+            payload[name] = result[name]
     np.savez_compressed(args.output, **payload)
     print(f"Integrated luminosity: {luminosity:.6g} fb^-1")
     if args.bin_centering:
         print(f"Applied bin-centering correction: {args.bin_centering}")
+    print(
+        "Final valid cross-section bins: "
+        f"{int(np.count_nonzero(final_valid))}/{binning.size} "
+        f"(acceptance={int(np.count_nonzero(acceptance_valid))}, "
+        f"radiative={int(np.count_nonzero(radiative_valid))}, "
+        f"bin-centering={int(np.count_nonzero(apply_mask))}, "
+        f"positive-uncertainty={int(np.count_nonzero(uncertainty_valid))})"
+    )
     print(f"Wrote {args.output}")
 
 
 def command_harmonics(args: argparse.Namespace) -> None:
     cross_section = np.load(args.cross_section, allow_pickle=False)
+    values = np.asarray(cross_section["reduced_cross_section"], dtype=float)
+    uncertainties = np.asarray(cross_section["uncertainty"], dtype=float)
+    if "final_validity_mask" in cross_section.files:
+        final_validity_mask = np.asarray(cross_section["final_validity_mask"], dtype=bool)
+        if final_validity_mask.shape != values.shape:
+            raise ValueError("cross-section final_validity_mask does not match its values")
+        validity_source = "cross_section.final_validity_mask"
+    else:
+        final_validity_mask = (
+            np.isfinite(values)
+            & np.isfinite(uncertainties)
+            & (uncertainties > 0.0)
+        )
+        validity_source = "legacy finite positive-uncertainty fallback"
+    measurement_covariance_phi = (
+        np.asarray(cross_section["covariance_phi"], dtype=float)
+        if "covariance_phi" in cross_section.files
+        else None
+    )
+    covariance_source = (
+        "cross_section.covariance_phi"
+        if measurement_covariance_phi is not None
+        else "diagonal cross_section.uncertainty"
+    )
+    covariance_samples = (
+        int(np.asarray(cross_section["covariance_phi_bootstrap_experiments"]).item())
+        if "covariance_phi_bootstrap_experiments" in cross_section.files
+        and int(np.asarray(cross_section["covariance_phi_bootstrap_experiments"]).item())
+        > 0
+        else None
+    )
     fits = fit_grid(
-        cross_section["reduced_cross_section"],
-        cross_section["uncertainty"],
+        values,
+        uncertainties,
         cross_section["phi_edges"],
+        validity_mask=final_validity_mask,
+        measurement_covariance_phi=measurement_covariance_phi,
+        measurement_covariance_samples=covariance_samples,
+        minimum_points=args.minimum_points,
+        maximum_chi2_ndf=args.maximum_chi2_ndf,
+        maximum_covariance_condition=args.maximum_covariance_condition,
+        maximum_relative_a_uncertainty=args.maximum_relative_a_uncertainty,
+        require_nonnegative=not args.allow_negative_fits,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        args.output,
+    payload = dict(
         **fits,
         coefficient_names=np.asarray(["A", "B", "C"]),
         q2_edges=cross_section["q2_edges"],
         xb_edges=cross_section["xb_edges"],
         t_edges=cross_section["t_edges"],
+        phi_edges=cross_section["phi_edges"],
+        fit_validity_source=validity_source,
+        fit_measurement_covariance_source=covariance_source,
+        fit_measurement_covariance_bootstrap_experiments=(
+            covariance_samples if covariance_samples is not None else 0
+        ),
+        fit_measurement_precision_correction=(
+            "Hartlap (N-p-2)/(N-1) per fit"
+            if covariance_samples is not None
+            else "none"
+        ),
+        quality_reason_names=np.asarray(QUALITY_REASON_NAMES),
+        quality_reason_bits=QUALITY_REASON_BITS,
+        quality_minimum_points=args.minimum_points,
+        quality_maximum_chi2_ndf=args.maximum_chi2_ndf,
+        quality_maximum_covariance_condition=args.maximum_covariance_condition,
+        quality_maximum_relative_A_uncertainty=args.maximum_relative_a_uncertainty,
+        quality_requires_nonnegative=not args.allow_negative_fits,
+        quality_definition=(
+            "raw generalized least-squares coefficients are retained; quality_mask additionally "
+            "requires the configured phi coverage, chi2/ndf, positive-definite well-conditioned "
+            "covariance, relative A precision, and nonnegative harmonic curve"
+        ),
     )
-    print(f"Successful fits: {np.isfinite(fits['chi2_ndf']).sum()}")
+    for name in (
+        *CURRENT_EFFICIENCY_PROVENANCE_FIELDS,
+        *BACKGROUND_PROVENANCE_FIELDS,
+        *CROSS_SECTION_VALIDITY_FIELDS,
+    ):
+        if name in cross_section.files:
+            payload[name] = cross_section[name]
+    np.savez_compressed(args.output, **payload)
+    fit_success = np.asarray(fits["fit_success"], dtype=bool)
+    quality_mask = np.asarray(fits["quality_mask"], dtype=bool)
+    status = np.asarray(fits["quality_status"], dtype=np.uint16)
+    print(f"Numerically successful raw fits: {int(np.count_nonzero(fit_success))}")
+    print(f"Production-quality fits: {int(np.count_nonzero(quality_mask))}")
+    for name, bit in zip(QUALITY_REASON_NAMES, QUALITY_REASON_BITS):
+        flagged = (status & bit) != 0
+        count = int(
+            np.count_nonzero(flagged if name == "fit_failed" else (flagged & fit_success))
+        )
+        if count:
+            print(f"Quality rejection {name}: {count}")
+    print(f"Harmonic measurement covariance: {covariance_source}")
     print(f"Wrote {args.output}")
+
+
+def _require_matching_edges(
+    left,
+    right,
+    names=("q2_edges", "xb_edges", "t_edges", "phi_edges"),
+) -> None:
+    for name in names:
+        first = np.asarray(left[name], dtype=float)
+        second = np.asarray(right[name], dtype=float)
+        if first.shape != second.shape or not np.allclose(
+            first, second, rtol=0.0, atol=1.0e-12
+        ):
+            raise ValueError(f"artifacts have incompatible {name}")
+
+
+def _matching_npz_field(left, right, name: str) -> bool:
+    if name not in left.files or name not in right.files:
+        return name not in left.files and name not in right.files
+    first = np.asarray(left[name])
+    second = np.asarray(right[name])
+    if first.shape != second.shape:
+        return False
+    if np.issubdtype(first.dtype, np.number) and np.issubdtype(
+        second.dtype, np.number
+    ):
+        return bool(
+            np.allclose(first, second, rtol=1.0e-12, atol=1.0e-12, equal_nan=True)
+        )
+    return bool(np.array_equal(first, second))
+
+
+def command_structure_functions(args: argparse.Namespace) -> None:
+    harmonics = np.load(args.harmonics, allow_pickle=False)
+    cross_section = np.load(args.cross_section, allow_pickle=False)
+    config = load_config(args.config)
+    binning = from_config(args.config)
+    _require_matching_edges(harmonics, cross_section)
+    for name, expected in (
+        ("q2_edges", binning.q2_edges),
+        ("xb_edges", binning.xb_edges),
+        ("t_edges", binning.t_edges),
+        ("phi_edges", binning.phi_edges),
+    ):
+        values = np.asarray(harmonics[name], dtype=float)
+        if values.shape != expected.shape or not np.allclose(
+            values, expected, rtol=0.0, atol=1.0e-12
+        ):
+            raise ValueError(f"harmonic artifact does not match configured {name}")
+    parameters = np.asarray(harmonics["parameters"], dtype=float)
+    covariance = np.asarray(harmonics["covariance"], dtype=float)
+    fit_success = (
+        np.asarray(harmonics["fit_success"], dtype=bool)
+        if "fit_success" in harmonics.files
+        else np.all(np.isfinite(parameters), axis=-1)
+    )
+    selected = fit_success.copy()
+    if "quality_mask" in harmonics.files and not args.include_quality_rejected:
+        selected &= np.asarray(harmonics["quality_mask"], dtype=bool)
+    q2_reference, xb_reference = harmonic_reference_coordinates(
+        binning, cross_section
+    )
+    epsilon = epsilon_from_xb_q2(
+        q2_reference, xb_reference, float(config["beam_energy"])
+    )
+    result = harmonic_to_structure_functions(parameters, covariance, epsilon)
+    valid = selected & result.valid
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        args.output,
+        structure_functions=np.where(valid[..., None], result.values, np.nan),
+        covariance=np.where(valid[..., None, None], result.covariance, np.nan),
+        uncertainties=np.where(valid[..., None], result.uncertainties, np.nan),
+        valid=valid,
+        epsilon=epsilon,
+        q2_reference=q2_reference,
+        xb_reference=xb_reference,
+        minus_t_coordinate=0.5 * (binning.t_edges[:-1] + binning.t_edges[1:]),
+        structure_function_names=STRUCTURE_FUNCTION_NAMES,
+        structure_function_units="nb/GeV^2",
+        beam_energy=float(config["beam_energy"]),
+        harmonic_convention=(
+            "d2sigma/(dt dphi)=A+B*cos(phi)+C*cos(2phi); "
+            "sigma_U=2pi*A, sigma_LT=2pi*B/sqrt(2epsilon(1+epsilon)), "
+            "sigma_TT=2pi*C/epsilon"
+        ),
+        covariance_definition="J * covariance(A,B,C) * J^T",
+        selection_definition=(
+            "numerically successful fits"
+            if args.include_quality_rejected
+            else "production quality_mask"
+        ),
+        q2_edges=binning.q2_edges,
+        xb_edges=binning.xb_edges,
+        t_edges=binning.t_edges,
+        phi_edges=binning.phi_edges,
+    )
+    print(f"Valid structure-function bins: {int(np.count_nonzero(valid))}/{valid.size}")
+    print(f"Wrote {args.output}")
+
+
+def _cross_section_grid(data, name: str, binning, default: np.ndarray) -> np.ndarray:
+    if name not in data.files:
+        return np.asarray(default, dtype=float)
+    values = np.asarray(data[name], dtype=float)
+    if values.shape == binning.shape:
+        return values
+    if values.size == binning.size:
+        return binning.unflatten(values.reshape(-1))
+    raise ValueError(
+        f"cross-section {name} has shape {values.shape}; expected {binning.shape} "
+        f"or {binning.size} flat values"
+    )
+
+
+def _model_fit_payload(
+    result: ModelGridResult,
+    phi_edges: np.ndarray,
+    beam_energy: float,
+    q2_harmonic_reference: np.ndarray | None = None,
+    xb_harmonic_reference: np.ndarray | None = None,
+) -> dict[str, np.ndarray]:
+    values = np.asarray(result.reduced_cross_section, dtype=float)
+    reliable = np.asarray(result.reliable, dtype=bool)
+    artificial_uncertainty = np.full(values.shape, np.nan, dtype=float)
+    for index in np.ndindex(values.shape[:-1]):
+        valid = reliable[index] & np.isfinite(values[index])
+        if not np.any(valid):
+            continue
+        scale = max(1.0e-12, float(np.max(np.abs(values[index][valid]))))
+        artificial_uncertainty[index][valid] = scale
+    fits = fit_grid(
+        values,
+        artificial_uncertainty,
+        phi_edges,
+        validity_mask=reliable,
+        minimum_points=4,
+        maximum_chi2_ndf=DEFAULT_MAXIMUM_CHI2_NDF,
+        maximum_covariance_condition=DEFAULT_MAXIMUM_COVARIANCE_CONDITION,
+        maximum_relative_a_uncertainty=DEFAULT_MAXIMUM_RELATIVE_A_UNCERTAINTY,
+        require_nonnegative=True,
+    )
+    # A deterministic model has no experimental point uncertainties, so the
+    # data-fit chi2 and precision cuts do not define model quality.  Retain the
+    # common fitter and its diagnostics, but accept every numerically successful
+    # model fit with sufficient full-rank phi coverage.
+    fit_success = np.asarray(fits["fit_success"], dtype=bool)
+    fits["quality_mask"] = fit_success.copy()
+    fits["quality_status"] = np.where(
+        fit_success,
+        np.uint16(0),
+        np.asarray(fits["quality_status"], dtype=np.uint16),
+    )
+
+    def reference_mean(grid: np.ndarray) -> np.ndarray:
+        grid = np.asarray(grid, dtype=float)
+        valid = reliable & np.isfinite(grid)
+        numerator = np.sum(np.where(valid, grid, 0.0), axis=-1)
+        denominator = np.sum(valid, axis=-1)
+        return np.divide(
+            numerator,
+            denominator,
+            out=np.full(values.shape[:-1], np.nan),
+            where=denominator > 0,
+        )
+
+    if (q2_harmonic_reference is None) != (xb_harmonic_reference is None):
+        raise ValueError("Q2 and xB harmonic references must be supplied together")
+    if q2_harmonic_reference is None:
+        q2_reference = reference_mean(result.q2_reference)
+        xb_reference = reference_mean(result.xb_reference)
+    else:
+        q2_reference = np.asarray(q2_harmonic_reference, dtype=float)
+        xb_reference = np.asarray(xb_harmonic_reference, dtype=float)
+        if q2_reference.shape != values.shape[:-1]:
+            raise ValueError("Q2 harmonic reference has incompatible shape")
+        if xb_reference.shape != values.shape[:-1]:
+            raise ValueError("xB harmonic reference has incompatible shape")
+    epsilon = epsilon_from_xb_q2(
+        q2_reference, xb_reference, beam_energy
+    )
+    structure = harmonic_to_structure_functions(
+        fits["parameters"], fits["covariance"], epsilon
+    )
+    structure_valid = np.asarray(fits["fit_success"], dtype=bool) & structure.valid
+    return {
+        **fits,
+        "model_fit_uncertainty": artificial_uncertainty,
+        "structure_functions": np.where(
+            structure_valid[..., None], structure.values, np.nan
+        ),
+        "structure_function_covariance_algorithmic": np.where(
+            structure_valid[..., None, None], structure.covariance, np.nan
+        ),
+        "structure_function_uncertainties_algorithmic": np.where(
+            structure_valid[..., None], structure.uncertainties, np.nan
+        ),
+        "structure_function_valid": structure_valid,
+        "epsilon": epsilon,
+        "q2_harmonic_reference": q2_reference,
+        "xb_harmonic_reference": xb_reference,
+    }
+
+
+def _model_prediction_payload(
+    result: ModelGridResult,
+    binning,
+    *,
+    beam_energy: float,
+    metadata: dict,
+    q2_harmonic_reference: np.ndarray | None = None,
+    xb_harmonic_reference: np.ndarray | None = None,
+) -> dict:
+    fit_payload = _model_fit_payload(
+        result,
+        binning.phi_edges,
+        beam_energy,
+        q2_harmonic_reference=q2_harmonic_reference,
+        xb_harmonic_reference=xb_harmonic_reference,
+    )
+    return {
+        "reduced_cross_section": result.reduced_cross_section,
+        "extracted_bin_average": result.extracted_bin_average,
+        "simple_reduced_average": result.simple_reduced_average,
+        "center_reduced_cross_section": result.center_reduced_cross_section,
+        "reliable": result.reliable,
+        "computed": result.computed,
+        "q2_reference": result.q2_reference,
+        "xb_reference": result.xb_reference,
+        "minus_t_reference": result.minus_t_reference,
+        "phi_reference": result.phi_reference,
+        "n_physical": result.n_physical,
+        "n_valid": result.n_valid,
+        "n_failed": result.n_failed,
+        "physical_fraction": result.physical_fraction,
+        "failure_fraction": result.failure_fraction,
+        **fit_payload,
+        "coefficient_names": np.asarray(["A", "B", "C"]),
+        "structure_function_names": STRUCTURE_FUNCTION_NAMES,
+        "reduced_cross_section_units": "nb/(GeV^2 rad)",
+        "structure_function_units": "nb/GeV^2",
+        "model_fit_uncertainty_definition": (
+            "constant per-bin model amplitude scale used only to normalize the "
+            "deterministic harmonic fit; derived covariance is not a model uncertainty"
+        ),
+        "model_fit_quality_definition": (
+            "quality_mask equals fit_success for deterministic models; experimental "
+            "chi2, precision, and covariance thresholds are not applied"
+        ),
+        "model_chi2_ndf_definition": (
+            "squared harmonic residual normalized by the per-bin model amplitude "
+            "scale and ndf; diagnostic only, not a statistical chi2"
+        ),
+        "forward_average_definition": (
+            "<virtual_photon_flux * reduced_cross_section>_physical_bin / "
+            "virtual_photon_flux(reference), followed by the same stored data "
+            "bin-centering divisor when present"
+        ),
+        "q2_edges": binning.q2_edges,
+        "xb_edges": binning.xb_edges,
+        "t_edges": binning.t_edges,
+        "phi_edges": binning.phi_edges,
+        "beam_energy": beam_energy,
+        **metadata,
+    }
+
+
+def command_model_prediction(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    binning = from_config(args.config)
+    beam_energy = float(config["beam_energy"])
+    phase_space = AnalysisPhaseSpace.from_config(config)
+    cross_section = np.load(args.cross_section, allow_pickle=False)
+    for name, expected in (
+        ("q2_edges", binning.q2_edges),
+        ("xb_edges", binning.xb_edges),
+        ("t_edges", binning.t_edges),
+        ("phi_edges", binning.phi_edges),
+    ):
+        values = np.asarray(cross_section[name], dtype=float)
+        if values.shape != expected.shape or not np.allclose(
+            values, expected, rtol=0.0, atol=1.0e-12
+        ):
+            raise ValueError(f"cross-section artifact does not match configured {name}")
+    q2_harmonic_reference, xb_harmonic_reference = harmonic_reference_coordinates(
+        binning, cross_section
+    )
+    q2_centers = 0.5 * (binning.q2_edges[:-1] + binning.q2_edges[1:])
+    xb_centers = 0.5 * (binning.xb_edges[:-1] + binning.xb_edges[1:])
+    q2_default = np.broadcast_to(q2_centers[:, None, None, None], binning.shape)
+    xb_default = np.broadcast_to(xb_centers[None, :, None, None], binning.shape)
+    q2_reference = _cross_section_grid(
+        cross_section, "flux_q2_coordinate", binning, q2_default
+    )
+    xb_reference = _cross_section_grid(
+        cross_section, "flux_xb_coordinate", binning, xb_default
+    )
+    transform = _cross_section_grid(
+        cross_section,
+        "bin_centering_C_BC",
+        binning,
+        np.ones(binning.shape, dtype=float),
+    )
+    if args.all_bins or "final_validity_mask" not in cross_section.files:
+        requested = np.ones(binning.shape, dtype=bool)
+    else:
+        requested = np.asarray(cross_section["final_validity_mask"], dtype=bool)
+        if requested.shape != binning.shape:
+            raise ValueError("cross-section final_validity_mask has incompatible shape")
+    bin_start, bin_stop, total_3d = _bin_centering_range(args, binning)
+    metadata = {
+        "model_name": args.model_name,
+        "samples_per_dimension": args.N,
+        "max_failure_fraction": args.max_failure_fraction,
+        "bin_start": bin_start,
+        "bin_stop": bin_stop,
+        "total_3d_bins": total_3d,
+        "data_cross_section_path": str(args.cross_section),
+        "data_valid_bins_only": not args.all_bins,
+        "bin_centering_transform_applied": "bin_centering_C_BC" in cross_section.files,
+        "phase_space_definition": (
+            "exclusive physical bin"
+            if not phase_space.enabled
+            else f"exclusive physical bin and {phase_space.description()}"
+        ),
+        **phase_space.as_npz_fields(),
+    }
+    if args.aao_exe:
+        if not args.aao_exe.is_file():
+            raise FileNotFoundError(f"aao_xsec executable not found: {args.aao_exe}")
+        evaluator = AaoExecutableEvaluator(
+            exe=args.aao_exe,
+            beam_energy=beam_energy,
+            theory=args.theory,
+            channel=args.channel,
+            resonance=args.resonance,
+            workers=args.workers,
+            chunk_size=args.chunk_size,
+            verbose_failures=args.verbose_failures,
+        )
+        metadata.update(
+            model_source_kind="aao_executable",
+            model_source_path=str(args.aao_exe),
+            aao_theory=args.theory,
+            aao_channel=args.channel,
+            aao_resonance=args.resonance,
+            aao_raw_cross_section_units=AAO_RAW_CROSS_SECTION_UNITS,
+            aao_reduced_cross_section_units=AAO_REDUCED_CROSS_SECTION_UNITS,
+            aao_cross_section_conversion=AAO_CROSS_SECTION_CONVERSION,
+        )
+        with evaluator:
+            result = average_model_over_bins(
+                binning,
+                beam_energy,
+                evaluator,
+                samples_per_dimension=args.N,
+                max_failure_fraction=args.max_failure_fraction,
+                bin_start=bin_start,
+                bin_stop=bin_stop,
+                progress_chunks=args.progress_chunks,
+                phase_space=phase_space,
+                q2_reference=q2_reference,
+                xb_reference=xb_reference,
+                transform=transform,
+                requested_mask=requested,
+            )
+    else:
+        evaluator = TabulatedModelEvaluator(
+            args.table, beam_energy, interpolation=args.interpolation
+        )
+        metadata.update(
+            model_source_kind="csv_table",
+            model_source_path=str(args.table),
+            table_mode=evaluator.mode,
+            table_t_input_convention=evaluator.t_input_convention,
+            interpolation=args.interpolation,
+        )
+        result = average_model_over_bins(
+            binning,
+            beam_energy,
+            evaluator,
+            samples_per_dimension=args.N,
+            max_failure_fraction=args.max_failure_fraction,
+            bin_start=bin_start,
+            bin_stop=bin_stop,
+            progress_chunks=args.progress_chunks,
+            phase_space=phase_space,
+            q2_reference=q2_reference,
+            xb_reference=xb_reference,
+            transform=transform,
+            requested_mask=requested,
+        )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        args.output,
+        **_model_prediction_payload(
+            result,
+            binning,
+            beam_energy=beam_energy,
+            metadata=metadata,
+            q2_harmonic_reference=q2_harmonic_reference,
+            xb_harmonic_reference=xb_harmonic_reference,
+        ),
+    )
+    print(
+        f"Reliable model bins: {int(np.count_nonzero(result.reliable))}/"
+        f"{int(np.count_nonzero(result.computed))} computed"
+    )
+    print(f"Wrote {args.output}")
+
+
+def command_model_prediction_merge(args: argparse.Namespace) -> None:
+    partials = [np.load(path, allow_pickle=False) for path in args.partials]
+    if not partials:
+        raise ValueError("at least one partial model artifact is required")
+    first = partials[0]
+    if _npz_string(first, "model_source_kind", "") == "aao_executable" and _npz_string(
+        first, "aao_cross_section_conversion", ""
+    ) != AAO_CROSS_SECTION_CONVERSION:
+        raise ValueError(
+            "legacy AAO model partials lack the required angular-to-t cross-section "
+            "conversion; regenerate every partial before merging"
+        )
+    q2_edges = np.asarray(first["q2_edges"], dtype=float)
+    xb_edges = np.asarray(first["xb_edges"], dtype=float)
+    t_edges = np.asarray(first["t_edges"], dtype=float)
+    phi_edges = np.asarray(first["phi_edges"], dtype=float)
+    binning = AnalysisBinning(q2_edges, xb_edges, t_edges, phi_edges)
+    float_fields = (
+        "reduced_cross_section",
+        "extracted_bin_average",
+        "simple_reduced_average",
+        "center_reduced_cross_section",
+        "q2_reference",
+        "xb_reference",
+        "minus_t_reference",
+        "phi_reference",
+        "physical_fraction",
+        "failure_fraction",
+    )
+    int_fields = ("n_physical", "n_valid", "n_failed")
+    merged = {name: np.full(binning.shape, np.nan) for name in float_fields}
+    for name in int_fields:
+        merged[name] = np.zeros(binning.shape, dtype=np.int64)
+    merged["reliable"] = np.zeros(binning.shape, dtype=bool)
+    merged["computed"] = np.zeros(binning.shape, dtype=bool)
+    identity_fields = (
+        "model_name",
+        "model_source_kind",
+        "model_source_path",
+        "beam_energy",
+        "samples_per_dimension",
+        "max_failure_fraction",
+        "total_3d_bins",
+        "data_cross_section_path",
+        "data_valid_bins_only",
+        "bin_centering_transform_applied",
+        "phase_space_definition",
+        "phase_space_Q2_min",
+        "phase_space_W_min",
+        "phase_space_electron_p_min",
+        "aao_theory",
+        "aao_channel",
+        "aao_resonance",
+        "aao_raw_cross_section_units",
+        "aao_reduced_cross_section_units",
+        "aao_cross_section_conversion",
+        "table_mode",
+        "table_t_input_convention",
+        "interpolation",
+        "q2_harmonic_reference",
+        "xb_harmonic_reference",
+    )
+    for path, partial in zip(args.partials, partials):
+        _require_matching_edges(first, partial)
+        for name in identity_fields:
+            if not _matching_npz_field(first, partial, name):
+                raise ValueError(f"partial model artifacts disagree on {name}: {path}")
+        mask = np.asarray(partial["computed"], dtype=bool)
+        if np.any(mask & merged["computed"]):
+            raise ValueError(f"partial model artifact overlaps an earlier chunk: {path}")
+        for name in (*float_fields, *int_fields, "reliable"):
+            values = np.asarray(partial[name])
+            if values.shape != binning.shape:
+                raise ValueError(f"partial {name} has incompatible shape: {path}")
+            merged[name][mask] = values[mask]
+        merged["computed"] |= mask
+    total_3d = int(np.asarray(first["total_3d_bins"]).item())
+    computed3 = np.any(merged["computed"], axis=-1)
+    if int(np.count_nonzero(computed3)) != total_3d:
+        raise ValueError(
+            f"partial model artifacts cover {int(np.count_nonzero(computed3))}/"
+            f"{total_3d} 3D bins"
+        )
+    result = ModelGridResult(**merged)
+    metadata_names = (
+        "model_name",
+        "model_source_kind",
+        "model_source_path",
+        "samples_per_dimension",
+        "max_failure_fraction",
+        "data_cross_section_path",
+        "data_valid_bins_only",
+        "bin_centering_transform_applied",
+        "phase_space_definition",
+        "phase_space_Q2_min",
+        "phase_space_W_min",
+        "phase_space_electron_p_min",
+        "aao_theory",
+        "aao_channel",
+        "aao_resonance",
+        "aao_raw_cross_section_units",
+        "aao_reduced_cross_section_units",
+        "aao_cross_section_conversion",
+        "table_mode",
+        "table_t_input_convention",
+        "interpolation",
+    )
+    metadata = {
+        name: first[name]
+        for name in metadata_names
+        if name in first.files
+    }
+    metadata.update(
+        bin_start=0,
+        bin_stop=total_3d,
+        total_3d_bins=total_3d,
+        merged_partial_paths=np.asarray([str(path) for path in args.partials]),
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        args.output,
+        **_model_prediction_payload(
+            result,
+            binning,
+            beam_energy=float(np.asarray(first["beam_energy"]).item()),
+            metadata=metadata,
+            q2_harmonic_reference=np.asarray(
+                first["q2_harmonic_reference"], dtype=float
+            ),
+            xb_harmonic_reference=np.asarray(
+                first["xb_harmonic_reference"], dtype=float
+            ),
+        ),
+    )
+    print(f"Merged {len(partials)} model artifacts into {args.output}")
+
+
+def command_model_comparison_plots(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    phi_pages, structure_pages, csv_path, json_path = render_model_comparison(
+        args.cross_section,
+        args.harmonics,
+        args.models,
+        beam_energy=float(config["beam_energy"]),
+        output_dir=args.output_dir,
+        include_quality_rejected=args.include_quality_rejected,
+    )
+    print(f"Model-comparison phi pages: {phi_pages}")
+    print(f"Model-comparison structure-function pages: {structure_pages}")
+    print(f"Wrote {csv_path}")
+    print(f"Wrote {json_path}")
+    print(f"Wrote model-comparison plots under {args.output_dir}")
 
 
 def command_harmonic_plots(args: argparse.Namespace) -> None:
@@ -2179,7 +4242,11 @@ def command_harmonic_plots(args: argparse.Namespace) -> None:
         raise ValueError("harmonic arrays do not match bin-edge dimensions")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    fit_mask = np.isfinite(chi2_ndf) & (points >= args.min_points)
+    raw_fit_mask = np.isfinite(chi2_ndf) & (points >= args.min_points)
+    if "quality_mask" in harmonics.files and not args.include_quality_rejected:
+        fit_mask = raw_fit_mask & np.asarray(harmonics["quality_mask"], dtype=bool)
+    else:
+        fit_mask = raw_fit_mask
     _plot_harmonic_overview_maps(
         fit_mask,
         chi2_ndf,
@@ -2204,11 +4271,44 @@ def command_harmonic_plots(args: argparse.Namespace) -> None:
         quilt_scale_percentile=args.quilt_scale_percentile,
         quilt_scale_mode=args.quilt_scale_mode,
     )
-    print(f"Successful fits: {int(fit_mask.sum())}")
+    quality_csv = args.output_dir / "harmonic_fit_quality_summary.csv"
+    _write_harmonic_quality_summary(harmonics, quality_csv)
+    print(f"Plotted fits: {int(fit_mask.sum())}")
+    if "quality_mask" in harmonics.files and not args.include_quality_rejected:
+        print("Plot selection: production quality_mask")
+    elif args.include_quality_rejected:
+        print("Plot selection: all numerically successful raw fits")
     print(f"Coefficient pages: {pages}")
     if args.quilt:
         print("Coefficient PDF includes one stitched quilt page")
+    print(f"Wrote {quality_csv}")
     print(f"Wrote harmonic plots under {args.output_dir}")
+
+
+def command_campaign_diagnostics(args: argparse.Namespace) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    revision = "not recorded"
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode == 0 and completed.stdout.strip():
+        revision = completed.stdout.strip()
+    report = render_campaign_diagnostics(
+        args.unfolding,
+        args.cross_section,
+        args.harmonics,
+        response_meta_path=args.response_meta,
+        title=args.title,
+        software_revision=revision,
+        invocation=shlex.join(sys.argv),
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report, encoding="utf-8")
+    print(f"Wrote {args.output}")
 
 
 def command_cross_section_plots(args: argparse.Namespace) -> None:
@@ -2224,6 +4324,12 @@ def command_cross_section_plots(args: argparse.Namespace) -> None:
     q2_edges = np.asarray(harmonics["q2_edges"], dtype=float)
     xb_edges = np.asarray(harmonics["xb_edges"], dtype=float)
     t_edges = np.asarray(harmonics["t_edges"], dtype=float)
+    if "quality_mask" in harmonics.files and not args.include_quality_rejected:
+        quality_mask = np.asarray(harmonics["quality_mask"], dtype=bool)
+        if quality_mask.shape != parameters.shape[:-1]:
+            raise ValueError("harmonic quality_mask does not match fit dimensions")
+        parameters = np.where(quality_mask[..., None], parameters, np.nan)
+        chi2_ndf = np.where(quality_mask, chi2_ndf, np.nan)
 
     if values.shape != uncertainties.shape or values.ndim != 4:
         raise ValueError("cross-section values and uncertainties must be equal 4D arrays")
@@ -2292,6 +4398,9 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
         truth4,
         out=np.zeros_like(rec4),
         where=truth4 > 0,
+    )
+    topology_composition = _response_topology_composition(
+        metadata, shape, reconstructed
     )
     same_bin4 = (
         _unflatten_response(same_bin_efficiency, shape)
@@ -2388,6 +4497,8 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
         args.output_dir / "acceptance_vs_phi_by_3d_bin.csv",
         include_quilt=args.quilt,
         quilt_scale_mode=args.quilt_scale_mode,
+        topology_composition=topology_composition,
+        topology_display=args.topology_display,
     )
 
     print(f"Truth-populated bins: {int(populated.sum())}")
@@ -2401,6 +4512,23 @@ def command_acceptance_plots(args: argparse.Namespace) -> None:
             print("Purity overlay: disabled; pass --include-purity to show P_i")
     else:
         print("Migration diagnostic source: unavailable; pass --response-matrix to include E_i/P_i")
+    if topology_composition is None:
+        print(
+            "Topology background: unavailable; rebuild with the current response-root "
+            "to store topology-resolved numerator counts"
+        )
+    elif args.topology_display == "dominant":
+        print(
+            "Topology background: color identifies the dominant reconstructed topology; "
+            "opacity increases with its fraction"
+        )
+    elif args.topology_display == "stacked":
+        print(
+            "Topology strip: each phi-bin bar is normalized to the reconstructed "
+            "numerator and stacked by topology fraction"
+        )
+    else:
+        print("Topology annotation: disabled")
     print(f"Wrote acceptance plots under {args.output_dir}")
 
 
@@ -2492,6 +4620,188 @@ def _load_mask(path: Path, expected: int) -> np.ndarray:
 def _unflatten_response(values: np.ndarray, shape: tuple[int, int, int, int]) -> np.ndarray:
     nq2, nxb, nt, nphi = shape
     return values.reshape(nxb, nq2, nphi, nt).transpose(1, 0, 3, 2)
+
+
+def _response_topology_composition(
+    metadata,
+    shape: tuple[int, int, int, int],
+    reconstructed_total: np.ndarray,
+) -> ResponseTopologyComposition | None:
+    id_key = "reconstructed_topology_ids"
+    count_key = "reconstructed_topology_counts"
+    present = (id_key in metadata.files, count_key in metadata.files)
+    if present == (False, False):
+        return None
+    if present != (True, True):
+        raise ValueError(
+            "response metadata must contain both reconstructed topology IDs and counts"
+        )
+
+    topology_ids = np.asarray(metadata[id_key], dtype=np.int64)
+    counts = np.asarray(metadata[count_key], dtype=float)
+    expected_bins = int(np.prod(shape))
+    if topology_ids.ndim != 1 or np.unique(topology_ids).size != topology_ids.size:
+        raise ValueError("reconstructed topology IDs must be a unique 1D array")
+    if counts.shape != (topology_ids.size, expected_bins):
+        raise ValueError(
+            "reconstructed topology counts do not match topology IDs and response bins"
+        )
+    if not np.all(np.isfinite(counts)) or np.any(counts < 0.0):
+        raise ValueError("reconstructed topology counts must be finite and nonnegative")
+    if not np.allclose(
+        counts.sum(axis=0),
+        np.asarray(reconstructed_total, dtype=float),
+        rtol=1.0e-10,
+        atol=1.0e-10,
+    ):
+        raise ValueError(
+            "reconstructed topology counts do not sum to reconstructed_total"
+        )
+
+    total = counts.sum(axis=0)
+    fractions = np.divide(
+        counts,
+        total[np.newaxis, :],
+        out=np.zeros_like(counts),
+        where=total[np.newaxis, :] > 0.0,
+    )
+    dominant = np.full(expected_bins, INVALID_TOPOLOGY, dtype=np.int64)
+    dominance = np.zeros(expected_bins, dtype=float)
+    if topology_ids.size:
+        positions = np.argmax(counts, axis=0)
+        populated = total > 0.0
+        dominant[populated] = topology_ids[positions[populated]]
+        dominance[populated] = counts[positions[populated], np.flatnonzero(populated)] / total[
+            populated
+        ]
+    fraction4 = (
+        np.stack([_unflatten_response(row, shape) for row in fractions])
+        if topology_ids.size
+        else np.empty((0, *shape), dtype=float)
+    )
+    return ResponseTopologyComposition(
+        topology_ids=topology_ids,
+        fractions=fraction4,
+        dominant_topology=_unflatten_response(dominant, shape),
+        dominance=_unflatten_response(dominance, shape),
+    )
+
+
+def _topology_label(topology_id: int) -> str:
+    if topology_id == INVALID_TOPOLOGY:
+        return "unsupported topology"
+    proton = {1: "FD", 2: "CD"}.get(topology_id // 4, "other")
+    photons = {0: "FD/FD", 1: "FD/FT", 2: "FT/FT"}.get(
+        topology_id % 4, f"FT count {topology_id % 4}"
+    )
+    return f"p {proton}; gamma gamma {photons}"
+
+
+def _topology_color(topology_id: int) -> str:
+    if topology_id in TOPOLOGY_COLORS:
+        return TOPOLOGY_COLORS[topology_id]
+    fallback = ("#af7aa1", "#ff9da7", "#9c755f", "#bab0ac")
+    return fallback[abs(int(topology_id)) % len(fallback)]
+
+
+def _topology_alpha(dominance: float) -> float:
+    """Keep the background translucent while preserving dominance ordering."""
+    return 0.08 + 0.42 * float(np.clip(dominance, 0.0, 1.0))
+
+
+def _draw_topology_background(
+    ax,
+    phi_edges: np.ndarray,
+    dominant_topology: np.ndarray,
+    dominance: np.ndarray,
+) -> None:
+    for index, (topology_id, fraction) in enumerate(
+        zip(dominant_topology, dominance, strict=True)
+    ):
+        if topology_id == INVALID_TOPOLOGY or fraction <= 0.0:
+            continue
+        ax.axvspan(
+            float(phi_edges[index]),
+            float(phi_edges[index + 1]),
+            color=_topology_color(int(topology_id)),
+            alpha=_topology_alpha(float(fraction)),
+            linewidth=0.0,
+            zorder=0,
+        )
+
+
+def _draw_topology_stacked_strip(
+    ax,
+    phi_edges: np.ndarray,
+    topology_ids: np.ndarray,
+    fractions: np.ndarray,
+    *,
+    bottom: float = 0.82,
+    height: float = 0.15,
+    label: bool = True,
+) -> None:
+    from matplotlib.patches import Rectangle
+    from matplotlib.transforms import blended_transform_factory
+
+    expected_shape = (topology_ids.size, phi_edges.size - 1)
+    if fractions.shape != expected_shape:
+        raise ValueError(
+            f"topology fractions have shape {fractions.shape}; expected {expected_shape}"
+        )
+    transform = blended_transform_factory(ax.transData, ax.transAxes)
+    ax.add_patch(
+        Rectangle(
+            (float(phi_edges[0]), bottom),
+            float(phi_edges[-1] - phi_edges[0]),
+            height,
+            transform=transform,
+            facecolor="white",
+            edgecolor="#555555",
+            linewidth=0.45,
+            alpha=0.88,
+            zorder=1.0,
+        )
+    )
+    for phi_index in range(phi_edges.size - 1):
+        cumulative = 0.0
+        for topology_index, topology_id in enumerate(topology_ids):
+            fraction = float(fractions[topology_index, phi_index])
+            if fraction <= 0.0:
+                continue
+            ax.add_patch(
+                Rectangle(
+                    (float(phi_edges[phi_index]), bottom + height * cumulative),
+                    float(phi_edges[phi_index + 1] - phi_edges[phi_index]),
+                    height * fraction,
+                    transform=transform,
+                    facecolor=_topology_color(int(topology_id)),
+                    edgecolor="white",
+                    linewidth=0.25,
+                    alpha=0.84,
+                    zorder=1.2,
+                )
+            )
+            cumulative += fraction
+    if label:
+        ax.text(
+            float(phi_edges[0]),
+            bottom + height + 0.008,
+            "REC topology mix",
+            transform=transform,
+            ha="left",
+            va="bottom",
+            fontsize=5.5,
+            color="#444444",
+            zorder=1.4,
+        )
+
+
+def _topology_strip_plot_limits(limits: tuple[float, float]) -> tuple[float, float]:
+    lower, upper = limits
+    span = upper - lower
+    if span <= 0.0:
+        span = max(abs(lower), abs(upper), 1.0)
+    return lower, upper + 0.24 * span
 
 
 def _response_diagonal(response_matrix: Path, number_of_bins: int) -> np.ndarray:
@@ -2935,6 +5245,106 @@ def _plot_pass_fraction_map(
     fig.tight_layout()
     fig.savefig(output, dpi=200)
     plt.close(fig)
+
+
+def _write_harmonic_quality_summary(harmonics, output: Path) -> None:
+    parameters = np.asarray(harmonics["parameters"], dtype=float)
+    covariance = np.asarray(harmonics["covariance"], dtype=float)
+    points = np.asarray(harmonics["points"], dtype=int)
+    chi2_ndf = np.asarray(harmonics["chi2_ndf"], dtype=float)
+    fit_success = (
+        np.asarray(harmonics["fit_success"], dtype=bool)
+        if "fit_success" in harmonics.files
+        else np.isfinite(chi2_ndf)
+    )
+    quality_mask = (
+        np.asarray(harmonics["quality_mask"], dtype=bool)
+        if "quality_mask" in harmonics.files
+        else fit_success.copy()
+    )
+    quality_status = (
+        np.asarray(harmonics["quality_status"], dtype=np.uint16)
+        if "quality_status" in harmonics.files
+        else np.zeros(points.shape, dtype=np.uint16)
+    )
+    condition = (
+        np.asarray(harmonics["covariance_condition"], dtype=float)
+        if "covariance_condition" in harmonics.files
+        else np.full(points.shape, np.nan)
+    )
+    relative_a = (
+        np.asarray(harmonics["relative_A_uncertainty"], dtype=float)
+        if "relative_A_uncertainty" in harmonics.files
+        else np.full(points.shape, np.nan)
+    )
+    minimum = (
+        np.asarray(harmonics["minimum_fitted_cross_section"], dtype=float)
+        if "minimum_fitted_cross_section" in harmonics.files
+        else np.full(points.shape, np.nan)
+    )
+    if "parameter_uncertainties" in harmonics.files:
+        parameter_uncertainties = np.asarray(
+            harmonics["parameter_uncertainties"], dtype=float
+        )
+    else:
+        diagonal = np.diagonal(covariance, axis1=-2, axis2=-1)
+        parameter_uncertainties = np.sqrt(np.where(diagonal >= 0.0, diagonal, np.nan))
+    reason_names = (
+        tuple(str(item) for item in harmonics["quality_reason_names"])
+        if "quality_reason_names" in harmonics.files
+        else QUALITY_REASON_NAMES
+    )
+    reason_bits = (
+        np.asarray(harmonics["quality_reason_bits"], dtype=np.uint16)
+        if "quality_reason_bits" in harmonics.files
+        else QUALITY_REASON_BITS
+    )
+    q2_edges = np.asarray(harmonics["q2_edges"], dtype=float)
+    xb_edges = np.asarray(harmonics["xb_edges"], dtype=float)
+    t_edges = np.asarray(harmonics["t_edges"], dtype=float)
+    lines = [
+        "iq2,q2_low,q2_high,ixb,xb_low,xb_high,it,t_low,t_high,points,"
+        "fit_success,quality_accepted,quality_status,quality_reasons,chi2_ndf,"
+        "covariance_condition,relative_A_uncertainty,minimum_fitted_cross_section,"
+        "A,A_uncertainty,B,B_uncertainty,C,C_uncertainty"
+    ]
+    for index in np.ndindex(points.shape):
+        if points[index] <= 0 and not fit_success[index]:
+            continue
+        iq2, ixb, it = index
+        reasons = "|".join(
+            name
+            for name, bit in zip(reason_names, reason_bits)
+            if quality_status[index] & bit
+        )
+        row = (
+            iq2,
+            q2_edges[iq2],
+            q2_edges[iq2 + 1],
+            ixb,
+            xb_edges[ixb],
+            xb_edges[ixb + 1],
+            it,
+            t_edges[it],
+            t_edges[it + 1],
+            int(points[index]),
+            int(fit_success[index]),
+            int(quality_mask[index]),
+            int(quality_status[index]),
+            reasons,
+            float(chi2_ndf[index]),
+            float(condition[index]),
+            float(relative_a[index]),
+            float(minimum[index]),
+            float(parameters[index][0]),
+            float(parameter_uncertainties[index][0]),
+            float(parameters[index][1]),
+            float(parameter_uncertainties[index][1]),
+            float(parameters[index][2]),
+            float(parameter_uncertainties[index][2]),
+        )
+        lines.append(",".join(str(item) for item in row))
+    output.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _plot_harmonic_overview_maps(
@@ -3558,12 +5968,16 @@ def _plot_quantity_quilts_vs_phi(
     scale_mode: str,
     reference_lines: tuple[float, ...] = (),
     include_zero: bool = False,
+    topology_composition: ResponseTopologyComposition | None = None,
+    topology_display: str = "dominant",
 ) -> int:
     """Draw one cross-section-style Q2-by-xB quilt per -t bin."""
     import matplotlib.pyplot as plt
 
     if scale_mode not in ("global", "panel"):
         raise ValueError("--quilt-scale-mode must be global or panel")
+    if topology_display not in ("dominant", "stacked", "none"):
+        raise ValueError("--topology-display must be dominant, stacked, or none")
     if not quantities:
         return 0
     first_values = next(iter(quantities.values()))[0]
@@ -3574,6 +5988,20 @@ def _plot_quantity_quilts_vs_phi(
             raise ValueError(f"quilt quantity {label} does not match the common 4D shape")
         if errors is not None and errors.shape != expected_shape:
             raise ValueError(f"quilt uncertainty {label} does not match the common 4D shape")
+    topology_enabled = topology_composition is not None and topology_display != "none"
+    if topology_enabled:
+        dominant_topology = topology_composition.dominant_topology
+        topology_dominance = topology_composition.dominance
+        if (
+            dominant_topology.shape != expected_shape
+            or topology_dominance.shape != expected_shape
+        ):
+            raise ValueError("topology composition does not match the quilt shape")
+        if topology_composition.fractions.shape != (
+            topology_composition.topology_ids.size,
+            *expected_shape,
+        ):
+            raise ValueError("topology fractions do not match the quilt shape")
 
     colors = (
         "#4c78a8", "#7b3294", "#f58518", "#222222", "#1b9e77",
@@ -3611,6 +6039,8 @@ def _plot_quantity_quilts_vs_phi(
             continue
 
         global_ylim = _padded_plot_limits(global_low, global_high, include_zero=include_zero)
+        if topology_enabled and topology_display == "stacked":
+            global_ylim = _topology_strip_plot_limits(global_ylim)
         active_q2, active_xb, positions = _ordered_quilt_axes(sorted(panels))
         fig, axes = plt.subplots(
             len(active_q2),
@@ -3624,6 +6054,13 @@ def _plot_quantity_quilts_vs_phi(
         for (iq2, ixb), series in panels.items():
             row, column = positions[(iq2, ixb)]
             ax = axes[row, column]
+            if topology_enabled and topology_display == "dominant":
+                _draw_topology_background(
+                    ax,
+                    phi_edges,
+                    dominant_topology[iq2, ixb, it, :],
+                    topology_dominance[iq2, ixb, it, :],
+                )
             local_low: list[float] = []
             local_high: list[float] = []
             for label, y, yerr, valid in series:
@@ -3648,8 +6085,20 @@ def _plot_quantity_quilts_vs_phi(
                 ax.axhline(value, color="red" if value != 1.0 else "black",
                            linestyle="--", linewidth=0.65, alpha=0.65)
             ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
-            ax.set_ylim(*(global_ylim if scale_mode == "global" else
-                          _padded_plot_limits(local_low, local_high, include_zero=include_zero)))
+            local_ylim = _padded_plot_limits(
+                local_low, local_high, include_zero=include_zero
+            )
+            if topology_enabled and topology_display == "stacked":
+                local_ylim = _topology_strip_plot_limits(local_ylim)
+            ax.set_ylim(*(global_ylim if scale_mode == "global" else local_ylim))
+            if topology_enabled and topology_display == "stacked":
+                _draw_topology_stacked_strip(
+                    ax,
+                    phi_edges,
+                    topology_composition.topology_ids,
+                    topology_composition.fractions[:, iq2, ixb, it, :],
+                    label=False,
+                )
             ax.grid(True, alpha=0.16, linewidth=0.45)
             ax.tick_params(axis="both", labelsize=6, length=2, labelleft=True)
             if iq2 == active_q2[0]:
@@ -3667,16 +6116,65 @@ def _plot_quantity_quilts_vs_phi(
                        linewidth=1.1, markersize=3, label=label)
             for index, label in enumerate(label_order)
         ]
-        fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.995),
-                   ncol=min(4, len(handles)), fontsize="small")
+        if topology_enabled:
+            from matplotlib.patches import Patch
+
+            if topology_display == "dominant":
+                page_dominant = dominant_topology[:, :, it, :]
+                page_dominance = topology_dominance[:, :, it, :]
+                page_topologies = sorted(
+                    int(item)
+                    for item in np.unique(page_dominant[page_dominance > 0.0])
+                )
+            else:
+                page_fraction = topology_composition.fractions[:, :, :, it, :]
+                page_topologies = [
+                    int(topology_id)
+                    for topology_id, fraction in zip(
+                        topology_composition.topology_ids,
+                        page_fraction,
+                        strict=True,
+                    )
+                    if np.any(fraction > 0.0)
+                ]
+            handles.extend(
+                Patch(
+                    facecolor=_topology_color(topology_id),
+                    alpha=(
+                        _topology_alpha(0.65)
+                        if topology_display == "dominant"
+                        else 0.84
+                    ),
+                    label=_topology_label(topology_id),
+                )
+                for topology_id in page_topologies
+            )
+        legend_y = 0.90 if topology_enabled else 0.995
+        fig.legend(
+            handles=handles,
+            loc="upper center",
+            bbox_to_anchor=(0.5, legend_y),
+            ncol=min(4, len(handles)),
+            fontsize="x-small" if topology_enabled else "small",
+        )
+        topology_note = ""
+        if topology_enabled and topology_display == "dominant":
+            topology_note = (
+                "\nbar color = dominant REC topology; opacity increases with dominance"
+            )
+        elif topology_enabled and topology_display == "stacked":
+            topology_note = "\nstacked strip = normalized REC topology composition"
         fig.suptitle(
             f"{title}\n-t {t_edges[it]:g}-{t_edges[it + 1]:g} GeV^2; "
             "Q2 increases bottom to top; xB increases left to right; "
-            + ("independent panel scales" if scale_mode == "panel" else "shared page scale"),
-            y=0.955,
+            + ("independent panel scales" if scale_mode == "panel" else "shared page scale")
+            + topology_note,
+            y=0.99 if topology_enabled else 0.955,
+            fontsize=10 if topology_enabled else None,
         )
         fig.text(0.012, 0.5, ylabel, rotation="vertical", va="center", fontsize=9)
-        fig.subplots_adjust(left=0.052, right=0.995, bottom=0.045, top=0.89,
+        fig.subplots_adjust(left=0.052, right=0.995, bottom=0.045,
+                            top=0.80 if topology_enabled else 0.89,
                             wspace=0.16, hspace=0.18)
         pdf.savefig(fig)
         plt.close(fig)
@@ -3767,11 +6265,15 @@ def _plot_acceptance_vs_phi(
     pdf_path: Path,
     csv_path: Path,
     include_quilt: bool = False,
-    quilt_scale_mode: str = "global",
+    quilt_scale_mode: str = "panel",
+    topology_composition: ResponseTopologyComposition | None = None,
+    topology_display: str = "dominant",
 ) -> int:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
 
+    if topology_display not in ("dominant", "stacked", "none"):
+        raise ValueError("--topology-display must be dominant, stacked, or none")
     phi_centers = 0.5 * (phi_edges[:-1] + phi_edges[1:])
     pages = 0
     csv_lines = [
@@ -3806,6 +6308,8 @@ def _plot_acceptance_vs_phi(
                 scale_mode=quilt_scale_mode,
                 reference_lines=(minimum_acceptance,),
                 include_zero=True,
+                topology_composition=topology_composition,
+                topology_display=topology_display,
             )
         for iq2 in range(efficiency.shape[0]):
             for ixb in range(efficiency.shape[1]):
@@ -3891,6 +6395,21 @@ def _plot_acceptance_vs_phi(
                     )
 
                     fig, ax = plt.subplots(figsize=(8, 5))
+                    topology_enabled = (
+                        topology_composition is not None
+                        and topology_display != "none"
+                    )
+                    if topology_enabled and topology_display == "dominant":
+                        dominant_topology4 = topology_composition.dominant_topology
+                        topology_dominance4 = topology_composition.dominance
+                        dominant_topology_phi = dominant_topology4[iq2, ixb, it, :]
+                        topology_dominance_phi = topology_dominance4[iq2, ixb, it, :]
+                        _draw_topology_background(
+                            ax,
+                            phi_edges,
+                            dominant_topology_phi,
+                            topology_dominance_phi,
+                        )
                     if np.any(zero):
                         ax.errorbar(
                             phi_centers[zero],
@@ -3975,6 +6494,16 @@ def _plot_acceptance_vs_phi(
                     )
                     ax.set_xlim(float(phi_edges[0]), float(phi_edges[-1]))
                     ax.set_ylim(bottom=0.0)
+                    if topology_enabled and topology_display == "stacked":
+                        ax.set_ylim(*_topology_strip_plot_limits(ax.get_ylim()))
+                        _draw_topology_stacked_strip(
+                            ax,
+                            phi_edges,
+                            topology_composition.topology_ids,
+                            topology_composition.fractions[:, iq2, ixb, it, :],
+                            bottom=0.80,
+                            height=0.16,
+                        )
                     ax.set_xlabel("phi bin center [deg]")
                     ax.set_ylabel("Migration/acceptance diagnostic")
                     ax.set_title(
@@ -3982,9 +6511,52 @@ def _plot_acceptance_vs_phi(
                         f"Q2 {q2_edges[iq2]:g}-{q2_edges[iq2 + 1]:g}, "
                         f"xB {xb_edges[ixb]:g}-{xb_edges[ixb + 1]:g}, "
                         f"-t {t_edges[it]:g}-{t_edges[it + 1]:g}"
+                        + (
+                            "\nbar color = dominant REC topology; opacity increases with dominance"
+                            if topology_enabled and topology_display == "dominant"
+                            else "\nstacked strip = normalized REC topology composition"
+                            if topology_enabled and topology_display == "stacked"
+                            else ""
+                        )
                     )
                     ax.grid(True, alpha=0.25)
-                    ax.legend(loc="best", fontsize="small")
+                    handles, labels = ax.get_legend_handles_labels()
+                    if topology_enabled:
+                        from matplotlib.patches import Patch
+
+                        if topology_display == "dominant":
+                            page_topologies = sorted(
+                                int(item)
+                                for item in np.unique(
+                                    dominant_topology_phi[topology_dominance_phi > 0.0]
+                                )
+                            )
+                        else:
+                            fraction_phi = topology_composition.fractions[
+                                :, iq2, ixb, it, :
+                            ]
+                            page_topologies = [
+                                int(topology_id)
+                                for topology_id, fraction in zip(
+                                    topology_composition.topology_ids,
+                                    fraction_phi,
+                                    strict=True,
+                                )
+                                if np.any(fraction > 0.0)
+                            ]
+                        for topology_id in page_topologies:
+                            handles.append(
+                                Patch(
+                                    facecolor=_topology_color(topology_id),
+                                    alpha=(
+                                        _topology_alpha(0.65)
+                                        if topology_display == "dominant"
+                                        else 0.84
+                                    ),
+                                )
+                            )
+                            labels.append(_topology_label(topology_id))
+                    ax.legend(handles, labels, loc="best", fontsize="small")
                     fig.tight_layout()
                     pdf.savefig(fig)
                     plt.close(fig)
@@ -4016,10 +6588,20 @@ def main() -> int:
         command_cross_section(args)
     elif args.command == "fit-harmonics":
         command_harmonics(args)
+    elif args.command == "structure-functions":
+        command_structure_functions(args)
+    elif args.command == "model-prediction":
+        command_model_prediction(args)
+    elif args.command == "model-prediction-merge":
+        command_model_prediction_merge(args)
+    elif args.command == "model-comparison-plots":
+        command_model_comparison_plots(args)
     elif args.command == "harmonic-plots":
         command_harmonic_plots(args)
     elif args.command == "cross-section-plots":
         command_cross_section_plots(args)
+    elif args.command == "campaign-diagnostics":
+        command_campaign_diagnostics(args)
     elif args.command == "acceptance-plots":
         command_acceptance_plots(args)
     elif args.command == "response-plots":

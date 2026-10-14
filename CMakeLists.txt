@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.10)
 project(Hipo2Root)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+include(CTest)
 
 # ROOT setup
 find_package(ROOT REQUIRED)
@@ -40,6 +41,7 @@ link_directories(
 )
 
 set(HIPO2ROOT_SOURCES
+  ${PROJECT_SOURCE_DIR}/src/conversion/ElasticMomentumCorrections.cpp
   ${PROJECT_SOURCE_DIR}/src/conversion/GeneratedEvent.cpp
   ${PROJECT_SOURCE_DIR}/src/conversion/ProtonEnergyLossCorrections.cpp
   ${PROJECT_SOURCE_DIR}/src/conversion/QualityAssurance.cpp
@@ -100,9 +102,25 @@ target_link_libraries(
   pthread
 )
 if(QADB_INCLUDE_DIR)
-  target_include_directories(hipo2root PRIVATE ${QADB_INCLUDE_DIR})
+  target_include_directories(
+    hipo2root PRIVATE
+    ${QADB_INCLUDE_DIR}
+    ${QADB_INCLUDE_DIR}/../rapidjson/include
+  )
   target_compile_definitions(hipo2root PRIVATE HAVE_QADB=1)
   message(STATUS "QADB support enabled: ${QADB_INCLUDE_DIR}")
+
+  # Audit the exact QADB helicity-sign convention and helicity-latched
+  # Faraday-cup charge used by beam-spin-asymmetry extractions.
+  add_executable(
+    qadb_helicity_audit
+    ${PROJECT_SOURCE_DIR}/src/apps/qadb_helicity_audit.cpp
+  )
+  target_include_directories(
+    qadb_helicity_audit PRIVATE
+    ${QADB_INCLUDE_DIR}
+    ${QADB_INCLUDE_DIR}/../rapidjson/include
+  )
 else()
   message(STATUS "QADB support disabled (QADB.h not found)")
 endif()
@@ -121,3 +139,37 @@ target_link_libraries(
   EG
   pthread
 )
+
+if(BUILD_TESTING)
+  add_executable(
+    test_conversion_config
+    ${PROJECT_SOURCE_DIR}/tests/test_conversion_config.cpp
+  )
+  add_test(NAME conversion_config COMMAND test_conversion_config)
+
+  add_executable(
+    test_elastic_momentum_corrections
+    ${PROJECT_SOURCE_DIR}/tests/test_elastic_momentum_corrections.cpp
+    ${PROJECT_SOURCE_DIR}/src/conversion/ElasticMomentumCorrections.cpp
+  )
+  add_test(NAME elastic_momentum_corrections COMMAND test_elastic_momentum_corrections)
+
+  add_executable(
+    test_post_cuts
+    ${PROJECT_SOURCE_DIR}/tests/test_post_cuts.cpp
+    ${POST_PROCESSING_SOURCES}
+    $<TARGET_OBJECTS:ROOTBranchesDictObjects>
+  )
+  target_compile_definitions(
+    test_post_cuts PRIVATE
+    POST_PROCESSING_ONLY
+    SF_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+  )
+  target_link_libraries(
+    test_post_cuts
+    ${ROOT_LIBRARIES}
+    EG
+    pthread
+  )
+  add_test(NAME post_cuts COMMAND test_post_cuts)
+endif()

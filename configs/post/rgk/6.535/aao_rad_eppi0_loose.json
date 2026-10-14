@@ -11,6 +11,7 @@
                 "detectors": [1],
                 "cuts": [
                     { "name": "electron.trigger", "op": "firstPidInstance" },
+                    { "name": "electron.min_p", "op": "minP", "min": 1.0 },
                     { "name": "electron.fiducial", "op": "fiducial" }
                 ]
             },

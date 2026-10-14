@@ -40,6 +40,19 @@ This reconstructed-particle table contains one `rec` object per retained
 reconstructed particle and an optional matched `gen` object.
 `rec.particleIdx` is the position in the complete
 `c12.getDetParticles()` list, so PID filtering can leave gaps.
+Detector-specific calorimeter deposits are stored as `E_FTCAL` for FT rows and
+as `E_PCAL`, `E_ECIN`, and `E_ECOUT` for FD rows; fields for other detectors
+remain non-finite.
+
+Kinematic corrections preserve the detector-bank values in `p_raw`,
+`theta_raw`, and `phi_raw`. The corrected `p`, `theta`, and `phi` fields drive
+the Cartesian momentum and downstream analysis. `delta_p`, `delta_theta`, and
+`delta_phi` store the total change. For momentum provenance,
+`delta_p_energy_loss` records the simulation-derived proton energy-loss stage
+and `delta_p_momentum_correction` records the subsequent data-derived particle
+momentum stage. `momentum_correction_applied` is true only when the row lies in
+an exact calibration support cell. `delta_p_elastic` remains as a deprecated
+compatibility alias; delta fields are zero for stages that were not applied.
 
 For backward compatibility, this tree temporarily retains the repeated
 `event` object used by existing post-processing, calibration scripts, and old
@@ -74,6 +87,15 @@ row per selected role occurrence with the event key, role, occurrence,
 `particleIdx`, PID, detector, sector, and selected kinematics. The legacy
 selected-role vectors and scalar role branches remain in the candidate tree for
 existing analysis and visualization consumers.
+
+Detector-coordinate provenance is retained for every selected role in both
+tables. `sParticles` uses the converter field names (`xFT`, `xDC1`, `xPCAL`,
+`uPCAL`, `edge_cvt1`, and related fields). `sEvents` prefixes the corresponding
+camel-case field with the role name, for example `electronXDC1`,
+`protonPhiCVT`, and `gamma1UPCAL`. Non-applicable detector coordinates remain
+non-finite. These branches support candidate-level ECAL, DC, FTCAL, and CVT
+occupancy diagnostics without returning to the much larger converter particle
+tree.
 
 Post-processing always reads `rParticles` and `rEvents`, with ordered legacy
 fallbacks, and writes `sEvents` plus `sParticles`. In `matchedRows` mode it

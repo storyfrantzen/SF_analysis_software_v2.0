@@ -1,4 +1,5 @@
 #pragma once
+#include <cmath>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -36,6 +37,12 @@ struct InputValidationConfig {
     bool skipMalformed = true;
 };
 
+struct DiphotonMassSkimConfig {
+    bool enabled = false;
+    double minGeV = 0.0;
+    double maxGeV = 1.0;
+};
+
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 struct Config {
@@ -45,17 +52,21 @@ struct Config {
 
     // ── Beam ──────────────────────────────────
     double beamEnergy = 10.6;
+    int torus = 0;
 
     // ── Final state filter ────────────────────
     std::vector<FinalState> finalState;
     bool inclusive = false;
+    bool allowAdditionalNeutralParticles = false;
     std::vector<int> outputPids;
+    long long maxEvents = -1;
 
     // ── DIS skim ──────────────────────────────
     bool   enableSkim = true;
     double Q2_min     = 1.0;
     double W_min      = 2.0;
-    double y_max      = 0.8;
+    double electronP_min = 0.0;
+    DiphotonMassSkimConfig diphotonMassSkim;
 
     // ── MC ────────────────────────────────────
     bool fillMC = false;
@@ -73,6 +84,7 @@ struct Config {
 
     // ── Kinematic corrections ─────────────────
     nlohmann::json kinematicCorrections;
+    nlohmann::json elasticMomentumCorrections;
 
     // ── Constructors ──────────────────────────
 
@@ -126,11 +138,54 @@ struct Config {
         }
 
         beamEnergy = j.value("beamEnergy", beamEnergy);
+        torus = j.value("torus", torus);
+        if (torus != -1 && torus != 0 && torus != 1) {
+            throw std::runtime_error("torus must be -1, 0, or 1");
+        }
+        if (j.contains("maxEvents")) {
+            maxEvents = j.at("maxEvents").get<long long>();
+            if (maxEvents <= 0) {
+                throw std::runtime_error("maxEvents must be a positive integer");
+            }
+        }
 
         enableSkim = j.value("enableSkim", enableSkim);
         Q2_min     = j.value("Q2_min",     Q2_min);
         W_min      = j.value("W_min",      W_min);
-        y_max      = j.value("y_max",      y_max);
+        if (j.contains("y_max")) {
+            throw std::runtime_error(
+                "y_max is no longer supported; configure electron_p_min instead"
+            );
+        }
+        electronP_min = j.value("electron_p_min", electronP_min);
+        if (!std::isfinite(electronP_min) || electronP_min < 0.0) {
+            throw std::runtime_error("electron_p_min must be finite and nonnegative");
+        }
+
+        if (j.contains("diphotonMassSkim")) {
+            const auto& skim = j["diphotonMassSkim"];
+            if (!skim.is_object()) {
+                throw std::runtime_error("diphotonMassSkim must be a JSON object");
+            }
+            diphotonMassSkim.enabled = skim.value(
+                "enabled", diphotonMassSkim.enabled
+            );
+            diphotonMassSkim.minGeV = skim.value(
+                "minGeV", diphotonMassSkim.minGeV
+            );
+            diphotonMassSkim.maxGeV = skim.value(
+                "maxGeV", diphotonMassSkim.maxGeV
+            );
+            if (diphotonMassSkim.enabled &&
+                (!std::isfinite(diphotonMassSkim.minGeV) ||
+                 !std::isfinite(diphotonMassSkim.maxGeV) ||
+                 diphotonMassSkim.minGeV < 0.0 ||
+                 diphotonMassSkim.maxGeV <= diphotonMassSkim.minGeV)) {
+                throw std::runtime_error(
+                    "enabled diphotonMassSkim requires 0 <= minGeV < maxGeV"
+                );
+            }
+        }
 
         fillMC = j.value("fillMC", fillMC);
         matchMC = j.value("matchMC", matchMC);
@@ -202,6 +257,15 @@ struct Config {
         }
 
         inclusive = j.value("inclusive", inclusive);
+        allowAdditionalNeutralParticles = j.value(
+            "allowAdditionalNeutralParticles", allowAdditionalNeutralParticles
+        );
+        if (inclusive && allowAdditionalNeutralParticles) {
+            throw std::runtime_error(
+                "allowAdditionalNeutralParticles requires inclusive=false; "
+                "inclusive=true already permits every additional particle"
+            );
+        }
         outputPids = j.value("outputPids", outputPids);
 
         if (j.contains("kinematicCorrections")) {
@@ -220,6 +284,27 @@ struct Config {
                 cf >> kinematicCorrections;
             } else {
                 kinematicCorrections = corrections;
+            }
+        }
+
+        if (j.contains("elasticMomentumCorrections")) {
+            const auto& corrections = j["elasticMomentumCorrections"];
+            if (corrections.is_string()) {
+                std::filesystem::path correctionPath = corrections.get<std::string>();
+                if (correctionPath.is_relative() && !configDir.empty()) {
+                    correctionPath = configDir / correctionPath;
+                }
+
+                std::ifstream cf(correctionPath);
+                if (!cf.is_open()) {
+                    throw std::runtime_error(
+                        "Cannot open elastic momentum corrections file: " +
+                        correctionPath.string()
+                    );
+                }
+                cf >> elasticMomentumCorrections;
+            } else {
+                elasticMomentumCorrections = corrections;
             }
         }
 

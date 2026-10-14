@@ -95,23 +95,41 @@ class AnalysisBinning:
         axes = tuple(range(offset)) + (offset + 1, offset, offset + 3, offset + 2)
         return values.transpose(axes).reshape(*leading, self.size)
 
-    def bin_means(self, flat: Array, values: Mapping[str, Array]) -> dict[str, Array]:
+    def bin_means(
+        self,
+        flat: Array,
+        values: Mapping[str, Array],
+        *,
+        weights: Array | None = None,
+    ) -> dict[str, Array]:
         """Compute all per-bin means with one bincount per variable."""
         flat = np.asarray(flat, dtype=np.int64)
         valid_bin = (flat >= 0) & (flat < self.size)
+        if weights is None:
+            event_weights = np.ones(flat.shape, dtype=float)
+        else:
+            event_weights = np.asarray(weights, dtype=float)
+            if event_weights.shape != flat.shape:
+                raise ValueError("weights shape does not match flat indices")
+            if not np.all(np.isfinite(event_weights)) or np.any(event_weights < 0.0):
+                raise ValueError("weights must be finite and nonnegative")
         output: dict[str, Array] = {}
         for name, raw in values.items():
             raw = np.asarray(raw, dtype=float)
             if raw.shape != flat.shape:
                 raise ValueError(f"{name} shape does not match flat indices")
-            valid = valid_bin & np.isfinite(raw)
-            counts = np.bincount(flat[valid], minlength=self.size)
-            sums = np.bincount(flat[valid], weights=raw[valid], minlength=self.size)
+            valid = valid_bin & np.isfinite(raw) & (event_weights > 0.0)
+            weight_sums = np.bincount(
+                flat[valid], weights=event_weights[valid], minlength=self.size
+            )
+            sums = np.bincount(
+                flat[valid], weights=raw[valid] * event_weights[valid], minlength=self.size
+            )
             output[name] = np.divide(
                 sums,
-                counts,
+                weight_sums,
                 out=np.full(self.size, np.nan),
-                where=counts > 0,
+                where=weight_sums > 0,
             )
         return output
 

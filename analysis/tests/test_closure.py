@@ -1,0 +1,377 @@
+from __future__ import annotations
+
+from argparse import Namespace
+import json
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+import warnings
+
+import numpy as np
+from scipy.sparse import diags
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from eppi0.binning import AnalysisBinning
+from eppi0.closure import (
+    SplitClosureInputs,
+    assess_iteration_coverage,
+    count_bootstrap_response,
+    deterministic_folds,
+    run_closure_scan,
+    stress_weights,
+    training_response,
+)
+from eppi0.phase_space import AnalysisPhaseSpace
+from validate_response_closure import render_saved_diagnostics, save_results
+from validate_response_closure import load_split_inputs, save_split_inputs
+
+
+class ClosureTests(unittest.TestCase):
+    def test_iteration_coverage_gate_is_separate_from_minimum_mse(self) -> None:
+        rows = []
+        for iteration, pull_std in ((1, 1.02), (2, 1.40)):
+            for fold in range(3):
+                row = {
+                    "fold": fold,
+                    "stress": "nominal",
+                    "iterations": iteration,
+                    "pull_mean": 0.03,
+                    "pull_std": pull_std,
+                    "coverage_1sigma": 0.68,
+                    "coverage_2sigma": 0.95,
+                }
+                for label in ("A", "B", "C"):
+                    row[f"harmonic_{label}_pull_mean"] = 0.05
+                    row[f"harmonic_{label}_pull_std"] = 1.05
+                rows.append(row)
+        assessment = assess_iteration_coverage(rows, (1, 2))
+        self.assertTrue(assessment[0]["certified"])
+        self.assertFalse(assessment[1]["certified"])
+        self.assertIn("pull_std", assessment[1]["failed_checks"])
+
+    def test_deterministic_folds_are_stable_and_source_aware(self) -> None:
+        source = np.repeat(np.arange(4, dtype=np.uint64), 100)
+        event = np.tile(np.arange(100, dtype=np.uint64), 4)
+        first = deterministic_folds(source, event, 5, seed=19)
+        second = deterministic_folds(source, event, 5, seed=19)
+        np.testing.assert_array_equal(first, second)
+        self.assertTrue(np.all((first >= 0) & (first < 5)))
+        self.assertGreater(np.unique(first).size, 1)
+        changed_source = deterministic_folds(source + 1, event, 5, seed=19)
+        self.assertGreater(np.count_nonzero(first != changed_source), 0)
+
+    def test_stress_weights_are_positive_and_nontrivial(self) -> None:
+        values = stress_weights(
+            q2=np.array([1.0, 2.0, 3.0]),
+            xb=np.array([0.1, 0.3, 0.6]),
+            minus_t=np.array([0.1, 0.5, 1.5]),
+            phi_rad=np.array([0.0, np.pi / 2.0, np.pi]),
+            names=("nominal", "q2_tilt", "xb_t_tilt", "phi_harmonic", "combined"),
+            strength=0.6,
+            q2_range=(1.0, 3.0),
+            xb_range=(0.1, 0.6),
+            t_range=(0.1, 1.5),
+        )
+        self.assertEqual(values.shape, (5, 3))
+        self.assertTrue(np.all(values > 0.0))
+        np.testing.assert_allclose(values[0], 1.0)
+        self.assertFalse(np.allclose(values[1], values[0]))
+        self.assertFalse(np.allclose(values[3], values[0]))
+
+    def test_identity_response_closes_exactly(self) -> None:
+        binning = AnalysisBinning(
+            [1, 2], [0.1, 0.5], [0.1, 1.0], [0, 60, 120, 180, 240, 300, 360]
+        )
+        folds = 3
+        truth = np.tile(
+            np.array([100.0, 120.0, 140.0, 160.0, 140.0, 120.0]), (folds, 1)
+        )
+        accepted = 0.5 * truth
+        migrations = tuple(diags(accepted[index], format="csr") for index in range(folds))
+        inputs = SplitClosureInputs(
+            fold_truth_total=truth,
+            fold_reconstructed_total=accepted,
+            fold_feed_counts=np.zeros_like(truth),
+            fold_migration_counts=migrations,
+            validation_truth=truth[None, ...],
+            validation_measured=accepted[None, ...],
+            validation_variance=accepted[None, ...],
+            stress_names=("nominal",),
+        )
+        response = training_response(inputs, 1)
+        np.testing.assert_allclose(response.efficiency, 0.5)
+        result = run_closure_scan(
+            inputs,
+            binning,
+            iterations=(0, 1, 4),
+            minimum_acceptance=0.01,
+            minimum_truth=1.0,
+            bootstrap=0,
+            minimum_harmonic_points=4,
+        )
+        expected = np.repeat(inputs.validation_truth[:, None, ...], 3, axis=1)
+        np.testing.assert_allclose(result.unfolded, expected)
+        self.assertEqual(result.recommended_iterations, 0)
+        for row in result.metrics:
+            self.assertAlmostEqual(float(row["normalized_mse"]), 0.0)
+            self.assertAlmostEqual(float(row["global_relative_bias"]), 0.0)
+            self.assertAlmostEqual(float(row["refold_chi2_ndf"]), 0.0)
+            self.assertEqual(int(row["harmonic_common_cells"]), 1)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_path = Path(temporary)
+            config = temporary_path / "analysis.json"
+            config.write_text("{}\n", encoding="utf-8")
+            args = Namespace(
+                label="synthetic closure",
+                converter_root=temporary_path / "converter.root",
+                selected_root=temporary_path / "selected.root",
+                split_input_dir=None,
+                config=config,
+                selection_mask=None,
+                dictionary=None,
+                folds=folds,
+                seed=731_921,
+                bootstrap=0,
+                response_uncertainty="analytic-diagonal",
+                minimum_truth=1.0,
+                minimum_harmonic_points=4,
+                stress_strength=0.6,
+                topology_group=[],
+            )
+            save_results(
+                temporary_path,
+                result,
+                inputs,
+                binning,
+                args=args,
+                scan_metadata={"generated_rows": 18},
+                phase_space=AnalysisPhaseSpace(),
+                minimum_acceptance=0.01,
+            )
+            summary = json.loads(
+                (temporary_path / "closure_summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(summary["recommendation"]["iterations"], 0)
+            self.assertTrue((temporary_path / "closure_metrics.csv").is_file())
+            self.assertTrue((temporary_path / "closure_results.npz").is_file())
+
+            diagnostics = temporary_path / "closure_diagnostics.pdf"
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                render_saved_diagnostics(
+                    temporary_path,
+                    output=diagnostics,
+                    label=(
+                        "synthetic topology-integrated response closure with a "
+                        "deliberately long campaign label"
+                    ),
+                )
+            collapsed = [
+                warning
+                for warning in caught
+                if "axes sizes collapsed to zero" in str(warning.message)
+            ]
+            self.assertEqual(collapsed, [])
+            self.assertTrue(diagnostics.is_file())
+            self.assertGreater(diagnostics.stat().st_size, 10_000)
+
+            save_split_inputs(temporary_path, inputs, {"generated_rows": 18})
+            restored, metadata = load_split_inputs(temporary_path)
+            np.testing.assert_allclose(restored.fold_truth_total, inputs.fold_truth_total)
+            np.testing.assert_allclose(
+                restored.fold_reconstructed_total, inputs.fold_reconstructed_total
+            )
+            np.testing.assert_allclose(
+                restored.fold_migration_counts[0].toarray(),
+                inputs.fold_migration_counts[0].toarray(),
+            )
+            self.assertEqual(restored.stress_names, inputs.stress_names)
+            self.assertEqual(metadata["generated_rows"], 18)
+
+    def test_fold_jackknife_response_covariance_inflates_varying_response(self) -> None:
+        binning = AnalysisBinning(
+            [1, 2], [0.1, 0.5], [0.1, 1.0], [0, 90, 180, 270, 360]
+        )
+        truth = np.full((5, 4), 200.0)
+        efficiencies = np.array([0.35, 0.45, 0.55, 0.65, 0.75])
+        accepted = efficiencies[:, None] * truth
+        migrations = tuple(diags(row, format="csr") for row in accepted)
+        measured = np.full((1, 5, 4), 100.0)
+        inputs = SplitClosureInputs(
+            fold_truth_total=truth,
+            fold_reconstructed_total=accepted,
+            fold_feed_counts=np.zeros_like(truth),
+            fold_migration_counts=migrations,
+            validation_truth=np.full((1, 5, 4), 200.0),
+            validation_measured=measured,
+            validation_variance=measured,
+            stress_names=("nominal",),
+        )
+        analytic = run_closure_scan(
+            inputs,
+            binning,
+            iterations=(1,),
+            minimum_acceptance=0.01,
+            minimum_truth=1.0,
+            bootstrap=0,
+            minimum_harmonic_points=4,
+            response_uncertainty="analytic-diagonal",
+        )
+        jackknife = run_closure_scan(
+            inputs,
+            binning,
+            iterations=(1,),
+            minimum_acceptance=0.01,
+            minimum_truth=1.0,
+            bootstrap=0,
+            minimum_harmonic_points=4,
+            response_uncertainty="fold-jackknife",
+        )
+        self.assertGreater(
+            float(np.nanmedian(jackknife.uncertainty)),
+            float(np.nanmedian(analytic.uncertainty)),
+        )
+
+    def test_count_bootstrap_rebuilds_integer_response_normalization(self) -> None:
+        truth = np.array([1000.0, 800.0])
+        migration = diags([400.0, 320.0], format="csr")
+        feed = np.array([15.0, 10.0])
+        replica = count_bootstrap_response(
+            truth, feed, migration, np.random.default_rng(17)
+        )
+        self.assertTrue(np.all(replica.truth_total >= 0.0))
+        self.assertTrue(np.all(replica.reconstructed_total >= 0.0))
+        self.assertTrue(np.all(replica.efficiency >= 0.0))
+        self.assertTrue(np.all(replica.efficiency <= 1.0))
+        np.testing.assert_allclose(
+            replica.reconstructed_total,
+            np.asarray(replica.core.multiply(replica.truth_total).sum(axis=1)).ravel()
+            + replica.feed_in_shape
+            * replica.feed_in_fraction
+            * replica.reconstructed_total.sum(),
+        )
+
+    def test_count_bootstrap_writes_independent_fixed_truth_metrics(self) -> None:
+        binning = AnalysisBinning(
+            [1, 2],
+            [0.1, 0.5],
+            [0.1, 1.0],
+            [0, 60, 120, 180, 240, 300, 360],
+        )
+        folds = 5
+        truth = np.full((folds, 6), 10_000.0)
+        accepted = np.full((folds, 6), 5_000.0)
+        migrations = tuple(diags(row, format="csr") for row in accepted)
+        inputs = SplitClosureInputs(
+            fold_truth_total=truth,
+            fold_reconstructed_total=accepted,
+            fold_feed_counts=np.zeros_like(truth),
+            fold_migration_counts=migrations,
+            validation_truth=np.full((1, folds, 6), 2_000.0),
+            validation_measured=np.full((1, folds, 6), 1_000.0),
+            validation_variance=np.full((1, folds, 6), 1_000.0),
+            stress_names=("nominal",),
+        )
+        result = run_closure_scan(
+            inputs,
+            binning,
+            iterations=(0, 1),
+            minimum_acceptance=0.01,
+            minimum_truth=1.0,
+            bootstrap=40,
+            minimum_harmonic_points=4,
+            response_uncertainty="count-bootstrap",
+            seed=29,
+        )
+        shifted_inputs = SplitClosureInputs(
+            fold_truth_total=truth,
+            fold_reconstructed_total=accepted,
+            fold_feed_counts=np.zeros_like(truth),
+            fold_migration_counts=migrations,
+            validation_truth=np.full((1, folds, 6), 2_000.0),
+            validation_measured=np.full((1, folds, 6), 700.0),
+            validation_variance=np.full((1, folds, 6), 700.0),
+            stress_names=("nominal",),
+        )
+        shifted = run_closure_scan(
+            shifted_inputs,
+            binning,
+            iterations=(0, 1),
+            minimum_acceptance=0.01,
+            minimum_truth=1.0,
+            bootstrap=40,
+            minimum_harmonic_points=4,
+            response_uncertainty="count-bootstrap",
+            seed=29,
+        )
+        self.assertEqual(len(result.fixed_truth_metrics), folds * 2)
+        self.assertEqual(len(result.fixed_truth_harmonic_cell_metrics), folds * 2)
+        self.assertEqual(len(result.harmonic_cell_metrics), folds * 2)
+        for row in result.fixed_truth_metrics:
+            self.assertEqual(int(row["calibration_pseudoexperiments"]), 20)
+            self.assertEqual(int(row["evaluation_pseudoexperiments"]), 20)
+            self.assertGreater(float(row["pull_std"]), 0.75)
+            self.assertLess(float(row["pull_std"]), 1.25)
+        for original, changed in zip(
+            result.fixed_truth_metrics, shifted.fixed_truth_metrics, strict=True
+        ):
+            for field in (
+                "pull_mean",
+                "pull_std",
+                "coverage_1sigma",
+                "coverage_2sigma",
+                "harmonic_A_pull_std",
+                "harmonic_B_pull_std",
+                "harmonic_C_pull_std",
+            ):
+                self.assertEqual(original[field], changed[field])
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            config = output / "analysis.json"
+            config.write_text("{}\n", encoding="utf-8")
+            args = Namespace(
+                label="count-bootstrap synthetic closure",
+                converter_root=output / "converter.root",
+                selected_root=output / "selected.root",
+                split_input_dir=None,
+                config=config,
+                selection_mask=None,
+                dictionary=None,
+                folds=folds,
+                seed=29,
+                bootstrap=40,
+                response_uncertainty="count-bootstrap",
+                minimum_truth=1.0,
+                minimum_harmonic_points=4,
+                stress_strength=0.6,
+                topology_group=[],
+            )
+            summary = save_results(
+                output,
+                result,
+                inputs,
+                binning,
+                args=args,
+                scan_metadata={"generated_rows": 50_000},
+                phase_space=AnalysisPhaseSpace(),
+                minimum_acceptance=0.01,
+            )
+            self.assertEqual(summary["schema_version"], 6)
+            self.assertEqual(
+                summary["recommendation"]["coverage_assessment_source"],
+                "fixed-truth independent pseudoexperiments",
+            )
+            for name in (
+                "harmonic_cell_metrics.csv",
+                "fixed_truth_metrics.csv",
+                "fixed_truth_harmonic_cell_metrics.csv",
+            ):
+                self.assertTrue((output / name).is_file())
+
+
+if __name__ == "__main__":
+    unittest.main()

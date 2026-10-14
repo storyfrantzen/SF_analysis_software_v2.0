@@ -299,6 +299,7 @@ def maybe_plot(arrays: dict[str, np.ndarray],
                theta_range_mode: ThetaRangeMode = "quantile",
                theta_trim_quantile: float = 0.001) -> None:
     import matplotlib.pyplot as plt
+    from matplotlib.ticker import FormatStrFormatter, MaxNLocator
 
     output_dir.mkdir(parents=True, exist_ok=True)
     p = arrays["rec.p"]
@@ -306,8 +307,29 @@ def maybe_plot(arrays: dict[str, np.ndarray],
     theta_range = resolve_theta_range(arrays, cfg, theta_range_mode, theta_trim_quantile)
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
     for ax, (name, col) in zip(axes, RESIDUAL_COLUMNS.items()):
-        hist = ax.hist2d(p, arrays[col], bins=80, cmap="magma", cmin=1)
-        fig.colorbar(hist[3], ax=ax)
+        residual_range = resolve_residual_range(
+            arrays, name, cfg, residual_range_mode, residual_trim_quantile
+        )
+        residual_mask = residual_range_mask(arrays, name, residual_range)
+        plot_mask = residual_mask & np.isfinite(p)
+        hist = ax.hist2d(
+            p[plot_mask],
+            arrays[col][plot_mask],
+            bins=80,
+            range=[cfg.momentum_range, residual_range],
+            cmap="magma",
+            cmin=1,
+        )
+        colorbar = fig.colorbar(hist[3], ax=ax)
+        colorbar.locator = MaxNLocator(nbins=5)
+        colorbar.formatter = FormatStrFormatter("%.3g")
+        colorbar.update_ticks()
+        ax.set_xlim(cfg.momentum_range)
+        ax.set_ylim(residual_range)
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+        ax.xaxis.set_major_formatter(FormatStrFormatter("%.3g"))
+        ax.yaxis.set_major_formatter(FormatStrFormatter("%.3g"))
         ax.set_xlabel("p_rec [GeV]")
         ax.set_ylabel(name)
         ax.set_title(f"{detector_name} {name}")
@@ -317,6 +339,7 @@ def maybe_plot(arrays: dict[str, np.ndarray],
         f"{detector_name} proton residuals vs reconstructed momentum",
         dataset_tag,
         beam_energy,
+        tight_layout=False,
     )
     plt.close(fig)
 
@@ -376,8 +399,34 @@ def maybe_plot(arrays: dict[str, np.ndarray],
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
     for ax, (name, col) in zip(axes, RESIDUAL_COLUMNS.items()):
-        hist = ax.hist2d(theta, arrays[col], bins=80, cmap="viridis", cmin=1)
-        fig.colorbar(hist[3], ax=ax)
+        residual_range = resolve_residual_range(
+            arrays, name, cfg, residual_range_mode, residual_trim_quantile
+        )
+        residual_mask = residual_range_mask(arrays, name, residual_range)
+        plot_mask = (
+            residual_mask
+            & np.isfinite(theta)
+            & (theta >= theta_range[0])
+            & (theta <= theta_range[1])
+        )
+        hist = ax.hist2d(
+            theta[plot_mask],
+            arrays[col][plot_mask],
+            bins=80,
+            range=[theta_range, residual_range],
+            cmap="viridis",
+            cmin=1,
+        )
+        colorbar = fig.colorbar(hist[3], ax=ax)
+        colorbar.locator = MaxNLocator(nbins=5)
+        colorbar.formatter = FormatStrFormatter("%.3g")
+        colorbar.update_ticks()
+        ax.set_xlim(theta_range)
+        ax.set_ylim(residual_range)
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+        ax.xaxis.set_major_formatter(FormatStrFormatter("%.3g"))
+        ax.yaxis.set_major_formatter(FormatStrFormatter("%.3g"))
         ax.set_xlabel("theta_rec [deg]")
         ax.set_ylabel(name)
         ax.set_title(f"{detector_name} {name}")
@@ -387,6 +436,7 @@ def maybe_plot(arrays: dict[str, np.ndarray],
         f"{detector_name} proton residuals vs reconstructed theta",
         dataset_tag,
         beam_energy,
+        tight_layout=False,
     )
     plt.close(fig)
 

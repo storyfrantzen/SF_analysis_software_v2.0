@@ -13,47 +13,68 @@ Calibration-only workflows live one level deeper in a `calibration/`
 subdirectory. No uncategorized executable configs are kept at the roots of
 `processing/`, `post/`, or `analysis/`.
 
+Shared, non-executable post-processing parents that deliberately span beam
+energies live under a named period directory. The Spring 2024 baseline parent
+is `post/rgk/spring2024/eppi0_base_baseline_uncalibrated.json`; the executable
+6.395 and 8.477 GeV bases extend it and supply their own `beamEnergy`.
+
 Processing configurations control HIPO input reduction, QADB, reconstructed
 skims, MC matching, generated-event storage, row-level PID storage filters, and
 kinematic corrections. Post configurations define candidate construction and
 tuneable detector/physics cuts. Analysis configurations contain binning,
-target, and normalization settings.
+target, normalization, and exclusivity-derivation settings. The
+`exclusivity.variables` object records each variable's containment probability
+and whether the final boundary is defined by the fitted narrow `core` or the
+complete physical `signal`. The `exclusivity.nminus1_audit` object controls the
+relative-boundary-shift threshold used to flag the non-mutating fixed-window
+N-1 stability audit. Command-line options to
+`analysis/derive_exclusivity.py` override these recorded defaults for deliberate
+systematic variations.
 
-The complete RGA 10.604 GeV EPPI0 pair is:
+The RGA 10.604 GeV Fall 2018 EPPI0 configs are explicit about polarity. Each
+of the following has both a `_torus+1.json` and `_torus-1.json` variant:
 
-- `processing/rga/10.604/eppi0_data.json`;
-- `processing/rga/10.604/eppi0_mc_acceptance.json`;
-- `post/rga/10.604/eppi0_data.json`;
-- `post/rga/10.604/eppi0_mc_acceptance.json`;
-- `analysis/rga/10.604.json`.
+- `processing/rga/10.604/eppi0_data_*.json`;
+- `processing/rga/10.604/eppi0_data_full_dst_*.json`;
+- `processing/rga/10.604/eppi0_GEMC_*.json`;
+- `post/rga/10.604/eppi0_data_*.json`;
+- `post/rga/10.604/eppi0_GEMC_*.json`;
+- `post/rga/10.604/eppi0_cut_diagnostics_*.json`;
+- `processing/rga/10.604/calibration/elastic_data_*.json`;
+- `post/rga/10.604/calibration/elastic_candidates_data_*.json`.
 
-Both post-processing files extend `post/rga/10.604/eppi0_base.json` so the
-shared particle, detector, fiducial, and loose-exclusivity selections live in
-one place. The data and MC child configs override only the output name and the
-sampling-fraction parameter file.
+The post-processing children extend their matching
+`post/rga/10.604/eppi0_base_torus*.json`. The two bases intentionally differ
+in torus sign and electron vertex window while keeping the common topology,
+detector, fiducial, and loose-exclusivity selection synchronized. Numerical
+analysis settings remain shared in `analysis/rga/10.604.json`.
 
 The active RGK 6.535 GeV files are:
 
-- `processing/rgk/6.535/aao_rad_q2_0.7_ep_1.00.json`;
-- `processing/rgk/6.535/aao_rad_q2_0.9_ep_1.15.json`;
 - `processing/rgk/6.535/eppi0_data.json`;
+- `processing/rgk/6.535/eppi0_data_full_dst.json`;
 - `post/rgk/6.535/eppi0_data.json`;
 - `post/rgk/6.535/eppi0_base.json`;
 - `post/rgk/6.535/aao_rad_eppi0_loose.json`;
-- `processing/rgk/6.535/eppi0_mc_acceptance.json`;
-- `post/rgk/6.535/eppi0_mc_acceptance.json`;
+- `processing/rgk/6.535/eppi0_GEMC.json`;
+- `post/rgk/6.535/eppi0_GEMC.json`;
 - `processing/rgk/6.535/calibration/sidis_electrons_data.json`;
 - `processing/rgk/6.535/calibration/sidis_electrons_mc.json`;
 - `processing/rgk/6.535/calibration/proton_energy_loss_mc.json`;
+- `processing/rgk/6.535/calibration/elastic_data.json`;
+- `processing/rgk/6.535/calibration/elastic_data_run_spanning.json`;
 - `post/rgk/6.535/calibration/electron_sf_candidates.json`;
 - `post/rgk/6.535/calibration/electron_sf_candidates_mc.json`;
+- `post/rgk/6.535/calibration/elastic_candidates_data.json`;
+- `post/rgk/6.535/calibration/elastic_candidates_data_run_spanning.json`;
 - `post/rgk/6.535/calibration/proton_energy_loss_fiducial.json`;
 - `post/rgk/6.535/calibration/electron_sf_selected.json`;
 - `efficiency/rgk/6.535/run_currents.json`;
 - `analysis/rgk/6.535.json`.
 
 RGA calibration inputs are under `processing/rga/10.604/calibration/` and
-`post/rga/10.604/calibration/`.
+`post/rga/10.604/calibration/`; these configs also carry explicit
+`_torus+1.json` or `_torus-1.json` suffixes.
 
 The RGA sampling-fraction calibration has distinct data and GEMC processing
 and candidate configs. This prevents the small validation outputs from
@@ -71,8 +92,8 @@ before parsing the normal post-processing fields. Object values merge
 recursively, while arrays and scalar values replace the parent value.
 
 Use this for data/MC pairs that intentionally share a topology and detector
-selection. For example, `configs/post/rga/10.604/eppi0_data.json` extends the
-RGA EPPI0 base config and overrides only `outputFile` plus
+selection. For example, `configs/post/rga/10.604/eppi0_data_torus+1.json`
+extends the matching RGA EPPI0 base config and overrides only `outputFile` plus
 `samplingFraction.sigma.paramsFile`.
 
 Primitive particle cuts and pair-mass composites accept an optional `mode`:
@@ -88,11 +109,12 @@ When `saveFailedCandidates` is true, loose-exclusivity failures are retained as
 well. The visualizer expands these two CSV branches into filterable quantities
 named `passCut_<cut_name>`.
 
-`post/rga/10.604/eppi0_cut_diagnostics.json` is a ready-to-run RGA data
-configuration. It requires the trigger electron and loose particle-quality
-preselection, while tagging electron/proton/photon fiducials, electron
-sampling-fraction cuts, the three CVT phi vetoes, and the pi0 mass window. It
-also retains failed loose-exclusivity candidates.
+The two `post/rga/10.604/eppi0_cut_diagnostics_torus*.json` files are
+ready-to-run RGA data configurations. They require the trigger electron and
+loose particle-quality preselection, while tagging the polarity-specific
+electron vertex window, electron/proton/photon fiducials, electron
+sampling-fraction cuts, the three CVT phi vetoes, and the pi0 mass window. They
+also retain failed loose-exclusivity candidates.
 
 ## Candidate selection
 
@@ -129,95 +151,346 @@ definition when they enter the same correction workflow.
 From the repository root:
 
 ```bash
-./build/hipo2root configs/processing/rga/10.604/eppi0_data.json \
+./build/hipo2root configs/processing/rga/10.604/eppi0_data_torus+1.json \
   /path/to/rga/eppi0/data
 
-./build/hipo2root configs/processing/rga/10.604/eppi0_mc_acceptance.json \
+./build/hipo2root configs/processing/rga/10.604/eppi0_GEMC_torus+1.json \
   /path/to/rga/gemc
 
-./build/post_process configs/post/rga/10.604/eppi0_data.json \
-  10.604_rga_eppi0_data.root
+./build/post_process configs/post/rga/10.604/eppi0_data_torus+1.json \
+  10.604_rga_fa18_torus+1_eppi0_data.root
 
-./build/post_process configs/post/rga/10.604/eppi0_mc_acceptance.json \
-  10.604_rga_eppi0_mc_acceptance.root
+./build/post_process configs/post/rga/10.604/eppi0_GEMC_torus+1.json \
+  10.604_rga_fa18_torus+1_eppi0_GEMC.root
 
-./build/post_process configs/post/rga/10.604/eppi0_cut_diagnostics.json \
-  10.604_rga_eppi0_data.root
+./build/post_process configs/post/rga/10.604/eppi0_cut_diagnostics_torus+1.json \
+  10.604_rga_fa18_torus+1_eppi0_data.root
 
-python3 -m visualizer 10.604_rga_eppi0_cut_diagnostics.root \
-  --tree sEvents --output 10.604_rga_eppi0_cut_diagnostics.html
+./build/post_process configs/post/rga/10.604/eppi0_cut_diagnostics_GEMC_torus+1.json \
+  10.604_rga_fa18_torus+1_eppi0_GEMC.root
+
+python3 -m visualizer 10.604_rga_fa18_torus+1_eppi0_cut_diagnostics.root \
+  --tree sEvents --output 10.604_rga_fa18_torus+1_eppi0_cut_diagnostics.html
 ```
 
 The processing stage corrects reconstructed proton momentum and angles before
 they are stored. Raw proton values and correction deltas remain in the ROOT
 branches. The post-processing stage accepts proton detector IDs 1 (FD) and 2
 (CD), applies PID-appropriate RGA fiducials, and applies the three electron
-sampling-fraction components to FD electrons. FT electrons bypass the FD-only
-sampling-fraction requirements.
+sampling-fraction components to FD electrons. Nominal RGA configurations accept
+only detector 1 electrons, consistent with the observed first-electron topology
+in data and GEMC. Photons receive a loose universal reconstructed-momentum cut
+of 0.4 GeV; nominal selection does not add a deposited-calorimeter-energy cut.
+The diagnostic configurations retain the former 0.15 GeV requirement as a
+non-rejecting tag: it evaluates the FTCAL energy for FT photons and the summed
+PCAL, ECIN, and ECOUT energies for FD photons. The electron-sector veto is
+applied only to FD photon/FD electron pairs. Downstream exclusivity derivation
+separates FD/FD, mixed FT/FD, and FT/FT photon pairs within each
+proton-detector category.
 
-## RGA sampling-fraction rederivation test
+For conversion of complete RGA reconstructed-DST holdings, use the dedicated
+storage-efficient data config:
 
-The converter accepts either a directory or one explicit `.hipo` file. Run the
-following from the repository root after rebuilding.
+```bash
+./build/hipo2root configs/processing/rga/10.604/eppi0_data_full_dst_torus+1.json \
+  /path/to/rga/10.604/reconstructed/dsts 0 1000000
 
-First process five lexicographically sorted Fall 2018 torus +1 data files:
+./build/post_process configs/post/rga/10.604/eppi0_data_torus+1.json \
+  10.604_rga_fa18_torus+1_eppi0_data_full_dst.root 1000000
+```
+
+Like its RGK counterpart, this config retains the normal QADB policy, writes
+only electron, proton, and photon rows, requires reconstructed `Q2 >= 1` and
+`W >= 2`, and uses a padded conversion threshold `p_e >= 1.5 GeV`.
+Post-processing applies the nominal analysis threshold `p_e >= 2 GeV`. It
+accepts an event when any photon pair has `0 <= m_gg <= 0.35 GeV`; final
+candidate choice and analysis cuts remain downstream.
+
+Use the matching `_torus-1.json` processing and post config for inbending
+Fall 2018 samples. The converter records the declared polarity as the ROOT
+`TorusPolarity` parameter. Candidate selection requires `-18 <= vz <= 10 cm`
+for torus `+1` and `-13 <= vz <= 12 cm` for torus `-1`; the torus sign also
+controls the DC-edge definition.
+
+The canonical RGA proton-energy-loss and sampling-fraction parameter JSONs are
+committed under `parameters/`, and the production configs reference them
+directly. The derivation commands below document how those files were made.
+Keep torus `+1` and `-1` inputs separate throughout.
+
+The two RGA proton energy-loss processing configs set `maxEvents: 50000000`;
+the four electron sampling-fraction processing configs set
+`maxEvents: 100000000`. Each is an exact global input-event cap across all
+supplied files. The electron configs also set `outputPids: [11]`, so they keep
+the inclusive electron event selection without writing unrelated particle
+rows, and preflight each HIPO input in a child process so malformed inputs can
+be skipped safely. `hipo2root` prints the configured event limit at startup and
+records both `ConfiguredMaxEvents` and `EventLimitReached` in its `Summary`
+tree.
+
+## RGA Fall 2018 calibration rederivation
+
+The converter accepts either directories or explicit `.hipo` files. Run these
+commands from the repository root after rebuilding in the JLab environment.
+It also accepts a plain-text manifest as `@path/to/manifest.txt`; this is the
+preferred way to process a finite sample distributed across many runs instead
+of truncating the globally sorted file list.
+
+### Proton energy-loss corrections
+
+Use a polarity-matched GEMC sample with generated and reconstructed protons.
+The calibration configs deliberately apply no existing proton correction.
 
 ```bash
 ./build/hipo2root \
-  configs/processing/rga/10.604/calibration/sidis_electrons_data.json \
+  configs/processing/rga/10.604/calibration/proton_energy_loss_mc_torus+1.json \
+  /path/to/fa18/torus+1/proton_calibration_gemc 0 1000000
+
+python3 scripts/derive_proton_energy_loss.py \
+  10.604_rga_fa18_torus+1_proton_energy_loss_mc.root \
+  --detector both \
+  --max-rows 50000000 \
+  --output parameters/proton_energy_loss/10.604RGA_FA18_torus+1_proton_energy_loss.json \
+  --plot-dir calibration_plots/proton_energy_loss/rga_fa18_torus+1 \
+  --dataset-tag 10.604RGA_FA18_torus+1 --beam-energy 10.604
+
+./build/hipo2root \
+  configs/processing/rga/10.604/calibration/proton_energy_loss_mc_torus-1.json \
+  /path/to/fa18/torus-1/proton_calibration_gemc 0 1000000
+
+python3 scripts/derive_proton_energy_loss.py \
+  10.604_rga_fa18_torus-1_proton_energy_loss_mc.root \
+  --detector both \
+  --max-rows 50000000 \
+  --output parameters/proton_energy_loss/10.604RGA_FA18_torus-1_proton_energy_loss.json \
+  --plot-dir calibration_plots/proton_energy_loss/rga_fa18_torus-1 \
+  --dataset-tag 10.604RGA_FA18_torus-1 --beam-energy 10.604
+```
+
+Inspect every FD/CD residual plot and the populated theta domain before using
+the outputs. The electron vertex requirement does not affect these fits because
+the samples contain matched proton rows and no electron selection.
+
+### Elastic electron/proton momentum parameters
+
+Use data and keep the torus polarities separate. These converter configs apply
+the existing proton energy-loss coefficients, but deliberately do not apply an
+elastic momentum correction. They require exactly one electron and one proton,
+veto other charged particles, and permit additional neutral particles such as
+radiative photons. The post-processing configs add the normal electron ID,
+vertex, and electron/proton fiducial selections. Coplanarity, two-body
+polar-angle closure, and a broad maximum missing-energy requirement are applied
+by the derivation script. The missing-energy requirement suppresses large
+inelastic tails but must be varied when assigning the calibration systematic.
+
+```bash
+./build/hipo2root \
+  configs/processing/rga/10.604/calibration/elastic_data_torus+1.json \
+  /path/to/fa18/torus+1/elastic/data 0 1000000
+
+./build/post_process \
+  configs/post/rga/10.604/calibration/elastic_candidates_data_torus+1.json \
+  10.604_rga_fa18_torus+1_elastic_data.root 1000000
+
+python3 scripts/derive_elastic_momentum.py \
+  10.604_rga_fa18_torus+1_elastic_candidates.root \
+  --beam-energy 10.604 \
+  --torus 1 \
+  --missing-energy-max-gev 0.75 \
+  --output parameters/momentum/10.604RGA_FA18_torus+1_elastic_momentum.json \
+  --plot-dir calibration_plots/momentum/rga_fa18_torus+1 \
+  --dataset-tag 10.604RGA_FA18_torus+1_elastic
+```
+
+Cells use a mode-seeded core estimator rather than assuming that the elastic
+peak is the majority population. Cells fail closed when their peak population,
+fraction, significance, width, or center is unacceptable. Exported support-cell
+rectangles ensure the converter does not interpolate through rejected or empty
+profile cells. The output records accepted and rejected cell diagnostics plus
+the weighted design-matrix singular values and condition number. Phi-dependent
+surfaces require multiple independent phi cells in enough theta slices, use a
+default maximum condition number of 100, and are rejected if their value
+exceeds 5% anywhere on a grid within the accepted support cells. Use
+`--theta-min-deg` to isolate a questionable detector-edge region rather than
+letting a global polynomial absorb it.
+
+For high-statistics diagnostics, add `--profile-binning adaptive` to make phi
+quantiles separately within each theta slice. In this mode `--phi-bins` is a
+maximum, `--target-cell-entries` reduces the phi count in sparse slices, and
+`--max-theta-bin-width-deg` splits physically over-wide theta intervals. The
+resulting `*_profile_cell_map.png` plots show the actual cell rectangles and
+populations. Keep the adaptive output disabled in production until its local
+structure and closure repeat in held-out runs.
+
+With `--plot-dir`, each fitted region now also writes
+`*_profile_vs_phi_by_theta.png`, showing the before and independently
+re-extracted after core centers in each polar-angle slice, with the direct
+surface drawn only over accepted phi cells. `*_cell_fit_discrepancy.png` shows
+the training-cell center minus the fitted surface, both spatially and versus
+theta. For FD fits linear in local phi, `*_phi_coefficients_vs_theta.png`
+shows secondary per-slice intercept/slope summaries against the corresponding
+terms of the direct surface; these slice lines are diagnostics, not a second
+calibration fit. The original `*.png` overview remains, but its accepted-cell
+color range now follows the actual fitted centers rather than the broad peak
+search ceiling. A visually centered overall histogram does not replace
+cell-level or held-out closure checks.
+
+Repeat with the matching `torus-1` config/output names. Before enabling the
+resulting `elasticMomentumCorrections` file in production, require closure on
+held-out runs and repeat the fit while varying missing energy, angular cuts,
+fit orders, binning, topology policy, and run ranges. Compare the neutral-only
+topology against a strict two-particle sample by setting
+`allowAdditionalNeutralParticles` to `false` in a copied processing config. A
+nominal-beam-energy mismatch or an uncorrected angle bias appears directly as a
+momentum-scale bias in this method.
+
+For electron angular-coverage studies, the RGK
+`elastic_electrons_inclusive_data_run_spanning.json` processing config and
+`elastic_electron_candidates_inclusive_data_run_spanning.json` post config
+retain exactly one identified electron while allowing any other reconstructed
+particles. Consume this sample with `--electron-selection inclusive-w`; no
+reconstructed proton is required. Keep the W window broad and vary it because
+it is calculated from the same momentum being calibrated.
+
+The `particle_momentum_correction/v2` schema extends the original elastic
+schema with `momentumRangeGeV`, momentum normalization, `momentumPower` terms,
+and momentum ranges on exact support cells. It supports detector-region proton
+`(p,theta)` and photon `(E,theta)` surfaces derived by
+`scripts/derive_eppi0_momentum.py`. The converter applies this generic stage
+after proton energy loss and records it in
+`delta_p_momentum_correction`/`momentum_correction_applied`.
+
+For the held-out study, use `scripts/select_hipo_run_sample.py` to choose one or
+more files per run, process the resulting `@manifest` with a config that omits
+`maxEvents`, and run `scripts/validate_elastic_momentum_runs.py`. The validator
+uses contiguous run blocks, alternating two-fold train/holdout evaluation, a
+pooled common-cell stability map, and nested
+constant/theta-linear/theta-phi/theta2-phi models. The last model is quadratic
+in theta and linear in sector-local phi, including theta-phi and
+theta-squared-phi interaction terms. Complexity is selected independently in
+each detector region. The output is a diagnostic: inspect run epochs, both
+held-out directions, and selection variations before promoting any pooled or
+mixed parameter file.
+
+The validator and systematic-scan driver can reuse a combined candidate ROOT
+file while selecting analysis-relevant periods with `--run-catalog` and
+`--include-run-classes`. Use `--block-by-run-class` to keep ordinary
+candidate-target blocks from crossing class boundaries. Use
+`--fold-by-run-class` with exactly two classes for the stronger test that fits
+each class and evaluates it exclusively on the other. Run-selection provenance
+is stored in the reports and parameter files.
+
+Once the model family is fixed, use
+`scripts/scan_elastic_momentum_systematics.py` for the missing-energy,
+lower-theta, and adaptive-cell-occupancy variations. It performs a
+one-at-a-time scan, loads the candidate tree once, and preserves the nominal
+run-block membership in every variation. Its aggregate JSON, TSV, and PNG
+summaries compare both the selected model and the fitted surface displacement
+in each detector region. The nominal mixed file remains a candidate pending
+review of those systematic changes.
+
+### Data sampling-fraction parameters
+
+Use the full representative Fall 2018 electron skims for each polarity. QADB,
+`Q2 >= 1`, `W >= 2`, and a padded `p >= 1.5 GeV` requirement are applied in
+conversion. DC/ECAL fiducials, the nominal `p >= 2 GeV` threshold, and the
+correct electron vertex window are applied in post-processing.
+
+```bash
+./build/hipo2root \
+  configs/processing/rga/10.604/calibration/sidis_electrons_data_torus+1.json \
   /cache/clas12/rg-a/production/recon/fall2018/torus+1/pass2/train/nSidis/ \
-  5 100000
+  0 1000000
 
 ./build/post_process \
-  configs/post/rga/10.604/calibration/electron_sf_candidates.json \
-  10.604_rga_sidis_electrons.root
+  configs/post/rga/10.604/calibration/electron_sf_candidates_torus+1.json \
+  10.604_rga_fa18_torus+1_sidis_electrons.root 1000000
 
 python3 scripts/derive_sampling_fraction.py \
-  10.604_rga_electron_sf_candidates.root \
-  --output parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_t+1_nSIDIS_5files.json \
-  --plot-dir calibration_plots/sampling_fraction/rga_10.604_data_5files \
-  --dataset-tag 10.604RGA_FA18_t+1_nSIDIS_5files \
+  10.604_rga_fa18_torus+1_electron_sf_candidates.root \
+  --tree sEvents --max-rows 10000000 --p-min 2.0 \
+  --output parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_torus+1_data.json \
+  --plot-dir calibration_plots/sampling_fraction/rga_fa18_torus+1_data \
+  --dataset-tag 10.604RGA_FA18_torus+1_data \
   --beam-energy 10.604 --run-group RGA --skim nSIDIS --torus 1
+
+./build/hipo2root \
+  configs/processing/rga/10.604/calibration/sidis_electrons_data_torus-1.json \
+  /cache/clas12/rg-a/production/recon/fall2018/torus-1/pass2/main/train/nSidis/ \
+  0 1000000
+
+./build/post_process \
+  configs/post/rga/10.604/calibration/electron_sf_candidates_torus-1.json \
+  10.604_rga_fa18_torus-1_sidis_electrons.root 1000000
+
+python3 scripts/derive_sampling_fraction.py \
+  10.604_rga_fa18_torus-1_electron_sf_candidates.root \
+  --tree sEvents --max-rows 10000000 --p-min 2.0 \
+  --output parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_torus-1_data.json \
+  --plot-dir calibration_plots/sampling_fraction/rga_fa18_torus-1_data \
+  --dataset-tag 10.604RGA_FA18_torus-1_data \
+  --beam-energy 10.604 --run-group RGA --skim nSIDIS --torus -1
 ```
 
-Then process the exact GEMC file and derive one sector-independent resolution
-fit copied to all six sectors:
+### GEMC sampling-fraction parameters
+
+Run the electron-only chain on separate polarity-matched GEMC productions.
+`--gemc` derives one sector-independent fit and copies it to all six sectors.
 
 ```bash
 ./build/hipo2root \
-  configs/processing/rga/10.604/calibration/sidis_electrons_mc.json \
-  /cache/clas12/rg-a/production/montecarlo/clasdis_pass2/fa18_out/clasdis_rga_fa18_out_50nA_10604MeV-0000.hipo \
-  1 100000
+  configs/processing/rga/10.604/calibration/sidis_electrons_mc_torus+1.json \
+  /path/to/fa18/torus+1/electron_calibration_gemc 0 1000000
 
 ./build/post_process \
-  configs/post/rga/10.604/calibration/electron_sf_candidates_mc.json \
-  10.604_rga_gemc_sidis_electrons.root
+  configs/post/rga/10.604/calibration/electron_sf_candidates_mc_torus+1.json \
+  10.604_rga_fa18_torus+1_gemc_sidis_electrons.root 1000000
 
 python3 scripts/derive_sampling_fraction.py \
-  10.604_rga_gemc_electron_sf_candidates.root --gemc \
-  --output parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_t+1_clasdisGEMC.json \
-  --plot-dir calibration_plots/sampling_fraction/rga_10.604_gemc \
-  --dataset-tag 10.604RGA_FA18_t+1_clasdisGEMC \
+  10.604_rga_fa18_torus+1_gemc_electron_sf_candidates.root --gemc \
+  --tree sEvents --max-rows 10000000 --p-min 2.0 \
+  --output parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_torus+1_GEMC.json \
+  --plot-dir calibration_plots/sampling_fraction/rga_fa18_torus+1_GEMC \
+  --dataset-tag 10.604RGA_FA18_torus+1_GEMC \
   --beam-energy 10.604 --run-group RGA --skim clasdis_pass2 --torus 1
+
+./build/hipo2root \
+  configs/processing/rga/10.604/calibration/sidis_electrons_mc_torus-1.json \
+  /path/to/fa18/torus-1/electron_calibration_gemc 0 1000000
+
+./build/post_process \
+  configs/post/rga/10.604/calibration/electron_sf_candidates_mc_torus-1.json \
+  10.604_rga_fa18_torus-1_gemc_sidis_electrons.root 1000000
+
+python3 scripts/derive_sampling_fraction.py \
+  10.604_rga_fa18_torus-1_gemc_electron_sf_candidates.root --gemc \
+  --tree sEvents --max-rows 10000000 --p-min 2.0 \
+  --output parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_torus-1_GEMC.json \
+  --plot-dir calibration_plots/sampling_fraction/rga_fa18_torus-1_GEMC \
+  --dataset-tag 10.604RGA_FA18_torus-1_GEMC \
+  --beam-energy 10.604 --run-group RGA --skim clasdis_pass2 --torus -1
 ```
 
-The two output JSON files and plot directories are intentionally separate.
-Compare the fitted mean and sigma curves and the retained fractions before
-choosing which parameters belong in a physics-selection configuration.
+Check sector populations, the momentum coverage, fitted mean/sigma curves,
+and retained fractions. Once these six canonical JSON files exist, the RGA
+production configs become directly usable without further path edits.
 
-## RGK 6.535 GeV aaoRad reconstructed-distribution comparison
+## RGK 6.535 GeV GEMC reconstructed-distribution comparison
 
 The RGK EPPI0 base config mirrors the RGA EPPI0 topology with RGK-specific
 detector acceptance: no detector 0 FT candidates, RGK ECAL fiducials, RGK ECAL
-edge cuts, and the same FD/CD proton treatment.
+edge cuts, and the same FD/CD proton treatment. Nominal RGK data and GEMC use
+the same universal reconstructed-photon momentum requirement as RGA,
+`p_gamma >= 0.4 GeV`, without an additional deposited-calorimeter-energy cut.
+Threshold alternatives are treated as downstream systematic variations rather
+than simultaneous nominal requirements.
 
-The aaoRad comparison configs are intended for quick shape checks across any
-compatible production. Choose the processing config whose phase-space family
-matches the generator inputs: `Q2 >= 0.7, electron p >= 1.00` or
-`Q2 >= 0.9, electron p >= 1.15`. The post config extends the RGK EPPI0 base but
-keeps a loose photon selection with a very low reconstructed photon momentum
-threshold, so comparisons remain sensitive to generated photon-threshold
-changes without depending on a particular production identifier.
+The unified `eppi0_GEMC.json` processing config is used for both radiative and
+non-radiative GEMC. It preserves every generated event in `gEvents` before the
+reconstructed topology and DIS skim, while requiring reconstructed `Q2 >= 1`,
+`W >= 2`, and a padded electron momentum threshold `p_e >= 0.3 GeV`.
+Post-processing and analysis apply the nominal `p_e >= 1 GeV` threshold. The
+optional `aao_rad_eppi0_loose.json` post config keeps a loose photon selection
+for quick radiative-production shape checks.
 
 For RGK 6.535 GeV data processing, use the data config pair. The processing
 config enables QADB, applies the `6.535RGK_INCLUSIVE_GEMC_100M` proton
@@ -247,10 +520,33 @@ python3 analysis/study_data_efficiency.py \
 
 The efficiency-study command defaults to unflagged P3/P4 runs and counts all
 selected candidates. Supply a fixed event mask with `--selection-mask` for the
-signal-yield study. Add `--include-classes P3 P4 L5` only after confirming L5
-trigger and prescale compatibility. The run-current manifest deliberately
-retains suspect, mixed-trigger, empty-target, and half-torus entries so each
-nominal exclusion remains auditable.
+signal-yield study, or add `--background-cuts data_exclusivity.npz` for the
+sideband-subtracted current-dependence systematic. Add
+`--include-classes P3 P4 L5` only after confirming L5 trigger and prescale
+compatibility. The run-current manifest deliberately retains suspect,
+mixed-trigger, empty-target, and half-torus entries so each nominal exclusion
+remains auditable. Fit exclusions do not remove physics data; use
+`--exclude-class-downstream T` or repeat `--exclude-run-downstream` to assign
+zero event weight and remove the corresponding per-run charge downstream. The
+exception is the default one-sided five-sigma low-yield safeguard: runs rejected
+as `below_group_mean_yield_threshold` are automatically assigned zero downstream
+weight when the correction artifact is written.
+
+For conversion of the complete reconstructed-DST holdings, including the
+luminosity-scan runs, use the more compact converter config:
+
+```bash
+./build/hipo2root configs/processing/rgk/6.535/eppi0_data_full_dst.json \
+  /path/to/rgk/6.535/reconstructed/dsts 0 1000000
+```
+
+This config retains the nominal QADB policy and DIS/topology skim, writes only
+electron, proton, and photon particle rows, and requires at least one photon
+pair with `0 <= m_gg <= 0.35 GeV`. The pair condition is existential: in an
+event with more than two photons, any pair may satisfy it. Its upper boundary
+is deliberately looser than the nominal post-processing pi0 window, whose
+upper edge is approximately `0.285 GeV`; candidate choice and all final
+selection cuts remain downstream.
 
 For calibrated RGK 6.535 GeV acceptance studies, use the compact acceptance
 processing config together with the acceptance post config. The processing
@@ -259,31 +555,19 @@ corrections; the post config extends the nominal RGK EPPI0 base selection and
 loads the `6.535RGK_INCLUSIVE_GEMC_100M` sampling-fraction parameters:
 
 ```bash
-./build/hipo2root configs/processing/rgk/6.535/eppi0_mc_acceptance.json \
+./build/hipo2root configs/processing/rgk/6.535/eppi0_GEMC.json \
   /path/to/rgk/6.535/gemc 0 1000000
 
-./build/post_process configs/post/rgk/6.535/eppi0_mc_acceptance.json \
-  6.535_rgk_eppi0_mc_acceptance.root 1000000
+./build/post_process configs/post/rgk/6.535/eppi0_GEMC.json \
+  6.535_rgk_eppi0_GEMC.root 1000000
 ```
 
-Example processing commands on ifarm for the lower-threshold phase-space family:
+For a quick loose-selection comparison of a radiative production, reuse the
+same converter output with the radiative post config:
 
 ```bash
-./build/hipo2root configs/processing/rgk/6.535/aao_rad_q2_0.7_ep_1.00.json \
-  /path/to/compatible/production 5 100000
-
 ./build/post_process configs/post/rgk/6.535/aao_rad_eppi0_loose.json \
-  6.535_rgk_aao_rad_q2_0.7_ep_1.00.root 100000
-```
-
-Use the other processing config for the tighter generated phase-space family:
-
-```bash
-./build/hipo2root configs/processing/rgk/6.535/aao_rad_q2_0.9_ep_1.15.json \
-  /path/to/compatible/production 5 100000
-
-./build/post_process configs/post/rgk/6.535/aao_rad_eppi0_loose.json \
-  6.535_rgk_aao_rad_q2_0.9_ep_1.15.root 100000
+  6.535_rgk_eppi0_GEMC.root 100000
 ```
 
 Compare any set of labeled selected outputs with the generic comparison tool.
@@ -332,6 +616,33 @@ python3 scripts/derive_sampling_fraction.py \
   --dataset-tag 6.535RGK_clasdisGEMC \
   --beam-energy 6.535 --run-group RGK --skim clasdis_pass2 --torus 1
 ```
+
+The sampling-fraction derivation uses a mode-seeded, iteratively clipped
+Gaussian-core estimator (`iterative_truncated_gaussian_core`, version 1) in
+every momentum bin.  Its truncated width is
+corrected back to the corresponding Gaussian sigma before the momentum
+dependence is fitted.  This prevents non-electron populations and calorimeter
+tails from redefining the electron resolution as the full-distribution RMS.
+The bin's observed core momentum mean is used as its fit coordinate, and both
+the mean and width momentum fits use their estimated uncertainties.  The
+output metadata records every bin's population, retained core fraction,
+Gaussian chi-square, convergence status, fitted values, and uncertainties.
+
+The diagnostic directory includes:
+
+- `sampling_fraction_sector_fits.png`: sector distributions and Gaussian-core
+  profiles under the parameter curves;
+- `sampling_fraction_profile_residuals.png`: fractional residuals of the core
+  mean and width from their momentum fits;
+- `sampling_fraction_core_fit_quality.png`: per-bin Gaussian chi-square and
+  retained core fraction;
+- `sampling_fraction_pulls.png`: standardized event residuals and the fraction
+  retained by a 3.5-sigma window;
+- `sampling_fraction_diagonal_cut.png`: the independent diagonal-cut check.
+
+With `--gemc`, one aggregate parameter fit is still copied to all sectors, but
+the sector-fit plot and validation metadata retain the six actual sector
+profiles so detector asymmetries remain visible.
 
 For proton energy loss:
 
@@ -429,3 +740,53 @@ python3 scripts/derive_sampling_fraction.py \
   --skim INCLUSIVE_GEMC_100M \
   --torus 1
 ```
+
+## RGK Spring 2024 baseline conversions
+
+The `rgk/6.395` and `rgk/8.477` configuration directories contain deliberately
+uncalibrated baseline conversions for the Spring 2024 torus-positive data and
+matching 0 nA Born AAO GEMC. They are intended for full-sample bookkeeping,
+yield, topology, and data/GEMC shape checks while energy-specific calibration
+artifacts are unavailable. The processing configurations therefore preserve
+raw reconstructed kinematics and do not borrow the Fall 2018 6.535 GeV proton
+energy-loss correction. The post-processing bases omit detector fiducials,
+sampling-fraction requirements, CVT phi vetoes, and the FD electron-sector
+photon veto. They retain only basic particle, topology, mass, and loose
+exclusivity requirements suitable for baseline sample characterization. Both
+energy-specific post-processing bases inherit those shared requirements from
+`post/rgk/spring2024/eppi0_base_baseline_uncalibrated.json` and override only
+`beamEnergy`, preventing the provisional selections from drifting apart.
+
+Use an explicit manifest to make the exact full input set reproducible:
+
+```bash
+./build/hipo2root \
+  configs/processing/rgk/6.395/eppi0_GEMC_born_0nA_baseline_uncalibrated.json \
+  @/path/to/6.395_born_0nA_manifest.txt
+
+./build/hipo2root \
+  configs/processing/rgk/6.395/eppi0_data_baseline_uncalibrated.json \
+  @/path/to/6.395_data_manifest.txt
+
+./build/hipo2root \
+  configs/processing/rgk/8.477/eppi0_GEMC_born_0nA_baseline_uncalibrated.json \
+  @/path/to/8.477_born_0nA_manifest.txt
+
+./build/hipo2root \
+  configs/processing/rgk/8.477/eppi0_data_baseline_uncalibrated.json \
+  @/path/to/8.477_data_manifest.txt
+```
+
+Run the correspondingly named files under `configs/post/rgk/<energy>` on the
+four converter outputs. The names retain `baseline_uncalibrated` so these
+artifacts cannot be confused with a later extraction using Spring 2024
+energy-specific proton and sampling-fraction calibrations.
+
+Provisional numerical-analysis configurations are available as
+`analysis/rgk/6.395.json` and `analysis/rgk/8.477.json`. They support initial
+bin-dependent response, occupancy, and kinematic studies; they are explicitly
+marked `provisional_baseline` and must not be treated as production-final
+binning. Both retain the established RGK xB, -t, and 18-degree phi edges. The
+6.395 GeV Q2 grid follows the 6.535 GeV RGK grid with 6.395 GeV as its upper
+edge, while the 8.477 GeV grid adds the established 5.5--7.0 GeV2 interval and
+ends at 8.477 GeV2.

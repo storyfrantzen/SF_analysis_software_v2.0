@@ -4,6 +4,15 @@ This project converts CLAS12 HIPO files into ROOT TTrees, builds configurable
 exclusive `epπ0` candidates, and provides a NumPy/SciPy response, unfolding,
 cross-section, and harmonic-analysis pipeline.
 
+## Start here
+
+For a new campaign or when returning to the repository after a break, use
+[the standard campaign template](docs/campaign_template.md). It identifies the
+maintained entry points, the `01_provenance` through `10_logs` work-directory
+layout, validation gates, artifact lineage, and the minimum completion
+checklist. Detailed tool and artifact documentation remains in
+[`analysis/README.md`](analysis/README.md).
+
 ## Build
 
 The C++ executables require ROOT and CLAS12ROOT. QADB support is enabled when
@@ -21,13 +30,14 @@ See `docs/jlab-module-setup.csh` for the JLab environment setup.
 ```bash
 hipo2root <config.json> <hipo_file_or_directory>... [max_files] [progress_events]
 post_process <post_config.json> <input.root> [progress_rows]
+qadb_helicity_audit --config <config.json> --run-list <runs.txt> --output-dir <directory>
 ```
 
 Processing configs live in `configs/processing/<run-group>/<energy>/`, so an
 RGA data run looks like:
 
 ```bash
-./build/hipo2root configs/processing/rga/10.604/eppi0_data.json /path/to/hipo/files
+./build/hipo2root configs/processing/rga/10.604/eppi0_data_torus+1.json /path/to/hipo/files
 ```
 
 Production configurations are organized by run group and energy. The complete
@@ -35,16 +45,22 @@ RGA 10.604 GeV EPPI0 data/acceptance-MC set lives under
 `configs/{processing,post}/rga/10.604/`, with its numerical analysis settings at
 `configs/analysis/rga/10.604.json`. See `configs/README.md` for the layout.
 
-The RGA EPPI0 configuration accepts FD or CD protons, applies the calibrated
-FD/CD proton energy-loss corrections during conversion, and applies the RGA
-DC, FT, ECAL, and CVT fiducial definitions plus the torus +1 electron
-sampling-fraction cuts during candidate selection.
+RGA Fall 2018 processing and post-selection configs are split explicitly by
+torus polarity. They accept FD or CD protons, apply the corresponding FD/CD
+proton correction during conversion, and apply polarity-aware RGA DC, FT,
+ECAL, and CVT fiducials during candidate selection. They also require the
+polarity-specific electron vertex windows: `-18 <= vz <= 10 cm` for torus `+1` and
+`-13 <= vz <= 12 cm` for torus `-1`.
+
+RGA calibration parameter JSON files are intentionally not committed. The
+production configs fail fast until the six polarity-specific proton and
+sampling-fraction outputs documented in `configs/README.md` have been derived.
 
 For matched REC/GEN proton rows used to derive the RGA energy-loss correction:
 
 ```bash
 ./build/hipo2root \
-  configs/processing/rga/10.604/calibration/proton_energy_loss_mc.json \
+  configs/processing/rga/10.604/calibration/proton_energy_loss_mc_torus+1.json \
   /path/to/hipo/files
 ```
 
@@ -62,7 +78,7 @@ letting tiny edge populations define the first and last theta bins. Use
 For storage-efficient acceptance production:
 
 ```bash
-./build/hipo2root configs/processing/rgk/6.535/eppi0_mc_acceptance.json /path/to/hipo/files
+./build/hipo2root configs/processing/rgk/6.535/eppi0_GEMC.json /path/to/hipo/files
 ```
 
 This writes a lightweight `gEvents` tree before reconstructed topology
@@ -95,6 +111,7 @@ The converter currently supports:
 - optional QADB filtering and accumulated-charge bookkeeping for data
 - final-state filtering
 - loose DIS skim cuts
+- composable proton energy-loss and data-derived elastic momentum corrections
 - reconstructed-particle branches
 - optional MC truth branches
 - compact generated-event acceptance trees filled before REC filtering
@@ -102,13 +119,17 @@ The converter currently supports:
 `hipo2root` reports progress every 1,000,000 input events by default. Pass a
 fourth argument to change that interval, or `0` to disable progress output.
 
-By default, `finalState` rejects reconstructed particles whose PIDs are not listed in the config. Set `inclusive` to `true` for inclusive final-state skims.
+By default, `finalState` rejects reconstructed particles whose PIDs are not
+listed in the config. Set `inclusive` to `true` to permit every additional
+particle, or keep `inclusive: false` and set
+`allowAdditionalNeutralParticles: true` to veto additional charged tracks while
+retaining neutral particles such as photons.
 Use `outputPids` when the event selection should remain broad but only selected
 particle rows should be written. For example, proton energy-loss calibration
 configs require events with at least one reconstructed proton and set
 `outputPids: [2212]` so the ROOT tree stores only proton rows.
 
-`post_process` performs ROOT post-processing. The initial module builds one EPPI0 candidate per event and applies configurable fiducial, sampling-fraction, topology, and loose exclusivity cuts. Post-processing configs are grouped by run group and energy, for example `configs/post/rga/10.604/eppi0_data.json`.
+`post_process` performs ROOT post-processing. The initial module builds one EPPI0 candidate per event and applies configurable fiducial, sampling-fraction, topology, and loose exclusivity cuts. Post-processing configs are grouped by run group and energy, for example `configs/post/rga/10.604/eppi0_data_torus+1.json`.
 
 ## Acceptance and cross-section analysis
 
@@ -155,5 +176,6 @@ See `docs/analysis_pipeline.md` for the recommended modular layout.
 - `configs/post/` - ROOT post-processing configs
 - `configs/analysis/` - numerical analysis configs
 - `docs/` - design notes and setup references
-- `data/` - local input/output data products, ignored by git
+- `data/` - committed small reference tables plus local campaign inputs when
+  explicitly needed
 - `build/`, `work-build/`, `cmake-build-*` - local CMake build trees, ignored by git

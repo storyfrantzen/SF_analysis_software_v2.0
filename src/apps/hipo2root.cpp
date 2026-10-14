@@ -30,6 +30,7 @@
 
 #include "Config.h"
 #include "GeneratedEvent.h"
+#include "ElasticMomentumCorrections.h"
 #include "ProtonEnergyLossCorrections.h"
 #include "QualityAssurance.h"
 #include "Kinematics.h"
@@ -62,8 +63,8 @@ std::string pidBranchToken(int pid) {
 }
 
 struct ReconstructedEventOutput {
-    std::uint64_t sourceFileId = INVALID_SOURCE_ID;
-    std::uint64_t sourceEventIndex = INVALID_SOURCE_ID;
+    ULong64_t sourceFileId = INVALID_SOURCE_ID;
+    ULong64_t sourceEventIndex = INVALID_SOURCE_ID;
     int runNum = -999;
     int eventNum = -999;
     int helicity = -999;
@@ -429,7 +430,12 @@ bool passesFinalState(const Config& cfg, clas12::clas12reader& c12) {
             const int pid = particle->getPid();
             const bool listed = std::any_of(cfg.finalState.begin(), cfg.finalState.end(),
                                             [pid](const FinalState& s) { return s.pid == pid; });
-            if (!listed) return false;
+            if (listed) continue;
+            if (cfg.allowAdditionalNeutralParticles &&
+                particle->par()->getCharge() == 0) {
+                continue;
+            }
+            return false;
         }
     }
 
@@ -456,7 +462,37 @@ bool passesDISSkim(const Config& cfg, clas12::clas12reader& c12) {
                                                     Kinematics::massForPid(11));
     const Kinematics::DIS dis = Kinematics::dis(lvE, cfg.beamEnergy);
 
-    return (dis.Q2 >= cfg.Q2_min && dis.W >= cfg.W_min && dis.y <= cfg.y_max);
+    return (
+        dis.Q2 >= cfg.Q2_min
+        && dis.W >= cfg.W_min
+        && lvE.P() >= cfg.electronP_min
+    );
+}
+
+bool passesDiphotonMassSkim(const Config& cfg, clas12::clas12reader& c12) {
+    if (!cfg.diphotonMassSkim.enabled) return true;
+
+    const auto photons = c12.getByID(22);
+    for (std::size_t first = 0; first < photons.size(); ++first) {
+        const auto* gamma1 = photons[first];
+        const TLorentzVector lvGamma1 = Kinematics::particle(
+            gamma1->par()->getPx(), gamma1->par()->getPy(), gamma1->par()->getPz(), 0.0
+        );
+        for (std::size_t second = first + 1; second < photons.size(); ++second) {
+            const auto* gamma2 = photons[second];
+            const TLorentzVector lvGamma2 = Kinematics::particle(
+                gamma2->par()->getPx(), gamma2->par()->getPy(), gamma2->par()->getPz(), 0.0
+            );
+            const double mass2 = (lvGamma1 + lvGamma2).M2();
+            if (!std::isfinite(mass2) || mass2 < 0.0) continue;
+            const double mass = std::sqrt(mass2);
+            if (mass >= cfg.diphotonMassSkim.minGeV &&
+                mass <= cfg.diphotonMassSkim.maxGeV) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 // ─── MC matching ─────────────────────────────────────────────────────────────
@@ -494,19 +530,42 @@ void fillRecBranch(RecBranches& recBranches,
                    int runNum,
                    int eventNum,
                    int particleIdx,
-                   const ProtonEnergyLossCorrections& corrections) {
-    if (particle->getPid() == 2212 && corrections.enabled()) {
-        const int det = getDetector(particle->par()->getStatus());
-        const double p = particle->getP();
-        const double theta = particle->getTheta();
-        const double phi = particle->getPhi();
-        const CorrectedKinematics corrected = corrections.correct(p, theta, phi, det);
-        recBranches.fill(particle, runNum, eventNum, particleIdx,
-                         corrected.p, corrected.theta, corrected.phi);
+                   const ProtonEnergyLossCorrections& energyLossCorrections,
+                   const ElasticMomentumCorrections& momentumCorrections) {
+    const int pid = particle->getPid();
+    const int det = getDetector(particle->par()->getStatus());
+    const int sector = particle->getSector();
+    const double measuredP = particle->getP();
+    const double measuredTheta = particle->getTheta();
+    const double measuredPhi = particle->getPhi();
+
+    CorrectedKinematics corrected;
+    corrected.p = measuredP;
+    corrected.theta = measuredTheta;
+    corrected.phi = measuredPhi;
+    if (pid == 2212 && energyLossCorrections.enabled()) {
+        corrected = energyLossCorrections.correct(
+            measuredP, measuredTheta, measuredPhi, det
+        );
+    }
+    const double energyLossDeltaP = corrected.p - measuredP;
+
+    const MomentumCorrectionResult momentum = momentumCorrections.correct(
+        corrected.p, corrected.theta, corrected.phi, pid, det, sector
+    );
+    const bool changed = energyLossDeltaP != 0.0 || momentum.applied ||
+                         corrected.deltaTheta != 0.0 || corrected.deltaPhi != 0.0;
+    if (!changed) {
+        recBranches.fill(particle, runNum, eventNum, particleIdx);
         return;
     }
 
-    recBranches.fill(particle, runNum, eventNum, particleIdx);
+    recBranches.fill(particle, runNum, eventNum, particleIdx,
+                     momentum.p, corrected.theta, corrected.phi);
+    recBranches.delta_p_energy_loss = energyLossDeltaP;
+    recBranches.delta_p_momentum_correction = momentum.deltaP;
+    recBranches.momentum_correction_applied = momentum.applied;
+    recBranches.delta_p_elastic = momentum.deltaP;
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -514,7 +573,8 @@ void fillRecBranch(RecBranches& recBranches,
 int main(int argc, char** argv) {
 
     if (argc < 3) {
-        std::cerr << "Usage: hipo2root <config.json> <hipo_file_or_directory>... "
+        std::cerr << "Usage: hipo2root <config.json> "
+                  << "<hipo_file_or_directory_or_@manifest>... "
                   << "[max_files] [progress_events]\n";
         return 1;
     }
@@ -558,6 +618,24 @@ int main(int argc, char** argv) {
         }
     }
     const ProtonEnergyLossCorrections corrections(cfg.kinematicCorrections);
+    const ElasticMomentumCorrections momentumCorrections(
+        cfg.elasticMomentumCorrections
+    );
+    if (momentumCorrections.enabled()) {
+        if (std::abs(momentumCorrections.beamEnergyGeV() - cfg.beamEnergy) > 1.0e-6) {
+            std::cerr << "[ERROR] Elastic momentum correction beam energy "
+                      << momentumCorrections.beamEnergyGeV()
+                      << " GeV does not match config beam energy " << cfg.beamEnergy
+                      << " GeV\n";
+            return 1;
+        }
+        if (cfg.torus == 0 || momentumCorrections.torus() != cfg.torus) {
+            std::cerr << "[ERROR] Elastic momentum correction torus "
+                      << momentumCorrections.torus()
+                      << " does not match config torus " << cfg.torus << "\n";
+            return 1;
+        }
+    }
     std::unique_ptr<QualityAssurance> qa;
     try {
         qa = std::make_unique<QualityAssurance>(cfg.qadb);
@@ -568,7 +646,35 @@ int main(int argc, char** argv) {
     // ── Collect .hipo files ───────────────────────────────────────────────────
     std::vector<std::string> hipoFiles;
     for (int argIndex = 2; argIndex < inputArgEnd; ++argIndex) {
-        const fs::path hipoInput = argv[argIndex];
+        const std::string inputArgument = argv[argIndex];
+        if (inputArgument.size() > 1 && inputArgument.front() == '@') {
+            const fs::path manifestPath = inputArgument.substr(1);
+            std::ifstream manifest(manifestPath);
+            if (!manifest.is_open()) {
+                std::cerr << "[ERROR] Could not open HIPO manifest: "
+                          << manifestPath << "\n";
+                return 1;
+            }
+            std::string line;
+            int lineNumber = 0;
+            while (std::getline(manifest, line)) {
+                ++lineNumber;
+                const auto first = line.find_first_not_of(" \t\r\n");
+                if (first == std::string::npos || line[first] == '#') continue;
+                const auto last = line.find_last_not_of(" \t\r\n");
+                const fs::path hipoPath = line.substr(first, last - first + 1);
+                if (!fs::is_regular_file(hipoPath)
+                    || hipoPath.extension() != ".hipo") {
+                    std::cerr << "[ERROR] Invalid HIPO path in manifest "
+                              << manifestPath << " at line " << lineNumber
+                              << ": " << hipoPath << "\n";
+                    return 1;
+                }
+                hipoFiles.push_back(hipoPath.string());
+            }
+            continue;
+        }
+        const fs::path hipoInput = inputArgument;
         if (fs::is_regular_file(hipoInput)) {
             if (hipoInput.extension() != ".hipo") {
                 std::cerr << "[ERROR] Input file is not a .hipo file: " << hipoInput << "\n";
@@ -592,6 +698,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::sort(hipoFiles.begin(), hipoFiles.end());
+    hipoFiles.erase(std::unique(hipoFiles.begin(), hipoFiles.end()), hipoFiles.end());
     if (maxFiles > 0 && static_cast<int>(hipoFiles.size()) > maxFiles) {
         hipoFiles.resize(maxFiles);
     }
@@ -606,6 +713,8 @@ int main(int argc, char** argv) {
               << "[INFO] REC trees   : " << TreeNames::rEvents
               << ", " << TreeNames::rParticles << "\n"
               << "[INFO] Beam energy : " << cfg.beamEnergy << " GeV\n"
+              << "[INFO] Torus       : "
+              << (cfg.torus == 0 ? "unspecified" : std::to_string(cfg.torus)) << "\n"
               << "[INFO] Fill MC     : " << (cfg.fillMC ? "yes" : "no") << "\n"
               << "[INFO] Match MC    : " << (cfg.matchMC ? "yes" : "no") << "\n"
               << "[INFO] GEN events  : "
@@ -626,8 +735,13 @@ int main(int argc, char** argv) {
               << "[INFO] Progress    : "
               << (progressEvery > 0 ? std::to_string(progressEvery) + " events" : "disabled")
               << "\n"
-              << "[INFO] Corrections : "
-              << (corrections.enabled() ? "enabled" : "disabled") << "\n";
+              << "[INFO] Event limit : "
+              << (cfg.maxEvents > 0 ? std::to_string(cfg.maxEvents) : "unlimited")
+              << "\n"
+              << "[INFO] Proton eloss: "
+              << (corrections.enabled() ? "enabled" : "disabled") << "\n"
+              << "[INFO] Elastic p   : "
+              << (momentumCorrections.enabled() ? "enabled" : "disabled") << "\n";
 
     if (qa->enabled()) {
         std::cout << "[INFO] QADB source : " << cfg.qadb.database << "\n"
@@ -642,12 +756,22 @@ int main(int argc, char** argv) {
             std::cout << "  PID " << s.pid
                       << "  " << (s.exact ? "==" : ">=") << s.count << "\n";
         std::cout << "  Unlisted PIDs: "
-                  << (cfg.inclusive ? "allowed" : "rejected") << "\n";
+                  << (cfg.inclusive
+                          ? "allowed"
+                          : (cfg.allowAdditionalNeutralParticles
+                                 ? "neutral only"
+                                 : "rejected"))
+                  << "\n";
     }
     if (cfg.enableSkim) {
         std::cout << "[INFO] DIS skim: Q2 >= " << cfg.Q2_min
                   << ", W >= "  << cfg.W_min
-                  << ", y <= " << cfg.y_max << "\n";
+                  << ", electron p >= " << cfg.electronP_min << " GeV\n";
+    }
+    if (cfg.diphotonMassSkim.enabled) {
+        std::cout << "[INFO] Diphoton mass skim: at least one pair in ["
+                  << cfg.diphotonMassSkim.minGeV << ", "
+                  << cfg.diphotonMassSkim.maxGeV << "] GeV\n";
     }
     if (!cfg.outputPids.empty()) {
         std::cout << "[INFO] Output PID filter:";
@@ -672,7 +796,7 @@ int main(int argc, char** argv) {
         gEvent.registerBranches(*gEvents);
     }
     TTree* sourceFilesTree = nullptr;
-    std::uint64_t catalogSourceFileId = INVALID_SOURCE_ID;
+    ULong64_t catalogSourceFileId = INVALID_SOURCE_ID;
     std::string catalogSourceFileName;
     int catalogStratumFlatIndex = -1;
     double catalogGeneratorWeight = 1.0;
@@ -698,6 +822,7 @@ int main(int argc, char** argv) {
 
     // ── Event loop ────────────────────────────────────────────────────────────
     long long nTotal = 0, nQAFail = 0, nFSFail = 0, nSkimFail = 0, nWritten = 0;
+    long long nDISSkimFail = 0, nDiphotonMassSkimFail = 0;
     long long nOutputRows = 0;
     long long nSkippedOutputPid = 0;
     long long nMatched = 0, nUnmatchedRec = 0, nUnmatchedGen = 0;
@@ -708,7 +833,12 @@ int main(int argc, char** argv) {
     const Clock::time_point startTime = Clock::now();
     std::unordered_map<std::uint64_t, std::string> sourceFileCatalog;
 
+    bool eventLimitReached = false;
     for (std::size_t fileIndex = 0; fileIndex < hipoFiles.size(); ++fileIndex) {
+        if (cfg.maxEvents > 0 && nTotal >= cfg.maxEvents) {
+            eventLimitReached = true;
+            break;
+        }
         const auto& hipoPath = hipoFiles[fileIndex];
         std::cout << "[INFO] Processing: " << hipoPath << "\n";
 
@@ -787,7 +917,7 @@ int main(int argc, char** argv) {
             lastProgressEvent = nTotal;
         };
 
-        while (c12.next()) {
+        while ((cfg.maxEvents <= 0 || nTotal < cfg.maxEvents) && c12.next()) {
             ++nTotal;
             const std::uint64_t currentSourceEventIndex = sourceEventIndex++;
 
@@ -821,6 +951,13 @@ int main(int argc, char** argv) {
             }
             if (!passesDISSkim(cfg, c12)) {
                 ++nSkimFail;
+                ++nDISSkimFail;
+                maybePrintProgress();
+                continue;
+            }
+            if (!passesDiphotonMassSkim(cfg, c12)) {
+                ++nSkimFail;
+                ++nDiphotonMassSkimFail;
                 maybePrintProgress();
                 continue;
             }
@@ -842,7 +979,8 @@ int main(int argc, char** argv) {
                     continue;
                 }
 
-                fillRecBranch(recBranches, particle, rn, en, i, corrections);
+                fillRecBranch(recBranches, particle, rn, en, i,
+                              corrections, momentumCorrections);
                 if (cfg.fillMC) genBranches.reset();
 
                 if (cfg.fillMC && cfg.matchMC && mc) {
@@ -889,6 +1027,9 @@ int main(int argc, char** argv) {
             ++nWritten;
             maybePrintProgress();
         }
+        if (cfg.maxEvents > 0 && nTotal >= cfg.maxEvents) {
+            eventLimitReached = true;
+        }
     }
 
     if (progressEvery > 0 && nTotal != lastProgressEvent) {
@@ -911,9 +1052,12 @@ int main(int argc, char** argv) {
     const double elapsed = std::chrono::duration<double>(Clock::now() - startTime).count();
     std::cout << "\n[DONE]\n"
               << "  Total events      : " << nTotal    << "\n"
+              << "  Event limit reached: " << (eventLimitReached ? "yes" : "no") << "\n"
               << "  Failed QADB       : " << nQAFail   << "\n"
               << "  Failed final state: " << nFSFail   << "\n"
               << "  Failed skim       : " << nSkimFail << "\n"
+              << "    DIS             : " << nDISSkimFail << "\n"
+              << "    Diphoton mass   : " << nDiphotonMassSkimFail << "\n"
               << "  Written events    : " << nWritten  << "\n"
               << "  Output rows       : " << nOutputRows << "\n"
               << "  PID-filtered rows : " << nSkippedOutputPid << "\n"
@@ -944,10 +1088,37 @@ int main(int argc, char** argv) {
     summary.Branch("QADBEnabled", &qadbEnabled, "QADBEnabled/O");
     summary.Branch("QADBDatabase", &qadbDatabase);
     summary.Branch("QADBRejectDefects", &qadbRejectDefects);
+    long long configuredMaxEvents = cfg.maxEvents;
+    summary.Branch("ConfiguredMaxEvents", &configuredMaxEvents, "ConfiguredMaxEvents/L");
+    bool disSkimEnabled = cfg.enableSkim;
+    double configuredQ2Min = cfg.Q2_min;
+    double configuredWMin = cfg.W_min;
+    double configuredElectronPMin = cfg.electronP_min;
+    summary.Branch("DISSkimEnabled", &disSkimEnabled, "DISSkimEnabled/O");
+    summary.Branch("ConfiguredQ2Min", &configuredQ2Min, "ConfiguredQ2Min/D");
+    summary.Branch("ConfiguredWMin", &configuredWMin, "ConfiguredWMin/D");
+    summary.Branch(
+        "ConfiguredElectronPMin",
+        &configuredElectronPMin,
+        "ConfiguredElectronPMin/D"
+    );
     summary.Branch("TotalEvents", &nTotal, "TotalEvents/L");
+    summary.Branch("EventLimitReached", &eventLimitReached, "EventLimitReached/O");
     summary.Branch("FailedQADB", &nQAFail, "FailedQADB/L");
     summary.Branch("FailedFinalState", &nFSFail, "FailedFinalState/L");
     summary.Branch("FailedSkim", &nSkimFail, "FailedSkim/L");
+    summary.Branch("FailedDISSkim", &nDISSkimFail, "FailedDISSkim/L");
+    summary.Branch("FailedDiphotonMassSkim", &nDiphotonMassSkimFail,
+                   "FailedDiphotonMassSkim/L");
+    bool diphotonMassSkimEnabled = cfg.diphotonMassSkim.enabled;
+    double diphotonMassSkimMinGeV = cfg.diphotonMassSkim.minGeV;
+    double diphotonMassSkimMaxGeV = cfg.diphotonMassSkim.maxGeV;
+    summary.Branch("DiphotonMassSkimEnabled", &diphotonMassSkimEnabled,
+                   "DiphotonMassSkimEnabled/O");
+    summary.Branch("DiphotonMassSkimMinGeV", &diphotonMassSkimMinGeV,
+                   "DiphotonMassSkimMinGeV/D");
+    summary.Branch("DiphotonMassSkimMaxGeV", &diphotonMassSkimMaxGeV,
+                   "DiphotonMassSkimMaxGeV/D");
     summary.Branch("WrittenEvents", &nWritten, "WrittenEvents/L");
     summary.Branch("OutputRows", &nOutputRows, "OutputRows/L");
     summary.Branch("PidFilteredRows", &nSkippedOutputPid, "PidFilteredRows/L");
@@ -989,6 +1160,8 @@ int main(int argc, char** argv) {
 
     TParameter<double> chargeMetadata("AccumulatedCharge", accumulatedCharge);
     chargeMetadata.Write();
+    TParameter<int> torusMetadata("TorusPolarity", cfg.torus);
+    torusMetadata.Write();
 
     outFile->Write();
     outFile->Close();

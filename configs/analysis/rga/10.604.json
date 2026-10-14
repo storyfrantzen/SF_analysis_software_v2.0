@@ -9,7 +9,32 @@
   "phase_space": {
     "Q2_min": 1.0,
     "W_min": 2.0,
-    "y_max": 0.8
+    "electron_p_min": 2.0
+  },
+  "exclusivity": {
+    "global_cuts": true,
+    "n_sigma": 3.0,
+    "minimum_events": 50,
+    "fit_window_sigma": 5.0,
+    "fit_max_iterations": 100,
+    "fit_convergence": 1e-5,
+    "fit_histogram_bins": 160,
+    "minimum_signal_fraction": 0.1,
+    "minimum_peak_significance": 3.0,
+    "maximum_local_sigma_ratio": 2.0,
+    "maximum_local_center_shift_sigma": 2.5,
+    "continuous_refinement": true,
+    "nminus1_audit": {
+      "boundary_relative_tolerance": 0.02
+    },
+    "variables": {
+      "rec_m_gg": {"containment": 0.9973002039367398, "cut_component": "core"},
+      "rec_pT_miss": {"containment": 0.9973002039367398, "cut_component": "signal"},
+      "rec_m2_epX": {"containment": 0.9973002039367398, "cut_component": "core"},
+      "rec_m_eggX": {"containment": 0.9973002039367398, "cut_component": "signal"},
+      "rec_E_miss": {"containment": 0.9973002039367398, "cut_component": "core"},
+      "rec_m2_miss": {"containment": 0.9973002039367398, "cut_component": "core"}
+    }
   },
   "binning": {
     "Q2": [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.6, 5.5, 7.0, 10.5],

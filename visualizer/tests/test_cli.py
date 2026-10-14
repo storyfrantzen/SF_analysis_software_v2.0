@@ -477,8 +477,9 @@ class VisualizerCliTests(unittest.TestCase):
             [sys.executable, "-m", "visualizer"], "weighted.html"
         )
         script = html.rsplit("<script>", 1)[1].split("</script>", 1)[0]
-        self.assertTrue(script.rstrip().endswith("init();"))
-        script = script.rsplit("init();", 1)[0]
+        startup_marker = "\nstartVisualizer().catch(error => {"
+        self.assertIn(startup_marker, script)
+        script = script.rsplit(startup_marker, 1)[0]
         script += """
 const testXs = [0, 1, 2, 3, 4, 5];
 const testYs = [10, 12, 15, 20, 30, 60];

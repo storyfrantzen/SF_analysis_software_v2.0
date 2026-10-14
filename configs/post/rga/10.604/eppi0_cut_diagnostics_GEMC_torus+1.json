@@ -1,0 +1,9 @@
+{
+    "extends": "eppi0_cut_diagnostics_torus+1.json",
+    "outputFile": "10.604_rga_fa18_torus+1_eppi0_GEMC_cut_diagnostics.root",
+    "samplingFraction": {
+        "sigma": {
+            "paramsFile": "../../../../parameters/sampling_fraction/SF_sigma_cut_params_10.604RGA_FA18_torus+1_GEMC.json"
+        }
+    }
+}

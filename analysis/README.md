@@ -5,6 +5,94 @@ This directory is the maintained replacement for the legacy
 from ROOT I/O so response construction, unfolding, and normalization can be
 unit-tested with ordinary NumPy arrays.
 
+## Final selected-event kinematics
+
+`plot_event_kinematics.py` writes one canonical multipage PDF for a completed
+data selection.  It reads the post-processed `sEvents` tree, applies the final
+exclusivity mask, and repeats the DIS, reconstructed-particle, exclusivity, and
+two-dimensional correlation pages for the topology-integrated sample and every
+retained reconstructed topology.  Topology-overlay pages make shape differences
+visible without allowing the largest group to set the normalization.  A JSON
+sidecar records the source paths, input sizes, mask and configuration hashes,
+topology populations, plotted branches, angle conventions, and page count.
+Plot panels are balanced across fixed-size landscape pages instead of restarting
+a mostly empty page at every subsection boundary. Each one-dimensional panel is
+tagged by its section, and detector occupancies use a larger two-by-two layout
+so square and rectangular detector coordinates remain legible and comparable.
+
+Candidate files produced by the current `post_process` retain selected-role
+detector coordinates. The report uses them for logarithmic occupancy maps of
+PCAL, ECIN, ECOUT, all three DC regions, FTCAL, and the CVT layer-1 direction.
+FD photon maps combine both selected photons; every occupancy page is repeated
+for the topology-integrated sample and each populated reconstructed topology.
+
+```bash
+python3 analysis/plot_event_kinematics.py selected_data.root \
+  --selection-mask data_selected_exclusivity.npy \
+  --config configs/analysis/rga/10.604.json \
+  --label "RGA Fall 2018 torus+1, final exclusive data" \
+  --output results/event_kinematics.pdf
+```
+
+The selected ROOT file is not hashed by default because campaign files can be
+large; use `--hash-inputs` when a full content hash is required.  The final
+selection mask and analysis configuration are always hashed.
+
+For GEMC, the same plotting command can add generated/reconstructed diagnostic
+pages when given the generated-left event sample produced by
+`build_event_sample.py`:
+
+```bash
+python3 analysis/build_event_sample.py \
+  converter_gemc.root selected_gemc.root results/gemc_events.npz \
+  --beam-energy 10.604
+
+python3 analysis/plot_event_kinematics.py selected_gemc.root \
+  --config configs/analysis/rga/10.604.json \
+  --label "RGA Fall 2018 inbending GEMC" \
+  --output results/gemc_event_kinematics.pdf \
+  --gemc-event-sample results/gemc_events.npz \
+  --gemc-output-dir results/gemc_generated_reconstructed
+```
+
+The supplementary directory contains standalone generated and reconstructed
+kinematics, a unit-normalized shape comparison, selection efficiency versus
+generated coordinates, and a three-distribution overlay modeled on the GEMC
+production diagnostic.  In that overlay, `rec` is the selected reconstructed
+candidate, `gen, same events` is generator truth for those same events, and
+`gen, all scaled` is the complete finite generated distribution scaled to the
+same-event generated integral.  The complete denominator comes from `gEvents`,
+which `hipo2root` fills before reconstructed QA, topology, or DIS decisions.
+The event-sample `rec_selected` definition comes from the selected ROOT file
+used to build it; a separate `--selection-mask` supplied only to the plotting
+command does not alter that generated-left join.
+
+The standalone `analysis/plot_gen_rec_kinematics.py` command remains available
+for regenerating only these GEMC PNGs from an existing event-sample NPZ.  It
+reads the beam energy from NPZ metadata by default, or accepts an explicit
+`--beam-energy` override.
+
+`compare_event_kinematics.py` applies the final data and GEMC masks separately,
+then compares their unit-normalized reconstructed-candidate shapes.  Every 1D
+panel contains a data/GEMC ratio, Jensen-Shannon divergence, and total-variation
+distance.  The 2D pages show data and GEMC density maps beside their density
+ratio.  The report repeats these comparisons for the integrated sample and each
+reconstructed topology and writes the numerical metrics to CSV.
+
+```bash
+python3 analysis/compare_event_kinematics.py selected_data.root selected_gemc.root \
+  --data-mask data_exclusivity.npy --gemc-mask gemc_selected_exclusivity.npy \
+  --config configs/analysis/rga/10.604.json \
+  --label "RGA Fall 2018 torus+1: data vs GEMC" \
+  --output results/data_vs_gemc_event_kinematics.pdf
+```
+
+This diagnostic does not reweight GEMC to the data's `Q2`, `xB`, `-t`, and phi
+population.  Differences in those coordinates can therefore contain generator
+model effects as well as detector and reconstruction mismodeling.  The data
+histograms contain final signal-region candidates; this shape diagnostic does
+not perform sideband subtraction.
+
 ## Event-sample contract
 
 An acceptance sample must contain one row per generated event, including events
@@ -15,7 +103,7 @@ with no accepted reconstructed candidate.  Each row needs:
 - reconstructed values for the same coordinates, or `NaN` when no candidate is
   reconstructed;
 - a reconstructed-selection flag;
-- the reconstructed proton topology;
+- the reconstructed proton detector and selected-photon FT multiplicity;
 - the generated-event weight, defaulting to one.
 
 Reconstructed DIS and final-state cuts may be applied to
@@ -46,17 +134,132 @@ mass.
   and reduced cross sections;
 - `eppi0.bin_centering`: physical-bin AAO model averaging and bin-centering
   corrections;
-- `eppi0.exclusivity`: topology-aware sequential data/GEMC windows;
+- `eppi0.exclusivity`: deterministic topology-aware data/GEMC windows with a
+  non-mutating N-1 stability audit;
 - `eppi0.event_sample`: radiative/non-radiative GEN construction and REC joins;
 - `eppi0.data_efficiency`: run-charge joins, current grouping, and zero-current fits;
-- `eppi0.harmonics`: weighted `A + B cos(phi) + C cos(2 phi)` fits.
+- `eppi0.harmonics`: weighted `A + B cos(phi) + C cos(2 phi)` fits;
+- `eppi0.structure_functions`: covariance-aware conversion of harmonics to
+  `sigma_U`, `sigma_LT`, and `sigma_TT`;
+- `eppi0.model_comparison`: AAO or tabulated-model interpolation and
+  extraction-equivalent physical-bin averaging;
+- `eppi0.campaign_diagnostics`: reproducible numerical end-of-campaign Markdown
+  audits spanning normalization, validity, response support, and harmonic quality.
+
+## Independent response and unfolding closure
+
+`validate_response_closure.py` performs a source-aware K-fold closure directly
+from the converter `gEvents` tree and the final selected GEMC tree.  The fold is
+a deterministic hash of `(sourceFileId, sourceEventIndex)`, so an event cannot
+enter both the response-training sample and the held-out pseudo-data in the same
+test.  For every fold, the command rebuilds the response from the other folds,
+unfolds the held-out reconstruction, and compares it with the known held-out
+truth.
+
+The default scan includes the nominal generated population and four positive
+truth reweightings that stress Q2, xB, -t, and phi.  It evaluates zero-iteration
+bin-by-bin correction and an iterative-Bayes scan, and records:
+
+- held-out truth bias, normalized MSE, pull mean, pull width, and coverage;
+- reconstructed-level refolding pulls and chi2 per degree of freedom;
+- closure of the fitted `A + B cos(phi) + C cos(2 phi)` harmonics;
+- a diagnostic iteration recommendation defined as the minimum median held-out
+  normalized MSE across folds and truth stresses.
+
+Run the topology-integrated closure first:
+
+```bash
+python3 analysis/validate_response_closure.py \
+  /path/to/converter_gemc.root /path/to/selected_gemc.root \
+  --selection-mask /path/to/gemc_selected_exclusivity.npy \
+  --config configs/analysis/rga/10.604.json \
+  --dictionary build/libEvent.so \
+  --folds 5 --iterations 0 1 2 4 8 12 25 \
+  --bootstrap 300 \
+  --response-uncertainty count-bootstrap \
+  --output-dir results/closure/integrated
+```
+
+`count-bootstrap` is the coverage-grade mode for unweighted GEMC. Each replica
+Poisson-resamples the saved integer migration, missed-event, and feed-in counts
+and rebuilds the response. It is paired with two independent data replicas.
+The observed-centered replica estimates the covariance of the central held-out
+closure result. The forward-generated replica is drawn from the nominal response
+applied to the fixed held-out truth target. Both recompute the data-derived prior
+and unfold, including nonlinear interactions between data and finite-response
+statistics. At least `2 * (Nphi + 3)` replicas are required; 300 or more are
+recommended for the campaign audit.
+
+The forward-generated ensemble is split into disjoint calibration and evaluation
+halves for the fixed-truth pseudoexperiment audit. The calibration half estimates
+the phi covariance and the evaluation half tests bin and harmonic pulls against
+the fixed truth target. It is deliberately not centered on the observed held-out
+reconstructed histogram: doing that would add the held-out sample's original
+counting fluctuation to the newly generated pseudoexperiment fluctuation and
+inflate pull widths by approximately `sqrt(2)`. The disjoint halves also avoid
+judging a covariance with the replicas used to estimate it.
+
+Phi covariance blocks are assembled only after converting the legacy flat
+`(xB, Q2, phi, -t)` ordering, where `-t` changes fastest, into analysis
+`(Q2, xB, -t, phi)` order. This conversion is also used by production
+unfolding and cross-section normalization, so closure and production attach
+each covariance block to the same physical phi distribution.
+
+`fold-jackknife` remains available as a fast comparison: with five folds it
+holds one fold out as pseudo-data and deletes each of the four response-training
+folds in turn. Its response covariance has at most rank three and is not the
+preferred harmonic-coverage estimate. `analytic-diagonal` retains the fastest
+legacy response-MC approximation.
+
+To repeat only the numerical scan with different covariance settings, reuse the
+fold-local sufficient statistics from the first run:
+
+```bash
+python3 analysis/validate_response_closure.py \
+  --split-input-dir results/closure/integrated \
+  --config configs/analysis/rga/10.604.json \
+  --folds 5 --iterations 0 1 2 4 8 12 25 \
+  --bootstrap 300 \
+  --response-uncertainty count-bootstrap \
+  --output-dir results/closure/integrated_count_bootstrap
+```
+
+This resume form does not require ROOT or rescan generated events.  Its summary
+records the source directory and checksum of the reused split-input artifact.
+
+Use repeated `--topology-group` options to restrict the reconstructed numerator
+while retaining the full generated denominator.  For example, an RGA pCD FD/FT
+closure uses `--topology-group 9`.  Separate runs for IDs 4, 8, 9, and 10 test
+the topology components whose accepted counts sum to the integrated response.
+
+The command writes `closure_summary.json`, `closure_metrics.csv`,
+`harmonic_cell_metrics.csv`, `closure_results.npz`, and
+`closure_diagnostics.pdf`. Count-bootstrap runs additionally write
+`fixed_truth_metrics.csv` and `fixed_truth_harmonic_cell_metrics.csv`. The two
+cell tables identify the `(Q2,xB,-t)` regions that dominate coefficient bias or
+undercoverage. The utility also preserves fold-local truth, reconstruction,
+feed-in, and sparse migration counts so the exact split can be audited.
+
+The summary reports the minimum-MSE iteration separately from an explicit
+coverage gate. For count-bootstrap runs, the gate uses the independent
+fixed-truth evaluation replicas. It checks median bin-level pull mean, pull
+width, one- and two-sigma coverage, plus the means and widths of the recovered
+A, B, and C harmonic pulls. A minimum-MSE iteration with
+`coverage_certified: false` must not be promoted to the nominal extraction.
+
+The summary explicitly limits the conclusion to
+response, feed-in, unfolding, refolding, and harmonic recovery.  This test does
+not validate data sideband subtraction, current-efficiency corrections,
+radiative or bin-centering corrections, luminosity, helicity handling, or
+data/GEMC detector mismodeling.
 
 ## Dependencies
 
 - Python 3.10 or newer;
 - NumPy and SciPy for the numerical pipeline;
 - Matplotlib for diagnostic PDF output;
-- PyROOT for `build_event_sample.py` and `export_selected_data.py`;
+- PyROOT for `build_event_sample.py`, `export_selected_data.py`, and
+  `export_selected_particle_matches.py`;
 - the project ROOT dictionary when object branches are not already discoverable.
 
 Run the dependency-light tests from the repository root:
@@ -129,6 +332,11 @@ python3 analysis/run_analysis.py radiative-correction born_lund/ rad_lund/ \
 python3 analysis/run_analysis.py unfold data_events.npz \
   results/response/response_matrix.npz results/response/response_meta.npz \
   --config configs/analysis/rgk/6.535.json --output results/unfolding.npz \
+  --iterations 1 --bootstrap 300 \
+  --response-uncertainty count-bootstrap \
+  --background-cuts results/data_exclusivity.npz \
+  --current-efficiency-correction \
+    results/data_efficiency/rgk_6.535/current_efficiency_correction.json \
   --radiative-correction results/C_rad.npz
 
 python3 analysis/run_analysis.py bin-centering \
@@ -141,7 +349,145 @@ python3 analysis/run_analysis.py cross-section results/unfolding.npz \
 
 python3 analysis/run_analysis.py fit-harmonics results/cross_section.npz \
   --output results/harmonics.npz
+
+python3 analysis/run_analysis.py campaign-diagnostics \
+  results/unfolding.npz results/cross_section.npz results/harmonics.npz \
+  --response-meta results/response/response_meta.npz \
+  --title "RGK 6.535 GeV nominal campaign" \
+  --output results/campaign_diagnostics.md
 ```
+
+`campaign-diagnostics` is the standard numerical campaign handoff.  It records
+absolute input paths, sizes, SHA-256 checksums, the software revision, and the
+exact invocation.  Its Markdown tables summarize charge and luminosity,
+current-efficiency and background corrections, independent and sequential 4D
+validity-mask attrition, final phi coverage, cross-section and uncertainty
+quantiles, harmonic-fit rejection flags, and an analyst sign-off checklist.
+Supplying `--response-meta` additionally partitions physical bins that fail the
+acceptance requirement by generated-event support and reports the relative
+multinomial response-probability uncertainty.  The automated triage is explicitly
+diagnostic: it identifies where losses occur but does not select a binning or
+declare a physics result valid.
+
+For a two-campaign comparison, construct paired cross-section artifacts whose
+`final_validity_mask` is the exact intersection of both campaigns in matching
+four-dimensional bins:
+
+```bash
+python3 analysis/make_common_validity_cross_sections.py \
+  results/rgk/cross_section.npz results/rga/cross_section.npz \
+  --left-output results/comparison/rgk_common.npz \
+  --right-output results/comparison/rga_common.npz
+```
+
+The command matches Q2 bins by their complete lower and upper edges, requires
+identical xB, -t, and phi edges, records both source paths and checksums, and
+sets bins outside the intersection to `NaN`. Run `fit-harmonics` and
+`structure-functions` on the paired outputs to prevent different phi coverage
+from masquerading as a campaign-dependent harmonic difference. Original
+cross-section artifacts are not modified.
+
+The cross-section artifact carries an explicit four-dimensional
+`final_validity_mask`.  It is the intersection of acceptance above the configured
+minimum, radiative reliability, bin-centering reliability, finite nonnegative
+corrected yield, finite positive propagated uncertainty, and positive physical
+volume and virtual-photon flux.  Invalid cross-section values and uncertainties
+are stored as `NaN`, and the component masks are retained separately so every
+rejection can be audited.  The harmonic stage consumes this mask directly.
+
+Positive-iteration unfolding retains covariance among phi bins inside every
+`(Q2, xB, -t)` cell. Every measured-spectrum replica reruns the full
+data-dependent estimator: it fluctuates the measured spectrum and rebuilds the
+acceptance-corrected IBU prior from that fluctuation. Keeping this prior fixed
+would omit a first-order statistical contribution at early iterations.
+
+Use `--response-uncertainty count-bootstrap` after closure certification. It
+also Poisson-resamples integer migration, missed-event, and feed-in counts,
+rebuilds the response for every replica, and stores the covariance of the joint
+data-and-response estimator as `total_covariance_phi`. The response NPZ must
+represent unweighted integer GEMC counts. `statistical_covariance_phi` remains a
+measured-spectrum-only diagnostic; `response_covariance_phi` is the residual
+joint-minus-statistical diagnostic and is not used separately downstream.
+The legacy `analytic-diagonal` mode instead adds its response-MC approximation
+on the block diagonal. In both modes, radiative-factor variances are added after
+unfolding, and `cross-section` propagates the blocks through luminosity, flux,
+bin volume, bin centering, and global normalization factors. The compact
+`covariance_phi` array therefore has shape `(NQ2, NxB, Nt, Nphi, Nphi)`;
+covariance between different three-dimensional cells is intentionally not
+stored. Its diagonal agrees with `uncertainty**2`.
+
+Theory prediction, structure-function export, and model-overlay commands are
+documented in [`docs/model_comparison.md`](../docs/model_comparison.md).
+
+`fit-harmonics` uses generalized least squares when the cross-section artifact
+contains `covariance_phi`, and otherwise records that it used the legacy diagonal
+`uncertainty` approximation. For bootstrap-estimated covariance it applies and
+records the finite-sample Hartlap precision correction `(N-p-2)/(N-1)`, where
+`p` is the number of valid phi points in the fit. It retains every numerically
+solvable raw fit, but only sets
+`quality_mask` for fits that satisfy the production guards.  Defaults require at
+least 12 valid phi bins, `chi2/ndf <= 3`, covariance condition number `<= 1e4`,
+`sigma_A/abs(A) <= 0.5`, a positive-definite finite covariance matrix, and a
+nonnegative `A + B cos(phi) + C cos(2 phi)` curve over the complete phi range.
+The last condition is evaluated analytically, not on a plotting grid.  Override
+individual thresholds with `--minimum-points`, `--maximum-chi2-ndf`,
+`--maximum-covariance-condition`, and
+`--maximum-relative-a-uncertainty`; use `--allow-negative-fits` only for an
+explicit diagnostic variation.  The artifact records raw parameters, covariance,
+parameter uncertainties, condition number, exact fitted minimum, a bit-coded
+rejection status, and the accepted quality mask.  Plot commands use
+`quality_mask` by default; `--include-quality-rejected` exposes the raw rejected
+fits for auditing.  `harmonic-plots` also writes
+`harmonic_fit_quality_summary.csv` with the decoded rejection reasons.
+
+`unfold --background-cuts` performs the nonpeaking-background subtraction at
+the reconstructed-yield stage, before feed-in subtraction and D'Agostini
+unfolding.  For each retained proton/photon topology it refits
+`rec_m_gg` in the final N-1 sample (all other exclusivity cuts applied), uses
+the nominal `rec_m_gg` window as the signal region, and uses the remainder of
+the fitted domain as sidebands.  The fitted linear-background shape determines
+the topology-specific transfer factor
+
+```text
+alpha = fitted background in signal window / fitted background in sidebands,
+N_background(bin, topology) = alpha(topology) * N_sideband(bin, topology).
+```
+
+Current-efficiency event weights, when requested, are applied to both regions.
+The saved variance contains signal-region counting variance, transferred
+sideband counting variance, and the diagonal contribution from the bootstrapped
+transfer-factor uncertainty.  The unfolding NPZ keeps the raw signal-region,
+sideband, estimated-background, and subtracted spectra together with every fit
+window and transfer factor.  The cross-section and harmonic artifacts carry the
+background-subtraction provenance fields downstream.
+
+The sideband and cut table must come from the same compact data sample.  If
+`--selection-mask` is also supplied, `unfold` verifies that it exactly matches
+the signal region reconstructed from `--background-cuts`; otherwise it stops.
+The first implementation deliberately accepts only the default pooled
+global-by-topology cut tables; local kinematic cut tables would conflate a
+changing signal definition with the background-shape estimate.
+Literal bin-by-bin subtraction can fluctuate below zero in sparse bins.
+The default `--background-negative-policy error` stops if this occurs in a
+reconstructed bin connected by the response matrix to any truth bin above the
+configured acceptance threshold. After inspecting the recorded spectra,
+`--background-negative-policy clip` explicitly permits nonnegative clipping
+and records the number and total deficit of clipped bins. It is never silent.
+Change the transfer-factor uncertainty sampling with
+`--background-alpha-bootstrap`; zero disables that uncertainty component.
+
+The unfolding artifact preserves both bin-by-bin acceptance diagnostics around
+the response feed-in subtraction. `acceptance_corrected` remains the legacy
+alias of `acceptance_corrected_raw = measured / efficiency`, while
+`acceptance_corrected_feed_in_subtracted` divides the stored
+`feed_in_corrected_measured` spectrum by the same efficiency. With
+`--iterations 0`, `unfolded` deliberately remains the raw legacy diagnostic and
+the artifact records `unfolding_method = bin_by_bin_efficiency`,
+`unfolding_input_definition = measured_without_feed_in_subtraction`, and
+`feed_in_subtraction_applied_to_unfolded = false`. Positive iteration counts use
+the feed-in-subtracted spectrum and record the corresponding iterative-Bayes
+provenance. The feed-in-subtracted bin-by-bin array is a central-value diagnostic;
+no separate covariance for that diagnostic is currently stored.
 
 For production MC response building, avoid serializing one dense row per
 generated event. Build the sparse response directly from the converter and
@@ -149,7 +495,7 @@ selected ROOT files:
 
 ```bash
 python3 analysis/run_analysis.py response-root \
-  6.535_rgk_eppi0_mc_acceptance.root selected_mc.root \
+  6.535_rgk_eppi0_GEMC.root selected_mc.root \
   --config configs/analysis/rgk/6.535.json --output-dir results/response \
   --dictionary build/libROOTBranchesDict.dylib
 ```
@@ -157,6 +503,11 @@ python3 analysis/run_analysis.py response-root \
 This command histograms the `gEvents` denominator in chunks, joins only
 selected REC candidates by `(sourceFileId, sourceEventIndex)`, and writes the
 same `response_matrix.npz` and `response_meta.npz` consumed by `unfold`.
+When the selected tree contains `pDet`, `g1Det`, and `g2Det`, `response-root`
+also stores weighted reconstructed counts by detector topology and REC bin.
+Those counts use the same selection mask, generated-event weights, reconstructed
+bin assignment, and generated-event match as `reconstructed_total`; their sum
+is checked against that numerator before the response is written.
 `build_event_sample.py` remains useful for compact debug samples and for
 backward compatibility with older particle-level matched files. New files join
 on `(sourceFileId, sourceEventIndex)`, because GEMC files can all have run 11
@@ -167,15 +518,19 @@ provide a `RunCharge` tree; the exporter preserves its run numbers, charges,
 and QADB event counters as `beam_charge_run`, `beam_charge_by_run_c`,
 `run_total_events`, `run_passed_qadb_events`, and
 `run_failed_qadb_events`. This permits charge-normalized run filtering without
-splitting the original HIPO production by run.
+splitting the original HIPO production by run. The artifact also records the
+selected electron, proton, and two photon detector IDs and the derived
+`rec_ft_photon_count`, whose values 0, 1, and 2 are independent of photon
+ordering.
 
 ## Data current-efficiency study
 
 `study_data_efficiency.py` joins the selected-event run numbers to the QADB
-charge arrays and `configs/efficiency/rgk/6.535/run_currents.json`. It writes a
-complete per-run audit table, charge-aggregated current-group yields, a linear
-zero-current fit, and a two-page diagnostic PDF. Its conservative default fit
-uses only unflagged P3 and P4 runs:
+charge arrays and a run-current manifest. The manifest's `dataset.run_group`
+labels the outputs, so the same command reports RGA or RGK without a hard-coded
+campaign name. It writes a complete per-run audit table, charge-aggregated
+current-group yields, a linear zero-current fit, and a multipage diagnostic PDF.
+Its conservative RGK default fit uses only unflagged P3 and P4 runs:
 
 ```bash
 python3 analysis/study_data_efficiency.py \
@@ -196,6 +551,63 @@ python3 analysis/study_data_efficiency.py \
   --output-dir results/data_efficiency/rgk_6.535_fixed_selection
 ```
 
+As a systematic check, replace the integer selected count by the same
+topology-dependent sideband subtraction used upstream of unfolding:
+
+```bash
+python3 analysis/study_data_efficiency.py \
+  results/data/rgk_6.535_data_events.npz \
+  --background-cuts results/cuts/data_exclusivity.npz \
+  --selection-mask results/data_exclusivity.npy \
+  --include-classes L4 L5 P3 P4 \
+  --output-dir results/data_efficiency/rgk_6.535_sideband_systematic
+```
+
+`--background-cuts` performs one common global-by-topology N-1
+`m_gg` fit, uses each fitted linear-background transfer factor `alpha_g`, and
+forms the run yield
+
+`N_r = N_signal,r - sum_g alpha_g N_sideband,r,g`.
+
+The optional selection mask becomes a consistency assertion: the command stops
+if it differs from the signal window reconstructed from the supplied cut table.
+Counting uncertainties use `N_signal + sum_g alpha_g^2 N_sideband,g`. The
+bootstrap uncertainty of each common `alpha_g` is recorded in
+`fit_summary.json` as a correlated systematic and is deliberately not treated
+as an independent statistical error for every run or run class.
+
+To diagnose the current dependence of one reconstructed proton/photon topology,
+add a repeatable `--topology-group` selector to the same background-subtracted
+command:
+
+```bash
+python3 analysis/study_data_efficiency.py \
+  results/data/rgk_6.535_data_events.npz \
+  --background-cuts results/cuts/data_exclusivity.npz \
+  --selection-mask results/data_exclusivity.npy \
+  --topology-group 8 \
+  --include-classes L4 L5 P3 P4 \
+  --output-dir results/data_efficiency/rgk_6.535_pCD_fdfd
+```
+
+The topology IDs are `4=pFD_fdfd`, `5=pFD_fdft`, `6=pFD_ftft`,
+`8=pCD_fdfd`, `9=pCD_fdft`, and `10=pCD_ftft`. Repeating the option combines
+the requested groups. The command first performs the same common
+global-by-topology mass fits as the integrated study, then retains the selected
+groups in both the signal-window and sideband contributions. This makes the
+topology slopes directly comparable to the integrated result without refitting
+the sideband transfer factors on smaller samples.
+
+When GEMC inputs are supplied, topology-group mode performs the complete
+double-slope study. It reads `reconstructed_topology_ids` and
+`accepted_topology_counts` from each response metadata file, keeps the common
+generated truth denominator, and forms the truth-matched, feed-in-excluded
+accepted numerator from the requested reconstructed topology groups. The
+resulting `current_efficiency_correction.json` is scoped to those groups. Its
+scalar event weights must not be applied to the topology-integrated physics
+sample; use it for the topology comparison or for a sample explicitly
+restricted to the same reconstructed topology.
+
 Include L5 only after confirming that its physics trigger and prescale are
 compatible with P3/P4. L4 trigger tests, mixed/random-trigger L6 runs, the E2
 empty-target run, and half-torus T runs are excluded unless explicitly admitted
@@ -208,20 +620,195 @@ ratio. Its effective current is charge weighted. The default fit therefore uses
 `N_k = sum_r N_r`, `Q_k = sum_r Q_r`,
 `I_k = sum_r(Q_r I_r) / Q_k`, and `Y_k = N_k / Q_k`.
 
+When compatible running periods have different overall yield normalizations,
+fit separate intercepts without forcing separate current-loss laws by repeating
+`--shared-slope-period`:
+
+```bash
+python3 analysis/study_data_efficiency.py data_events.npz \
+  --manifest run_currents.json \
+  --include-classes E_LOW E_PROD L_LOW L_PROD \
+  --shared-slope-period early=E_LOW,E_PROD \
+  --shared-slope-period late=L_LOW,L_PROD \
+  --output-dir results/data_efficiency/shared_slope
+```
+
+This performs one joint fit,
+`Y_p(I) = A_p (1 + beta I)`: every named period gets its own zero-current
+normalization `A_p`, while all periods constrain the same fractional slope
+`beta`. Every included class must appear in exactly one mapping. The complete
+joint covariance is saved in `fit_summary.json` and in the correction
+provenance; downstream relative efficiency uses `eta_data(I)=1+beta I`, for
+which the nuisance normalizations cancel.
+
 The output directory contains:
 
 - `run_yields.csv`: every charge-bearing run, its counts, charge, current
-  metadata, inclusion decision, and exclusion reason;
+  metadata, signal-region and sideband counts, estimated background, net signal,
+  inclusion decision, and exclusion reason;
 - `current_group_yields.csv`: charge-aggregated fit points and their relative
   efficiencies;
 - `fit_summary.json`: inputs, filters, charge validation, fit covariance,
-  warnings, and zero-current result;
+  warnings, zero-current result, and the selected GEMC reference response;
+- `current_efficiency_correction.json` (when GEMC inputs are supplied): the
+  fitted data and GEMC models, `D(I)`, reference-response fingerprint, all
+  usable run currents, nominal per-run unfolding weights, downstream selection,
+  and the resulting analysis beam charge;
 - `data_efficiency_diagnostics.pdf`: current-dependence, fit pulls, and
-  included-run stability plots.
+  included-run stability plots. With GEMC inputs, the lower panel of the first
+  page is `D(I) = eta_data(I) / eta_MC(I)`. The upper panel displays
+  unit-normalized data and GEMC efficiencies, their slopes, and the propagated
+  data-fit uncertainty; the ratio panel intentionally has no uncertainty band.
+  Its automatic vertical ranges retain run-level outliers, while its compact
+  panels and fitted-domain current range avoid unnecessary page space. Excluded
+  runs remain visible on the current plot as crosses colored and labeled by their
+  manifest run class. The run-stability page uses a compact charge panel and
+  draws each charge-weighted run-group yield across the full run range as a
+  matching dotted line.
 
 Use `--fit-level runs` only as a diagnostic. The nominal group-level fit avoids
 treating the many runs within one production setting as independent current
 settings.
+
+By default, an otherwise eligible run is rejected when its charge-normalized
+yield lies more than five statistical standard deviations below the
+leave-one-out mean of its run-class group. The pull combines the run's counting
+uncertainty with the uncertainty of that independently calculated group mean.
+The lowest failing run is removed and the audit repeats, which prevents a bad
+run from diluting its own discrepancy. These runs are recorded in
+`run_yields.csv` with `below_group_mean_yield_threshold`; when a GEMC correction
+artifact is produced, they also receive zero downstream event weight and their
+charge is removed from the analysis luminosity. Use
+`--low-yield-sigma-threshold 0` only to disable this safeguard for a systematic
+check.
+
+To prevent a negligible-charge run from moving the effective current of a
+run-class group, set a minimum within-group QADB-charge contribution:
+
+```bash
+python3 analysis/study_data_efficiency.py data_events.npz \
+  --selection-mask results/data_exclusivity.npy \
+  --include-classes L4 L5 P4 P3 \
+  --minimum-group-charge-fraction 0.01 \
+  --output-dir results/data_efficiency/rgk_6.535_charge_filtered
+```
+
+Here `0.01` means one percent, not one percent per run. The fraction is
+calculated once within each run class after current-quality and explicit-run
+filters. Rejected runs remain in `run_yields.csv` with
+`below_minimum_group_charge_fraction`, and their calculated fraction remains
+available in `group_charge_fraction`. The procedure is intentionally not
+iterative, so the denominator and rejected set do not depend on removal order.
+
+An optional GEMC manifest adds accepted/generated efficiencies, a linear
+current fit, and an overlay on the first diagnostics page. Each response must
+have been built with the same analysis binning and the same fixed numerical MC
+exclusivity definition:
+
+```json
+{
+  "schema_version": 1,
+  "samples": [
+    {
+      "label": "no_background",
+      "current_nA": 0.0,
+      "response_meta": "/path/to/no_background/response_meta.npz"
+    },
+    {
+      "label": "merged_60nA",
+      "current_nA": 60.0,
+      "response_meta": "/path/to/merged_60nA/response_meta.npz"
+    }
+  ]
+}
+```
+
+Pass it with `--gemc-manifest /path/to/gemc_efficiency_manifest.json`. If there
+is exactly one positive-current GEMC point, that point is inferred to be the
+reference response used downstream. Otherwise select the actual response with
+`--reference-current-na`. For example:
+
+```bash
+python3 analysis/study_data_efficiency.py data_events.npz \
+  --selection-mask results/data_exclusivity.npy \
+  --include-classes L4 L5 P4 P3 \
+  --gemc-manifest /path/to/gemc_efficiency_manifest.json \
+  --reference-current-na 60 \
+  --exclude-class-downstream T \
+  --exclude-class-downstream E2 \
+  --output-dir results/data_efficiency/rgk_6.535
+```
+
+For every GEMC sample, the native numerator is
+`sum_i(truth_total_i * efficiency_i)`, which counts selected events generated
+and reconstructed inside the analysis phase space without including feed-in.
+Before fitting the current dependence, all samples are standardized to the
+lowest-current sample's generated-truth distribution over bins supported by
+every sample. This prevents different generated kinematic mixtures from being
+misidentified as detector-current dependence. Native totals, standardized
+efficiencies, common-support fractions, and the uncertainty model are retained
+in `gemc_efficiency_points.csv` and the correction provenance. Relative data
+and standardized GEMC efficiencies are normalized to their fitted zero-current
+intercepts on the overlay.
+
+The scalar correction consumed by `unfold` is
+
+`w_r = eta_MC(I_ref) / eta_data(I_r)`
+
+for each selected event from run `r`. Equivalently,
+
+`w_r = [eta_data(I_ref) / eta_data(I_r)] / D(I_ref)`.
+
+The weighted reconstructed histogram is unfolded with the response built at
+`I_ref`. Ordinary study filters (`--include-classes`, `--include-run`,
+`--exclude-run`, current quality, and minimum group charge) determine only
+which runs constrain the current fit; they do not remove runs from the physics
+dataset. To remove runs downstream, repeat `--exclude-run-downstream RUN` or
+`--exclude-class-downstream CLASS`. The correction artifact assigns those runs
+zero event weight, and `unfold` removes them before the signal/background
+histograms are built. It also sets the analysis charge to the original
+file-level charge minus the excluded per-run charges, so excluded runs
+contribute neither yield nor luminosity while the no-exclusion case preserves
+the converter's normalization exactly. For example,
+`--exclude-class-downstream T` removes all half-torus runs. This explicit
+distinction prevents a fit-only exclusion from silently changing the physics
+sample.
+
+Every charge-bearing run that remains downstream must have a usable current.
+A run without current metadata must either be repaired in the manifest or
+explicitly excluded downstream; otherwise artifact construction stops. The
+artifact records both original and analysis charge, included/excluded run lists,
+fit inclusion, analysis inclusion, exclusion reasons, and the applied weight
+for every run.
+
+`unfold` verifies the SHA-256 fingerprint of `response_meta.npz` against the
+chosen reference sample before applying any weights. It stores the complete
+correction JSON, the reference current, `D(I_ref)`, weight range, unweighted
+counts, weighted counts, `sum(w^2)`, original/analysis beam charge, and the
+downstream-excluded run list in its output. Weighted bin means and
+bootstrap statistical fluctuations use the same event weights. The fit-model
+uncertainties recorded per run in the JSON are correlated calibration
+uncertainties; they are intentionally preserved for systematic variations and
+are not folded into the statistical `corrected_uncertainty` array.
+
+The same two points can be supplied directly without creating a JSON file:
+
+```bash
+python3 analysis/study_data_efficiency.py data_events.npz \
+  --selection-mask results/data_exclusivity.npy \
+  --gemc-sample no_background 0 /path/to/no_background/response_meta.npz \
+  --gemc-sample merged_60nA 60 /path/to/merged_60nA/response_meta.npz \
+  --output-dir results/data_efficiency/rgk_6.535_data_gemc
+```
+
+Use the same generated events for the no-background and merged samples when
+possible. The tool requires identical response bin edges and warns when the
+truth totals differ. With only the zero-background and one merged-current
+sample, the straight line is the assumed two-point model and cannot test
+curvature. For weighted response metadata, provide
+`statistical_uncertainty` in the corresponding manifest entry when a validated
+uncertainty is available; otherwise the reported binomial uncertainty is only
+an effective-weight approximation.
 
 For interactive cut studies and quick detector/topology comparisons, build a
 standalone histogram browser from either compact NPZ samples or selected ROOT
@@ -344,8 +931,19 @@ with `N_same,i = N(rec i and gen i)`, they are:
 The default phi overlay includes `A_i`, `E_i`, and `epsilon_i`. Add
 `--include-purity` to include `P_i`, whose scale can differ substantially from
 the other three diagnostics. Add `--quilt` to prepend one stitched `Q2`-by-`xB`
-page per `-t` bin to the phi PDF. Quilts share a page-wide y scale by default;
-use `--quilt-scale-mode panel` for independent panel scales.
+page per `-t` bin to the phi PDF. Quilts use independent panel scales by
+default; pass `--quilt-scale-mode global` for one page-wide scale.
+
+For metadata written by the current `response-root`, every phi bin in the quilt
+and detailed pages has a translucent background bar. Its color identifies the
+dominant reconstructed proton/photon topology and its opacity increases with
+that topology's fraction of the response numerator. Pass
+`--topology-display stacked` to replace those backgrounds with a normalized
+stacked strip in every panel. Each strip has one bar per phi bin, and its colored
+segments show all reconstructed topologies in proportion to their contribution
+to that bin's response numerator. `--topology-display none` suppresses either
+annotation. Older response metadata without topology-resolved counts remains
+readable and produces the original unadorned plots.
 
 The full unfolding still uses the migration matrix `R[j,i]`, not any one of
 these scalar diagnostics alone.
@@ -371,7 +969,7 @@ the adapter requires `--beam-energy` to reconstruct those quantities:
 
 ```bash
 python3 analysis/build_event_sample.py \
-  6.535_rgk_eppi0_mc_acceptance.root selected_mc.root mc_events.npz
+  6.535_rgk_eppi0_GEMC.root selected_mc.root mc_events.npz
 ```
 
 For generated-versus-reconstructed visualization of a large production, use
@@ -379,8 +977,8 @@ the reverse join instead of materializing one output row per generated event:
 
 ```bash
 python3 analysis/build_event_sample.py \
-  6.535_rgk_eppi0_mc_acceptance.root \
-  6.535_rgk_eppi0_mc_acceptance_selected.root \
+  6.535_rgk_eppi0_GEMC.root \
+  6.535_rgk_eppi0_GEMC_selected.root \
   samples/rgk_6.535_matched_mc_events.npz \
   --dictionary build/libROOTBranchesDict.so \
   --matched-only --chunk-size 250000 --progress-chunks 4
@@ -394,30 +992,178 @@ generated topology and kinematics. Every output row therefore has
 columns used by the visualizer. This artifact is intended for reconstruction
 diagnostics, not as the generated denominator for response construction.
 
-`derive_exclusivity.py` preserves the legacy sequential variable order and
-global/per-bin modes. The nominal legacy-faithful procedure is to derive
-separate `n`-sigma windows for data and GEMC. GEMC exclusivity peaks are often
-narrower than data, so equal numerical boundaries would not represent equal
-resolution-relative signal regions. Save both cut tables and their retained
-fractions. Applying one common numerical table to both samples remains useful
-as a systematic cross-check, especially for non-Gaussian tails and correlated
-sequential cuts.
+The event-level `gEvents` record does not necessarily contain two labeled
+pi0-decay photons. For detector-resolution studies, export the generated match
+of each particle actually chosen by post-processing instead:
+
+```bash
+python3 analysis/export_selected_particle_matches.py \
+  6.535_rgk_eppi0_GEMC.root \
+  6.535_rgk_eppi0_GEMC_selected.root \
+  samples/rgk_6.535_selected_particle_matches.npz \
+  --dictionary build/libROOTBranchesDict.so \
+  --chunk-size 1000000 --progress-chunks 10
+```
+
+The adapter reads the selected roles from `sParticles`, streams the converter
+`rParticles` tree, and joins on
+`(sourceFileId, sourceEventIndex, particleIdx)`. It writes one row per selected
+role occurrence with reconstructed kinematics, detector and sector, the
+converter's `matchedGenIdx` and `matchAngleDeg`, and the matched generated PID
+and kinematics. Selected rows without a generated match are retained with
+`gen_matched=false`. A JSON summary beside the NPZ reports overall and
+role/detector matching fractions plus median, 95th-percentile, and near-limit
+matching-angle diagnostics. Missing converter rows, duplicate source-aware
+keys, selected/converter identity disagreements, and claimed matches with a
+different generated PID stop the export rather than silently corrupting the
+resolution sample. This particle-level artifact is diagnostic only and is not
+the generated denominator for response construction.
+
+`derive_exclusivity.py` uses a deterministic physics-ordered bootstrap followed
+by a fixed-window N-1 stability audit and preserves the global/per-bin modes.
+Global-by-topology pooling is the default because this exclusive channel is
+generally too sparse for stable fine-bin fits. Pass
+`--per-bin-cuts` to opt into local `(Q2, xB, -t)` groups with same-topology
+fallbacks; the explicit `--global-cuts` spelling remains accepted. The signal
+model follows the geometry of each exclusivity quantity:
+
+- `rec_m_gg`: Gaussian signal with the linear-background slope constrained by
+  sidebands;
+- `rec_pT_miss`: Rice signal, with Rayleigh retained as its nested zero-offset
+  limit;
+- `rec_m2_epX`: narrow Gaussian core plus optional broad Gaussian nuisance tail
+  and a nonnegative linear background;
+- `rec_m_eggX`: Gaussian signal, promoted to a split Gaussian only when the
+  Bayesian information criterion supports the extra asymmetry parameter;
+- `rec_E_miss`: Gaussian core plus an optional positive ex-Gaussian tail; the
+  tail is fitted and audited but does not widen the core-resolution cut; and
+- `rec_m2_miss`: Laplace cusp, promoted to an asymmetric Laplace when supported,
+  with an optional broad Laplace nuisance component that does not widen the
+  narrow-cusp cut.
+
+The `--n-sigma` value supplies the fallback Gaussian-equivalent signal
+probability (for
+example, `3` means 99.73%). Non-Gaussian windows are obtained from their fitted
+signal CDF at that containment. The analysis config can override the
+containment and choose `core` or `signal` independently for each variable under
+`exclusivity.variables`. The nominal RGA and RGK configs explicitly use the
+core for `m_gg`, `m2_epX`, `E_miss`, and `m2_miss`, and the complete physical
+signal for `pT_miss` and `m_eggX`. Broad nuisance components do
+not enlarge their associated narrow-core windows. This prevents percentile
+tails, background-contaminated sigma clipping, or a broad resolution tail from
+defining the core resolution. Local windows are derived separately for
+`(proton detector, number of FT photons, Q2 bin, xB bin, -t bin)`. Global mode
+retains the first two topology components while pooling kinematic bins. Thus
+FD/FD, mixed FT/FD, and FT/FT photon pairs never share resolution windows, and
+the two possible orderings of a mixed pair remain one physical category.
+
+Nominal windows come from one fixed physics-ordered bootstrap (`m_gg`,
+`pT_miss`, `m2_epX`, `m_eggX`, `E_miss`, then `m2_miss`) so that early clean
+peaks suppress combinatorial background before the missing-quantity fits. The
+order is based on variable identity rather than the caller's tuple order. Once
+derived, these six windows are immutable. A single simultaneous N-1 audit then
+refits each quantity after applying the other five nominal cuts and records the
+alternative boundaries, fit population, source, any failure reason, and maximum
+relative boundary displacement. Audit fits never update a cut or remove a
+group. This avoids the two-cycle and multi-cycle oscillations that can occur
+when correlated tails repeatedly change one another's fitting populations. The
+configured audit tolerance is therefore a stability flag, not a convergence or
+acceptance requirement. The cut table also records cumulative cut flow and the
+fixed-window N-1 numerator and denominator for every group and variable.
+
+When a local kinematic group has too few bootstrap-selected events or an
+unstable core, its nominal window falls back to the corresponding bootstrap
+sample pooled over the same proton detector and FT-photon multiplicity. The
+same hierarchy is recorded separately for an N-1 audit proposal. A group is
+retained only if all six nominal variables have finite windows; cuts are never
+silently disabled. The cut NPZ
+records every initially populated group and, for any removed group, the first
+failed variable and exact fit/window rejection reason. It also records fitted
+centers, characteristic scales, fit and fitted-signal entry counts, signal
+fractions, peak significances, selected fit models, named fit parameters,
+signal containment, fit domain, Pearson chi-square, Poisson deviance, BIC and
+next-model delta-BIC, binned observations and fitted components, iteration
+counts, and whether each window was global, local, or topology-pooled. The
+command also prints the median center, scale, bounds,
+signal fraction, significance, and model counts for every variable. Absolute
+expected-center and maximum-width sanity limits reject
+pathological fits rather than allowing an inflated sigma to validate itself.
+In addition, a local window must remain within the configured width ratio and
+center shift of its same-proton-detector/same-FT topology reference. An
+otherwise valid but inconsistent local hump is recorded as a
+`topology_consistency_fallback`, making this hierarchical decision auditable.
+The nominal procedure is to
+derive separate equal-containment windows for data and GEMC. GEMC exclusivity peaks are
+often narrower than data, so equal numerical boundaries would not represent
+equal resolution-relative signal regions. Save both cut tables and their
+retained fractions. Applying one common numerical table to both samples remains
+useful as a systematic cross-check, especially for non-Gaussian tails and
+correlated sequential cuts.
 
 Derive nominal data and GEMC windows independently:
 
 ```bash
 python3 analysis/derive_exclusivity.py data_events.npz \
   --config configs/analysis/rgk/6.535.json \
-  --cuts results/data_exclusivity.npz --mask results/data_exclusivity.npy
+  --cuts results/data_exclusivity.npz --mask results/data_exclusivity.npy \
+  --diagnostics results/data_exclusivity_diagnostics.pdf
 
 python3 analysis/derive_exclusivity.py mc_events.npz \
   --config configs/analysis/rgk/6.535.json \
-  --cuts results/gemc_exclusivity.npz --mask results/gemc_exclusivity.npy
+  --cuts results/gemc_exclusivity.npz --mask results/gemc_exclusivity.npy \
+  --diagnostics results/gemc_exclusivity_diagnostics.pdf
 ```
 
-Pass the GEMC mask to `response --selection-mask` and the data mask to
-`unfold --selection-mask`. Use `--global-cuts` for one set of windows per proton
-topology when individual kinematic bins lack sufficient statistics.
+The PDF can also be regenerated without the event sample because the v8 cut
+table stores the fit histograms and components:
+
+```bash
+python3 analysis/plot_exclusivity_diagnostics.py \
+  results/data_exclusivity.npz \
+  results/data_exclusivity_diagnostics.pdf
+```
+
+Compare the stored data and GEMC fits in one PDF with one page per exclusivity
+quantity, topology columns, and data/GEMC rows:
+
+```bash
+python3 analysis/plot_exclusivity_diagnostics.py \
+  results/data_exclusivity.npz \
+  results/data_gemc_exclusivity_comparison.pdf \
+  --gemc-cuts results/gemc_exclusivity.npz
+```
+
+Each comparison panel places fit metadata and quality metrics in separate,
+opaque side panels rather than over the histogram. Each topology column has its
+own horizontal range, shared only by its data and GEMC rows, so a broad topology
+cannot visually compress a narrower one. Data and GEMC use distinct color
+palettes, and the nominal window is listed as `[lower, upper]`. Bold topology
+headers and semi-transparent vertical separators organize the columns. The
+compact legend shows the data/GEMC sample encoding once and the line-style
+meaning of each fit component once, rather than duplicating every component for
+both samples.
+Quantity names use physics-formatted labels. Paired mode requires the nominal
+global-by-topology cut tables because a local table can contain many kinematic
+groups for one detector topology. The main paired pages contain only topologies
+retained by both data and GEMC. By default, each topology that failed retention
+in either sample is then rendered on dedicated per-quantity audit pages at the
+end of the PDF. Add `--omit-dropped-topologies` to suppress that appendix.
+
+For a large per-bin table, the plotter defaults to the 24 groups with the worst
+reduced chi-square. Repeat `--group-id ID` to inspect chosen groups, or change
+the limit with `--maximum-groups`. A high reduced chi-square is an audit flag,
+not an automatic rejection: a statistically significant but imperfect model
+should be inspected rather than silently discarded.
+
+Pass the GEMC mask to `response --selection-mask`. For data, either pass the
+mask to `unfold --selection-mask` without background subtraction, or pass the
+corresponding data cut table to `unfold --background-cuts` so the command can
+reconstruct both its signal and N-1 sideband regions. Use `--per-bin-cuts` only
+when one deliberately wants
+local kinematic windows with automatic same-topology fallback instead of the
+default pooled topology windows. Cut tables produced
+before photon-topology grouping or before the v8 bootstrap/audited fits are
+incompatible and must be re-derived rather than passed with `--reuse-cuts`.
 
 For large GEMC production, derive the GEMC exclusivity mask directly from the
 selected-candidate ROOT file instead of reading the dense generated-event NPZ:
@@ -454,7 +1200,7 @@ the full path only when duplicate basenames must be disambiguated.
 Check both identities after converting more than one input file:
 
 ```bash
-python3 analysis/check_event_keys.py 6.535_rgk_eppi0_mc_acceptance.root
+python3 analysis/check_event_keys.py 6.535_rgk_eppi0_GEMC.root
 ```
 
 Repeated `(runNum,eventNum)` keys are expected for the tested GEMC production;
@@ -508,21 +1254,34 @@ LUND event structure. Type-1 generator submissions are not yet supported. The
 `SourceFiles` tree also stores the resolved stratum and weight for file-level
 auditing. The existing response builders consume `weight` directly.
 
-The harmonic stage retains the legacy weighted fit
-`A + B cos(phi) + C cos(2 phi)` and stores coefficients, full covariance,
-chi-square per degree of freedom, and the number of contributing phi bins.
+The harmonic stage uses the weighted fit `A + B cos(phi) + C cos(2 phi)` and
+stores both its raw numerical result and the production-quality decision
+described above.  This keeps weak fits inspectable without allowing sparse,
+ill-conditioned, imprecise, or negative curves into nominal coefficient plots.
 
 The radiative-correction command streams Born and radiative LUND files directly
 into configured analysis bins, using the same electron-proton Trento phi
 convention as the rest of this package. If the analysis config contains a
 `phase_space` block, each filled bin is interpreted as the rectangular 4D bin
-intersected with those generated-level DIS cuts. For the current RGK/RGA
-configs this is `Q2 >= 1`, `W >= 2`, and `y <= 0.8`, matching the processing
-skim region. Its output is a native `C_rad.npz`
+intersected with those generated-level DIS cuts. Both current configs require
+`Q2 >= 1` and `W >= 2`. RGA directly requires generated electron momentum
+`p_e >= 2 GeV`, while RGK directly requires `p_e >= 1 GeV`. These match the
+nominal post-selection thresholds without a redundant `y` cut. Conversion is
+intentionally padded to `1.5 GeV` for RGA and `0.3 GeV` for RGK so alternate
+post-selection thresholds can be studied. Its output is a native `C_rad.npz`
 artifact consumed by `unfold --radiative-correction`; reliability masks and
 correction uncertainties are propagated into the self-contained unfolding
-result. For AAO-generated samples, pass the generator `sig_sum` integrated cross
-sections with `--born-normalization-file` and `--radiative-normalization-file`
+result. Statistical uncertainties are cluster-aware: exact consecutive LUND
+records emitted by one stochastic mode-3 multiplicity decision are grouped as
+one proposal cluster of weight `m`. Per-bin count variance is accumulated as
+`sum(m^2)`, and reliability uses the Kish effective count
+`sum(m)^2 / sum(m^2)` rather than treating repeated records as independent.
+This reduces exactly to the previous Poisson formula when every event has unit
+multiplicity. The artifact preserves raw counts, cluster `sumw2`, effective
+counts, raw pre-reliability corrections and uncertainties, and aggregate
+cluster diagnostics. For AAO-generated samples, pass the generator `sig_sum`
+integrated cross sections with `--born-normalization-file` and
+`--radiative-normalization-file`
 when `.norm` or `.sum` sidecars are available. Each option may point to one
 sidecar or to a directory containing many job sidecars. Directory inputs prefer
 `.norm` files when present, use an `events`-weighted mean `sig_sum` when every
@@ -534,18 +1293,42 @@ when entering the values manually. The resulting global factor is
 radiative-to-Born cross-section ratio rather than a raw event-density ratio.
 `unfold --radiative-correction` divides unfolded yields by this factor. The
 artifact also stores support diagnostics: per-bin born/radiative counts, overlap
-and status masks, generated `Q2`/`Eprime` ranges, the phase-space cuts used to
-define the selected bins, and the integrated cross sections used for each
-sample. When sidecars are supplied, the artifact also preserves the
+and cluster-effective status masks, generated `Q2`/`Eprime` ranges, the
+phase-space cuts used to define the selected bins, and the integrated cross
+sections used for each sample. When sidecars are supplied, the artifact also preserves the
 normalization records used to get those cross sections: sidecar paths,
 combination method, `sig_sum`, `sig_int`, `events`, `ntries`, `nevent`,
-`mcall_max`, `sigr_max`, generator name, and units. Regenerate the diagnostic
-report later without rereading LUND files:
+`mcall_max`, `sigr_max`, mode-3 proposal metadata, generator name, and units.
+Radiative mode-3 sidecars are rejected when the direct proposal leaves less
+than 5% legacy support, when `mcall_max > events`, or when they predate the
+`aao-rad-mode3-v2` schema that records the untruncated behavior. Born mode-3
+sidecars using `aao-norad-mode3-v2` require consistent target/actual event and
+overshoot counts, a certified complete final multiplicity block, and
+`mcall_max` no larger than the requested job capacity. Completed legacy Born
+sidecars remain readable because the old Born generator already emitted a
+complete multiplicity block before checking its event limit; they lack only the
+new protection against resource-exhausting job-sized blocks. Regenerate a job
+that triggers either new fail-safe with a validated envelope; for radiative
+production also use the bounded full-support proposal. Do not pool or
+selectively omit a failed job. Regenerate the diagnostic report later without
+rereading LUND files:
 
 ```bash
 python3 analysis/run_analysis.py radiative-correction-plots results/C_rad.npz \
   --output results/C_rad_diagnostics.pdf --csv results/C_rad_diagnostics.csv \
   --quilt
+```
+
+Overlay two corrections only when they use identical four-dimensional bin
+edges.  The comparison adds one quilt page per `-t` bin and masks each series
+with its own reliability selection:
+
+```bash
+python3 analysis/run_analysis.py radiative-correction-plots results/exclurad_C_rad.npz \
+  --overlay-correction results/aao_C_rad.npz \
+  --primary-label EXCLURAD --overlay-label AAO \
+  --output results/exclurad_vs_aao_C_rad.pdf --overlay-only \
+  --quilt-scale-mode panel
 ```
 
 The PDF includes summary/support pages, a clipped `0<C_rad<2` summary
@@ -554,6 +1337,169 @@ fraction in `(xB,Q2)` and `(phi,-t)`, and then detailed per-`(Q2,xB,-t)` phi
 pages. With `--quilt`, one stitched `Q2`-by-`xB` `C_rad`-vs-phi page per `-t`
 bin is inserted before the detailed pages. Use `--quilt-scale-mode global` for
 a common y scale across every panel on a page.
+
+To test whether a localized AAO phi structure is produced by finite-cell
+averaging or migration in the final LUND coordinates, stream the existing
+Born and radiative manifests once through progressively narrower cells:
+
+```bash
+python3 analysis/aao_nested_cell_radiative_correction.py \
+  --born-manifest manifests/aao_born_2000.list \
+  --radiative-manifest manifests/aao_rad_2000.list \
+  --normalization-artifact results/C_rad_AAO.npz \
+  --config configs/diagnostics/rga/10.604/aao_vcut_bump_cell_1x1x1x12.json \
+  --output results/aao_nested_cells
+```
+
+The defaults contract around `(Q2,xB,-t)=(1.5,0.30,0.30)` from the original
+`[1,2] x [0.25,0.38] x [0.2,0.4]` cell. Repeat `--cell
+LABEL:Q2LO:Q2HI:XBLO:XBHIGH:TLO:THIGH` to supply another nested sequence. The
+artifact retains Born, soft-radiative, and hard-radiative counts and
+cluster-`sumw2`; reports the central-to-edge correction for every cell; and
+plots both `C_rad(phi)` and the unit-normalized radiative/Born shape ratio.
+This final-coordinate study is deliberately separate from a subsequent test
+using the generator's internal hard-scattering coordinates.
+
+That final test uses AAO's deterministic fixed-trial survey output, which
+retains the hard-parent and completed final-state coordinates on the same
+weighted proposal.  Run one or more survey replicas, then compare the paired
+coordinates with:
+
+```bash
+python3 analysis/aao_internal_final_migration_test.py \
+  --survey survey_replica000 \
+  --survey survey_replica001 \
+  --config configs/diagnostics/rga/10.604/aao_vcut_bump_cell_1x1x1x12.json \
+  --output results/aao_internal_final_migration
+```
+
+The report conditions on the same broad, medium, and narrow *final* cells and
+shows the cross-section-weighted hard-parent-to-final phi migration.  For the
+events ending at final `150 < phi < 210 deg`, it reports the fractions whose
+hard parent was central, occupied the same `(Q2,xB,-t)` cell, and occupied the
+same phi bin.  Results are split into native AAO soft (`intreg=6`) and resolved
+(`intreg=1..5`) branches.  Survey weights, rather than raw proposal counts,
+must be used for every interpretation.
+
+For an AAO mode-3 calibration, test whether its internal hadronic azimuth and
+the Trento azimuth reconstructed from the final generated four-vectors use the
+same convention with:
+
+```bash
+python3 analysis/aao_calibration_phi_convention.py \
+  --calibration mm020=/path/to/mm020/cal75/envelope_calibration.json \
+  --calibration mm100=/path/to/mm100/cal75/envelope_calibration.json \
+  --born-reference /path/to/aao_final_lund_vscan.npz \
+  --output results/aao_phi_convention
+```
+
+The Born reference can be either the soft/hard decomposition NPZ or the final
+LUND v-cut-scan NPZ for the same cell. The utility uses
+`integrand_corrected` as the calibration weight and the full proposal count
+for normalization. It compares the nominal final-state
+`phi_observed_deg` correction with the internal `phi_cm_deg` correction and an
+explicit `(phi_observed_deg + 180 deg) mod 360 deg` diagnostic. It also writes
+the weighted internal-to-observed migration matrix and wrapped angular
+difference. The two remapped curves are diagnostics, not replacement
+corrections unless the downstream analysis convention is independently shown
+to match that mapping.
+
+The hard-photon AAO branch can be tested without editing the checked-out
+generator or producing LUND events. The following controlled A/B diagnostic
+copies and builds a separate executable in `VARIANT`, activates the
+`sigu + epsilon*sigl` interference denominator used by the soft branch, and
+runs one existing mode-3 calibration replica with exactly the same immutable
+input and seed:
+
+```bash
+python3 analysis/aao_hard_interference_ab_test.py build \
+  --source external/aao_gen/aao_rad --output "$VARIANT"
+python3 analysis/aao_hard_interference_ab_test.py run \
+  --baseline-report "$BASELINE/envelope_calibration.json" \
+  --variant-executable "$VARIANT/build/aao_rad" \
+  --born-reference "$BORN_REFERENCE" --replicas 1 --output "$AB_OUTPUT"
+```
+
+The comparison is diagnostic only. It records source and executable hashes,
+retains each variant calibration CSV and normalization sidecar, checks paired
+trial/coordinate agreement, and produces baseline-versus-variant `C_rad` and
+radiative-cross-section-ratio plots. Do not use the variant for production
+without generator-author review.
+
+The same utility supports narrowly scoped follow-up variants through
+`build --variant-kind`: `control` rebuilds an unchanged copy of the current
+source and must reproduce the retained baseline before the patched variants
+are interpreted; `external-off` keeps the nominal incoming/outgoing
+external-loss random draws and rejection loops but removes their electron
+energy shifts; `denominator-external-off` combines that test with the soft-like
+hard denominator; `interference-off` removes the hard-branch phi modulation;
+and `denominator-phi-plus-180` reverses the hard cos(phi) and sin(phi) terms
+after applying the denominator change. The `run` command also accepts
+`--minimum-photon-energy` for a soft/hard-separator stability test and
+`--electron-helicity-flag` for a lower-priority helicity control. These are
+diagnostic counterfactuals, not production generator settings.
+
+Two companion utilities inspect retained AAO LUND production without changing
+its normalization. Split a mode-3 radiative correction into native soft and
+resolved-photon contributions with:
+
+```bash
+python3 analysis/aao_soft_hard_radiative_correction.py \
+  --born-manifest born.list --radiative-manifest radiative.list \
+  --normalization-artifact C_rad_AAO.npz \
+  --config configs/analysis/rga/10.604.json \
+  --output results/aao_soft_hard
+```
+
+The soft and hard terms share the original proposal normalization, so their
+binwise corrections add to the total correction. To test sensitivity to a
+final-state inelasticity cut without renormalizing the retained tail, use:
+
+```bash
+python3 analysis/aao_vcut_cell_scan.py \
+  --born-manifest born.list --radiative-manifest radiative.list \
+  --normalization-artifact C_rad_AAO.npz \
+  --config configs/analysis/rga/10.604.json \
+  --output results/aao_vcut_scan
+```
+
+For a fast unweighted inspection of either Born or radiative LUND kinematics,
+use `scripts/aao_lund_kinematics.py INPUT OUTPUT.png --ebeam ENERGY`. This plot
+is a generator diagnostic and does not replace weighted correction artifacts.
+
+## GEMC statistics planning
+
+`project_gemc_mc_statistics.py` projects the generated-event count needed for
+target precision and phi coverage from compact matched-particle float32
+ntuples. It is intended for production planning before a large GEMC request:
+
+```bash
+python3 analysis/project_gemc_mc_statistics.py \
+  --sample born /path/to/born.f32 none \
+  --binning provisional configs/analysis/rgk/6.395.json \
+  --output-dir results/gemc_statistics_projection
+```
+
+The matched-particle efficiency used by this projection is deliberately
+simpler than the maintained candidate and exclusivity selection. Treat its
+event-count estimate as a planning diagnostic rather than response closure.
+
+## Photon-efficiency map sensitivity
+
+`klimenko_photon_map_sensitivity.py` applies the bin values transcribed from
+the published Klimenko FD-photon efficiency figure to an existing event-sample
+NPZ. It reports the covered fraction and the resulting event-weight scale by
+photon topology:
+
+```bash
+python3 analysis/klimenko_photon_map_sensitivity.py \
+  event_sample.npz results/klimenko_sensitivity \
+  --label "RGA photon-map sensitivity"
+```
+
+This utility uses piecewise-constant values digitized from a figure. It is a
+bounded sensitivity check, not the production photon-efficiency correction,
+which must use the delivered map and its validity metadata.
 
 ## Bin-centering correction
 
@@ -599,6 +1545,22 @@ Repeat with larger `--N` values, for example `N=2,4,6,8`, and compare the
 merged `C_BC` artifacts to assess convergence. To summarize and visualize a
 scan after merging all requested `C_BC_N*.npz` files:
 
+For the JLab production scan at `N=10,20,30`, use the repository submission
+driver rather than embedding a multi-statement shell program in every SWIF job:
+
+```bash
+cd /work/clas12/storyf/SF_analysis_software_v2.0
+bash scripts/submit_bin_centering_swif.sh --run
+```
+
+The driver freezes the analysis code, configuration, AAO executable, MAID
+table, module setup, driver, worker, job manifest, Git state, and hashes under
+the campaign correction directories. It creates two phase-0 jobs (one RGK and
+one RGA real output) and releases the remaining jobs only after both phase-0
+jobs succeed. The RGA result is common to the torus+1 and torus-1 campaigns.
+Use `--help` to override input paths, the UTC stage stamp, or the number of
+chunks.
+
 ```bash
 python3 scripts/plot_bin_centering_convergence.py results/bin_centering_convergence/rgk_6.535 \
   --n-values 2 4 6 8 \
@@ -632,6 +1594,188 @@ Files are discovered with `C_BC*.npz`, labeled using their stored
 Only reliable, computed phi bins are drawn. The PDF also contains detailed phi
 pages for the primary positional artifact unless `--quilts-only` is passed.
 
+## Beam-spin asymmetry
+
+The beam-spin layer reuses the nominal selected-data sample, topology-dependent
+exclusivity cuts, and the audited downstream run selection. It does not apply
+acceptance, luminosity, radiative, bin-centering, or current-efficiency weights:
+those factors cancel to first order between the two rapidly alternating beam
+helicities. It does retain the same nonpeaking `m_gg` sideband subtraction in
+each helicity state.
+
+First audit QADB's helicity sign and helicity-latched Faraday-cup charge for the
+observed data runs:
+
+```bash
+qadb_helicity_audit \
+  --config configs/processing/rga/10.604/eppi0_data_torus+1.json \
+  --run-list data_runs.txt \
+  --output-dir results/helicity_audit
+```
+
+Some older QADB datasets contain accepted total Faraday-cup charge but no
+helicity-latched charge. After confirming that condition from the audit, an
+explicit `--equal-split-total-charge` rerun assigns half of each run's accepted
+total charge to each helicity. The run table labels those rows
+`equal_split_total_charge`, and the summary records their count. This assumes
+negligible helicity-correlated beam-charge asymmetry and must be retained as a
+beam-charge systematic; it is never enabled automatically.
+
+The audit applies the processing configuration's exact QADB database, rejected
+defects, and allowed `Misc` runs. It writes `helicity_sign_intervals.tsv`,
+`run_helicity_charge.tsv`, and `audit_summary.json`. Physical event helicity is
+defined as `raw helicity * QADB CorrectHelicitySign(run,event)`. The plus and
+minus charge columns are swapped for a run when QADB reports a `BSAWrong` sign.
+Unknown or mixed-sign runs are unusable and make the audit exit nonzero. The
+audited charge covers every accepted QADB bin in each listed run, so its total
+should be compared with, but need not equal, charge accumulated while scanning
+a channel-specific skim.
+
+Re-export the existing selected ROOT file with the current adapter. Schema 5
+adds `helicity_raw`; no HIPO conversion or post-processing rerun is needed:
+
+```bash
+python3 analysis/export_selected_data.py selected_data.root processing_data.root \
+  data_events.npz --dictionary build/libROOTBranchesDict.so
+```
+
+Beam polarization is a positive magnitude in a reviewed JSON manifest. QADB,
+not the polarization sign, handles the half-wave-plate and exceptional-run sign
+convention:
+
+```json
+{
+  "schema_version": 1,
+  "source": "Moller analysis note or run-period table and version",
+  "periods": [
+    {
+      "label": "documented period",
+      "runs": "5032-5419",
+      "polarization": 0.89,
+      "uncertainty": 0.02
+    }
+  ]
+}
+```
+
+Every retained run must occur in exactly one manifest period. Then extract the
+four-dimensional asymmetry and fit each populated `(Q2,xB,-t)` bin to
+`A_LU(phi bin)=A_sin_phi <sin(phi)>_bin`. The harmonic basis is integrated
+exactly between the stored phi edges; the bin center is used only for plotting.
+
+```bash
+python3 analysis/beam_spin_asymmetry.py data_events.npz \
+  --config configs/analysis/rga/10.604.json \
+  --selection-mask data_exclusivity.npy \
+  --background-cuts data_exclusivity.npz \
+  --helicity-audit-dir results/helicity_audit \
+  --polarization beam_polarization.json \
+  --run-selection-artifact current_efficiency_correction.json \
+  --output-dir results/beam_spin_asymmetry
+```
+
+Runs whose QADB helicity sign is unknown can be removed explicitly with a
+repeatable `--exclude-run RUN` option. These exclusions are stored in both the
+NPZ artifact and JSON summary.
+
+Before fixing a production BSA grid, scan coarsenings of the configured
+`Q2`, `xB`, and `-t` axes together with uniform 8, 12, 16, and 20-bin phi
+schemes. The scan never uses the measured helicity difference. It scores
+charge-balanced, sideband-subtracted effective statistics, phi coverage,
+the null-asymmetry projected sine-amplitude uncertainty, background fraction,
+and optional GEMC generated/reconstructed response support. Repeat `--sample`
+to require the same grid
+to pass in both RGA polarities:
+
+```bash
+python3 analysis/optimize_beam_spin_binning.py \
+  --config configs/analysis/rga/10.604.json \
+  --sample t1 data_t1.npz data_t1_mask.npy data_t1_cuts.npz \
+    audit_t1 beam_polarization.json current_selection_t1.json \
+  --sample tn1 data_tn1.npz data_tn1_mask.npy data_tn1_cuts.npz \
+    audit_tn1 beam_polarization.json current_selection_tn1.json \
+  --exclude-run t1:5565 --exclude-run tn1:5137 --exclude-run tn1:5377 \
+  --response-meta t1=response_t1_meta.npz \
+  --response-meta tn1=response_tn1_meta.npz \
+  --output-dir results/bsa_binning_scan
+```
+
+The output contains `binning_scan.csv`, `binning_scan.pdf`, per-cell metrics,
+and `recommended_analysis_config.json`. The recommendation maximizes the
+number of 3D cells passing every supplied sample, excludes schemes with fewer
+than 12 phi bins by default, and breaks ties using projected precision and
+artifact size. Response metadata checks generated and reconstructed support; it
+does not replace a subsequent migration-purity or split-sample validation.
+
+The run-selection artifact contributes only its zero-weight run exclusions; its
+current-dependent event weights are deliberately not applied. The estimator
+balances unequal plus/minus charge separately for every run before combining
+runs. `beam_spin_asymmetry.npz` stores the asymmetry, statistical uncertainty,
+separate polarization uncertainty, signed yields, sine amplitudes, and full
+input provenance. Diagnostics are written as
+`beam_spin_asymmetry_vs_phi.pdf` and `sin_phi_amplitude_vs_t.pdf`. The
+sideband-transfer uncertainty and remaining campaign systematic covariance are
+recorded as pending rather than folded into the statistical error.
+
+Compare two independent extractions, such as opposite torus polarities, before
+combining them:
+
+```bash
+python3 analysis/compare_beam_spin_asymmetries.py \
+  torus_plus/beam_spin_asymmetry.npz \
+  torus_minus/beam_spin_asymmetry.npz \
+  --left-label "torus +1" --right-label "torus -1" \
+  --output-dir results/beam_spin_polarity_comparison
+```
+
+The comparison reports amplitude and phi-point pulls and fits the extended
+null-test form `c0 + s1*sin(phi) + c1*cos(phi) + s2*sin(2phi)`. The constant,
+cosine, and second-sine coefficients should be statistically consistent with
+zero for the one-photon exclusive-pi0 beam-spin observable. These checks are
+internal consistency tests rather than replacements for detector and selection
+systematic studies.
+
+Make the provisional comparison with the values transcribed from Table 5.1 of
+Andrey's internal EPPI0 analysis note directly from the two current BSA
+artifacts:
+
+```bash
+python3 analysis/compare_bsa_to_andrey.py \
+  --torus-plus-1 torus_plus/beam_spin_asymmetry.npz \
+  --torus-minus-1 torus_minus/beam_spin_asymmetry.npz \
+  --output-dir results/andrey_bsa_comparison
+```
+
+This utility assigns the note's outbending rows to torus+1 and its inbending
+rows to torus-1. It selects the nearest production-quality campaign-bin center
+in `(Q2,xB,-t)`, writes the complete matching table and input hashes, and
+produces a five-region comparison quilt plus matching and pull diagnostics.
+Because no event-level rebinning is performed, the resulting chi-squared is a
+descriptive diagnostic. The BSA inputs are helicity-yield asymmetries and do
+not depend on IBU iterations or unfolded cross-section covariance.
+
+Export one or more finalized cross-section artifacts as plain CSV tables for
+external collaborators while retaining the within-cell phi covariance:
+
+```bash
+python3 analysis/export_reduced_cross_sections.py \
+  --sample torus_plus1 "RGA Fall 2018 torus+1" plus/cross_section.npz \
+  --sample torus_minus1 "RGA Fall 2018 torus-1" minus/cross_section.npz \
+  --sample combined "RGA Fall 2018 combined polarities" combined/cross_section.npz \
+  --beam-energy torus_plus1 10.604 \
+  --beam-energy torus_minus1 10.604 \
+  --beam-energy combined 10.604 \
+  --output-dir results/rga_fa18_cross_section_export
+```
+
+Each CSV contains only final-valid bins, all four bin indices and edges, the
+coordinates used for the virtual-photon flux, reduced cross section, propagated
+counting uncertainty, virtual-photon polarization epsilon when the beam energy
+is supplied, and BLUE weights where applicable. The companion NPZ
+retains the phi covariance required for correlated harmonic fits. The generated
+README and JSON summary record input paths, hashes, units, validity definitions,
+uncertainty scope, and provisional limitations.
+
 ## Legacy behavior intentionally corrected
 
 - reconstructed failures never remove generated events from the denominator;
@@ -649,7 +1793,7 @@ The preferred converter configuration enables `gEvents`, applies REC
 topology/DIS skims only to `rParticles`, and sets
 `saveUnmatchedMC` to false. This retains the generated denominator in one
 lightweight scalar row per event. See
-`configs/processing/rgk/6.535/eppi0_mc_acceptance.json`.
+`configs/processing/rgk/6.535/eppi0_GEMC.json`.
 
 For older files without `gEvents`, an unbiased denominator still
 requires an unrestricted matched conversion with unmatched particle-level GEN

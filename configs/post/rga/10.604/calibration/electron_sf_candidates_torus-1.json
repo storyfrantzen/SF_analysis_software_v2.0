@@ -1,0 +1,4 @@
+{
+    "extends": "electron_sf_candidates_base_torus-1.json",
+    "outputFile": "10.604_rga_fa18_torus-1_electron_sf_candidates.root"
+}

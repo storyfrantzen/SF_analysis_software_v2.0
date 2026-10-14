@@ -1,0 +1,4 @@
+{
+    "extends": "../spring2024/eppi0_base_baseline_uncalibrated.json",
+    "beamEnergy": 6.395
+}

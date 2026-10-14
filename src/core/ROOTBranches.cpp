@@ -70,6 +70,10 @@ void RecBranches::reset() {
     delta_p = 0.0;
     delta_theta = 0.0;
     delta_phi = 0.0;
+    delta_p_energy_loss = 0.0;
+    delta_p_momentum_correction = 0.0;
+    momentum_correction_applied = false;
+    delta_p_elastic = 0.0;
     beta = NAN;
     chi2pid = NAN;
     trackChi2 = NAN;
@@ -81,7 +85,7 @@ void RecBranches::reset() {
     vz = NAN;
     time = NAN;
 
-    xFT = yFT = NAN;
+    xFT = yFT = E_FTCAL = NAN;
     xDC1 = yDC1 = xDC2 = yDC2 = xDC3 = yDC3 = NAN;
     edgeDC1 = edgeDC2 = edgeDC3 = NAN;
     xPCAL = yPCAL = NAN;
@@ -118,6 +122,10 @@ void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx) {
     delta_p = 0.0;
     delta_theta = 0.0;
     delta_phi = 0.0;
+    delta_p_energy_loss = 0.0;
+    delta_p_momentum_correction = 0.0;
+    momentum_correction_applied = false;
+    delta_p_elastic = 0.0;
     beta    = safeGet(rec->par()->getBeta());
     chi2pid = safeGet(rec->par()->getChi2Pid());
 
@@ -144,6 +152,7 @@ void RecBranches::fill(clas12::region_particle* rec, int rn, int en, int idx) {
     if (det == 0) {
         xFT = safeGet(rec->ft(clas12::FTCAL)->getX());
         yFT = safeGet(rec->ft(clas12::FTCAL)->getY());
+        E_FTCAL = safeGet(rec->ft(clas12::FTCAL)->getEnergy());
     }
 
     // ── FD ───────────────────────────────────────────────
