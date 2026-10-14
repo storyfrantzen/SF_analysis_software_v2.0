@@ -8,13 +8,26 @@ from typing import Iterable, Sequence
 import numpy as np
 
 from .binning import AnalysisBinning
-from .event_sample import _dis, _minus_t, _trento_phi
+from .event_sample import (
+    ELECTRON_MASS,
+    PI0_MASS,
+    PROTON_MASS,
+    _dis,
+    _minus_t,
+    _trento_phi,
+)
+from .generators import GeneratorCampaign, GeneratorRunRecord
 from .phase_space import AnalysisPhaseSpace
 
 
 Array = np.ndarray
 LUND_TEXT_SUFFIXES = {".lund", ".txt"}
 CLUSTER_UNCERTAINTY_MODEL = "consecutive-exact-lund-clusters-v1"
+EXCLUGEN_UNCERTAINTY_MODEL = "independent-run-standard-error-v1"
+EXCLUGEN_NORMALIZATION_METHOD = (
+    "per-run sigma_nb * selected_bin_events / generated_events, averaged over runs"
+)
+EXCLUGEN_V_DEFINITION = "MX2(e'p) - m_pi0^2"
 
 
 @dataclass(frozen=True)
@@ -53,6 +66,346 @@ class RadiativeCorrectionResult:
     normalization_ratio: float
     born_integrated_cross_section: float | None = None
     radiative_integrated_cross_section: float | None = None
+
+
+@dataclass(frozen=True)
+class ExclugenModeEstimate:
+    """Cross-section estimate and support accumulated from independent runs."""
+
+    cross_section: Array
+    standard_error: Array
+    counts: Array
+    effective_counts: Array
+    run_estimates: Array
+    records: tuple[GeneratorRunRecord, ...]
+    generated_events: int
+    selected_events: int
+    in_range_events: int
+
+
+@dataclass(frozen=True)
+class ExclugenRadiativeCorrectionResult:
+    """Analysis-binned EXCLUGEN radiative correction with full provenance."""
+
+    c_rad: Array
+    delta_c: Array
+    c_rad_raw: Array
+    delta_c_raw: Array
+    reliable: Array
+    support_overlap: Array
+    support_status: Array
+    born: ExclugenModeEstimate
+    radiative: ExclugenModeEstimate
+    campaign: GeneratorCampaign
+    normalization_ratio: float
+    born_integrated_cross_section: float
+    radiative_integrated_cross_section: float
+    v_max_GeV2: float
+
+
+def compute_exclugen_radiative_correction(
+    campaign: GeneratorCampaign,
+    binning: AnalysisBinning,
+    *,
+    v_max: float = 0.2,
+    min_counts: int = 5,
+    max_files: int | None = None,
+    progress_runs: int = 0,
+    phase_space: AnalysisPhaseSpace | None = None,
+) -> ExclugenRadiativeCorrectionResult:
+    """Compute ``C_rad = sigma_rad(v < v_max) / sigma_Born``.
+
+    Each LUND run is an independent cross-section estimate.  For run ``i`` and
+    bin ``b`` the estimate is ``sigma_i * n_i,b / N_i``; the central value is
+    the mean across runs and its uncertainty is the standard error across those
+    independent estimates.  The offline inelasticity cut is applied only to the
+    radiative sample, and surviving events are deliberately not renormalized.
+    """
+    if campaign.provider != "exclugen":
+        raise ValueError(
+            "compute_exclugen_radiative_correction requires an EXCLUGEN campaign"
+        )
+    if not np.isfinite(v_max):
+        raise ValueError("v_max must be finite")
+    if min_counts < 0:
+        raise ValueError("min_counts must be non-negative")
+    if max_files is not None and max_files <= 0:
+        raise ValueError("max_files must be positive when provided")
+    if progress_runs < 0:
+        raise ValueError("progress_runs must be non-negative")
+
+    born = estimate_exclugen_mode(
+        campaign,
+        "born",
+        binning,
+        v_max=v_max,
+        max_files=max_files,
+        progress_runs=progress_runs,
+        phase_space=phase_space,
+    )
+    radiative = estimate_exclugen_mode(
+        campaign,
+        "rad",
+        binning,
+        v_max=v_max,
+        max_files=max_files,
+        progress_runs=progress_runs,
+        phase_space=phase_space,
+    )
+
+    c_rad_flat, delta_flat = _ratio_and_error(
+        radiative.cross_section,
+        radiative.standard_error,
+        born.cross_section,
+        born.standard_error,
+    )
+    support_overlap = (born.counts > 0.0) & (radiative.counts > 0.0)
+    reliable_flat = (
+        support_overlap
+        & (born.effective_counts >= min_counts)
+        & (radiative.effective_counts >= min_counts)
+        & np.isfinite(c_rad_flat)
+        & np.isfinite(delta_flat)
+    )
+    c_rad_safe = np.where(reliable_flat, c_rad_flat, 1.0)
+    delta_safe = np.where(reliable_flat, delta_flat, 1.0)
+    support_status = support_status_codes(
+        born.counts,
+        radiative.counts,
+        min_counts,
+        born_effective_counts=born.effective_counts,
+        radiative_effective_counts=radiative.effective_counts,
+    )
+    born_sigma = float(np.mean([record.sigma_value for record in born.records]))
+    radiative_sigma = float(
+        np.mean([record.sigma_value for record in radiative.records])
+    )
+    return ExclugenRadiativeCorrectionResult(
+        c_rad=binning.unflatten(c_rad_safe),
+        delta_c=binning.unflatten(delta_safe),
+        c_rad_raw=binning.unflatten(c_rad_flat),
+        delta_c_raw=binning.unflatten(delta_flat),
+        reliable=binning.unflatten(reliable_flat),
+        support_overlap=binning.unflatten(support_overlap),
+        support_status=binning.unflatten(support_status),
+        born=born,
+        radiative=radiative,
+        campaign=campaign,
+        normalization_ratio=radiative_sigma / born_sigma,
+        born_integrated_cross_section=born_sigma,
+        radiative_integrated_cross_section=radiative_sigma,
+        v_max_GeV2=float(v_max),
+    )
+
+
+def estimate_exclugen_mode(
+    campaign: GeneratorCampaign,
+    mode: str,
+    binning: AnalysisBinning,
+    *,
+    v_max: float,
+    max_files: int | None = None,
+    progress_runs: int = 0,
+    phase_space: AnalysisPhaseSpace | None = None,
+) -> ExclugenModeEstimate:
+    """Estimate one EXCLUGEN mode without post-selection renormalization."""
+    records = campaign.runs_for_mode(mode)
+    if max_files is not None:
+        records = records[:max_files]
+    if not records:
+        raise ValueError(f"EXCLUGEN campaign has no {mode!r} runs")
+
+    estimates: list[Array] = []
+    counts_total = np.zeros(binning.size, dtype=float)
+    sum_weights = np.zeros(binning.size, dtype=float)
+    sum_weight_squares = np.zeros(binning.size, dtype=float)
+    generated_total = 0
+    selected_total = 0
+    in_range_total = 0
+
+    for position, record in enumerate(records, start=1):
+        electron, proton, observed = read_exclugen_lund(record.lund_path)
+        if observed != record.observed_events or observed != record.requested_events:
+            raise ValueError(
+                f"{record.lund_path}: observed {observed} events, provenance records "
+                f"observed={record.observed_events} and requested={record.requested_events}"
+            )
+        q2, xb = _dis(electron, record.beam_energy_GeV)
+        minus_t = _minus_t(proton)
+        phi = _trento_phi(electron, proton, record.beam_energy_GeV)
+        flat = binning.coordinates_to_flat(q2, xb, minus_t, phi)
+        selected = (
+            np.isfinite(q2)
+            & np.isfinite(xb)
+            & np.isfinite(minus_t)
+            & np.isfinite(phi)
+        )
+        if mode == "rad":
+            inelasticity = exclugen_inelasticity_v(
+                electron, proton, record.beam_energy_GeV
+            )
+            selected &= np.isfinite(inelasticity) & (inelasticity < v_max)
+        selected_total += int(np.count_nonzero(selected))
+        if phase_space is not None and phase_space.enabled:
+            selected &= phase_space.mask(q2, xb, record.beam_energy_GeV)
+        inside = selected & (flat >= 0) & (flat < binning.size)
+        counts = np.bincount(flat[inside], minlength=binning.size).astype(float)
+        event_weight = record.sigma_value / record.requested_events
+        estimates.append(event_weight * counts)
+        counts_total += counts
+        sum_weights += event_weight * counts
+        sum_weight_squares += event_weight**2 * counts
+        generated_total += observed
+        in_range_total += int(np.count_nonzero(inside))
+        if progress_runs > 0 and (
+            position % progress_runs == 0 or position == len(records)
+        ):
+            print(
+                f"[EXCLUGEN] {mode}: estimated {position}/{len(records)} runs, "
+                f"generated={generated_total}, selected={selected_total}, "
+                f"analysis-bin={in_range_total}"
+            )
+
+    matrix = np.asarray(estimates, dtype=float)
+    return ExclugenModeEstimate(
+        cross_section=np.mean(matrix, axis=0),
+        standard_error=independent_run_standard_error(matrix),
+        counts=counts_total,
+        effective_counts=weighted_effective_count(
+            sum_weights, sum_weight_squares
+        ),
+        run_estimates=matrix,
+        records=records,
+        generated_events=generated_total,
+        selected_events=selected_total,
+        in_range_events=in_range_total,
+    )
+
+
+def independent_run_standard_error(values: Array) -> Array:
+    values = np.asarray(values, dtype=float)
+    if values.ndim < 1:
+        raise ValueError("independent run estimates must have a run axis")
+    if values.shape[0] < 2:
+        return np.full(values.shape[1:], np.nan, dtype=float)
+    return np.std(values, axis=0, ddof=1) / np.sqrt(values.shape[0])
+
+
+def weighted_effective_count(sum_weights: Array, sum_weight_squares: Array) -> Array:
+    sum_weights = np.asarray(sum_weights, dtype=float)
+    sum_weight_squares = np.asarray(sum_weight_squares, dtype=float)
+    if sum_weights.shape != sum_weight_squares.shape:
+        raise ValueError("weight-sum arrays must have matching shapes")
+    return np.divide(
+        np.square(sum_weights),
+        sum_weight_squares,
+        out=np.zeros_like(sum_weights),
+        where=sum_weight_squares > 0.0,
+    )
+
+
+def exclugen_inelasticity_v(
+    electron: Array,
+    proton: Array,
+    beam_energy: float,
+) -> Array:
+    """Return ``MX2(e'p) - m_pi0**2`` in GeV2 for EXCLUGEN events."""
+    beam_pz = np.sqrt(beam_energy**2 - ELECTRON_MASS**2)
+    missing_energy = beam_energy + PROTON_MASS - electron[:, 3] - proton[:, 3]
+    missing_px = -electron[:, 0] - proton[:, 0]
+    missing_py = -electron[:, 1] - proton[:, 1]
+    missing_pz = beam_pz - electron[:, 2] - proton[:, 2]
+    missing_mass2 = (
+        np.square(missing_energy)
+        - np.square(missing_px)
+        - np.square(missing_py)
+        - np.square(missing_pz)
+    )
+    return missing_mass2 - PI0_MASS**2
+
+
+def read_exclugen_lund(path: str | Path) -> tuple[Array, Array, int]:
+    """Read electron and proton four-vectors from one complete LUND file."""
+    source_path = Path(path)
+    electrons: list[tuple[float, float, float, float]] = []
+    protons: list[tuple[float, float, float, float]] = []
+    events = 0
+    with source_path.open("r", errors="replace") as source:
+        while True:
+            header = source.readline()
+            if not header:
+                break
+            fields = header.split()
+            if not fields:
+                continue
+            try:
+                particle_count = int(fields[0])
+            except ValueError:
+                continue
+            events += 1
+            electron = None
+            proton = None
+            complete = True
+            for _ in range(particle_count):
+                row = source.readline()
+                if not row:
+                    complete = False
+                    break
+                parts = row.split()
+                if len(parts) < 10:
+                    complete = False
+                    continue
+                try:
+                    pid = int(parts[3])
+                    momentum = tuple(float(parts[index]) for index in (6, 7, 8, 9))
+                except ValueError:
+                    complete = False
+                    continue
+                if pid == 11 and electron is None:
+                    electron = momentum
+                elif pid == 2212 and proton is None:
+                    proton = momentum
+            if not complete or electron is None or proton is None:
+                raise ValueError(
+                    f"incomplete/non-e'p event {events} in {source_path}"
+                )
+            electrons.append(electron)
+            protons.append(proton)
+    return (
+        np.asarray(electrons, dtype=float).reshape((-1, 4)),
+        np.asarray(protons, dtype=float).reshape((-1, 4)),
+        events,
+    )
+
+
+def _ratio_and_error(
+    numerator: Array,
+    numerator_error: Array,
+    denominator: Array,
+    denominator_error: Array,
+) -> tuple[Array, Array]:
+    ratio = np.divide(
+        numerator,
+        denominator,
+        out=np.full_like(numerator, np.nan, dtype=float),
+        where=denominator != 0.0,
+    )
+    relative_numerator = np.divide(
+        numerator_error,
+        numerator,
+        out=np.full_like(numerator_error, np.nan, dtype=float),
+        where=numerator != 0.0,
+    )
+    relative_denominator = np.divide(
+        denominator_error,
+        denominator,
+        out=np.full_like(denominator_error, np.nan, dtype=float),
+        where=denominator != 0.0,
+    )
+    uncertainty = ratio * np.sqrt(
+        np.square(relative_numerator) + np.square(relative_denominator)
+    )
+    return ratio, uncertainty
 
 
 def compute_radiative_correction(

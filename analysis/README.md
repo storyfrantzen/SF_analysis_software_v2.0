@@ -141,6 +141,10 @@ mass.
 - `eppi0.exclusivity`: deterministic topology-aware data/GEMC windows with a
   non-mutating N-1 stability audit;
 - `eppi0.event_sample`: radiative/non-radiative GEN construction and REC joins;
+- `eppi0.generators`: generator-neutral campaign provenance with the maintained
+  EXCLUGEN discovery backend;
+- `eppi0.radiative_correction`: EXCLUGEN per-run cross-section estimates and
+  explicit legacy AAO correction support;
 - `eppi0.data_efficiency`: run-charge joins, current grouping, and zero-current fits;
 - `eppi0.harmonics`: weighted `A + B cos(phi) + C cos(2 phi)` fits;
 - `eppi0.structure_functions`: covariance-aware conversion of harmonics to
@@ -325,11 +329,11 @@ The core numerical stages are exposed through one command:
 python3 analysis/run_analysis.py response mc_events.npz \
   --config configs/analysis/rgk/6.535.json --output-dir results/response
 
-python3 analysis/run_analysis.py radiative-correction born_lund/ rad_lund/ \
-  --config configs/analysis/rgk/6.535.json --output results/C_rad.npz \
-  --born-normalization-file born_lund/aao_norad.norm \
-  --radiative-normalization-file rad_lund/aao_rad.norm \
-  --progress-chunks 1 \
+python3 analysis/run_analysis.py radiative-correction \
+  --production-root /path/to/exclugen/pi0p_campaign \
+  --config configs/analysis/rga/10.604.json --output results/C_rad.npz \
+  --generator-model pi0.amp2614 --generator-revision 50a5074 \
+  --expected-runs 200 --v-max 0.2 --allow-mixed-dirty-state \
   --diagnostic-pdf results/C_rad_diagnostics.pdf \
   --diagnostic-csv results/C_rad_diagnostics.csv
 
@@ -1263,25 +1267,45 @@ stores both its raw numerical result and the production-quality decision
 described above.  This keeps weak fits inspectable without allowing sparse,
 ill-conditioned, imprecise, or negative curves into nominal coefficient plots.
 
-The radiative-correction command streams Born and radiative LUND files directly
-into configured analysis bins, using the same electron-proton Trento phi
-convention as the rest of this package. If the analysis config contains a
+The `radiative-correction` command uses EXCLUGEN by default. It discovers and
+strictly validates the matched LUND/config pair for every Born and radiative
+run under `--production-root`. For run `i` and analysis bin `b`, the maintained
+estimator is
+
+```text
+sigma_i * n_i,b / N_i,
+```
+
+where `sigma_i` is the config's integrated `sigma_nb`, `N_i` is the complete
+generated-event count, and `n_i,b` is the selected bin count. The bin value is
+the mean across independent runs and its statistical uncertainty is the
+standard error across those run estimates. Only radiative events receive the
+offline `v = MX2(e'p) - m_pi0^2 < --v-max` cut. The accepted radiative sample
+is deliberately not renormalized after this cut. Generation `vcut` values and
+the offline cut are stored separately, along with model, revision, dirty state,
+card signatures, hashes, seeds, paths, event counts, and cross-section units.
+
+Both provider paths fill the configured analysis bins with the package's
+electron-proton Trento phi convention. If the analysis config contains a
 `phase_space` block, each filled bin is interpreted as the rectangular 4D bin
 intersected with those generated-level DIS cuts. Both current configs require
 `Q2 >= 1` and `W >= 2`. RGA directly requires generated electron momentum
 `p_e >= 2 GeV`, while RGK directly requires `p_e >= 1 GeV`. These match the
 nominal post-selection thresholds without a redundant `y` cut. Conversion is
 intentionally padded to `1.5 GeV` for RGA and `0.3 GeV` for RGK so alternate
-post-selection thresholds can be studied. Its output is a native `C_rad.npz`
-artifact consumed by `unfold --radiative-correction`; reliability masks and
-correction uncertainties are propagated into the self-contained unfolding
-result. Statistical uncertainties are cluster-aware: exact consecutive LUND
-records emitted by one stochastic mode-3 multiplicity decision are grouped as
-one proposal cluster of weight `m`. Per-bin count variance is accumulated as
+post-selection thresholds can be studied. The native `C_rad.npz` artifact is
+consumed by `unfold --radiative-correction`; reliability masks and correction
+uncertainties are propagated into the self-contained unfolding result.
+
+AAO is retained only as an explicit legacy/reference provider: pass
+`--generator aao` plus the Born and radiative positional inputs. Its
+statistical uncertainties remain cluster-aware: exact consecutive LUND records
+emitted by one stochastic mode-3 multiplicity decision are grouped as one
+proposal cluster of weight `m`. Per-bin count variance is accumulated as
 `sum(m^2)`, and reliability uses the Kish effective count
 `sum(m)^2 / sum(m^2)` rather than treating repeated records as independent.
 This reduces exactly to the previous Poisson formula when every event has unit
-multiplicity. The artifact preserves raw counts, cluster `sumw2`, effective
+multiplicity. The AAO artifact preserves raw counts, cluster `sumw2`, effective
 counts, raw pre-reliability corrections and uncertainties, and aggregate
 cluster diagnostics. For AAO-generated samples, pass the generator `sig_sum`
 integrated cross sections with `--born-normalization-file` and
@@ -1314,8 +1338,20 @@ complete multiplicity block before checking its event limit; they lack only the
 new protection against resource-exhausting job-sized blocks. Regenerate a job
 that triggers either new fail-safe with a validated envelope; for radiative
 production also use the bounded full-support proposal. Do not pool or
-selectively omit a failed job. Regenerate the diagnostic report later without
-rereading LUND files:
+selectively omit a failed job. A legacy AAO invocation is therefore explicit:
+
+```bash
+python3 analysis/run_analysis.py radiative-correction born_lund/ rad_lund/ \
+  --generator aao \
+  --config configs/analysis/rgk/6.535.json --output results/C_rad_AAO.npz \
+  --born-normalization-file born_lund/aao_norad.norm \
+  --radiative-normalization-file rad_lund/aao_rad.norm
+```
+
+`analysis/exclurad_4d_radiative_correction.py` is now only a compatibility
+wrapper over the maintained EXCLUGEN provider path; it no longer implements a
+second estimator. Regenerate the diagnostic report later without rereading
+LUND files:
 
 ```bash
 python3 analysis/run_analysis.py radiative-correction-plots results/C_rad.npz \
