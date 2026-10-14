@@ -17,7 +17,9 @@ When returning after a break, start with these files:
 3. `configs/README.md` for configuration inheritance and calibration inputs;
 4. `analysis/README.md` for detailed command options and artifact schemas;
 5. `docs/analysis_pipeline.md` for the detector-correction and selection
-   design.
+   design;
+6. `docs/campaign_artifact_manifest.md` for the durable artifact catalog and
+   restorable campaign shell state.
 
 Then inspect the exact code state before looking at old shell history:
 
@@ -39,6 +41,7 @@ The normal campaign uses a small set of entry points:
 | --- | --- |
 | HIPO conversion | `build/hipo2root` |
 | Candidate construction | `build/post_process` |
+| Artifact and environment catalog | `scripts/build_campaign_manifest.py` |
 | Data event export | `analysis/export_selected_data.py` |
 | Data and GEMC exclusivity | `analysis/derive_exclusivity.py` |
 | Response through structure functions | `analysis/run_analysis.py` |
@@ -159,10 +162,21 @@ git -C "$repo" rev-parse HEAD \
 git -C "$repo" status --short \
   >! "$work/01_provenance/environment/git_status.txt"
 module list >&! "$work/01_provenance/environment/modules_${stamp}.txt"
+
+python3 "$repo/scripts/build_campaign_manifest.py" update "$work" \
+  --checksum none \
+  --shell-path "repo=$repo" \
+  --shell-path "work=$work" \
+  --shell-variable "stamp=$stamp"
 ```
 
 Also preserve the exact configs used. A symlink to a changing clone is not
-enough for final provenance.
+enough for final provenance. Pass every unexported `tcsh` path or scalar needed
+to resume the campaign with `--shell-path` or `--shell-variable`; a child
+process cannot discover local parent-shell variables by itself. The generated
+JSON preserves artifact descriptions across refreshes, and the generated
+`restore_campaign_environment.tcsh` restores the reviewed shell state. See
+`docs/campaign_artifact_manifest.md` for checksum, refresh, and security rules.
 
 ### Input gate
 
@@ -500,6 +514,8 @@ the collaborator's code when the campaign artifact can export them directly.
 A campaign is ready for physics comparison when all applicable items are true:
 
 - [ ] input manifests and environment provenance are frozen;
+- [ ] the campaign artifact manifest is current, fully described, and passes
+      its strict check;
 - [ ] data charge, run exclusions, and QADB behavior are audited;
 - [ ] data and GEMC selections were derived and inspected independently;
 - [ ] candidate kinematics and detector occupancy were reviewed;
