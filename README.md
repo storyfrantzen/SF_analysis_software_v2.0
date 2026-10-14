@@ -11,7 +11,10 @@ For a new campaign or when returning to the repository after a break, use
 maintained entry points, the `01_provenance` through `10_logs` work-directory
 layout, validation gates, artifact lineage, and the minimum completion
 checklist. Detailed tool and artifact documentation remains in
-[`analysis/README.md`](analysis/README.md).
+[`analysis/README.md`](analysis/README.md). The
+[campaign artifact manifest](docs/campaign_artifact_manifest.md) preserves
+campaign filenames, descriptions, checksums, and restorable shell paths and
+variables.
 
 ## Build
 
@@ -169,6 +172,8 @@ See `docs/analysis_pipeline.md` for the recommended modular layout.
 - `src/conversion/`, `include/conversion/` - HIPO-to-ROOT conversion support
 - `src/post/`, `include/post/` - ROOT post-processing cuts and candidate selection
 - `scripts/` - calibration and analysis helper scripts
+- `scripts/build_campaign_manifest.py` - durable campaign artifact and
+  shell-state catalog
 - `analysis/` - event-sample adapters and the maintained EPPI0 numerical pipeline
 - `visualizer/` - standalone interactive cut-study and extraction visualizer
 - `vendor/` - vendored header-only dependencies
