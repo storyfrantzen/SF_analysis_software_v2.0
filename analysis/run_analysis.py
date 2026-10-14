@@ -42,9 +42,16 @@ from eppi0.current_efficiency import (
     response_meta_sha256,
 )
 from eppi0.exclusivity import load_cuts
+from eppi0.generators import GeneratorCampaign, discover_exclugen_campaign
 from eppi0.response import build_response
 from eppi0.radiative_correction import (
     CLUSTER_UNCERTAINTY_MODEL,
+    EXCLUGEN_NORMALIZATION_METHOD,
+    EXCLUGEN_UNCERTAINTY_MODEL,
+    EXCLUGEN_V_DEFINITION,
+    ExclugenModeEstimate,
+    ExclugenRadiativeCorrectionResult,
+    compute_exclugen_radiative_correction,
     compute_radiative_correction,
 )
 from eppi0.root_response import build_response_from_root
@@ -280,12 +287,66 @@ def parser() -> argparse.ArgumentParser:
 
     radcorr = commands.add_parser(
         "radiative-correction",
-        help="Compute a native C_rad artifact from Born and radiative LUND samples",
+        help="Compute C_rad with EXCLUGEN (default) or legacy AAO samples",
     )
-    radcorr.add_argument("born", type=Path, help="Born LUND glob or directory")
-    radcorr.add_argument("radiative", type=Path, help="Radiative LUND glob or directory")
+    radcorr.add_argument(
+        "born",
+        nargs="?",
+        type=Path,
+        help="Legacy AAO Born LUND glob or directory (requires --generator aao)",
+    )
+    radcorr.add_argument(
+        "radiative",
+        nargs="?",
+        type=Path,
+        help="Legacy AAO radiative LUND glob or directory (requires --generator aao)",
+    )
     radcorr.add_argument("--config", type=Path, required=True)
     radcorr.add_argument("--output", type=Path, required=True)
+    radcorr.add_argument(
+        "--generator",
+        choices=("exclugen", "aao"),
+        default="exclugen",
+        help="Generator provider (default: exclugen; AAO is legacy/reference only)",
+    )
+    radcorr.add_argument(
+        "--production-root",
+        type=Path,
+        help="EXCLUGEN production root containing born/ and rad/",
+    )
+    radcorr.add_argument(
+        "--execution-path",
+        choices=("farm", "local", "local-parallel"),
+        default="farm",
+        help="Execution path recorded in EXCLUGEN provenance",
+    )
+    radcorr.add_argument("--generator-channel", default="pi0p")
+    radcorr.add_argument("--generator-model", default="pi0.amp2614")
+    radcorr.add_argument("--generator-revision")
+    radcorr.add_argument(
+        "--expected-runs",
+        type=int,
+        default=200,
+        help="Expected EXCLUGEN runs per mode; use 0 to disable",
+    )
+    radcorr.add_argument("--allow-revision-mismatch", action="store_true")
+    radcorr.add_argument(
+        "--allow-mixed-dirty-state",
+        action="store_true",
+        help="Permit historical campaigns containing both clean and dirty run stamps",
+    )
+    radcorr.add_argument(
+        "--v-max",
+        type=float,
+        default=0.2,
+        help="Offline EXCLUGEN radiative-only v cut in GeV2",
+    )
+    radcorr.add_argument(
+        "--progress-runs",
+        type=int,
+        default=25,
+        help="Print EXCLUGEN discovery/estimation progress every N runs; use 0 to disable",
+    )
     radcorr.add_argument("--chunk-size", type=int, default=200_000)
     radcorr.add_argument("--max-events", type=int)
     radcorr.add_argument(
@@ -299,7 +360,7 @@ def parser() -> argparse.ArgumentParser:
         default=5,
         help=(
             "Minimum Kish effective count in both samples for a reliable bin; "
-            "exact consecutive multiplicity copies count as one proposal cluster"
+            "AAO exact consecutive multiplicity copies count as one proposal cluster"
         ),
     )
     radcorr.add_argument(
@@ -1561,6 +1622,302 @@ def command_unfold(args: argparse.Namespace) -> None:
 
 
 def command_radiative_correction(args: argparse.Namespace) -> None:
+    """Dispatch radiative corrections through an explicit generator provider."""
+    provider = getattr(args, "generator", "aao")
+    if provider == "exclugen":
+        _command_exclugen_radiative_correction(args)
+    elif provider == "aao":
+        _command_aao_radiative_correction(args)
+    else:
+        raise ValueError(f"Unsupported radiative-correction generator {provider!r}")
+
+
+def _command_exclugen_radiative_correction(args: argparse.Namespace) -> None:
+    if args.production_root is None:
+        raise ValueError(
+            "--production-root is required for --generator exclugen"
+        )
+    if args.born is not None or args.radiative is not None:
+        raise ValueError(
+            "Born/radiative positional inputs are AAO-only; use --production-root "
+            "for --generator exclugen"
+        )
+    if args.max_events is not None:
+        raise ValueError(
+            "--max-events is not supported for EXCLUGEN because each run must retain "
+            "its sigma_nb / generated-events normalization"
+        )
+    aao_normalization_options = (
+        args.normalization_ratio,
+        args.born_integrated_cross_section,
+        args.radiative_integrated_cross_section,
+        args.born_normalization_file,
+        args.radiative_normalization_file,
+        args.max_normalization_files,
+    )
+    if any(value is not None for value in aao_normalization_options):
+        raise ValueError(
+            "AAO normalization overrides are not valid for --generator exclugen; "
+            "EXCLUGEN normalization comes from each matched config.json sigma_nb"
+        )
+    if args.expected_runs < 0:
+        raise ValueError("--expected-runs must be non-negative")
+    if args.progress_runs < 0:
+        raise ValueError("--progress-runs must be non-negative")
+
+    config = load_config(args.config)
+    binning = from_config(args.config)
+    phase_space = AnalysisPhaseSpace.from_config(config)
+    progress = print if args.progress_runs > 0 else None
+    campaign = discover_exclugen_campaign(
+        args.production_root,
+        execution_path=args.execution_path,
+        expected_runs=(args.expected_runs or None),
+        expected_channel=args.generator_channel,
+        expected_model=args.generator_model,
+        expected_revision=args.generator_revision,
+        allow_revision_mismatch=args.allow_revision_mismatch,
+        allow_mixed_dirty_state=args.allow_mixed_dirty_state,
+        progress=progress,
+        progress_interval=max(1, args.progress_runs),
+    )
+    result = compute_exclugen_radiative_correction(
+        campaign,
+        binning,
+        v_max=args.v_max,
+        min_counts=args.min_counts,
+        max_files=args.max_files,
+        progress_runs=args.progress_runs,
+        phase_space=phase_space,
+    )
+    _write_exclugen_radiative_correction(
+        args.output,
+        args.config,
+        config,
+        binning,
+        phase_space,
+        result,
+        min_counts=args.min_counts,
+        max_files=args.max_files,
+    )
+    if args.diagnostic_pdf:
+        pages = _plot_radiative_correction_diagnostics(
+            args.output,
+            args.diagnostic_pdf,
+            csv_path=args.diagnostic_csv,
+            include_quilt=args.diagnostic_quilt,
+            quilt_scale_mode=args.diagnostic_quilt_scale_mode,
+        )
+        print(
+            "Wrote radiative-correction diagnostic PDF with "
+            f"{pages} pages: {args.diagnostic_pdf}"
+        )
+    _print_exclugen_radiative_summary(result, phase_space, args.min_counts)
+    print(f"Wrote {args.output}")
+
+
+def _exclugen_mode_npz_fields(
+    prefix: str,
+    estimate: ExclugenModeEstimate,
+) -> dict[str, object]:
+    records = estimate.records
+    return {
+        f"{prefix}_run_indices": np.asarray(
+            [record.run_index for record in records], dtype=np.int64
+        ),
+        f"{prefix}_seeds": np.asarray(
+            [record.seed for record in records], dtype=np.int64
+        ),
+        f"{prefix}_sigma_nb": np.asarray(
+            [record.sigma_value for record in records], dtype=float
+        ),
+        f"{prefix}_requested_events_per_run": np.asarray(
+            [record.requested_events for record in records], dtype=np.int64
+        ),
+        f"{prefix}_observed_events_per_run": np.asarray(
+            [record.observed_events for record in records], dtype=np.int64
+        ),
+        f"{prefix}_config_sha256": np.asarray(
+            [record.config_sha256 for record in records]
+        ),
+        f"{prefix}_config_paths": np.asarray(
+            [str(record.config_path) for record in records]
+        ),
+        f"{prefix}_lund_paths": np.asarray(
+            [str(record.lund_path) for record in records]
+        ),
+    }
+
+
+def _write_exclugen_radiative_correction(
+    output: Path,
+    analysis_config: Path,
+    config: dict,
+    binning: AnalysisBinning,
+    phase_space: AnalysisPhaseSpace,
+    result: ExclugenRadiativeCorrectionResult,
+    *,
+    min_counts: int,
+    max_files: int | None,
+) -> None:
+    used_records = result.born.records + result.radiative.records
+    revisions = sorted({record.generator_revision for record in used_records})
+    dirty_states = sorted({record.dirty_state for record in used_records})
+    branches = sorted({record.generator_branch for record in used_records})
+    execution_paths = sorted({record.execution_path for record in used_records})
+    card_signatures = sorted({record.card_signature for record in used_records})
+    beam_energies = sorted({record.beam_energy_GeV for record in used_records})
+    generation_vcuts = sorted(
+        {record.generation_vcut_GeV2 for record in used_records}
+    )
+    artifact_campaign = GeneratorCampaign(
+        production_root=result.campaign.production_root,
+        runs=used_records,
+        analysis_config=str(Path(analysis_config).resolve()),
+        radiative_correction={
+            "normalization": EXCLUGEN_NORMALIZATION_METHOD,
+            "normalization_units": "nb",
+            "uncertainty_model": EXCLUGEN_UNCERTAINTY_MODEL,
+            "offline_v_definition": EXCLUGEN_V_DEFINITION,
+            "offline_v_max_GeV2": result.v_max_GeV2,
+            "radiative_histogram_renormalized_after_v_cut": False,
+            "minimum_effective_count": min_counts,
+        },
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output,
+        C_rad=result.c_rad,
+        delta_C=result.delta_c,
+        C_rad_raw=result.c_rad_raw,
+        delta_C_raw=result.delta_c_raw,
+        reliable=result.reliable,
+        support_overlap=result.support_overlap,
+        support_status=result.support_status,
+        H_born=binning.unflatten(result.born.counts),
+        H_rad=binning.unflatten(result.radiative.counts),
+        H_born_effective=binning.unflatten(result.born.effective_counts),
+        H_rad_effective=binning.unflatten(result.radiative.effective_counts),
+        born_cross_section_nb=binning.unflatten(result.born.cross_section),
+        radiative_vcut_cross_section_nb=binning.unflatten(
+            result.radiative.cross_section
+        ),
+        born_cross_section_sem_nb=binning.unflatten(result.born.standard_error),
+        radiative_vcut_cross_section_sem_nb=binning.unflatten(
+            result.radiative.standard_error
+        ),
+        normalization_ratio=result.normalization_ratio,
+        born_integrated_cross_section=result.born_integrated_cross_section,
+        radiative_integrated_cross_section=result.radiative_integrated_cross_section,
+        normalization_quantity="integrated_generated_cross_section",
+        normalization_units="nb",
+        normalization_method=EXCLUGEN_NORMALIZATION_METHOD,
+        min_counts=min_counts,
+        max_files=-1 if max_files is None else max_files,
+        beam_energy=(beam_energies[0] if len(beam_energies) == 1 else np.nan),
+        analysis_beam_energy=float(config["beam_energy"]),
+        q2_edges=binning.q2_edges,
+        xb_edges=binning.xb_edges,
+        t_edges=binning.t_edges,
+        phi_edges=binning.phi_edges,
+        born_files=len(result.born.records),
+        radiative_files=len(result.radiative.records),
+        born_events_seen=result.born.generated_events,
+        radiative_events_seen=result.radiative.generated_events,
+        born_topology_events=result.born.generated_events,
+        radiative_topology_events=result.radiative.generated_events,
+        born_selected_events=result.born.selected_events,
+        radiative_vcut_selected_events=result.radiative.selected_events,
+        born_in_range=result.born.in_range_events,
+        radiative_in_range=result.radiative.in_range_events,
+        generator_provider=result.campaign.provider,
+        generator_model=result.campaign.model,
+        generator_channel=result.campaign.channel,
+        generator_production_root=str(result.campaign.production_root),
+        generator_revisions=np.asarray(revisions),
+        generator_dirty_states=np.asarray(dirty_states),
+        generator_branches=np.asarray(branches),
+        generator_execution_paths=np.asarray(execution_paths),
+        generator_card_signatures=np.asarray(card_signatures),
+        generator_beam_energies_GeV=np.asarray(beam_energies, dtype=float),
+        generator_generation_vcuts_GeV2=np.asarray(
+            generation_vcuts, dtype=float
+        ),
+        generator_manifest_json=json.dumps(
+            artifact_campaign.to_manifest(), sort_keys=True
+        ),
+        analysis_config=str(Path(analysis_config).resolve()),
+        offline_radiative_v_max_GeV2=result.v_max_GeV2,
+        offline_radiative_v_definition=EXCLUGEN_V_DEFINITION,
+        radiative_histogram_renormalized_after_v_cut=False,
+        uncertainty_model=EXCLUGEN_UNCERTAINTY_MODEL,
+        reliability_count_definition="sigma_nb-weighted Kish effective count per 4D bin",
+        phi_convention="electron-proton trento plane",
+        phase_space_definition=(
+            "4D bin"
+            if not phase_space.enabled
+            else f"4D bin and {phase_space.description()}"
+        ),
+        **phase_space.as_npz_fields(),
+        **_exclugen_mode_npz_fields("born", result.born),
+        **_exclugen_mode_npz_fields("radiative", result.radiative),
+    )
+
+
+def _print_exclugen_radiative_summary(
+    result: ExclugenRadiativeCorrectionResult,
+    phase_space: AnalysisPhaseSpace,
+    min_counts: int,
+) -> None:
+    reliable_bins = int(np.count_nonzero(result.reliable))
+    total_bins = int(result.reliable.size)
+    support_counts = np.bincount(result.support_status.ravel(), minlength=7)
+    print(
+        "EXCLUGEN Born runs: "
+        f"files={len(result.born.records)}, generated={result.born.generated_events}, "
+        f"selected={result.born.selected_events}, in-range={result.born.in_range_events}"
+    )
+    print(
+        "EXCLUGEN radiative runs: "
+        f"files={len(result.radiative.records)}, "
+        f"generated={result.radiative.generated_events}, "
+        f"v-selected={result.radiative.selected_events}, "
+        f"in-range={result.radiative.in_range_events}"
+    )
+    print(
+        f"Reliable bins: {reliable_bins}/{total_bins} with minimum per-bin "
+        f"sigma_nb-weighted effective count={min_counts}"
+    )
+    print(
+        "Support bins: "
+        f"overlap={int(np.count_nonzero(result.support_overlap))}, "
+        f"both_empty={int(support_counts[1])}, born_only={int(support_counts[2])}, "
+        f"radiative_only={int(support_counts[3])}, "
+        f"low_born={int(support_counts[4])}, "
+        f"low_radiative={int(support_counts[5])}, "
+        f"low_both={int(support_counts[6])}"
+    )
+    print(
+        "Integrated generator cross sections: "
+        f"born={result.born_integrated_cross_section:.8g} nb, "
+        f"radiative={result.radiative_integrated_cross_section:.8g} nb; "
+        f"ratio={result.normalization_ratio:.8g}"
+    )
+    print(
+        f"Offline radiative-only cut: {EXCLUGEN_V_DEFINITION} < "
+        f"{result.v_max_GeV2:g} GeV2; no post-cut renormalization"
+    )
+    if phase_space.enabled:
+        print(f"Analysis phase space: 4D bin and {phase_space.description()}")
+
+
+def _command_aao_radiative_correction(args: argparse.Namespace) -> None:
+    if args.born is None or args.radiative is None:
+        raise ValueError(
+            "Born and radiative positional inputs are required for --generator aao"
+        )
+    if getattr(args, "production_root", None) is not None:
+        raise ValueError("--production-root is EXCLUGEN-only")
     config = load_config(args.config)
     binning = from_config(args.config)
     phase_space = AnalysisPhaseSpace.from_config(config)
@@ -1655,6 +2012,7 @@ def command_radiative_correction(args: argparse.Namespace) -> None:
         radiative_maximum_cluster_multiplicity=(
             result.radiative.maximum_cluster_multiplicity
         ),
+        generator_provider="aao",
         uncertainty_model=CLUSTER_UNCERTAINTY_MODEL,
         reliability_count_definition="kish-effective-count-per-bin",
         born_generated_q2_range=np.asarray([result.born.generated_q2_min, result.born.generated_q2_max]),
@@ -2496,10 +2854,12 @@ def _plot_radcorr_summary_page(
     import matplotlib.pyplot as plt
 
     good = reliable & np.isfinite(c_rad)
+    provider = _npz_string(correction, "generator_provider", "legacy")
     lines = [
         "Radiative-correction diagnostics",
         "",
         f"Source: {correction_path}",
+        f"Generator provider: {provider}",
         f"4D shape: {c_rad.shape}",
         f"Total bins: {c_rad.size}",
         f"Reliable phi bins: {np.count_nonzero(reliable)}",
@@ -2510,26 +2870,53 @@ def _plot_radcorr_summary_page(
         f"Born summed per-bin effective count: {np.sum(h_born_effective):.8g}",
         f"Radiative summed per-bin effective count: {np.sum(h_rad_effective):.8g}",
         f"Uncertainty model: {_npz_string(correction, 'uncertainty_model', 'legacy-independent-event-poisson')}",
-        f"Born topology clusters: {_optional_scalar(correction, 'born_topology_clusters'):.8g}",
-        f"Radiative topology clusters: {_optional_scalar(correction, 'radiative_topology_clusters'):.8g}",
-        f"Born maximum cluster multiplicity: {_optional_scalar(correction, 'born_maximum_cluster_multiplicity'):.8g}",
-        f"Radiative maximum cluster multiplicity: {_optional_scalar(correction, 'radiative_maximum_cluster_multiplicity'):.8g}",
         f"Normalization ratio: {_optional_scalar(correction, 'normalization_ratio'):.8g}",
-        f"Born integrated cross section: {_optional_scalar(correction, 'born_integrated_cross_section'):.8g}",
-        f"Radiative integrated cross section: {_optional_scalar(correction, 'radiative_integrated_cross_section'):.8g}",
+        f"Born integrated cross section (nb): {_optional_scalar(correction, 'born_integrated_cross_section'):.8g}",
+        f"Radiative integrated cross section (nb): {_optional_scalar(correction, 'radiative_integrated_cross_section'):.8g}",
         f"Mean C_rad reliable: {np.nanmean(c_rad[good]) if np.any(good) else np.nan:.8g}",
         f"Median C_rad reliable: {np.nanmedian(c_rad[good]) if np.any(good) else np.nan:.8g}",
         f"Mean delta_C reliable: {np.nanmean(delta_c[good]) if np.any(good) else np.nan:.8g}",
-        "",
-        _range_line(correction, "born_generated_q2_range", "Born generated Q2"),
-        _range_line(correction, "radiative_generated_q2_range", "Radiative generated Q2"),
-        _range_line(correction, "born_generated_eprime_range", "Born generated Eprime"),
-        _range_line(correction, "radiative_generated_eprime_range", "Radiative generated Eprime"),
-        "",
-        "support_status codes: 0 reliable, 1 both empty, 2 born only,",
-        "3 radiative only, 4 low effective born, 5 low effective radiative,",
-        "6 low effective support in both.",
     ]
+    if provider == "exclugen":
+        lines.extend(
+            [
+                f"Generator model: {_npz_string(correction, 'generator_model', 'not stored')}",
+                f"Generator channel: {_npz_string(correction, 'generator_channel', 'not stored')}",
+                f"Born independent runs: {_optional_scalar(correction, 'born_files'):.8g}",
+                f"Radiative independent runs: {_optional_scalar(correction, 'radiative_files'):.8g}",
+                f"Radiative events passing offline v cut: {_optional_scalar(correction, 'radiative_vcut_selected_events'):.8g}",
+                f"Offline radiative v maximum (GeV2): {_optional_scalar(correction, 'offline_radiative_v_max_GeV2'):.8g}",
+                f"Offline v definition: {_npz_string(correction, 'offline_radiative_v_definition', 'not stored')}",
+                "Radiative histogram renormalized after v cut: "
+                + _npz_string(
+                    correction,
+                    "radiative_histogram_renormalized_after_v_cut",
+                    "not stored",
+                ),
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                f"Born topology clusters: {_optional_scalar(correction, 'born_topology_clusters'):.8g}",
+                f"Radiative topology clusters: {_optional_scalar(correction, 'radiative_topology_clusters'):.8g}",
+                f"Born maximum cluster multiplicity: {_optional_scalar(correction, 'born_maximum_cluster_multiplicity'):.8g}",
+                f"Radiative maximum cluster multiplicity: {_optional_scalar(correction, 'radiative_maximum_cluster_multiplicity'):.8g}",
+                "",
+                _range_line(correction, "born_generated_q2_range", "Born generated Q2"),
+                _range_line(correction, "radiative_generated_q2_range", "Radiative generated Q2"),
+                _range_line(correction, "born_generated_eprime_range", "Born generated Eprime"),
+                _range_line(correction, "radiative_generated_eprime_range", "Radiative generated Eprime"),
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "support_status codes: 0 reliable, 1 both empty, 2 born only,",
+            "3 radiative only, 4 low effective born, 5 low effective radiative,",
+            "6 low effective support in both.",
+        ]
+    )
     counts = np.bincount(support_status.ravel(), minlength=7)
     lines.append("")
     lines.append("Status counts: " + ", ".join(f"{idx}={int(count)}" for idx, count in enumerate(counts[:7])))

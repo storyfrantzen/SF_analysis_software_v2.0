@@ -402,6 +402,27 @@ For each correction record source samples, code commit, config, reference
 current or model settings, uncertainty definition, validity mask, and checksum.
 Use unit-correction artifacts only for named systematic variants.
 
+EXCLUGEN is the maintained radiative-correction provider. Its production root
+must contain the validated `born/` and `rad/` LUND/config pairs; the command
+records the per-run `sigma_nb`, event counts, seeds, hashes, revision state,
+generation `vcut`, and the separate offline radiative-only `v` cut:
+
+```tcsh
+python3 "$repo/analysis/run_analysis.py" radiative-correction \
+  --production-root "$exclugen_production_root" \
+  --generator-model pi0.amp2614 \
+  --generator-revision "$exclugen_revision" \
+  --expected-runs 200 \
+  --v-max 0.2 \
+  --config "$analysis_config" \
+  --output "$radiative_correction_npz" \
+  --diagnostic-pdf "$radiative_correction_pdf"
+```
+
+Use `--allow-mixed-dirty-state` only for a reviewed historical production whose
+mixed stamps have been documented in campaign provenance. AAO corrections are
+legacy/reference-only and require the explicit `--generator aao` selection.
+
 ## 10. Run the extraction
 
 Use the closure-qualified iteration and uncertainty method. Keep the unfolding,

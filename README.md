@@ -17,6 +17,11 @@ artifact documentation remains in
 campaign filenames, descriptions, checksums, and restorable shell paths and
 variables.
 
+Generator-level radiative corrections now use the EXCLUGEN provider by
+default through `analysis/run_analysis.py radiative-correction`. The pinned AAO
+submodule remains available for reproducibility and reference comparisons, but
+AAO correction production requires the explicit `--generator aao` selection.
+
 ## Build
 
 The C++ executables require ROOT and CLAS12ROOT. QADB support is enabled when
