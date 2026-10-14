@@ -1,5 +1,9 @@
 # EPPI0 analysis
 
+Use [the repository map](../docs/repository_map.md) to choose the maintained
+entry point. This file is the detailed command and artifact-schema reference
+after that choice is made.
+
 This directory is the maintained replacement for the legacy
 `SF_analysis_software/analysis_v2.0` scripts.  The numerical core is separated
 from ROOT I/O so response construction, unfolding, and normalization can be
