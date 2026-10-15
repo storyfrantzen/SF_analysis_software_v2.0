@@ -6,6 +6,7 @@ import argparse
 from dataclasses import dataclass
 import json
 import math
+import os
 from pathlib import Path
 import re
 import shlex
@@ -36,6 +37,14 @@ from eppi0.cross_section import (
     physical_bin_volumes,
     reduced_cross_section,
     virtual_photon_flux,
+)
+from eppi0.exclugen_model import (
+    EXCLUGEN_CROSS_SECTION_QUANTITY,
+    EXCLUGEN_CROSS_SECTION_UNITS,
+    EXCLUGEN_DEFAULT_CHANNEL,
+    EXCLUGEN_DEFAULT_MODEL,
+    EXCLUGEN_T_CONVENTION,
+    ExclugenModelEvaluator,
 )
 from eppi0.current_efficiency import (
     load_current_efficiency_correction,
@@ -89,6 +98,24 @@ from eppi0.unfolding import (
 
 
 C_RAD_DIAGNOSTIC_PLOT_RANGE = (0.0, 2.0)
+
+MODEL_PROVENANCE_FIELDS = (
+    "model_provider",
+    "model_name",
+    "model_revision",
+    "channel",
+    "t_nucl",
+    "cross_section_quantity",
+    "units",
+    "beam_energy",
+    "helicity_mode",
+    "model_source_kind",
+    "model_source_path",
+    "model_dirty_state",
+    "model_out_of_range_policy",
+    "model_validity_json",
+    "model_provenance",
+)
 
 TOPOLOGY_COLORS = {
     4: "#4e79a7",
@@ -478,11 +505,46 @@ def parser() -> argparse.ArgumentParser:
 
     bin_centering = commands.add_parser(
         "bin-centering",
-        help="Compute AAO model bin-centering corrections over the analysis bins",
+        help="Compute model bin-centering corrections over the analysis bins",
     )
     bin_centering.add_argument("--config", type=Path, required=True)
     bin_centering.add_argument("--output", type=Path, required=True)
-    bin_centering.add_argument("--exe", type=Path, required=True, help="Path to the aao_xsec executable")
+    bin_centering.add_argument(
+        "--model-provider",
+        choices=("exclugen", "aao"),
+        default="exclugen",
+        help="Model provider (default: exclugen; AAO must be selected explicitly)",
+    )
+    bin_centering.add_argument(
+        "--exclugen-root",
+        type=Path,
+        help="Pinned exclurad_py checkout (or set EXCLUGEN_ROOT)",
+    )
+    bin_centering.add_argument(
+        "--model-name",
+        help=f"Registered model name (EXCLUGEN default: {EXCLUGEN_DEFAULT_MODEL})",
+    )
+    bin_centering.add_argument(
+        "--model-revision",
+        help="Required EXCLUGEN Git revision or unique prefix",
+    )
+    bin_centering.add_argument(
+        "--beam-helicity",
+        type=int,
+        choices=(-1, 0, 1),
+        default=0,
+        help="Model beam helicity; 0 is the helicity-averaged production default",
+    )
+    bin_centering.add_argument(
+        "--allow-dirty-model",
+        action="store_true",
+        help="Allow an explicitly non-production dirty EXCLUGEN checkout",
+    )
+    bin_centering.add_argument(
+        "--exe",
+        type=Path,
+        help="Path to aao_xsec (required only with --model-provider aao)",
+    )
     bin_centering.add_argument("--N", type=int, default=4, help="Midpoint samples per dimension")
     bin_centering.add_argument("--workers", type=int, default=None)
     bin_centering.add_argument("--chunk-size", type=int, default=64)
@@ -513,9 +575,9 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         help="Zero-based chunk index to compute when --bin-chunks is set",
     )
-    bin_centering.add_argument("--theory", type=int, default=5)
-    bin_centering.add_argument("--channel", type=int, default=1)
-    bin_centering.add_argument("--resonance", type=int, default=0)
+    bin_centering.add_argument("--theory", type=int, default=5, help="AAO only")
+    bin_centering.add_argument("--channel", type=int, default=1, help="AAO only")
+    bin_centering.add_argument("--resonance", type=int, default=0, help="AAO only")
     bin_centering.add_argument(
         "--max-failure-fraction",
         type=float,
@@ -620,15 +682,52 @@ def parser() -> argparse.ArgumentParser:
 
     model_prediction = commands.add_parser(
         "model-prediction",
-        help="Forward-average AAO or tabulated theory through the analysis bins and fit harmonics",
+        help="Forward-average EXCLUGEN, AAO, or tabulated theory and fit harmonics",
     )
     model_prediction.add_argument("--config", type=Path, required=True)
     model_prediction.add_argument("--cross-section", type=Path, required=True)
     model_prediction.add_argument("--output", type=Path, required=True)
-    model_prediction.add_argument("--model-name", required=True)
-    source = model_prediction.add_mutually_exclusive_group(required=True)
-    source.add_argument("--aao-exe", type=Path, help="Path to the aao_xsec executable")
-    source.add_argument("--table", type=Path, help="CSV model table")
+    model_prediction.add_argument(
+        "--model-provider",
+        choices=("exclugen", "aao", "table"),
+        default="exclugen",
+        help="Model provider (default: exclugen; AAO/table must be explicit)",
+    )
+    model_prediction.add_argument(
+        "--model-name",
+        help=f"Artifact/model label (EXCLUGEN default: {EXCLUGEN_DEFAULT_MODEL})",
+    )
+    model_prediction.add_argument(
+        "--exclugen-root",
+        type=Path,
+        help="Pinned exclurad_py checkout (or set EXCLUGEN_ROOT)",
+    )
+    model_prediction.add_argument(
+        "--model-revision",
+        help="Required EXCLUGEN Git revision or unique prefix",
+    )
+    model_prediction.add_argument(
+        "--beam-helicity",
+        type=int,
+        choices=(-1, 0, 1),
+        default=0,
+        help="Model beam helicity; 0 is the helicity-averaged production default",
+    )
+    model_prediction.add_argument(
+        "--allow-dirty-model",
+        action="store_true",
+        help="Allow an explicitly non-production dirty EXCLUGEN checkout",
+    )
+    model_prediction.add_argument(
+        "--aao-exe",
+        type=Path,
+        help="Path to aao_xsec (required with --model-provider aao)",
+    )
+    model_prediction.add_argument(
+        "--table",
+        type=Path,
+        help="CSV model table (required with --model-provider table)",
+    )
     model_prediction.add_argument(
         "--interpolation",
         choices=("linear", "nearest"),
@@ -3251,29 +3350,93 @@ def _prepare_matplotlib_cache() -> None:
     os.environ.setdefault("XDG_CACHE_HOME", str(xdg_dir))
 
 
+def _exclugen_model_evaluator(
+    args: argparse.Namespace,
+    beam_energy: float,
+) -> ExclugenModelEvaluator:
+    source_root = getattr(args, "exclugen_root", None) or os.environ.get(
+        "EXCLUGEN_ROOT"
+    )
+    if not source_root:
+        raise ValueError(
+            "EXCLUGEN is the default model provider; pass --exclugen-root or set "
+            "EXCLUGEN_ROOT to the pinned exclurad_py checkout"
+        )
+    return ExclugenModelEvaluator(
+        source_root,
+        beam_energy,
+        model_name=getattr(args, "model_name", None) or EXCLUGEN_DEFAULT_MODEL,
+        expected_revision=getattr(args, "model_revision", None),
+        channel=EXCLUGEN_DEFAULT_CHANNEL,
+        beam_helicity=getattr(args, "beam_helicity", 0),
+        allow_dirty=getattr(args, "allow_dirty_model", False),
+    )
+
+
+def _aao_model_metadata(
+    args: argparse.Namespace,
+    executable: Path,
+    beam_energy: float,
+) -> dict[str, object]:
+    name = getattr(args, "model_name", None) or (
+        f"aao.theory{args.theory}.channel{args.channel}"
+    )
+    return {
+        "model_provider": "aao",
+        "model_name": name,
+        "model_revision": "unversioned executable",
+        "channel": f"aao channel {args.channel}",
+        "t_nucl": EXCLUGEN_T_CONVENTION,
+        "cross_section_quantity": EXCLUGEN_CROSS_SECTION_QUANTITY,
+        "units": AAO_REDUCED_CROSS_SECTION_UNITS,
+        "beam_energy": beam_energy,
+        "helicity_mode": "AAO executable default",
+        "model_source_kind": "aao_executable",
+        "model_source_path": str(executable),
+        "aao_theory": args.theory,
+        "aao_channel": args.channel,
+        "aao_resonance": args.resonance,
+        "aao_raw_cross_section_units": AAO_RAW_CROSS_SECTION_UNITS,
+        "aao_reduced_cross_section_units": AAO_REDUCED_CROSS_SECTION_UNITS,
+        "aao_cross_section_conversion": AAO_CROSS_SECTION_CONVERSION,
+        "theory": args.theory,
+        "resonance": args.resonance,
+    }
+
+
 def command_bin_centering(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     binning = from_config(args.config)
     beam_energy = float(config["beam_energy"])
     phase_space = AnalysisPhaseSpace.from_config(config)
-    if not args.exe.is_file():
-        raise FileNotFoundError(f"aao_xsec executable not found: {args.exe}")
     if args.N <= 0:
         raise ValueError("--N must be positive")
     if args.chunk_size <= 0:
         raise ValueError("--chunk-size must be positive")
     bin_start, bin_stop, total_3d_bins = _bin_centering_range(args, binning)
 
-    evaluator = AaoExecutableEvaluator(
-        exe=args.exe,
-        beam_energy=beam_energy,
-        theory=args.theory,
-        channel=args.channel,
-        resonance=args.resonance,
-        workers=args.workers,
-        chunk_size=args.chunk_size,
-        verbose_failures=args.verbose_failures,
-    )
+    provider = getattr(args, "model_provider", "exclugen")
+    if provider == "exclugen":
+        if args.exe is not None:
+            raise ValueError("--exe requires --model-provider aao")
+        evaluator = _exclugen_model_evaluator(args, beam_energy)
+    elif provider == "aao":
+        if args.exe is None:
+            raise ValueError("--model-provider aao requires --exe")
+        if not args.exe.is_file():
+            raise FileNotFoundError(f"aao_xsec executable not found: {args.exe}")
+        evaluator = AaoExecutableEvaluator(
+            exe=args.exe,
+            beam_energy=beam_energy,
+            theory=args.theory,
+            channel=args.channel,
+            resonance=args.resonance,
+            workers=args.workers,
+            chunk_size=args.chunk_size,
+            verbose_failures=args.verbose_failures,
+        )
+    else:
+        raise ValueError(f"unsupported bin-centering model provider: {provider}")
     with evaluator:
         result = compute_bin_centering(
             binning,
@@ -3286,18 +3449,20 @@ def command_bin_centering(args: argparse.Namespace) -> None:
             progress_chunks=args.progress_chunks,
             phase_space=phase_space,
         )
+    model_metadata = (
+        evaluator.metadata()
+        if provider == "exclugen"
+        else _aao_model_metadata(args, args.exe, beam_energy)
+    )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     _save_bin_centering_artifact(
         args.output,
         binning,
         result,
-        beam_energy=beam_energy,
         samples_per_dimension=args.N,
         max_failure_fraction=args.max_failure_fraction,
-        theory=args.theory,
-        channel=args.channel,
-        resonance=args.resonance,
+        model_metadata=model_metadata,
         bin_start=bin_start,
         bin_stop=bin_stop,
         total_3d_bins=total_3d_bins,
@@ -3342,12 +3507,9 @@ def _save_bin_centering_artifact(
     binning,
     result,
     *,
-    beam_energy: float,
     samples_per_dimension: int,
     max_failure_fraction: float,
-    theory: int,
-    channel: int,
-    resonance: int,
+    model_metadata: dict[str, object],
     bin_start: int,
     bin_stop: int,
     total_3d_bins: int,
@@ -3375,15 +3537,8 @@ def _save_bin_centering_artifact(
         xb_edges=binning.xb_edges,
         t_edges=binning.t_edges,
         phi_edges=binning.phi_edges,
-        beam_energy=beam_energy,
         samples_per_dimension=samples_per_dimension,
         max_failure_fraction=max_failure_fraction,
-        theory=theory,
-        channel=channel,
-        resonance=resonance,
-        aao_raw_cross_section_units=AAO_RAW_CROSS_SECTION_UNITS,
-        aao_reduced_cross_section_units=AAO_REDUCED_CROSS_SECTION_UNITS,
-        aao_cross_section_conversion=AAO_CROSS_SECTION_CONVERSION,
         bin_start=bin_start,
         bin_stop=bin_stop,
         total_3d_bins=total_3d_bins,
@@ -3392,13 +3547,14 @@ def _save_bin_centering_artifact(
             "d4sigma(physical selected midpoint-grid centroid)"
         ),
         apply_as="centered_cross_section = bin_averaged_cross_section / C_BC",
-        t_convention="positive -t externally; signed t passed to aao_xsec",
+        t_convention="positive -t externally; signed nucleon t passed to model",
         phase_space_definition=(
             "exclusive physical bin"
             if not phase_space.enabled
             else f"exclusive physical bin and {phase_space.description()}"
         ),
         **phase_space.as_npz_fields(),
+        **model_metadata,
     )
 
 
@@ -3434,12 +3590,14 @@ def command_bin_centering_merge(args: argparse.Namespace) -> None:
         "failure_fraction": np.ones(shape, dtype=float),
     }
     metadata_keys = (
-        "beam_energy",
         "samples_per_dimension",
         "max_failure_fraction",
+        *MODEL_PROVENANCE_FIELDS,
         "theory",
-        "channel",
         "resonance",
+        "aao_theory",
+        "aao_channel",
+        "aao_resonance",
         "aao_raw_cross_section_units",
         "aao_reduced_cross_section_units",
         "aao_cross_section_conversion",
@@ -4355,7 +4513,6 @@ def command_model_prediction(args: argparse.Namespace) -> None:
             raise ValueError("cross-section final_validity_mask has incompatible shape")
     bin_start, bin_stop, total_3d = _bin_centering_range(args, binning)
     metadata = {
-        "model_name": args.model_name,
         "samples_per_dimension": args.N,
         "max_failure_fraction": args.max_failure_fraction,
         "bin_start": bin_start,
@@ -4371,29 +4528,14 @@ def command_model_prediction(args: argparse.Namespace) -> None:
         ),
         **phase_space.as_npz_fields(),
     }
-    if args.aao_exe:
-        if not args.aao_exe.is_file():
-            raise FileNotFoundError(f"aao_xsec executable not found: {args.aao_exe}")
-        evaluator = AaoExecutableEvaluator(
-            exe=args.aao_exe,
-            beam_energy=beam_energy,
-            theory=args.theory,
-            channel=args.channel,
-            resonance=args.resonance,
-            workers=args.workers,
-            chunk_size=args.chunk_size,
-            verbose_failures=args.verbose_failures,
-        )
-        metadata.update(
-            model_source_kind="aao_executable",
-            model_source_path=str(args.aao_exe),
-            aao_theory=args.theory,
-            aao_channel=args.channel,
-            aao_resonance=args.resonance,
-            aao_raw_cross_section_units=AAO_RAW_CROSS_SECTION_UNITS,
-            aao_reduced_cross_section_units=AAO_REDUCED_CROSS_SECTION_UNITS,
-            aao_cross_section_conversion=AAO_CROSS_SECTION_CONVERSION,
-        )
+    provider = getattr(args, "model_provider", "exclugen")
+    if provider == "exclugen":
+        if args.aao_exe is not None or args.table is not None:
+            raise ValueError(
+                "--aao-exe/--table require an explicit matching --model-provider"
+            )
+        evaluator = _exclugen_model_evaluator(args, beam_energy)
+        metadata.update(evaluator.metadata())
         with evaluator:
             result = average_model_over_bins(
                 binning,
@@ -4410,11 +4552,60 @@ def command_model_prediction(args: argparse.Namespace) -> None:
                 transform=transform,
                 requested_mask=requested,
             )
-    else:
+    elif provider == "aao":
+        if args.aao_exe is None:
+            raise ValueError("--model-provider aao requires --aao-exe")
+        if args.table is not None:
+            raise ValueError("--table requires --model-provider table")
+        if not args.aao_exe.is_file():
+            raise FileNotFoundError(f"aao_xsec executable not found: {args.aao_exe}")
+        evaluator = AaoExecutableEvaluator(
+            exe=args.aao_exe,
+            beam_energy=beam_energy,
+            theory=args.theory,
+            channel=args.channel,
+            resonance=args.resonance,
+            workers=args.workers,
+            chunk_size=args.chunk_size,
+            verbose_failures=args.verbose_failures,
+        )
+        metadata.update(_aao_model_metadata(args, args.aao_exe, beam_energy))
+        with evaluator:
+            result = average_model_over_bins(
+                binning,
+                beam_energy,
+                evaluator,
+                samples_per_dimension=args.N,
+                max_failure_fraction=args.max_failure_fraction,
+                bin_start=bin_start,
+                bin_stop=bin_stop,
+                progress_chunks=args.progress_chunks,
+                phase_space=phase_space,
+                q2_reference=q2_reference,
+                xb_reference=xb_reference,
+                transform=transform,
+                requested_mask=requested,
+            )
+    elif provider == "table":
+        if args.table is None:
+            raise ValueError("--model-provider table requires --table")
+        if args.aao_exe is not None:
+            raise ValueError("--aao-exe requires --model-provider aao")
+        if not args.model_name:
+            raise ValueError("--model-provider table requires --model-name")
         evaluator = TabulatedModelEvaluator(
             args.table, beam_energy, interpolation=args.interpolation
         )
         metadata.update(
+            model_provider="table",
+            model_name=args.model_name,
+            model_revision=f"sha256:{response_meta_sha256(args.table)}",
+            channel=EXCLUGEN_DEFAULT_CHANNEL,
+            t_nucl=EXCLUGEN_T_CONVENTION,
+            cross_section_quantity=EXCLUGEN_CROSS_SECTION_QUANTITY,
+            units=EXCLUGEN_CROSS_SECTION_UNITS,
+            beam_energy=beam_energy,
+            helicity_mode="encoded by table; unpolarized expected",
             model_source_kind="csv_table",
             model_source_path=str(args.table),
             table_mode=evaluator.mode,
@@ -4436,6 +4627,8 @@ def command_model_prediction(args: argparse.Namespace) -> None:
             transform=transform,
             requested_mask=requested,
         )
+    else:
+        raise ValueError(f"unsupported model provider: {provider}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         args.output,
@@ -4491,10 +4684,7 @@ def command_model_prediction_merge(args: argparse.Namespace) -> None:
     merged["reliable"] = np.zeros(binning.shape, dtype=bool)
     merged["computed"] = np.zeros(binning.shape, dtype=bool)
     identity_fields = (
-        "model_name",
-        "model_source_kind",
-        "model_source_path",
-        "beam_energy",
+        *MODEL_PROVENANCE_FIELDS,
         "samples_per_dimension",
         "max_failure_fraction",
         "total_3d_bins",
@@ -4540,9 +4730,7 @@ def command_model_prediction_merge(args: argparse.Namespace) -> None:
         )
     result = ModelGridResult(**merged)
     metadata_names = (
-        "model_name",
-        "model_source_kind",
-        "model_source_path",
+        *MODEL_PROVENANCE_FIELDS,
         "samples_per_dimension",
         "max_failure_fraction",
         "data_cross_section_path",
