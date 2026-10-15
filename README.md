@@ -21,6 +21,10 @@ Generator-level radiative corrections now use the EXCLUGEN provider by
 default through `analysis/run_analysis.py radiative-correction`. The pinned AAO
 submodule remains available for reproducibility and reference comparisons, but
 AAO correction production requires the explicit `--generator aao` selection.
+EXCLUGEN is likewise the default model provider for `bin-centering` and
+`model-prediction`. Those commands evaluate the pinned amplitude model directly
+in its reduced Hand-convention cross section, while AAO and CSV tables require
+explicit `--model-provider` selections.
 
 ## Build
 

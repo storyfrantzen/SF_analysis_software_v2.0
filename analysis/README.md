@@ -349,7 +349,8 @@ python3 analysis/run_analysis.py unfold data_events.npz \
 
 python3 analysis/run_analysis.py bin-centering \
   --config configs/analysis/rgk/6.535.json --output results/C_BC.npz \
-  --exe /path/to/aao_xsec --N 4 --workers 8 --progress-chunks 10
+  --exclugen-root /path/to/pinned/exclurad_py \
+  --model-revision 50a5074 --N 4 --progress-chunks 10
 
 python3 analysis/run_analysis.py cross-section results/unfolding.npz \
   --config configs/analysis/rgk/6.535.json --output results/cross_section.npz \
@@ -1544,14 +1545,27 @@ which must use the delivered map and its validity metadata.
 ## Bin-centering correction
 
 `bin-centering` computes `C_BC = <d4sigma>_physical_selected_bin /
-d4sigma(center)` with AAO model calls over a midpoint grid. The selected bin is
-the exclusive physical region intersected with the same optional `phase_space`
-cuts from the analysis config. The analysis-facing convention remains positive
-`-t`; the command converts internally to signed negative `t` only when calling
-`aao_xsec`. The reference center is the geometric centroid of the sampled
-physical selected midpoint cells in each bin, and the artifact stores the center
-coordinates, physical fractions, failed-call fractions, phase-space cuts, and
-reliability mask.
+d4sigma(center)` with EXCLUGEN model calls over a midpoint grid. EXCLUGEN is the
+default provider and `pi0.amp2614` is its default model. Pass
+`--exclugen-root` or set `EXCLUGEN_ROOT` to one pinned `exclurad_py` checkout;
+`--model-revision` can require its complete Git revision or a unique prefix.
+Dirty source trees are rejected unless `--allow-dirty-model` is deliberately
+given. The selected bin is the exclusive physical region intersected with the
+same optional `phase_space` cuts from the analysis config. The analysis-facing
+convention remains positive `-t`; the command converts internally to signed
+negative nucleon `t` when calling the model. The reference center is the
+geometric centroid of the sampled physical selected midpoint cells in each bin,
+and the artifact stores the center coordinates, physical fractions, failed-call
+fractions, phase-space cuts, and reliability mask.
+
+The EXCLUGEN adapter reads the model's raw Hand-convention structure functions
+in `nb/GeV^2` and constructs `d2sigma/(dt dphi)` in `nb/(GeV^2 rad)` with the
+canonical `1/(2pi)` harmonic formula. It does not call the electron-level
+Born/RC kernel, add a virtual-photon flux, or apply the AAO `dOmega/dt`
+Jacobian. The analysis layer applies its virtual-photon flux exactly once when
+forming `d4sigma`. Model provider, name, source revision, channel, `t_N`
+convention, quantity, units, beam energy, and helicity mode are stored in every
+artifact.
 
 Apply the artifact during normalization with `cross-section --bin-centering`.
 The cross-section stage uses the exclusive physical bin volume, including the
@@ -1569,7 +1583,8 @@ looks like:
 python3 analysis/run_analysis.py bin-centering \
   --config configs/analysis/rgk/6.535.json \
   --output results/bc_parts/C_BC_N4_part000.npz \
-  --exe /path/to/aao_xsec --N 4 --workers 8 \
+  --exclugen-root /path/to/pinned/exclurad_py \
+  --model-revision 50a5074 --N 4 \
   --progress-chunks 10 --bin-chunks 100 --bin-chunk-index 0
 ```
 
@@ -1582,24 +1597,27 @@ python3 analysis/run_analysis.py bin-centering-merge \
 ```
 
 Repeat with larger `--N` values, for example `N=2,4,6,8`, and compare the
-merged `C_BC` artifacts to assess convergence. To summarize and visualize a
-scan after merging all requested `C_BC_N*.npz` files:
+merged `C_BC` artifacts to assess convergence.
 
-For the JLab production scan at `N=10,20,30`, use the repository submission
-driver rather than embedding a multi-statement shell program in every SWIF job:
+The earlier JLab AAO production scan at `N=10,20,30` remains reproducible with
+the repository submission driver. It is retained as an explicit legacy/model
+comparison path rather than the new default:
 
 ```bash
 cd /work/clas12/storyf/SF_analysis_software_v2.0
 bash scripts/submit_bin_centering_swif.sh --run
 ```
 
-The driver freezes the analysis code, configuration, AAO executable, MAID
+The legacy driver freezes the analysis code, configuration, AAO executable, MAID
 table, module setup, driver, worker, job manifest, Git state, and hashes under
 the campaign correction directories. It creates two phase-0 jobs (one RGK and
 one RGA real output) and releases the remaining jobs only after both phase-0
 jobs succeed. The RGA result is common to the torus+1 and torus-1 campaigns.
 Use `--help` to override input paths, the UTC stage stamp, or the number of
 chunks.
+
+To summarize and visualize a scan after merging all requested
+`C_BC_N*.npz` files:
 
 ```bash
 python3 scripts/plot_bin_centering_convergence.py results/bin_centering_convergence/rgk_6.535 \
@@ -1633,6 +1651,52 @@ Files are discovered with `C_BC*.npz`, labeled using their stored
 `samples_per_dimension`, sorted by N, and symlink aliases are deduplicated.
 Only reliable, computed phi bins are drawn. The PDF also contains detailed phi
 pages for the primary positional artifact unless `--quilts-only` is passed.
+
+To run the retained AAO evaluator directly, select it explicitly:
+
+```bash
+python3 analysis/run_analysis.py bin-centering \
+  --model-provider aao --exe /path/to/aao_xsec \
+  --config configs/analysis/rgk/6.535.json \
+  --output results/C_BC_AAO.npz --N 4 --workers 8
+```
+
+## Forward-averaged model prediction
+
+`model-prediction` uses the same reduced-cross-section evaluator contract and
+EXCLUGEN default. It averages `Gamma * d2sigma/(dt dphi)` through the physical
+analysis cells, divides by the flux at the data reference coordinate, applies
+the data artifact's bin-centering transform when present, and fits the resulting
+phi grid to the standard harmonics:
+
+```bash
+python3 analysis/run_analysis.py model-prediction \
+  --config configs/analysis/rgk/6.535.json \
+  --cross-section results/cross_section.npz \
+  --output results/model_amp2614.npz \
+  --exclugen-root /path/to/pinned/exclurad_py \
+  --model-revision 50a5074 --N 4
+```
+
+AAO and CSV tables remain available only through explicit provider selections:
+
+```bash
+python3 analysis/run_analysis.py model-prediction \
+  --model-provider aao --aao-exe /path/to/aao_xsec \
+  --model-name aao-theory5 \
+  --config configs/analysis/rgk/6.535.json \
+  --cross-section results/cross_section.npz --output results/model_aao.npz
+
+python3 analysis/run_analysis.py model-prediction \
+  --model-provider table --table /path/to/model.csv \
+  --model-name external-table \
+  --config configs/analysis/rgk/6.535.json \
+  --cross-section results/cross_section.npz --output results/model_table.npz
+```
+
+Partial EXCLUGEN, AAO, and table artifacts use the existing
+`model-prediction-merge` command. The merge rejects disagreements in the generic
+model identity and cross-section convention fields before combining any bins.
 
 ## Beam-spin asymmetry
 

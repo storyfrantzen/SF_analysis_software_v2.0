@@ -38,7 +38,7 @@ python3 scripts/build_campaign_manifest.py --help
 | Build the response | `analysis/run_analysis.py response` | Sparse response and response metadata |
 | Certify unfolding | `analysis/validate_response_closure.py` | Closure, coverage, and estimator/iteration decision |
 | Unfold data | `analysis/run_analysis.py unfold` | Unfolded yields and propagated covariance |
-| Apply corrections | `analysis/run_analysis.py radiative-correction` and `bin-centering` | Frozen correction artifacts |
+| Apply corrections | `analysis/run_analysis.py radiative-correction` and `bin-centering` | Frozen EXCLUGEN-default correction artifacts with model provenance |
 | Normalize cross sections | `analysis/run_analysis.py cross-section` | Reduced cross sections with covariance |
 | Fit harmonics | `analysis/run_analysis.py fit-harmonics` | Audited harmonic coefficients and covariance |
 | Extract structure functions | `analysis/run_analysis.py structure-functions` | Structure-function artifact |

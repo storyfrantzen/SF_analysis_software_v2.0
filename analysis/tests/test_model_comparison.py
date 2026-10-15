@@ -270,6 +270,11 @@ class ModelCommandIntegrationTests(unittest.TestCase):
             cross_section=cross_section,
             output=output,
             model_name="synthetic",
+            model_provider="table",
+            exclugen_root=None,
+            model_revision=None,
+            beam_helicity=0,
+            allow_dirty_model=False,
             aao_exe=None,
             table=table,
             interpolation="nearest",
@@ -308,7 +313,10 @@ class ModelCommandIntegrationTests(unittest.TestCase):
             self.assertTrue(np.all(model["reliable"]))
             self.assertTrue(np.all(model["fit_success"]))
             self.assertTrue(np.all(model["quality_mask"]))
+            self.assertEqual(str(model["model_provider"]), "table")
             self.assertEqual(str(model["model_name"]), "synthetic")
+            self.assertEqual(str(model["channel"]), "pi0p")
+            self.assertEqual(str(model["units"]), "nb/(GeV^2 rad)")
             epsilon = float(epsilon_from_xb_q2(2.0, 0.3, 6.535))
             expected_u_after_transform = (10.0 + epsilon * 2.0) / 2.0
             np.testing.assert_allclose(
