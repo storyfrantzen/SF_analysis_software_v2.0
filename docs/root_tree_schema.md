@@ -70,8 +70,31 @@ so it is intentionally not row-aligned with `rEvents`.
 The source-aware key is the join contract. Set only
 `generatedEventTree.enabled`; its name is fixed.
 
+The `radiative` branch is an event-level hard-photon flag, not the source
+manifest mode. In an EXCLUGEN full-RC source, soft and hard events coexist.
+With `idecay=1`, two generated photons identify the non-hard form and three
+identify the hard form; the retained documentation `pi0` parent occurs in
+both.
+
 `gParticles` is reserved for a future generated-particle table. No current
 production path writes it because no such output contract is yet needed.
+
+## `SourceFiles`
+
+This is the compact file-level catalog for `gEvents`. Every row maps one
+`sourceFileId` to `sourceFileName`, `stratumFlatIndex`, and `generatorWeight`.
+When `generatorProvenance.sourceManifest` is configured, the row additionally
+stores the manifest schema and path, HIPO/LUND/config paths, provider, mode,
+channel, model, revision, branch, dirty state, run index, seed, event counts,
+integrated cross section and units, hashes, execution path, beam energy,
+generation cutoff, and nucleon `t`.
+
+Long generator strings are deliberately stored here rather than repeated in
+`gEvents`. `analysis/build_event_sample.py` selects the used catalog rows and
+embeds them in the NPZ `metadata_json`. EXCLUGEN rows always retain
+`generatorWeight == 1`; cross-section normalization is provenance for
+correction estimators, not response weighting. The legacy AAO chunk adapter
+continues to populate `stratumFlatIndex` and its pooled event weight.
 
 ## Selected output
 

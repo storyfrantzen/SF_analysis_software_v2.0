@@ -1139,7 +1139,16 @@ candidates and is the acceptance join key. It is necessary because GEMC files
 use run 11 and may each restart `eventNum` at one; `(runNum,eventNum)` is
 therefore diagnostic metadata, not a cross-file primary key.
 
-For stratum-preserving AAO chunks, `hipo2root` can resolve the pooled event
+For maintained generator productions, build an
+`sf-generator-source-manifest-v1` after GEMC and configure it as
+`generatorProvenance.sourceManifest`. The converter then requires an exact
+HIPO mapping, stores the full generator identity once in `SourceFiles`, and
+rejects a hard-radiative event from a source declared `born`. A full-RC `rad`
+source contains both soft and hard events. `build_event_sample.py` propagates
+the used catalog records into NPZ `metadata_json`. See
+`docs/generator_source_provenance.md` for the command and schema contract.
+
+For legacy stratum-preserving AAO chunks, `hipo2root` can resolve the pooled event
 weight from the filename and the repacker provenance:
 
 ```json
@@ -1159,8 +1168,17 @@ unknown token is a fatal error rather than a silent unit-weight fallback. This
 does not alter the standard LUND event structure. Type-1 generator submissions
 are not yet supported.
 
-Radiative topology is `e p pi0 gamma`; non-radiative topology is `e p gamma
-gamma`. Invalid generator topologies remain represented with
+The AAO pooled weight remains specific to that legacy adapter. EXCLUGEN source
+manifests preserve the cross section and event counts in `SourceFiles`, but
+`gEvents.weight` remains one so detector-response matrices count ordinary
+generated events.
+
+Legacy AAO hard-radiative topology is `e p pi0 gamma`; its non-radiative
+topology is `e p gamma gamma`. EXCLUGEN with `idecay=1` retains the parent
+`pi0` in both cases. Its non-hard event has two decay photons, while a hard
+event has the radiated photon followed by those two daughters. The converter
+therefore uses photon multiplicity—two versus three—rather than parent-`pi0`
+presence. Invalid generator topologies remain represented with
 `topologyValid=false` and reset kinematics, making event accounting explicit.
 
 After this row is saved, the normal `finalState` and DIS skim apply only to the

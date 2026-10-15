@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cmath>
 
+#include "GeneratedTopology.h"
 #include "ROOTBranches.h"
 
 class TTree;

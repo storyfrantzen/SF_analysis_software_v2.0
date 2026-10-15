@@ -119,16 +119,31 @@ void GeneratedEventBranches::fill(clas12::mcparticle* particles,
         }
     }
 
-    radiative = havePi0;
-    const bool haveMeson = radiative ? !photons.empty() : photons.size() >= 2;
-    topologyValid = haveElectron && haveProton && haveMeson;
+    const GeneratedTopology topology = classifyGeneratedTopology(
+        haveElectron, haveProton, havePi0, photons.size()
+    );
+    topologyValid = topology != GeneratedTopology::invalid;
+    radiative = topology == GeneratedTopology::hardRadiative;
     if (!topologyValid) return;
 
-    if (!radiative) pi0 = photons[0] + photons[1];
+    // EXCLUGEN writes the hard photon before the two pi0 daughters.  Select
+    // the daughter pair rather than the first two photons, reproducing the
+    // generator's parent links without requiring them from the bank reader.
+    if (photons.size() >= 2) {
+        const std::size_t firstDaughter = pi0DecayPhotonOffset(photons.size());
+        pi0 = photons[firstDaughter] + photons[firstDaughter + 1];
+        fillKinematics(
+            photons[firstDaughter], gamma1P, gamma1Theta, gamma1Phi
+        );
+        fillKinematics(
+            photons[firstDaughter + 1], gamma2P, gamma2Theta, gamma2Phi
+        );
+    } else if (!photons.empty()) {
+        // Legacy AAO stores only the radiated photon beside an undecayed pi0.
+        fillKinematics(photons[0], gamma1P, gamma1Theta, gamma1Phi);
+    }
     fillKinematics(electron, electronP, electronTheta, electronPhi);
     fillKinematics(proton, protonP, protonTheta, protonPhi);
-    if (!photons.empty()) fillKinematics(photons[0], gamma1P, gamma1Theta, gamma1Phi);
-    if (photons.size() > 1) fillKinematics(photons[1], gamma2P, gamma2Theta, gamma2Phi);
     fillKinematics(pi0, pi0P, pi0Theta, pi0Phi);
     const Kinematics::DIS dis = Kinematics::dis(electron, beamEnergy);
     Q2 = dis.Q2;

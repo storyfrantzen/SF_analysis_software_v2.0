@@ -113,12 +113,15 @@ contracts and compatibility behavior.
 
 `gEvents` has one row per input MC event. It stores the source-aware
 identity `(sourceFileId, sourceEventIndex)`, the original `(runNum, eventNum)`,
-generator-topology validity, a radiative flag, weight, and generated `Q2`, `nu`,
-`xB`, `y`, `W`, `minusT`, and `trentoPhi`. Invalid generator topologies remain
-present with `topologyValid=false`, allowing exact input-event accounting. A
+generator-topology validity, an event-level hard-radiative flag, weight, and
+generated `Q2`, `nu`, `xB`, `y`, `W`, `minusT`, and `trentoPhi`. Invalid
+generator topologies remain present with `topologyValid=false`, allowing exact
+input-event accounting. A
 `SourceFiles` tree maps each deterministic `sourceFileId` to its HIPO source
 name, normally the basename and the full path only when duplicate basenames
-must be disambiguated.
+must be disambiguated. Generator productions can also store one compact,
+generator-neutral provenance record per HIPO. See
+[generator source provenance](docs/generator_source_provenance.md).
 
 GEMC production files commonly restart `eventNum` at one and use `runNum == 11`,
 so `(runNum, eventNum)` is not a valid cross-file identity. The analysis join
