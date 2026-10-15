@@ -91,6 +91,7 @@ from run_analysis import (
 )
 from derive_exclusivity import derivation_settings, render_diagnostics_isolated
 from build_event_sample import (
+    generator_source_metadata,
     reconstructed_columns,
     reverse_join_selected_events,
 )
@@ -298,6 +299,49 @@ class ResponseTests(unittest.TestCase):
 
 
 class EventSampleTests(unittest.TestCase):
+    def test_generator_source_catalog_is_compact_npz_metadata(self) -> None:
+        source_files = {
+            "sourceFileId": np.array([1001, 1002], dtype=np.uint64),
+            "sourceFileName": np.array(["born_001.hipo", "born_002.hipo"]),
+            "generatorManifestSchema": np.array(
+                ["sf-generator-source-manifest-v1"] * 2
+            ),
+            "generatorProvider": np.array(["exclugen", "exclugen"]),
+            "generatorMode": np.array(["born", "born"]),
+            "generatorModel": np.array(["pi0.amp2614", "pi0.amp2614"]),
+            "generatorRevision": np.array(["50a5074", "50a5074"]),
+            "generatorRunIndex": np.array([1, 2], dtype=np.int64),
+            "generatorWeight": np.array([1.0, 1.0]),
+            "generatorSigmaValue": np.array([0.9, 1.1]),
+        }
+        metadata = generator_source_metadata(
+            source_files, np.array([1002], dtype=np.uint64)
+        )
+        self.assertEqual(
+            metadata["generator_source_schema"],
+            "sf-generator-source-manifest-v1",
+        )
+        self.assertEqual(metadata["generator_providers"], ["exclugen"])
+        self.assertEqual(metadata["generator_modes"], ["born"])
+        self.assertEqual(len(metadata["generator_sources"]), 1)
+        source = metadata["generator_sources"][0]
+        self.assertEqual(source["source_file_id"], 1002)
+        self.assertEqual(source["run_index"], 2)
+        self.assertEqual(source["generator_weight"], 1.0)
+        json.dumps(metadata, allow_nan=False)
+
+    def test_generator_source_catalog_rejects_unmapped_event_source(self) -> None:
+        source_files = {
+            "sourceFileId": np.array([1001], dtype=np.uint64),
+            "generatorManifestSchema": np.array(
+                ["sf-generator-source-manifest-v1"]
+            ),
+        }
+        with self.assertRaisesRegex(ValueError, "absent from SourceFiles"):
+            generator_source_metadata(
+                source_files, np.array([1002], dtype=np.uint64)
+            )
+
     def test_reverse_join_exports_only_valid_selected_matches(self) -> None:
         rec = {
             "runNum": np.array([11, 11, 11, 11]),

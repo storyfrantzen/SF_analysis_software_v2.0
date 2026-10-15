@@ -13,7 +13,6 @@
 #include <iomanip>
 #include <memory>
 #include <optional>
-#include <regex>
 #include <sstream>
 #include <unordered_map>
 
@@ -30,6 +29,7 @@
 
 #include "Config.h"
 #include "GeneratedEvent.h"
+#include "GeneratorProvenance.h"
 #include "ElasticMomentumCorrections.h"
 #include "ProtonEnergyLossCorrections.h"
 #include "QualityAssurance.h"
@@ -52,11 +52,6 @@ struct HipoOpenCheck {
 };
 
 namespace {
-
-struct GeneratorFileMetadata {
-    int stratumFlatIndex = -1;
-    double weight = 1.0;
-};
 
 std::string pidBranchToken(int pid) {
     return pid < 0 ? "Minus" + std::to_string(-pid) : std::to_string(pid);
@@ -171,63 +166,6 @@ private:
         std::fill(topologyPidCountsOther.begin(), topologyPidCountsOther.end(), 0);
     }
 };
-
-std::string extractCanonicalChunkId(const std::string& filename) {
-    static const std::regex pattern(
-        R"(s[0-9]{5}__g[0-9]{4}__p[0-9]{6})"
-    );
-    std::sregex_iterator match(filename.begin(), filename.end(), pattern);
-    const std::sregex_iterator end;
-    if (match == end) {
-        throw std::runtime_error(
-            "Filename does not contain a canonical AAO chunk ID "
-            "(sNNNNN__gNNNN__pNNNNNN): " + filename
-        );
-    }
-    const std::string identifier = match->str();
-    ++match;
-    if (match != end) {
-        throw std::runtime_error(
-            "Filename contains more than one canonical AAO chunk ID: " + filename
-        );
-    }
-    return identifier;
-}
-
-std::unordered_map<std::string, GeneratorFileMetadata>
-loadGeneratorWeights(const std::string& provenancePath) {
-    std::ifstream source(provenancePath);
-    if (!source.is_open()) {
-        throw std::runtime_error(
-            "Cannot open generator chunk provenance: " + provenancePath
-        );
-    }
-    nlohmann::json provenance;
-    source >> provenance;
-    if (provenance.value("schema", std::string()) != "aao-osg-stratum-chunks-v1") {
-        throw std::runtime_error(
-            "Unsupported generator chunk provenance schema in " + provenancePath
-        );
-    }
-    std::unordered_map<std::string, GeneratorFileMetadata> weights;
-    for (const auto& chunk : provenance.at("chunks")) {
-        const std::string chunkFile = chunk.at("chunk_file").get<std::string>();
-        const std::string chunkId = extractCanonicalChunkId(chunkFile);
-        const GeneratorFileMetadata metadata{
-            chunk.at("flat_index").get<int>(),
-            chunk.at("pooled_event_weight_microbarn").get<double>()
-        };
-        if (!std::isfinite(metadata.weight) || metadata.weight <= 0.0) {
-            throw std::runtime_error("Invalid generator weight for " + chunkFile);
-        }
-        if (!weights.emplace(chunkId, metadata).second) {
-            throw std::runtime_error(
-                "Duplicate canonical generator chunk ID in provenance: " + chunkId
-            );
-        }
-    }
-    return weights;
-}
 
 bool isRichDetectorSchemaWarning(const std::string& line) {
     return line.find("hipo::schema getEntryOrder") != std::string::npos &&
@@ -608,10 +546,28 @@ int main(int argc, char** argv) {
         std::cerr << "[ERROR] generatorWeights requires generatedEventTree.enabled=true\n";
         return 1;
     }
-    std::unordered_map<std::string, GeneratorFileMetadata> generatorWeights;
+    if (cfg.generatorProvenance.enabled() && !cfg.generatedEventTree.enabled) {
+        std::cerr << "[ERROR] generatorProvenance requires "
+                  << "generatedEventTree.enabled=true\n";
+        return 1;
+    }
+    std::optional<LegacyAaoChunkCatalog> generatorWeights;
     if (cfg.generatorWeights.enabled) {
         try {
-            generatorWeights = loadGeneratorWeights(cfg.generatorWeights.chunkProvenance);
+            generatorWeights.emplace(LegacyAaoChunkCatalog::load(
+                cfg.generatorWeights.chunkProvenance
+            ));
+        } catch (const std::exception& error) {
+            std::cerr << "[ERROR] " << error.what() << "\n";
+            return 1;
+        }
+    }
+    std::optional<GeneratorSourceCatalog> generatorSources;
+    if (cfg.generatorProvenance.enabled()) {
+        try {
+            generatorSources.emplace(GeneratorSourceCatalog::load(
+                cfg.generatorProvenance.sourceManifest
+            ));
         } catch (const std::exception& error) {
             std::cerr << "[ERROR] " << error.what() << "\n";
             return 1;
@@ -725,6 +681,13 @@ int main(int argc, char** argv) {
                       ? cfg.generatorWeights.chunkProvenance
                       : "unit weights")
               << "\n"
+              << "[INFO] GEN source  : "
+              << (cfg.generatorProvenance.enabled()
+                      ? cfg.generatorProvenance.sourceManifest
+                      : (cfg.generatorWeights.enabled
+                             ? "legacy AAO chunk provenance"
+                             : "not configured"))
+              << "\n"
               << "[INFO] QADB        : " << (qa->enabled() ? "enabled" : "disabled") << "\n"
               << "[INFO] Input check : "
               << (cfg.inputValidation.enabled
@@ -780,7 +743,7 @@ int main(int argc, char** argv) {
     }
 
     // ── Output ROOT file + tree ───────────────────────────────────────────────
-    TFile* outFile = TFile::Open(cfg.outputFile.c_str(), "RECREATE");
+    std::unique_ptr<TFile> outFile(TFile::Open(cfg.outputFile.c_str(), "RECREATE"));
     if (!outFile || outFile->IsZombie()) {
         std::cerr << "[ERROR] Could not open output file: " << cfg.outputFile << "\n";
         return 1;
@@ -800,6 +763,30 @@ int main(int argc, char** argv) {
     std::string catalogSourceFileName;
     int catalogStratumFlatIndex = -1;
     double catalogGeneratorWeight = 1.0;
+    std::string catalogGeneratorManifestSchema;
+    std::string catalogGeneratorManifestPath;
+    std::string catalogGeneratorHipoPath;
+    std::string catalogGeneratorLundPath;
+    std::string catalogGeneratorConfigPath;
+    std::string catalogGeneratorProvider;
+    std::string catalogGeneratorMode;
+    std::string catalogGeneratorChannel;
+    std::string catalogGeneratorModel;
+    std::string catalogGeneratorRevision;
+    std::string catalogGeneratorBranch;
+    std::string catalogGeneratorDirtyState;
+    long long catalogGeneratorRunIndex = -1;
+    long long catalogGeneratorSeed = -1;
+    long long catalogGeneratorRequestedEvents = -1;
+    long long catalogGeneratorObservedEvents = -1;
+    double catalogGeneratorSigmaValue = NAN;
+    std::string catalogGeneratorSigmaUnits;
+    std::string catalogGeneratorCardSignature;
+    std::string catalogGeneratorConfigSha256;
+    std::string catalogGeneratorExecutionPath;
+    double catalogGeneratorBeamEnergyGeV = NAN;
+    double catalogGeneratorGenerationVcutGeV2 = NAN;
+    double catalogGeneratorTNuclGeV2 = NAN;
     if (cfg.generatedEventTree.enabled) {
         sourceFilesTree = new TTree("SourceFiles", "SourceFiles");
         sourceFilesTree->Branch("sourceFileId", &catalogSourceFileId, "sourceFileId/l");
@@ -809,6 +796,64 @@ int main(int argc, char** argv) {
         );
         sourceFilesTree->Branch(
             "generatorWeight", &catalogGeneratorWeight, "generatorWeight/D"
+        );
+        sourceFilesTree->Branch(
+            "generatorManifestSchema", &catalogGeneratorManifestSchema
+        );
+        sourceFilesTree->Branch(
+            "generatorManifestPath", &catalogGeneratorManifestPath
+        );
+        sourceFilesTree->Branch("generatorHipoPath", &catalogGeneratorHipoPath);
+        sourceFilesTree->Branch("generatorLundPath", &catalogGeneratorLundPath);
+        sourceFilesTree->Branch("generatorConfigPath", &catalogGeneratorConfigPath);
+        sourceFilesTree->Branch("generatorProvider", &catalogGeneratorProvider);
+        sourceFilesTree->Branch("generatorMode", &catalogGeneratorMode);
+        sourceFilesTree->Branch("generatorChannel", &catalogGeneratorChannel);
+        sourceFilesTree->Branch("generatorModel", &catalogGeneratorModel);
+        sourceFilesTree->Branch("generatorRevision", &catalogGeneratorRevision);
+        sourceFilesTree->Branch("generatorBranch", &catalogGeneratorBranch);
+        sourceFilesTree->Branch("generatorDirtyState", &catalogGeneratorDirtyState);
+        sourceFilesTree->Branch(
+            "generatorRunIndex", &catalogGeneratorRunIndex, "generatorRunIndex/L"
+        );
+        sourceFilesTree->Branch(
+            "generatorSeed", &catalogGeneratorSeed, "generatorSeed/L"
+        );
+        sourceFilesTree->Branch(
+            "generatorRequestedEvents",
+            &catalogGeneratorRequestedEvents,
+            "generatorRequestedEvents/L"
+        );
+        sourceFilesTree->Branch(
+            "generatorObservedEvents",
+            &catalogGeneratorObservedEvents,
+            "generatorObservedEvents/L"
+        );
+        sourceFilesTree->Branch(
+            "generatorSigmaValue", &catalogGeneratorSigmaValue,
+            "generatorSigmaValue/D"
+        );
+        sourceFilesTree->Branch("generatorSigmaUnits", &catalogGeneratorSigmaUnits);
+        sourceFilesTree->Branch(
+            "generatorCardSignature", &catalogGeneratorCardSignature
+        );
+        sourceFilesTree->Branch(
+            "generatorConfigSha256", &catalogGeneratorConfigSha256
+        );
+        sourceFilesTree->Branch(
+            "generatorExecutionPath", &catalogGeneratorExecutionPath
+        );
+        sourceFilesTree->Branch(
+            "generatorBeamEnergyGeV", &catalogGeneratorBeamEnergyGeV,
+            "generatorBeamEnergyGeV/D"
+        );
+        sourceFilesTree->Branch(
+            "generatorGenerationVcutGeV2", &catalogGeneratorGenerationVcutGeV2,
+            "generatorGenerationVcutGeV2/D"
+        );
+        sourceFilesTree->Branch(
+            "generatorTNuclGeV2", &catalogGeneratorTNuclGeV2,
+            "generatorTNuclGeV2/D"
         );
     }
 
@@ -858,22 +903,27 @@ int main(int argc, char** argv) {
         const std::string sourceBasename = fs::path(hipoPath).filename().string();
         int sourceStratumFlatIndex = -1;
         double sourceGeneratorWeight = 1.0;
-        if (cfg.generatorWeights.enabled) {
-            std::string sourceChunkId;
+        const GeneratorSourceMetadata* sourceProvenance = nullptr;
+        const LegacyAaoChunkMetadata* aaoChunk = nullptr;
+        if (generatorSources) {
             try {
-                sourceChunkId = extractCanonicalChunkId(sourceBasename);
+                sourceProvenance = &generatorSources->at(hipoPath);
             } catch (const std::exception& error) {
                 std::cerr << "[ERROR] " << error.what() << "\n";
                 return 1;
             }
-            const auto weightEntry = generatorWeights.find(sourceChunkId);
-            if (weightEntry == generatorWeights.end()) {
-                std::cerr << "[ERROR] HIPO canonical chunk ID is absent from "
-                          << "generator chunk provenance: " << sourceChunkId << "\n";
+            sourceStratumFlatIndex = sourceProvenance->stratumFlatIndex;
+            sourceGeneratorWeight = sourceProvenance->generatorWeight;
+        }
+        if (cfg.generatorWeights.enabled) {
+            try {
+                aaoChunk = &generatorWeights->atHipoPath(hipoPath);
+            } catch (const std::exception& error) {
+                std::cerr << "[ERROR] " << error.what() << "\n";
                 return 1;
             }
-            sourceStratumFlatIndex = weightEntry->second.stratumFlatIndex;
-            sourceGeneratorWeight = weightEntry->second.weight;
+            sourceStratumFlatIndex = aaoChunk->stratumFlatIndex;
+            sourceGeneratorWeight = aaoChunk->generatorWeight;
         }
         const std::string sourceFileName = sourceBasenameCounts[sourceBasename] > 1
             ? fs::absolute(fs::path(hipoPath)).lexically_normal().string()
@@ -892,6 +942,63 @@ int main(int argc, char** argv) {
                 catalogSourceFileName = sourceFileName;
                 catalogStratumFlatIndex = sourceStratumFlatIndex;
                 catalogGeneratorWeight = sourceGeneratorWeight;
+                catalogGeneratorManifestSchema.clear();
+                catalogGeneratorManifestPath.clear();
+                catalogGeneratorHipoPath = fs::absolute(fs::path(hipoPath))
+                    .lexically_normal().string();
+                catalogGeneratorLundPath.clear();
+                catalogGeneratorConfigPath.clear();
+                catalogGeneratorProvider.clear();
+                catalogGeneratorMode.clear();
+                catalogGeneratorChannel.clear();
+                catalogGeneratorModel.clear();
+                catalogGeneratorRevision.clear();
+                catalogGeneratorBranch.clear();
+                catalogGeneratorDirtyState.clear();
+                catalogGeneratorRunIndex = -1;
+                catalogGeneratorSeed = -1;
+                catalogGeneratorRequestedEvents = -1;
+                catalogGeneratorObservedEvents = -1;
+                catalogGeneratorSigmaValue = NAN;
+                catalogGeneratorSigmaUnits.clear();
+                catalogGeneratorCardSignature.clear();
+                catalogGeneratorConfigSha256.clear();
+                catalogGeneratorExecutionPath.clear();
+                catalogGeneratorBeamEnergyGeV = NAN;
+                catalogGeneratorGenerationVcutGeV2 = NAN;
+                catalogGeneratorTNuclGeV2 = NAN;
+                if (sourceProvenance) {
+                    catalogGeneratorManifestSchema = sourceProvenance->manifestSchema;
+                    catalogGeneratorManifestPath = generatorSources->manifestPath();
+                    catalogGeneratorHipoPath = sourceProvenance->hipoPath;
+                    catalogGeneratorLundPath = sourceProvenance->lundPath;
+                    catalogGeneratorConfigPath = sourceProvenance->configPath;
+                    catalogGeneratorProvider = sourceProvenance->provider;
+                    catalogGeneratorMode = sourceProvenance->mode;
+                    catalogGeneratorChannel = sourceProvenance->channel;
+                    catalogGeneratorModel = sourceProvenance->model;
+                    catalogGeneratorRevision = sourceProvenance->generatorRevision;
+                    catalogGeneratorBranch = sourceProvenance->generatorBranch;
+                    catalogGeneratorDirtyState = sourceProvenance->dirtyState;
+                    catalogGeneratorRunIndex = sourceProvenance->runIndex;
+                    catalogGeneratorSeed = sourceProvenance->seed;
+                    catalogGeneratorRequestedEvents = sourceProvenance->requestedEvents;
+                    catalogGeneratorObservedEvents = sourceProvenance->observedEvents;
+                    catalogGeneratorSigmaValue = sourceProvenance->sigmaValue;
+                    catalogGeneratorSigmaUnits = sourceProvenance->sigmaUnits;
+                    catalogGeneratorCardSignature = sourceProvenance->cardSignature;
+                    catalogGeneratorConfigSha256 = sourceProvenance->configSha256;
+                    catalogGeneratorExecutionPath = sourceProvenance->executionPath;
+                    catalogGeneratorBeamEnergyGeV = sourceProvenance->beamEnergyGeV;
+                    catalogGeneratorGenerationVcutGeV2 =
+                        sourceProvenance->generationVcutGeV2;
+                    catalogGeneratorTNuclGeV2 = sourceProvenance->tNuclGeV2;
+                } else if (aaoChunk) {
+                    catalogGeneratorManifestSchema = "aao-osg-stratum-chunks-v1";
+                    catalogGeneratorManifestPath = generatorWeights->manifestPath();
+                    catalogGeneratorLundPath = aaoChunk->sourceLundPath;
+                    catalogGeneratorProvider = "aao";
+                }
                 sourceFilesTree->Fill();
             }
         }
@@ -933,6 +1040,17 @@ int main(int argc, char** argv) {
                             cfg.beamEnergy,
                             sourceStratumFlatIndex,
                             sourceGeneratorWeight);
+                if (sourceProvenance && gEvent.topologyValid &&
+                    !sourceProvenance->acceptsRadiativeEvent(gEvent.radiative)) {
+                    std::cerr << "[ERROR] Hard-radiative generated topology is "
+                              << "not allowed by source provenance for " << hipoPath
+                              << " at source event " << currentSourceEventIndex
+                              << ": manifest mode=" << sourceProvenance->mode
+                              << ", hard radiative="
+                              << (gEvent.radiative ? "true" : "false") << "\n";
+                    outFile->Close();
+                    return 1;
+                }
                 gEvents->Fill();
                 ++nGeneratedEvents;
                 if (gEvent.topologyValid) ++nGeneratedTopologyValid;

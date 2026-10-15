@@ -29,6 +29,10 @@ int main() {
         std::filesystem::current_path() / "test_config_neutral_inclusive.json";
     const auto invalidNeutralInclusivePath =
         std::filesystem::current_path() / "test_config_invalid_neutral_inclusive.json";
+    const auto generatorProvenancePath =
+        std::filesystem::current_path() / "test_config_generator_provenance.json";
+    const auto conflictingGeneratorProvenancePath =
+        std::filesystem::current_path() / "test_config_conflicting_generator_provenance.json";
 
     writeConfig(validPath, -1, 50000000);
     const Config valid(validPath.string());
@@ -114,6 +118,41 @@ int main() {
     std::filesystem::remove(invalidNeutralInclusivePath);
     if (!rejected) {
         std::cerr << "conversion config accepted an ambiguous additional-particle policy\n";
+        return 1;
+    }
+
+    {
+        std::ofstream output(generatorProvenancePath);
+        output << "{\"generatorProvenance\":{"
+               << "\"sourceManifest\":\"sources/manifest.json\"}}";
+    }
+    const Config generatorProvenance(generatorProvenancePath.string());
+    std::filesystem::remove(generatorProvenancePath);
+    const auto expectedManifest = (
+        generatorProvenancePath.parent_path() / "sources/manifest.json"
+    ).lexically_normal().string();
+    if (!generatorProvenance.generatorProvenance.enabled() ||
+        generatorProvenance.generatorProvenance.sourceManifest != expectedManifest) {
+        std::cerr << "conversion config did not resolve generator source provenance\n";
+        return 1;
+    }
+
+    {
+        std::ofstream output(conflictingGeneratorProvenancePath);
+        output << "{\"generatorWeights\":{\"enabled\":true,"
+               << "\"chunkProvenance\":\"chunks.json\"},"
+               << "\"generatorProvenance\":{"
+               << "\"sourceManifest\":\"sources.json\"}}";
+    }
+    rejected = false;
+    try {
+        const Config invalid(conflictingGeneratorProvenancePath.string());
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    std::filesystem::remove(conflictingGeneratorProvenancePath);
+    if (!rejected) {
+        std::cerr << "conversion config accepted conflicting generator provenance modes\n";
         return 1;
     }
     return 0;

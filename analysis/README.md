@@ -124,8 +124,11 @@ repeats a legacy event-key object only for backward compatibility. The full
 schema contract is documented in
 `docs/root_tree_schema.md`.
 
-Radiative generator events are interpreted as `e p pi0 gamma`; non-radiative
-events are interpreted as `e p gamma gamma`.  Extra reconstructed photons are
+Legacy AAO radiative events are interpreted as `e p pi0 gamma`, while its
+non-radiative events are `e p gamma gamma`. EXCLUGEN with `idecay=1` retains a
+documentation `pi0` parent and writes its two decay photons in both modes. Its
+full-RC sample mixes two-photon soft events with three-photon hard events; the
+extra hard photon precedes the decay pair. Extra reconstructed photons are
 allowed and the reconstructed pi0 candidate is the photon pair nearest the pi0
 mass.
 
@@ -1210,7 +1213,29 @@ The converter writes one row for every input MC event:
 while the converter `Summary` tree records both total generated rows and valid
 generated topologies for bookkeeping. The companion `SourceFiles` tree records
 the mapping from `sourceFileId` to HIPO source name, normally the basename and
-the full path only when duplicate basenames must be disambiguated.
+the full path only when duplicate basenames must be disambiguated. When a
+generator source manifest is configured, `build_event_sample.py` also copies
+the used file-level generator records into `metadata_json.generator_sources`
+and records compact provider, mode, model, revision, and schema summaries.
+
+Create the strict HIPO-to-generator mapping after detector simulation:
+
+```bash
+python3 analysis/build_generator_source_manifest.py \
+  /path/to/generator_campaign.json \
+  --mode born --hipo-directory /path/to/born/dst_inb \
+  --output /path/to/born/source_manifest.json
+```
+
+Configure the result under `generatorProvenance.sourceManifest` in the
+processing JSON. Conversion fails if an input HIPO is missing from the catalog
+or if a Born source contains a hard-radiative event. For EXCLUGEN with
+`idecay=1`, two photons identify a non-hard event and three identify a hard
+event; the retained parent `pi0` does not distinguish them. A full-RC source
+legitimately contains both. EXCLUGEN response events remain unit weighted; its
+stored cross section and event count are inputs to correction estimators, not
+response weights. The full contract is in
+`docs/generator_source_provenance.md`.
 
 Check both identities after converting more than one input file:
 
@@ -1221,7 +1246,7 @@ python3 analysis/check_event_keys.py 6.535_rgk_eppi0_GEMC.root
 Repeated `(runNum,eventNum)` keys are expected for the tested GEMC production;
 duplicated source-event keys are an error.
 
-### Bin-conditional OSG weights
+### Legacy AAO bin-conditional OSG weights
 
 After finalizing a bin-conditional AAO campaign, repack its LUND files without
 mixing strata or generator replicas:

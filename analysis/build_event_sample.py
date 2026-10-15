@@ -52,6 +52,70 @@ GENERATED_EVENT_COLUMNS = [
 
 GENERATED_OPTIONAL_COLUMNS = ["stratumFlatIndex"]
 
+SOURCE_FILES_TREE = "SourceFiles"
+
+GENERATOR_SOURCE_COLUMNS = [
+    "sourceFileId",
+    "sourceFileName",
+    "stratumFlatIndex",
+    "generatorWeight",
+    "generatorManifestSchema",
+    "generatorManifestPath",
+    "generatorHipoPath",
+    "generatorLundPath",
+    "generatorConfigPath",
+    "generatorProvider",
+    "generatorMode",
+    "generatorChannel",
+    "generatorModel",
+    "generatorRevision",
+    "generatorBranch",
+    "generatorDirtyState",
+    "generatorRunIndex",
+    "generatorSeed",
+    "generatorRequestedEvents",
+    "generatorObservedEvents",
+    "generatorSigmaValue",
+    "generatorSigmaUnits",
+    "generatorCardSignature",
+    "generatorConfigSha256",
+    "generatorExecutionPath",
+    "generatorBeamEnergyGeV",
+    "generatorGenerationVcutGeV2",
+    "generatorTNuclGeV2",
+]
+
+GENERATOR_SOURCE_METADATA_NAMES = {
+    "sourceFileId": "source_file_id",
+    "sourceFileName": "source_file_name",
+    "stratumFlatIndex": "stratum_flat_index",
+    "generatorWeight": "generator_weight",
+    "generatorManifestSchema": "manifest_schema",
+    "generatorManifestPath": "manifest_path",
+    "generatorHipoPath": "hipo_path",
+    "generatorLundPath": "lund_path",
+    "generatorConfigPath": "config_path",
+    "generatorProvider": "provider",
+    "generatorMode": "mode",
+    "generatorChannel": "channel",
+    "generatorModel": "model",
+    "generatorRevision": "revision",
+    "generatorBranch": "branch",
+    "generatorDirtyState": "dirty_state",
+    "generatorRunIndex": "run_index",
+    "generatorSeed": "seed",
+    "generatorRequestedEvents": "requested_events",
+    "generatorObservedEvents": "observed_events",
+    "generatorSigmaValue": "sigma_value",
+    "generatorSigmaUnits": "sigma_units",
+    "generatorCardSignature": "card_signature",
+    "generatorConfigSha256": "config_sha256",
+    "generatorExecutionPath": "execution_path",
+    "generatorBeamEnergyGeV": "beam_energy_GeV",
+    "generatorGenerationVcutGeV2": "generation_vcut_GeV2",
+    "generatorTNuclGeV2": "t_nucl_GeV2",
+}
+
 GENERATED_EVENT_PARTICLE_COLUMNS = [
     "electronP",
     "electronTheta",
@@ -172,7 +236,17 @@ def main() -> int:
         if has_generated_tree and generated_tree.GetBranch(name)
     ]
     generated_entries = int(generated_tree.GetEntries()) if has_generated_tree else 0
+    source_files_tree = input_file.Get(SOURCE_FILES_TREE)
+    source_files_columns = [
+        name for name in GENERATOR_SOURCE_COLUMNS
+        if source_files_tree and source_files_tree.GetBranch(name)
+    ]
     input_file.Close()
+    source_files = (
+        ROOT.RDataFrame(SOURCE_FILES_TREE, matched_path).AsNumpy(source_files_columns)
+        if source_files_columns
+        else {}
+    )
 
     selected_path = str(args.selected_root.resolve())
     selected_file = ROOT.TFile.Open(selected_path, "READ")
@@ -245,6 +319,9 @@ def main() -> int:
             "reconstructed_columns": sorted(rec_values),
             "schema_version": 8,
         }
+        metadata.update(generator_source_metadata(
+            source_files, sample.get("source_file_id")
+        ))
         write_sample(args.output, sample, metadata)
         print(f"Generated events scanned: {stats['generated_events_scanned']}")
         print(f"Valid generated events: {stats['valid_generated_events']}")
@@ -336,6 +413,9 @@ def main() -> int:
         "reconstructed_columns": sorted(rec_values),
         "schema_version": 7,
     }
+    metadata.update(generator_source_metadata(
+        source_files, sample.get("source_file_id")
+    ))
     write_sample(args.output, sample, metadata)
     print(f"Generated events: {generated.run.size}")
     print(f"Selected REC matches: {sample['rec_selected'].sum()}")
@@ -490,6 +570,95 @@ def source_keys(source_file_id: np.ndarray, source_event_index: np.ndarray) -> n
     keys["source_file_id"] = np.asarray(source_file_id, dtype=np.uint64)
     keys["source_event_index"] = np.asarray(source_event_index, dtype=np.uint64)
     return keys
+
+
+def _json_scalar(value):
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (float, np.floating)):
+        return float(value) if np.isfinite(value) else None
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    return str(value)
+
+
+def generator_source_metadata(
+    source_files: dict[str, np.ndarray],
+    used_source_file_ids: np.ndarray | None,
+) -> dict:
+    """Convert the compact ROOT source catalog to JSON-safe NPZ metadata."""
+
+    if not source_files or "sourceFileId" not in source_files:
+        return {}
+    row_count = np.asarray(source_files["sourceFileId"]).size
+    for name, values in source_files.items():
+        if np.asarray(values).size != row_count:
+            raise ValueError(f"SourceFiles column {name} has inconsistent size")
+    source_ids = np.asarray(source_files["sourceFileId"], dtype=np.uint64)
+    if np.unique(source_ids).size != source_ids.size:
+        raise ValueError("SourceFiles contains duplicate sourceFileId rows")
+
+    if used_source_file_ids is None or np.asarray(used_source_file_ids).size == 0:
+        selected_rows = np.arange(row_count, dtype=np.int64)
+    else:
+        used_ids = np.unique(np.asarray(used_source_file_ids, dtype=np.uint64))
+        lookup = {int(source_id): row for row, source_id in enumerate(source_ids)}
+        missing = [
+            int(source_id)
+            for source_id in used_ids
+            if int(source_id) not in lookup
+        ]
+        if missing:
+            raise ValueError(
+                f"generated events reference sourceFileId values absent from SourceFiles: {missing}"
+            )
+        selected_rows = np.asarray([lookup[int(source_id)] for source_id in used_ids])
+
+    if "generatorManifestSchema" not in source_files:
+        return {}
+    schemas = [
+        str(_json_scalar(np.asarray(source_files["generatorManifestSchema"])[row]))
+        for row in selected_rows
+    ]
+    configured = [bool(schema) for schema in schemas]
+    if not any(configured):
+        return {}
+    if not all(configured):
+        raise ValueError(
+            "SourceFiles mixes generator-provenance records with unclassified sources"
+        )
+
+    records: list[dict] = []
+    for row in selected_rows:
+        record = {
+            output_name: _json_scalar(np.asarray(source_files[input_name])[row])
+            for input_name, output_name in GENERATOR_SOURCE_METADATA_NAMES.items()
+            if input_name in source_files
+        }
+        records.append(record)
+
+    def distinct(name: str) -> list[str]:
+        return sorted({
+            str(record[name]) for record in records
+            if record.get(name) not in (None, "")
+        })
+
+    schema_values = distinct("manifest_schema")
+    metadata = {
+        "generator_source_schemas": schema_values,
+        "generator_providers": distinct("provider"),
+        "generator_modes": distinct("mode"),
+        "generator_models": distinct("model"),
+        "generator_revisions": distinct("revision"),
+        "generator_sources": records,
+    }
+    if len(schema_values) == 1:
+        metadata["generator_source_schema"] = schema_values[0]
+    return metadata
 
 
 def write_sample(output: Path, sample: dict[str, np.ndarray], metadata: dict) -> None:

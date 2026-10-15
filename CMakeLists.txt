@@ -43,6 +43,7 @@ link_directories(
 set(HIPO2ROOT_SOURCES
   ${PROJECT_SOURCE_DIR}/src/conversion/ElasticMomentumCorrections.cpp
   ${PROJECT_SOURCE_DIR}/src/conversion/GeneratedEvent.cpp
+  ${PROJECT_SOURCE_DIR}/src/conversion/GeneratorProvenance.cpp
   ${PROJECT_SOURCE_DIR}/src/conversion/ProtonEnergyLossCorrections.cpp
   ${PROJECT_SOURCE_DIR}/src/conversion/QualityAssurance.cpp
   ${PROJECT_SOURCE_DIR}/src/core/Kinematics.cpp
@@ -142,10 +143,23 @@ target_link_libraries(
 
 if(BUILD_TESTING)
   add_executable(
+    test_generated_topology
+    ${PROJECT_SOURCE_DIR}/tests/test_generated_topology.cpp
+  )
+  add_test(NAME generated_topology COMMAND test_generated_topology)
+
+  add_executable(
     test_conversion_config
     ${PROJECT_SOURCE_DIR}/tests/test_conversion_config.cpp
   )
   add_test(NAME conversion_config COMMAND test_conversion_config)
+
+  add_executable(
+    test_generator_provenance
+    ${PROJECT_SOURCE_DIR}/tests/test_generator_provenance.cpp
+    ${PROJECT_SOURCE_DIR}/src/conversion/GeneratorProvenance.cpp
+  )
+  add_test(NAME generator_provenance COMMAND test_generator_provenance)
 
   add_executable(
     test_elastic_momentum_corrections

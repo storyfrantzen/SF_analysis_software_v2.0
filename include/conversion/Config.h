@@ -32,6 +32,12 @@ struct GeneratorWeightsConfig {
     std::string chunkProvenance;
 };
 
+struct GeneratorProvenanceConfig {
+    std::string sourceManifest;
+
+    bool enabled() const { return !sourceManifest.empty(); }
+};
+
 struct InputValidationConfig {
     bool enabled = false;
     bool skipMalformed = true;
@@ -75,6 +81,7 @@ struct Config {
     double matchMaxAngleDeg = 3.0;
     GeneratedEventTreeConfig generatedEventTree;
     GeneratorWeightsConfig generatorWeights;
+    GeneratorProvenanceConfig generatorProvenance;
 
     // ── Data quality ──────────────────────────
     QADBConfig qadb;
@@ -232,6 +239,33 @@ struct Config {
                 generatorWeights.chunkProvenance =
                     provenancePath.lexically_normal().string();
             }
+        }
+
+        if (j.contains("generatorProvenance")) {
+            const auto& provenance = j["generatorProvenance"];
+            if (!provenance.is_object()) {
+                throw std::runtime_error("generatorProvenance must be a JSON object");
+            }
+            generatorProvenance.sourceManifest = provenance.value(
+                "sourceManifest", generatorProvenance.sourceManifest
+            );
+            if (generatorProvenance.sourceManifest.empty()) {
+                throw std::runtime_error(
+                    "generatorProvenance.sourceManifest must not be empty"
+                );
+            }
+            std::filesystem::path sourceManifest =
+                generatorProvenance.sourceManifest;
+            if (sourceManifest.is_relative() && !configDir.empty()) {
+                sourceManifest = configDir / sourceManifest;
+            }
+            generatorProvenance.sourceManifest =
+                sourceManifest.lexically_normal().string();
+        }
+        if (generatorWeights.enabled && generatorProvenance.enabled()) {
+            throw std::runtime_error(
+                "generatorWeights and generatorProvenance are mutually exclusive"
+            );
         }
 
         if (j.contains("qadb")) {

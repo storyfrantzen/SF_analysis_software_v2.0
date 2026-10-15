@@ -39,6 +39,7 @@ python3 scripts/build_campaign_manifest.py --help
 | Certify unfolding | `analysis/validate_response_closure.py` | Closure, coverage, and estimator/iteration decision |
 | Unfold data | `analysis/run_analysis.py unfold` | Unfolded yields and propagated covariance |
 | Apply corrections | `analysis/run_analysis.py radiative-correction` and `bin-centering` | Frozen EXCLUGEN-default correction artifacts with model provenance |
+| Bind GEMC output to generator runs | `analysis/build_generator_source_manifest.py` | Strict per-HIPO generator source manifest consumed by conversion |
 | Normalize cross sections | `analysis/run_analysis.py cross-section` | Reduced cross sections with covariance |
 | Fit harmonics | `analysis/run_analysis.py fit-harmonics` | Audited harmonic coefficients and covariance |
 | Extract structure functions | `analysis/run_analysis.py structure-functions` | Structure-function artifact |
@@ -117,6 +118,7 @@ Configuration inheritance and campaign-specific examples are documented in
 | Which config family should I edit? | `configs/README.md` |
 | Where are corrections and selections applied? | `docs/analysis_pipeline.md` |
 | What does each ROOT tree contain? | `docs/root_tree_schema.md` |
+| How is a final HIPO tied to its generator run? | `docs/generator_source_provenance.md` |
 | How are model and reference comparisons defined? | `docs/model_comparison.md` |
 | What legacy behavior was corrected? | `docs/legacy_analysis_v2_review.md` |
 | Why was a file retained, archived, or removed? | `docs/repository_cleanup_review.md` |
