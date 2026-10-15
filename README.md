@@ -36,7 +36,12 @@ cmake -S . -B build
 cmake --build build -j
 ```
 
-See `docs/jlab-module-setup.csh` for the JLab environment setup.
+See `docs/jlab-module-setup.csh` for the JLab environment setup. Source that
+file before running the Python analysis on the Farm. It refreshes tcsh's
+command cache, verifies the matched scientific Python/PyROOT stack, and exports
+the resolved interpreter as `SF_ANALYSIS_PYTHON`. Do not use an absolute
+`/usr/bin/python3*` path after loading the CLAS12 module because its compiled
+Python packages belong to the module-selected interpreter.
 
 ## Core compiled commands
 

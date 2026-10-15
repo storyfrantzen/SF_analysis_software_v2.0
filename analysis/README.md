@@ -270,6 +270,12 @@ data/GEMC detector mismodeling.
   `export_selected_particle_matches.py`;
 - the project ROOT dictionary when object branches are not already discoverable.
 
+On the JLab Farm, source `docs/jlab-module-setup.csh` and use `python3` or the
+exported `SF_ANALYSIS_PYTHON`. The setup selects the matched CLAS12 Python and
+PyROOT stack. Do not substitute `/usr/bin/python3` or `/usr/bin/python3.12`
+after loading the module; those interpreters are ABI-incompatible with the
+module's compiled Python extensions.
+
 Run the dependency-light tests from the repository root:
 
 ```bash
