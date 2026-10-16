@@ -339,12 +339,13 @@ python3 analysis/run_analysis.py response mc_events.npz \
   --config configs/analysis/rgk/6.535.json --output-dir results/response
 
 python3 analysis/run_analysis.py radiative-correction \
-  --production-root /path/to/exclugen/pi0p_campaign \
-  --config configs/analysis/rga/10.604.json --output results/C_rad.npz \
+  --production-root /path/to/exclugen/itarg1_campaign \
+  --config configs/analysis/rga/10.604.json --output results/C_RBC.npz \
   --generator-model pi0.amp2614 --generator-revision 50a5074 \
-  --expected-runs 200 --v-max 0.2 --allow-mixed-dirty-state \
-  --diagnostic-pdf results/C_rad_diagnostics.pdf \
-  --diagnostic-csv results/C_rad_diagnostics.csv
+  --exclugen-root /path/to/pinned/exclurad_py --model-revision 50a5074 \
+  --expected-runs 200 --v-max 0.2 --reference-N 20 \
+  --diagnostic-pdf results/C_RBC_diagnostics.pdf \
+  --diagnostic-csv results/C_RBC_diagnostics.csv
 
 python3 analysis/run_analysis.py unfold data_events.npz \
   results/response/response_matrix.npz results/response/response_meta.npz \
@@ -354,16 +355,10 @@ python3 analysis/run_analysis.py unfold data_events.npz \
   --background-cuts results/data_exclusivity.npz \
   --current-efficiency-correction \
     results/data_efficiency/rgk_6.535/current_efficiency_correction.json \
-  --radiative-correction results/C_rad.npz
-
-python3 analysis/run_analysis.py bin-centering \
-  --config configs/analysis/rgk/6.535.json --output results/C_BC.npz \
-  --exclugen-root /path/to/pinned/exclurad_py \
-  --model-revision 50a5074 --N 4 --progress-chunks 10
+  --radiative-correction results/C_RBC.npz
 
 python3 analysis/run_analysis.py cross-section results/unfolding.npz \
-  --config configs/analysis/rgk/6.535.json --output results/cross_section.npz \
-  --bin-centering results/C_BC.npz
+  --config configs/analysis/rgk/6.535.json --output results/cross_section.npz
 
 python3 analysis/run_analysis.py fit-harmonics results/cross_section.npz \
   --output results/harmonics.npz
@@ -1299,23 +1294,40 @@ stores both its raw numerical result and the production-quality decision
 described above.  This keeps weak fits inspectable without allowing sparse,
 ill-conditioned, imprecise, or negative curves into nominal coefficient plots.
 
-The `radiative-correction` command uses EXCLUGEN by default. It discovers and
-strictly validates the matched LUND/config pair for every Born and radiative
-run under `--production-root`. For run `i` and analysis bin `b`, the maintained
-estimator is
+The `radiative-correction` command uses EXCLUGEN by default. Its nominal input
+is an `itarg=1` full-radiative campaign; it discovers and strictly validates the
+matched LUND/config pair for every radiative run under `--production-root`. For
+run `i` and analysis bin `b`, the generated finite-bin cross-section estimator
+is
 
 ```text
 sigma_i * n_i,b / N_i,
 ```
 
 where `sigma_i` is the config's integrated `sigma_nb`, `N_i` is the complete
-generated-event count, and `n_i,b` is the selected bin count. The bin value is
-the mean across independent runs and its statistical uncertainty is the
-standard error across those run estimates. Only radiative events receive the
-offline `v = MX2(e'p) - m_pi0^2 < --v-max` cut. The accepted radiative sample
-is deliberately not renormalized after this cut. Generation `vcut` values and
-the offline cut are stored separately, along with model, revision, dirty state,
-card signatures, hashes, seeds, paths, event counts, and cross-section units.
+generated-event count, and `n_i,b` is the selected bin count. The bin value
+`R1_b` is the mean across independent runs and its statistical uncertainty is
+the standard error across those run estimates. Radiative events receive the
+offline `v = MX2(e'p) - m_pi0^2 < --v-max` cut and are deliberately not
+renormalized after it. Generation `vcut` values and the offline cut are stored
+separately, along with model, revision, dirty state, card signatures, hashes,
+seeds, paths, event counts, and cross-section units.
+
+The production divisor is the combined radiative-centering correction
+
+```text
+C_RBC,b = <R1>_b / B0(x_c,b)
+        = R1_b / [V_b Gamma(x_c,b) sigma_B0,reduced(x_c,b)].
+```
+
+Here `V_b` is the exclusive physical four-dimensional bin volume and `x_c,b`
+is its model-independent equal-volume centroid after the configured phase-space
+cuts. The midpoint order `--reference-N` controls only that geometry integral.
+The Born model is evaluated once, vectorized, at each valid centroid; no
+generated Born campaign and no finite-bin Born quadrature are required for the
+nominal correction. The artifact stores the same divisor as both `C_RBC` and
+the downstream-compatible `C_rad`, together with the centroid, `V_b`, generated
+`R1_b`, and center-point Born quantities.
 
 Both provider paths fill the configured analysis bins with the package's
 electron-proton Trento phi convention. If the analysis config contains a
@@ -1325,29 +1337,44 @@ intersected with those generated-level DIS cuts. Both current configs require
 `p_e >= 2 GeV`, while RGK directly requires `p_e >= 1 GeV`. These match the
 nominal post-selection thresholds without a redundant `y` cut. Conversion is
 intentionally padded to `1.5 GeV` for RGA and `0.3 GeV` for RGK so alternate
-post-selection thresholds can be studied. The native `C_rad.npz` artifact is
-consumed by `unfold --radiative-correction`; reliability masks and correction
-uncertainties are propagated into the self-contained unfolding result.
+post-selection thresholds can be studied. The native combined artifact is
+consumed by `unfold --radiative-correction`; reliability masks, the independent-
+run `R1` uncertainty, and the centroid coordinates are propagated into the
+self-contained unfolding result. `cross-section` evaluates the virtual-photon
+flux at that stored centroid and must not receive a separate `--bin-centering`
+artifact, because `C_RBC` already contains that transformation.
 
-Before changing that production convention, validate the complete matched
-four-sample matrix with `radiative-correction-closure`. Write `B0/R0` for Born
-and full-RC samples generated with `itarg=0`, and `B1/R1` for the corresponding
-`itarg=1` samples. The closure artifact records five related ratios:
+Retain the complete matched four-sample matrix as a validation and systematic
+study with `radiative-correction-closure`. Write `B0/R0` for Born and full-RC
+samples generated with `itarg=0`, and `B1/R1` for the corresponding `itarg=1`
+samples. The closure artifact records five related ratios:
 
 - `R1/B0`: leading total-correction candidate, including internal radiation
   and the target-radiation migration retained by the generated truth
   coordinates;
 - `R1/B1`: internal correction folded through the external-radiation sample,
-  and the current production convention;
+  retained as a comparison to the former production convention;
 - `B1/B0`: external-radiation effect on the Born sample;
 - `R0/B0`: internal correction without external radiation;
 - `R1/R0`: external-radiation effect on the full-RC sample.
 
-The command labels `R1/B0` as a validation candidate and stores it as
-`C_rad_candidate`, not as production `C_rad`, so the closure artifact cannot be
-silently substituted into `unfold`. The exact identity
-`R1/B0 = (R1/B1)(B1/B0)` is retained as a bookkeeping check, not as an
+The generated four-sample artifact remains validation-only and stores
+`C_rad_candidate`, so it cannot be silently substituted into `unfold`. The
+exact identity `R1/B0 = (R1/B1)(B1/B0)` is a bookkeeping check, not an
 independent statistical validation because the ratios share samples.
+
+Pass `--combined-reference-N N` to test the factorization used by the nominal
+artifact:
+
+```text
+<R1>/B0(x_c) = [<R1>/<B0>] [<B0>/B0(x_c)].
+```
+
+The left side is constructed directly from the generated `R1` bin integral and
+the center-point model value. The two factors on the right use the generated
+`B0` bin integral. Their product must agree to floating-point precision; this
+tests implementation bookkeeping, while run-to-run variation and midpoint-order
+scans test the separate statistical and numerical inputs.
 
 Optionally add a direct finite-bin integration of EXCLUGEN's internal-only
 `rc_factor()` result. It integrates `sigma_obs` and `sigma_born` separately in
@@ -1369,16 +1396,16 @@ python3 analysis/run_analysis.py radiative-correction-closure \
   --output results/radiative_closure.npz \
   --exclugen-root /path/to/pinned/exclurad_py \
   --model-revision 50a5074 \
+  --combined-reference-N 20 \
   --direct-samples-per-dimension 2 \
   --direct-bin-start 97 --direct-bin-stop 98
 ```
 
 Use a narrow bin range first because the direct kernel is substantially more
-expensive than reading generated events. Promote `R1/B0` to the nominal
-correction only after the generated `R0/B0` versus direct-integral comparison,
-midpoint convergence, four-sample support, and downstream extraction closure
-are satisfactory. Until then, the existing `radiative-correction` command and
-its production artifact remain unchanged.
+expensive than reading generated events. The direct `rc_factor()` integration
+has no `itarg=1` target convolution and therefore remains an internal-RC
+diagnostic; it does not replace the generated `R1` numerator of the nominal
+combined correction.
 
 AAO is retained only as an explicit legacy/reference provider: pass
 `--generator aao` plus the Born and radiative positional inputs. Its
@@ -1639,6 +1666,11 @@ negative nucleon `t` when calling the model. The reference center is the
 geometric centroid of the sampled physical selected midpoint cells in each bin,
 and the artifact stores the center coordinates, physical fractions, failed-call
 fractions, phase-space cuts, and reliability mask.
+
+This standalone finite-bin model integration is retained for convergence
+studies, model comparisons, and the legacy AAO two-factor workflow. Do not
+apply its `C_BC` artifact after the nominal EXCLUGEN `C_RBC` correction: that
+artifact already contains the required finite-bin-to-centroid transformation.
 
 The EXCLUGEN adapter reads the model's raw Hand-convention structure functions
 in `nb/GeV^2` and constructs `d2sigma/(dt dphi)` in `nb/(GeV^2 rad)` with the

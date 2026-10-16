@@ -1789,6 +1789,80 @@ class UnfoldingTests(unittest.TestCase):
             np.hypot(1.0 / 2.0, 1.0 * 0.2 / 2.0**2),
         )
 
+    def test_unfold_propagates_combined_correction_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            config_path = tmpdir / "config.json"
+            data_path = tmpdir / "data.npz"
+            matrix_path = tmpdir / "response.npz"
+            meta_path = tmpdir / "response_meta.npz"
+            correction_path = tmpdir / "C_RBC.npz"
+            output_path = tmpdir / "unfolding.npz"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "beam_energy": 6.535,
+                        "minimum_acceptance": 0.005,
+                        "binning": {
+                            "Q2": [1.0, 1.5],
+                            "xB": [0.1, 0.3],
+                            "minus_t": [0.1, 0.3],
+                            "phi_deg": [0.0, 360.0],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            np.savez_compressed(
+                data_path,
+                rec_Q2=np.asarray([1.2]),
+                rec_xB=np.asarray([0.2]),
+                rec_minus_t=np.asarray([0.2]),
+                rec_trento_phi=np.asarray([0.1]),
+                rec_selected=np.asarray([True]),
+            )
+            save_npz(matrix_path, eye(1, format="csr"))
+            np.savez_compressed(
+                meta_path,
+                efficiency=np.ones(1),
+                feed_in_fraction=0.0,
+                feed_in_shape=np.zeros(1),
+                response_variance_sum=np.zeros(1),
+            )
+            shape = (1, 1, 1, 1)
+            np.savez_compressed(
+                correction_path,
+                C_rad=np.full(shape, 2.0),
+                delta_C=np.full(shape, 0.2),
+                reliable=np.ones(shape, dtype=bool),
+                includes_bin_centering=np.asarray(True),
+                reference_q2=np.full(shape, 1.25),
+                reference_xB=np.full(shape, 0.24),
+                reference_minus_t=np.full(shape, 0.2),
+                reference_phi=np.full(shape, np.pi),
+            )
+            args = argparse.Namespace(
+                data=data_path,
+                response_matrix=matrix_path,
+                response_meta=meta_path,
+                config=config_path,
+                output=output_path,
+                selection_mask=None,
+                iterations=0,
+                bootstrap=0,
+                seed=12345,
+                radiative_correction=correction_path,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_unfold(args)
+            with np.load(output_path, allow_pickle=False) as result:
+                self.assertTrue(bool(result["radiative_includes_bin_centering"]))
+                np.testing.assert_allclose(result["radiative_reference_q2"], [1.25])
+                np.testing.assert_allclose(result["radiative_reference_xB"], [0.24])
+                np.testing.assert_allclose(result["radiative_reference_minus_t"], [0.2])
+                np.testing.assert_allclose(result["radiative_reference_phi"], [np.pi])
+                np.testing.assert_allclose(result["corrected_yield"], [0.5])
+
     def test_unfold_applies_run_current_weights_and_weighted_statistics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
@@ -2496,6 +2570,92 @@ class NormalizationTests(unittest.TestCase):
         np.testing.assert_array_equal(
             output["final_validity_mask"], [[[[True, False]]]]
         )
+
+    def test_cross_section_uses_combined_correction_reference_without_cbc(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            config_path = tmpdir / "config.json"
+            unfolding_path = tmpdir / "unfolding.npz"
+            centering_path = tmpdir / "C_BC.npz"
+            output_path = tmpdir / "cross_section.npz"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "beam_energy": 6.535,
+                        "target_length_cm": 5.0,
+                        "target_density_g_cm3": 0.071,
+                        "target_molar_mass_g": 1.008,
+                        "pi0_to_gg_branching_ratio": 0.988,
+                        "minimum_acceptance": 0.005,
+                        "phase_space": {
+                            "Q2_min": 1.0,
+                            "W_min": 2.0,
+                            "electron_p_min": 1.0,
+                        },
+                        "binning": {
+                            "Q2": [1.2, 1.4],
+                            "xB": [0.2, 0.3],
+                            "minus_t": [0.2, 0.3],
+                            "phi_deg": [0.0, 360.0],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            np.savez_compressed(
+                unfolding_path,
+                beam_charge_c=1.0e-3,
+                efficiency=np.asarray([1.0]),
+                corrected_yield=np.asarray([100.0]),
+                corrected_uncertainty=np.asarray([10.0]),
+                radiative_reliable=np.asarray([True]),
+                radiative_includes_bin_centering=np.asarray(True),
+                radiative_reference_q2=np.asarray([1.25]),
+                radiative_reference_xB=np.asarray([0.24]),
+                Q2_mean=np.asarray([1.35]),
+                xB_mean=np.asarray([0.28]),
+            )
+            np.savez_compressed(
+                centering_path,
+                C_BC=np.full((1, 1, 1, 1), 2.0),
+                reliable=np.ones((1, 1, 1, 1), dtype=bool),
+                q2_center=np.full((1, 1, 1, 1), 1.25),
+                xB_center=np.full((1, 1, 1, 1), 0.24),
+            )
+            args = argparse.Namespace(
+                unfolding_result=unfolding_path,
+                config=config_path,
+                output=output_path,
+                bin_centering=None,
+                global_normalization=1.0,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                command_cross_section(args)
+            with np.load(output_path, allow_pickle=False) as output:
+                flux = virtual_photon_flux(
+                    np.asarray([1.25]), np.asarray([0.24]), 6.535
+                )[0]
+                expected = (
+                    100.0
+                    * 1.0e-6
+                    / (
+                        float(output["luminosity_fb"])
+                        * 0.988
+                        * output["bin_volume"][0, 0, 0, 0]
+                        * flux
+                    )
+                )
+                self.assertAlmostEqual(
+                    output["reduced_cross_section"][0, 0, 0, 0], expected
+                )
+                self.assertTrue(bool(output["combined_radiative_centering_applied"]))
+                self.assertNotIn("bin_centering_C_BC", output.files)
+                np.testing.assert_allclose(output["flux_q2_mean"], [1.25])
+                np.testing.assert_allclose(output["flux_xb_mean"], [0.24])
+
+            args.bin_centering = centering_path
+            with self.assertRaisesRegex(ValueError, "already includes bin centering"):
+                command_cross_section(args)
 
 
 class BinCenteringTests(unittest.TestCase):

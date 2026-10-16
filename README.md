@@ -17,14 +17,17 @@ artifact documentation remains in
 campaign filenames, descriptions, checksums, and restorable shell paths and
 variables.
 
-Generator-level radiative corrections now use the EXCLUGEN provider by
-default through `analysis/run_analysis.py radiative-correction`. The pinned AAO
-submodule remains available for reproducibility and reference comparisons, but
-AAO correction production requires the explicit `--generator aao` selection.
-EXCLUGEN is likewise the default model provider for `bin-centering` and
-`model-prediction`. Those commands evaluate the pinned amplitude model directly
-in its reduced Hand-convention cross section, while AAO and CSV tables require
-explicit `--model-provider` selections.
+Generator-level radiative corrections now use the EXCLUGEN provider by default
+through `analysis/run_analysis.py radiative-correction`. The nominal artifact
+combines radiative and bin-centering effects as the generated finite-bin
+average `R1` (full RC with target radiation) divided by the Born model evaluated
+at the bin's physical-volume centroid. It therefore needs only the `itarg=1`
+radiative campaign plus the pinned model source; do not apply a second
+`bin-centering` artifact downstream. The pinned AAO submodule remains available
+for reproducibility and reference comparisons, but AAO correction production
+requires the explicit `--generator aao` selection and retains separate
+radiative and bin-centering factors. EXCLUGEN is also the default model provider
+for standalone `bin-centering` diagnostics and `model-prediction`.
 
 ## Build
 

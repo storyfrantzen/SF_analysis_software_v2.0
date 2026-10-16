@@ -25,7 +25,9 @@ from eppi0.bin_centering import (
     AAO_RAW_CROSS_SECTION_UNITS,
     AAO_REDUCED_CROSS_SECTION_UNITS,
     AaoExecutableEvaluator,
+    PhysicalBinReference,
     compute_bin_centering,
+    compute_physical_bin_reference,
 )
 from eppi0.background_subtraction import METHOD as BACKGROUND_METHOD
 from eppi0.background_subtraction import estimate_mgg_background
@@ -52,18 +54,26 @@ from eppi0.current_efficiency import (
     response_meta_sha256,
 )
 from eppi0.exclusivity import load_cuts
-from eppi0.generators import GeneratorCampaign, discover_exclugen_campaign
+from eppi0.generators import (
+    GeneratorCampaign,
+    discover_exclugen_campaign,
+    discover_exclugen_mode,
+)
 from eppi0.response import build_response
 from eppi0.radiative_correction import (
     CLUSTER_UNCERTAINTY_MODEL,
+    CombinedCorrectionClosure,
     EXCLUGEN_NORMALIZATION_METHOD,
     EXCLUGEN_UNCERTAINTY_MODEL,
     EXCLUGEN_V_DEFINITION,
     DirectInternalRadiativeResult,
+    ExclugenCombinedCorrectionResult,
     ExclugenModeEstimate,
     ExclugenRadiativeClosureResult,
     ExclugenRadiativeCorrectionResult,
+    combined_correction_closure,
     compute_direct_internal_radiative_correction,
+    compute_exclugen_combined_correction,
     compute_exclugen_radiative_closure,
     compute_exclugen_radiative_correction,
     compute_radiative_correction,
@@ -314,12 +324,21 @@ def parser() -> argparse.ArgumentParser:
             "event weights before unfolding"
         ),
     )
-    unfold.add_argument("--radiative-correction", type=Path,
-                        help="Legacy-compatible NPZ containing C_rad, delta_C, and reliable")
+    unfold.add_argument(
+        "--radiative-correction",
+        type=Path,
+        help=(
+            "NPZ containing C_rad (including the EXCLUGEN C_RBC alias), "
+            "delta_C, and reliable"
+        ),
+    )
 
     radcorr = commands.add_parser(
         "radiative-correction",
-        help="Compute C_rad with EXCLUGEN (default) or legacy AAO samples",
+        help=(
+            "Compute combined EXCLUGEN radiative-centering correction "
+            "(default) or legacy AAO C_rad"
+        ),
     )
     radcorr.add_argument(
         "born",
@@ -344,7 +363,7 @@ def parser() -> argparse.ArgumentParser:
     radcorr.add_argument(
         "--production-root",
         type=Path,
-        help="EXCLUGEN production root containing born/ and rad/",
+        help="EXCLUGEN itarg=1 production root containing rad/",
     )
     radcorr.add_argument(
         "--execution-path",
@@ -355,6 +374,29 @@ def parser() -> argparse.ArgumentParser:
     radcorr.add_argument("--generator-channel", default="pi0p")
     radcorr.add_argument("--generator-model", default="pi0.amp2614")
     radcorr.add_argument("--generator-revision")
+    radcorr.add_argument(
+        "--exclugen-root",
+        type=Path,
+        help="Pinned exclurad_py checkout for the Born centroid evaluation",
+    )
+    radcorr.add_argument(
+        "--model-revision",
+        help="Required revision for the Born model source; defaults to --generator-revision",
+    )
+    radcorr.add_argument(
+        "--allow-dirty-model",
+        action="store_true",
+        help="Allow an explicitly non-production Born evaluation from a dirty tree",
+    )
+    radcorr.add_argument(
+        "--reference-N",
+        type=int,
+        default=20,
+        help=(
+            "Midpoint cells per dimension used only to locate the physical-volume "
+            "centroid; no model calls are made on this grid (default: 20)"
+        ),
+    )
     radcorr.add_argument(
         "--expected-runs",
         type=int,
@@ -391,7 +433,7 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         default=5,
         help=(
-            "Minimum Kish effective count in both samples for a reliable bin; "
+            "Minimum effective count in each generated input for a reliable bin; "
             "AAO exact consecutive multiplicity copies count as one proposal cluster"
         ),
     )
@@ -404,7 +446,7 @@ def parser() -> argparse.ArgumentParser:
     radcorr.add_argument(
         "--diagnostic-pdf",
         type=Path,
-        help="Optional multi-page PDF with C_rad vs phi and support diagnostics",
+        help="Optional multi-page PDF with correction-vs-phi and support diagnostics",
     )
     radcorr.add_argument(
         "--diagnostic-csv",
@@ -457,7 +499,7 @@ def parser() -> argparse.ArgumentParser:
         "radiative-correction-closure",
         help=(
             "Compare matched EXCLUGEN itarg=0/1 Born and full-RC samples; "
-            "the leading candidate is rad(itarg=1)/born(itarg=0)"
+            "optionally close the combined R1/B0(center) factorization"
         ),
     )
     radclosure.add_argument("--config", type=Path, required=True)
@@ -566,6 +608,16 @@ def parser() -> argparse.ArgumentParser:
         default=1,
         help="Print direct-integration progress every N assigned bins; 0 disables",
     )
+    radclosure.add_argument(
+        "--combined-reference-N",
+        type=int,
+        default=0,
+        help=(
+            "Also verify <R1>/B0(reference) = (<R1>/<B0>)*(<B0>/B0(reference)) "
+            "using a model-independent physical centroid located with N midpoint "
+            "cells per dimension; 0 disables"
+        ),
+    )
 
     radcorr_plots = commands.add_parser(
         "radiative-correction-plots",
@@ -619,7 +671,10 @@ def parser() -> argparse.ArgumentParser:
     xsec.add_argument(
         "--bin-centering",
         type=Path,
-        help="Optional NPZ from bin-centering; output cross sections are divided by C_BC",
+        help=(
+            "Optional separate C_BC NPZ for legacy corrections; prohibited when "
+            "the radiative artifact already includes bin centering"
+        ),
     )
 
     bin_centering = commands.add_parser(
@@ -1520,11 +1575,34 @@ def command_unfold(args: argparse.Namespace) -> None:
     corrected_uncertainty = sigma_total.copy()
     corrected_covariance_phi = total_covariance_phi.copy()
     radiative_reliable = np.ones(binning.size, dtype=bool)
+    radiative_includes_bin_centering = False
+    radiative_reference_q2 = np.full(binning.size, np.nan, dtype=float)
+    radiative_reference_xb = np.full(binning.size, np.nan, dtype=float)
+    radiative_reference_minus_t = np.full(binning.size, np.nan, dtype=float)
+    radiative_reference_phi = np.full(binning.size, np.nan, dtype=float)
     if args.radiative_correction:
         correction = np.load(args.radiative_correction, allow_pickle=False)
         factor = binning.flatten_values(correction["C_rad"])
         factor_uncertainty = binning.flatten_values(correction["delta_C"])
         radiative_reliable = binning.flatten_values(correction["reliable"]).astype(bool)
+        radiative_includes_bin_centering = (
+            bool(np.asarray(correction["includes_bin_centering"]).item())
+            if "includes_bin_centering" in correction.files
+            else False
+        )
+        if radiative_includes_bin_centering:
+            for field, target in (
+                ("reference_q2", radiative_reference_q2),
+                ("reference_xB", radiative_reference_xb),
+                ("reference_minus_t", radiative_reference_minus_t),
+                ("reference_phi", radiative_reference_phi),
+            ):
+                if field not in correction.files:
+                    raise ValueError(
+                        "combined radiative-centering correction is missing "
+                        f"{field}"
+                    )
+                target[:] = binning.flatten_values(correction[field])
         radiative_valid = (
             radiative_reliable
             & (efficiency > minimum_acceptance)
@@ -1646,6 +1724,11 @@ def command_unfold(args: argparse.Namespace) -> None:
             else "not applicable to zero-iteration bin-by-bin correction"
         ),
         radiative_reliable=radiative_reliable,
+        radiative_includes_bin_centering=radiative_includes_bin_centering,
+        radiative_reference_q2=radiative_reference_q2,
+        radiative_reference_xB=radiative_reference_xb,
+        radiative_reference_minus_t=radiative_reference_minus_t,
+        radiative_reference_phi=radiative_reference_phi,
         kl_divergence=kl,
         efficiency=efficiency,
         beam_charge_c=beam_charge,
@@ -1882,39 +1965,66 @@ def _command_exclugen_radiative_correction(args: argparse.Namespace) -> None:
         raise ValueError("--expected-runs must be non-negative")
     if args.progress_runs < 0:
         raise ValueError("--progress-runs must be non-negative")
+    if args.reference_N <= 0:
+        raise ValueError("--reference-N must be positive")
+    source_root = args.exclugen_root or os.environ.get("EXCLUGEN_ROOT")
+    if not source_root:
+        raise ValueError(
+            "the combined EXCLUGEN correction requires --exclugen-root or "
+            "EXCLUGEN_ROOT"
+        )
 
     config = load_config(args.config)
     binning = from_config(args.config)
     phase_space = AnalysisPhaseSpace.from_config(config)
     progress = print if args.progress_runs > 0 else None
-    campaign = discover_exclugen_campaign(
+    radiative_records = discover_exclugen_mode(
         args.production_root,
+        "rad",
         execution_path=args.execution_path,
         expected_runs=(args.expected_runs or None),
         expected_channel=args.generator_channel,
         expected_model=args.generator_model,
-        expected_revision=args.generator_revision,
-        allow_revision_mismatch=args.allow_revision_mismatch,
+        expected_revision=(
+            None if args.allow_revision_mismatch else args.generator_revision
+        ),
         allow_mixed_dirty_state=args.allow_mixed_dirty_state,
         progress=progress,
         progress_interval=max(1, args.progress_runs),
     )
-    result = compute_exclugen_radiative_correction(
+    campaign = GeneratorCampaign(
+        production_root=Path(args.production_root),
+        runs=radiative_records,
+    )
+    evaluator = ExclugenModelEvaluator(
+        source_root,
+        float(config["beam_energy"]),
+        model_name=args.generator_model,
+        expected_revision=args.model_revision or args.generator_revision,
+        channel=args.generator_channel,
+        beam_helicity=0,
+        allow_dirty=args.allow_dirty_model,
+    )
+    result = compute_exclugen_combined_correction(
         campaign,
         binning,
+        float(config["beam_energy"]),
+        evaluator,
         v_max=args.v_max,
         min_counts=args.min_counts,
         max_files=args.max_files,
         progress_runs=args.progress_runs,
+        reference_samples_per_dimension=args.reference_N,
         phase_space=phase_space,
     )
-    _write_exclugen_radiative_correction(
+    _write_exclugen_combined_correction(
         args.output,
         args.config,
         config,
         binning,
         phase_space,
         result,
+        evaluator.metadata(),
         min_counts=args.min_counts,
         max_files=args.max_files,
     )
@@ -1930,7 +2040,7 @@ def _command_exclugen_radiative_correction(args: argparse.Namespace) -> None:
             "Wrote radiative-correction diagnostic PDF with "
             f"{pages} pages: {args.diagnostic_pdf}"
         )
-    _print_exclugen_radiative_summary(result, phase_space, args.min_counts)
+    _print_exclugen_combined_summary(result, phase_space, args.min_counts)
     print(f"Wrote {args.output}")
 
 
@@ -1944,6 +2054,8 @@ def command_radiative_correction_closure(args: argparse.Namespace) -> None:
         raise ValueError("--direct-samples-per-dimension must be non-negative")
     if args.direct_progress_bins < 0:
         raise ValueError("--direct-progress-bins must be non-negative")
+    if args.combined_reference_N < 0:
+        raise ValueError("--combined-reference-N must be non-negative")
     config = load_config(args.config)
     binning = from_config(args.config)
     phase_space = AnalysisPhaseSpace.from_config(config)
@@ -1980,8 +2092,8 @@ def command_radiative_correction_closure(args: argparse.Namespace) -> None:
     generator_beam_energy = float(campaign_itarg0.runs[0].beam_energy_GeV)
     direct_result = None
     direct_metadata = None
+    source_root = args.exclugen_root or os.environ.get("EXCLUGEN_ROOT")
     if args.direct_samples_per_dimension > 0:
-        source_root = args.exclugen_root or os.environ.get("EXCLUGEN_ROOT")
         if not source_root:
             raise ValueError(
                 "the direct internal-RC cross-check requires --exclugen-root or "
@@ -2013,6 +2125,77 @@ def command_radiative_correction_closure(args: argparse.Namespace) -> None:
             "evaluator_points": evaluator.n_points,
             "evaluator_failed_points": evaluator.n_failed,
         }
+    combined_closure = None
+    combined_reference = None
+    combined_center_reduced = None
+    combined_center_electron = None
+    combined_physical_volume = None
+    combined_model_metadata = None
+    if args.combined_reference_N > 0:
+        if not source_root:
+            raise ValueError(
+                "the combined-factor closure requires --exclugen-root or "
+                "EXCLUGEN_ROOT"
+            )
+        combined_reference = compute_physical_bin_reference(
+            binning,
+            float(config["beam_energy"]),
+            samples_per_dimension=args.combined_reference_N,
+            phase_space=phase_space,
+        )
+        combined_physical_volume = physical_bin_volumes(
+            binning,
+            float(config["beam_energy"]),
+            q2_minimum=(1.0 if phase_space.q2_min is None else phase_space.q2_min),
+            w_minimum=(2.0 if phase_space.w_min is None else phase_space.w_min),
+            electron_p_minimum=(
+                0.0
+                if phase_space.electron_p_min is None
+                else phase_space.electron_p_min
+            ),
+        )
+        valid_reference = (
+            (combined_reference.n_physical > 0)
+            & np.isfinite(combined_physical_volume)
+            & (combined_physical_volume > 0.0)
+        )
+        combined_center_reduced = np.full(binning.shape, np.nan, dtype=float)
+        model_evaluator = ExclugenModelEvaluator(
+            source_root,
+            float(config["beam_energy"]),
+            model_name=args.generator_model,
+            expected_revision=args.model_revision or args.generator_revision,
+            channel=args.generator_channel,
+            beam_helicity=0,
+            allow_dirty=args.allow_dirty_model,
+        )
+        if np.any(valid_reference):
+            reference_points = np.column_stack(
+                (
+                    combined_reference.xB_center[valid_reference],
+                    combined_reference.q2_center[valid_reference],
+                    -combined_reference.minus_t_center[valid_reference],
+                    combined_reference.phi_center[valid_reference],
+                )
+            )
+            combined_center_reduced[valid_reference] = model_evaluator(
+                reference_points
+            )
+        combined_center_electron = (
+            virtual_photon_flux(
+                combined_reference.q2_center,
+                combined_reference.xB_center,
+                float(config["beam_energy"]),
+            )
+            * combined_center_reduced
+        )
+        combined_closure = combined_correction_closure(
+            binning.unflatten(result.estimates["rad_itarg1"].cross_section),
+            binning.unflatten(result.estimates["born_itarg0"].cross_section),
+            combined_physical_volume,
+            combined_center_electron,
+        )
+        combined_model_metadata = model_evaluator.metadata()
     _write_exclugen_radiative_closure(
         args.output,
         args.config,
@@ -2024,11 +2207,18 @@ def command_radiative_correction_closure(args: argparse.Namespace) -> None:
         max_files=args.max_files,
         direct_result=direct_result,
         direct_metadata=direct_metadata,
+        combined_closure=combined_closure,
+        combined_reference=combined_reference,
+        combined_center_reduced=combined_center_reduced,
+        combined_center_electron=combined_center_electron,
+        combined_physical_volume=combined_physical_volume,
+        combined_model_metadata=combined_model_metadata,
     )
     _print_exclugen_radiative_closure_summary(
         result,
         args.min_counts,
         direct_result=direct_result,
+        combined_closure=combined_closure,
     )
     print(f"Wrote {args.output}")
 
@@ -2045,6 +2235,12 @@ def _write_exclugen_radiative_closure(
     max_files: int | None,
     direct_result: DirectInternalRadiativeResult | None = None,
     direct_metadata: dict[str, object] | None = None,
+    combined_closure: CombinedCorrectionClosure | None = None,
+    combined_reference: PhysicalBinReference | None = None,
+    combined_center_reduced: np.ndarray | None = None,
+    combined_center_electron: np.ndarray | None = None,
+    combined_physical_volume: np.ndarray | None = None,
+    combined_model_metadata: dict[str, object] | None = None,
 ) -> None:
     fields: dict[str, object] = {
         "schema": "sf-exclugen-radiative-closure-v1",
@@ -2201,6 +2397,50 @@ def _write_exclugen_radiative_closure(
                 ),
             }
         )
+    fields["combined_factorization_enabled"] = combined_closure is not None
+    if combined_closure is not None:
+        if (
+            combined_reference is None
+            or combined_center_reduced is None
+            or combined_center_electron is None
+            or combined_physical_volume is None
+        ):
+            raise ValueError("combined closure is missing reference/model fields")
+        fields.update(
+            {
+                "combined_factorization_definition": (
+                    "<R1>/B0(reference) = "
+                    "(<R1>/<B0>)*(<B0>/B0(reference))"
+                ),
+                "C_combined_direct": combined_closure.direct,
+                "C_generated_R1_over_generated_B0": (
+                    combined_closure.radiative_over_born_average
+                ),
+                "C_generated_B0_average_over_model_B0_center": (
+                    combined_closure.born_average_over_center
+                ),
+                "C_combined_factorized": combined_closure.product,
+                "combined_factorization_residual": combined_closure.residual,
+                "reliable_combined_factorization": combined_closure.reliable,
+                "combined_reference_q2": combined_reference.q2_center,
+                "combined_reference_xB": combined_reference.xB_center,
+                "combined_reference_minus_t": combined_reference.minus_t_center,
+                "combined_reference_phi": combined_reference.phi_center,
+                "combined_reference_n_physical": combined_reference.n_physical,
+                "combined_reference_physical_fraction": (
+                    combined_reference.physical_fraction
+                ),
+                "combined_reference_samples_per_dimension": (
+                    combined_reference.samples_per_dimension
+                ),
+                "combined_physical_bin_volume": combined_physical_volume,
+                "combined_B0_center_reduced": combined_center_reduced,
+                "combined_B0_center_electron": combined_center_electron,
+                "combined_model_metadata_json": json.dumps(
+                    combined_model_metadata or {}, sort_keys=True
+                ),
+            }
+        )
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(output, **fields)
 
@@ -2210,6 +2450,7 @@ def _print_exclugen_radiative_closure_summary(
     min_counts: int,
     *,
     direct_result: DirectInternalRadiativeResult | None = None,
+    combined_closure: CombinedCorrectionClosure | None = None,
 ) -> None:
     labels = {
         "total": "R1/B0 total candidate",
@@ -2257,6 +2498,20 @@ def _print_exclugen_radiative_closure_summary(
             f"mean direct/generated={mean_ratio:.8g}, "
             f"max |direct/generated - 1|={maximum_delta:.3g}"
         )
+    if combined_closure is not None:
+        valid = combined_closure.reliable & np.isfinite(
+            combined_closure.residual
+        )
+        maximum = (
+            float(np.max(np.abs(combined_closure.residual[valid])))
+            if np.any(valid)
+            else float("nan")
+        )
+        print(
+            "Combined radiative-centering identity: "
+            f"overlap={int(np.count_nonzero(valid))}/{valid.size}, "
+            f"max absolute residual={maximum:.3g}"
+        )
     print(
         f"Reliability threshold: sigma_nb-weighted effective count >= {min_counts} "
         "in both inputs to each ratio"
@@ -2294,6 +2549,172 @@ def _exclugen_mode_npz_fields(
             [str(record.lund_path) for record in records]
         ),
     }
+
+
+def _write_exclugen_combined_correction(
+    output: Path,
+    analysis_config: Path,
+    config: dict,
+    binning: AnalysisBinning,
+    phase_space: AnalysisPhaseSpace,
+    result: ExclugenCombinedCorrectionResult,
+    model_metadata: dict[str, object],
+    *,
+    min_counts: int,
+    max_files: int | None,
+) -> None:
+    records = result.radiative.records
+    artifact_campaign = GeneratorCampaign(
+        production_root=result.campaign.production_root,
+        runs=records,
+        analysis_config=str(Path(analysis_config).resolve()),
+        radiative_correction={
+            "definition": (
+                "R1_bin / (physical_bin_volume * virtual_photon_flux(reference) "
+                "* B0_reduced(reference))"
+            ),
+            "includes_bin_centering": True,
+            "offline_v_definition": EXCLUGEN_V_DEFINITION,
+            "offline_v_max_GeV2": result.v_max_GeV2,
+            "minimum_effective_count": min_counts,
+        },
+    )
+    radiative_sigma = float(np.mean([record.sigma_value for record in records]))
+    support_overlap = (
+        (binning.unflatten(result.radiative.counts) > 0.0)
+        & np.isfinite(result.born_center_reduced)
+        & (result.born_center_reduced > 0.0)
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output,
+        schema="sf-exclugen-combined-radiative-centering-v1",
+        correction_scope="radiative_and_bin_centering",
+        correction_definition=(
+            "C_RBC = <R1>_physical_bin / "
+            "[Gamma(reference) * B0_reduced(reference)]"
+        ),
+        correction_application=(
+            "divide unfolded radiated yield by C_RBC, then normalize with the "
+            "stored physical bin volume and reference virtual-photon flux; do not "
+            "apply a separate bin-centering correction"
+        ),
+        includes_bin_centering=True,
+        requires_separate_bin_centering=False,
+        C_rad=result.correction,
+        C_RBC=result.correction,
+        delta_C=result.uncertainty,
+        delta_C_RBC=result.uncertainty,
+        C_rad_raw=result.correction_raw,
+        C_RBC_raw=result.correction_raw,
+        delta_C_raw=result.uncertainty_raw,
+        delta_C_RBC_raw=result.uncertainty_raw,
+        reliable=result.reliable,
+        support_overlap=support_overlap,
+        support_status=result.support_status,
+        H_rad=binning.unflatten(result.radiative.counts),
+        H_rad_effective=binning.unflatten(result.radiative.effective_counts),
+        radiative_vcut_cross_section_nb=binning.unflatten(
+            result.radiative.cross_section
+        ),
+        radiative_vcut_cross_section_sem_nb=binning.unflatten(
+            result.radiative.standard_error
+        ),
+        radiative_bin_average_d4sigma=result.radiative_bin_average,
+        born_center_reduced_cross_section=result.born_center_reduced,
+        born_center_electron_d4sigma=result.born_center_electron,
+        physical_bin_volume=result.physical_volume,
+        reference_q2=result.reference.q2_center,
+        reference_xB=result.reference.xB_center,
+        reference_minus_t=result.reference.minus_t_center,
+        reference_phi=result.reference.phi_center,
+        reference_n_physical=result.reference.n_physical,
+        reference_physical_fraction=result.reference.physical_fraction,
+        reference_samples_per_dimension=result.reference.samples_per_dimension,
+        reference_definition=(
+            "equal-volume centroid of midpoint cells passing exclusive physical "
+            "kinematics and configured generated-level phase-space cuts"
+        ),
+        normalization_quantity="integrated_generated_cross_section",
+        normalization_units="nb",
+        normalization_method=EXCLUGEN_NORMALIZATION_METHOD,
+        radiative_integrated_cross_section=radiative_sigma,
+        min_counts=min_counts,
+        max_files=-1 if max_files is None else max_files,
+        beam_energy=float(config["beam_energy"]),
+        analysis_beam_energy=float(config["beam_energy"]),
+        q2_edges=binning.q2_edges,
+        xb_edges=binning.xb_edges,
+        t_edges=binning.t_edges,
+        phi_edges=binning.phi_edges,
+        radiative_files=len(records),
+        radiative_events_seen=result.radiative.generated_events,
+        radiative_topology_events=result.radiative.generated_events,
+        radiative_vcut_selected_events=result.radiative.selected_events,
+        radiative_in_range=result.radiative.in_range_events,
+        generator_provider=result.campaign.provider,
+        generator_model=result.campaign.model,
+        generator_channel=result.campaign.channel,
+        generator_production_root=str(result.campaign.production_root),
+        generator_manifest_json=json.dumps(
+            artifact_campaign.to_manifest(), sort_keys=True
+        ),
+        offline_radiative_v_max_GeV2=result.v_max_GeV2,
+        offline_radiative_v_definition=EXCLUGEN_V_DEFINITION,
+        radiative_histogram_renormalized_after_v_cut=False,
+        uncertainty_model=EXCLUGEN_UNCERTAINTY_MODEL,
+        uncertainty_scope=(
+            "independent-run standard error of generated R1 only; model and "
+            "reference-coordinate systematics are not included"
+        ),
+        reliability_count_definition=(
+            "sigma_nb-weighted Kish effective count in generated R1 per 4D bin"
+        ),
+        phi_convention="electron-proton trento plane",
+        phase_space_definition=(
+            "4D bin"
+            if not phase_space.enabled
+            else f"4D bin and {phase_space.description()}"
+        ),
+        analysis_config=str(Path(analysis_config).resolve()),
+        **phase_space.as_npz_fields(),
+        **{f"born_model_{key}": value for key, value in model_metadata.items()},
+        **_exclugen_mode_npz_fields("radiative", result.radiative),
+    )
+
+
+def _print_exclugen_combined_summary(
+    result: ExclugenCombinedCorrectionResult,
+    phase_space: AnalysisPhaseSpace,
+    min_counts: int,
+) -> None:
+    reliable = result.reliable
+    good = reliable & np.isfinite(result.correction_raw)
+    status_counts = np.bincount(result.support_status.ravel(), minlength=5)
+    print(
+        "EXCLUGEN combined R1-to-B0-centroid correction: "
+        f"reliable={int(np.count_nonzero(reliable))}/{reliable.size}, "
+        f"mean={float(np.nanmean(result.correction_raw[good])) if np.any(good) else np.nan:.8g}"
+    )
+    print(
+        "Radiative itarg=1 runs: "
+        f"files={len(result.radiative.records)}, "
+        f"generated={result.radiative.generated_events}, "
+        f"v-selected={result.radiative.selected_events}, "
+        f"in-range={result.radiative.in_range_events}, min-effective={min_counts}"
+    )
+    print(
+        "Support status: "
+        f"reliable={int(status_counts[0])}, empty-R1={int(status_counts[1])}, "
+        f"low-R1={int(status_counts[2])}, invalid-reference={int(status_counts[3])}, "
+        f"invalid-B0-center={int(status_counts[4])}"
+    )
+    print(
+        "Born model calls are restricted to one physical-centroid point per "
+        "physical analysis bin; no finite-bin B0 integral is used."
+    )
+    if phase_space.enabled:
+        print(f"Analysis phase space: 4D bin and {phase_space.description()}")
 
 
 def _write_exclugen_radiative_correction(
@@ -3093,7 +3514,11 @@ def _plot_radiative_correction_diagnostics(
     c_rad = np.asarray(correction["C_rad"], dtype=float)
     delta_c = np.asarray(correction["delta_C"], dtype=float)
     reliable = np.asarray(correction["reliable"], dtype=bool)
-    h_born = np.asarray(correction["H_born"], dtype=float)
+    has_generated_born = "H_born" in correction.files
+    h_born = np.asarray(
+        correction["H_born"] if has_generated_born else np.zeros_like(c_rad),
+        dtype=float,
+    )
     h_rad = np.asarray(correction["H_rad"], dtype=float)
     h_born_effective = np.asarray(
         correction["H_born_effective"] if "H_born_effective" in correction.files else h_born,
@@ -3188,15 +3613,24 @@ def _plot_radiative_correction_diagnostics(
         csv_path.parent.mkdir(parents=True, exist_ok=True)
 
     phi_centers = 0.5 * (phi_edges[:-1] + phi_edges[1:])
-    status_labels = (
-        "reliable",
-        "both empty",
-        "born only",
-        "radiative only",
-        "low born",
-        "low radiative",
-        "low both",
-    )
+    if has_generated_born:
+        status_labels = (
+            "reliable",
+            "both empty",
+            "born only",
+            "radiative only",
+            "low born",
+            "low radiative",
+            "low both",
+        )
+    else:
+        status_labels = (
+            "reliable",
+            "empty R1",
+            "low R1",
+            "invalid reference",
+            "invalid B0 center",
+        )
     status_colors = {
         0: "#1b9e77",
         1: "#c7c7c7",
@@ -3312,6 +3746,7 @@ def _plot_radiative_correction_diagnostics(
                             it,
                             status_labels,
                             status_colors,
+                            has_generated_born,
                         )
                         pages += 1
                         good = reliable_phi & np.isfinite(values)
@@ -3402,6 +3837,9 @@ def _plot_radcorr_summary_page(
 
     good = reliable & np.isfinite(c_rad)
     provider = _npz_string(correction, "generator_provider", "legacy")
+    combined = bool(
+        np.asarray(correction["includes_bin_centering"]).item()
+    ) if "includes_bin_centering" in correction.files else False
     lines = [
         "Radiative-correction diagnostics",
         "",
@@ -3412,9 +3850,7 @@ def _plot_radcorr_summary_page(
         f"Reliable phi bins: {np.count_nonzero(reliable)}",
         f"Overlap phi bins: {np.count_nonzero(support_overlap)}",
         f"minimum effective counts: {min_counts}",
-        f"Born total in-range count: {np.sum(h_born):.8g}",
         f"Radiative total in-range count: {np.sum(h_rad):.8g}",
-        f"Born summed per-bin effective count: {np.sum(h_born_effective):.8g}",
         f"Radiative summed per-bin effective count: {np.sum(h_rad_effective):.8g}",
         f"Uncertainty model: {_npz_string(correction, 'uncertainty_model', 'legacy-independent-event-poisson')}",
         f"Normalization ratio: {_optional_scalar(correction, 'normalization_ratio'):.8g}",
@@ -3424,12 +3860,27 @@ def _plot_radcorr_summary_page(
         f"Median C_rad reliable: {np.nanmedian(c_rad[good]) if np.any(good) else np.nan:.8g}",
         f"Mean delta_C reliable: {np.nanmean(delta_c[good]) if np.any(good) else np.nan:.8g}",
     ]
+    if combined:
+        lines.extend(
+            [
+                "Generated Born sample: not used",
+                "Correction includes bin centering: yes",
+                f"Reference definition: {_npz_string(correction, 'reference_definition', 'not stored')}",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                f"Born total in-range count: {np.sum(h_born):.8g}",
+                f"Born summed per-bin effective count: {np.sum(h_born_effective):.8g}",
+            ]
+        )
     if provider == "exclugen":
         lines.extend(
             [
                 f"Generator model: {_npz_string(correction, 'generator_model', 'not stored')}",
                 f"Generator channel: {_npz_string(correction, 'generator_channel', 'not stored')}",
-                f"Born independent runs: {_optional_scalar(correction, 'born_files'):.8g}",
+                *([] if combined else [f"Born independent runs: {_optional_scalar(correction, 'born_files'):.8g}"]),
                 f"Radiative independent runs: {_optional_scalar(correction, 'radiative_files'):.8g}",
                 f"Radiative events passing offline v cut: {_optional_scalar(correction, 'radiative_vcut_selected_events'):.8g}",
                 f"Offline radiative v maximum (GeV2): {_optional_scalar(correction, 'offline_radiative_v_max_GeV2'):.8g}",
@@ -3456,14 +3907,23 @@ def _plot_radcorr_summary_page(
                 _range_line(correction, "radiative_generated_eprime_range", "Radiative generated Eprime"),
             ]
         )
-    lines.extend(
-        [
-            "",
-            "support_status codes: 0 reliable, 1 both empty, 2 born only,",
-            "3 radiative only, 4 low effective born, 5 low effective radiative,",
-            "6 low effective support in both.",
-        ]
-    )
+    if combined:
+        lines.extend(
+            [
+                "",
+                "support_status codes: 0 reliable, 1 empty R1, 2 low effective R1,",
+                "3 invalid physical reference, 4 invalid B0 center.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "support_status codes: 0 reliable, 1 both empty, 2 born only,",
+                "3 radiative only, 4 low effective born, 5 low effective radiative,",
+                "6 low effective support in both.",
+            ]
+        )
     counts = np.bincount(support_status.ravel(), minlength=7)
     lines.append("")
     lines.append("Status counts: " + ", ".join(f"{idx}={int(count)}" for idx, count in enumerate(counts[:7])))
@@ -3689,6 +4149,7 @@ def _plot_radcorr_phi_page(
     it,
     status_labels,
     status_colors,
+    has_generated_born=True,
 ) -> None:
     _prepare_matplotlib_cache()
     import matplotlib.pyplot as plt
@@ -3735,9 +4196,10 @@ def _plot_radcorr_phi_page(
     ax.grid(True, alpha=0.25)
     ax.legend(loc="best", fontsize="x-small", ncol=2)
 
-    cax.plot(phi_centers, born_counts, "o-", color="#4c78a8", markersize=3, linewidth=1.0, label="born")
+    if has_generated_born:
+        cax.plot(phi_centers, born_counts, "o-", color="#4c78a8", markersize=3, linewidth=1.0, label="born")
     cax.plot(phi_centers, rad_counts, "s-", color="#f58518", markersize=3, linewidth=1.0, label="radiative")
-    if not (
+    if has_generated_born and not (
         np.allclose(born_effective_counts, born_counts)
         and np.allclose(rad_effective_counts, rad_counts)
     ):
@@ -3749,6 +4211,15 @@ def _plot_radcorr_phi_page(
             linewidth=1.0,
             label="born effective",
         )
+        cax.plot(
+            phi_centers,
+            rad_effective_counts,
+            "--",
+            color="#f58518",
+            linewidth=1.0,
+            label="radiative effective",
+        )
+    elif not np.allclose(rad_effective_counts, rad_counts):
         cax.plot(
             phi_centers,
             rad_effective_counts,
@@ -4327,13 +4798,47 @@ def command_cross_section(args: argparse.Namespace) -> None:
         radiative_valid = np.ones(binning.size, dtype=bool)
     flux_q2 = q2_means.copy()
     flux_xb = xb_means.copy()
+    radiative_includes_bin_centering = (
+        bool(np.asarray(result["radiative_includes_bin_centering"]).item())
+        if "radiative_includes_bin_centering" in result.files
+        else False
+    )
+    if radiative_includes_bin_centering and args.bin_centering:
+        raise ValueError(
+            "the radiative correction already includes bin centering; do not pass "
+            "--bin-centering"
+        )
     bin_centering_cbc = None
     bin_centering_reliable = None
     bin_centering_q2_center = None
     bin_centering_xb_center = None
     cbc_flat = None
     apply_mask = np.ones(binning.size, dtype=bool)
-    if args.bin_centering:
+    if radiative_includes_bin_centering:
+        required = ("radiative_reference_q2", "radiative_reference_xB")
+        missing = [name for name in required if name not in result.files]
+        if missing:
+            raise ValueError(
+                "unfolding result is missing combined-correction reference fields: "
+                + ", ".join(missing)
+            )
+        q2_center_flat = np.asarray(result["radiative_reference_q2"], dtype=float)
+        xb_center_flat = np.asarray(result["radiative_reference_xB"], dtype=float)
+        if q2_center_flat.shape != (binning.size,) or xb_center_flat.shape != (
+            binning.size,
+        ):
+            raise ValueError(
+                "combined-correction reference coordinates must match flattened binning"
+            )
+        apply_mask = (
+            np.isfinite(q2_center_flat)
+            & np.isfinite(xb_center_flat)
+            & (q2_center_flat > 0.0)
+            & (xb_center_flat > 0.0)
+        )
+        flux_q2 = np.where(apply_mask, q2_center_flat, q2_means)
+        flux_xb = np.where(apply_mask, xb_center_flat, xb_means)
+    elif args.bin_centering:
         bin_centering = np.load(args.bin_centering, allow_pickle=False)
         required = ("C_BC", "reliable", "q2_center", "xB_center")
         missing = [name for name in required if name not in bin_centering.files]
@@ -4467,7 +4972,12 @@ def command_cross_section(args: argparse.Namespace) -> None:
         bin_volume_definition="exclusive physical 4D volume after configured phase-space cuts",
         bin_volume_integration_points=DEFAULT_VOLUME_INTEGRATION_POINTS,
         flux_coordinate_definition=(
-            "C_BC reference centroid when bin centering is applied; event mean otherwise"
+            "physical-volume centroid stored by the combined EXCLUGEN correction"
+            if radiative_includes_bin_centering
+            else (
+                "C_BC reference centroid when separate bin centering is applied; "
+                "event mean otherwise"
+            )
         ),
         reduced_cross_section_units="nb/(GeV^2 rad)",
         luminosity_fb=luminosity,
@@ -4489,6 +4999,7 @@ def command_cross_section(args: argparse.Namespace) -> None:
         xb_edges=binning.xb_edges,
         t_edges=binning.t_edges,
         phi_edges=binning.phi_edges,
+        radiative_includes_bin_centering=radiative_includes_bin_centering,
     )
     payload.update(
         phase_space_definition=(
@@ -4528,6 +5039,21 @@ def command_cross_section(args: argparse.Namespace) -> None:
             bin_centering_application=(
                 "flux evaluated at C_BC reference coordinates; reduced cross section "
                 "and uncertainty divided by C_BC"
+            ),
+        )
+    if radiative_includes_bin_centering:
+        payload.update(
+            combined_radiative_centering_applied=True,
+            combined_radiative_centering_application=(
+                "unfolded yield divided by generated <R1>/B0(reference); flux "
+                "evaluated at the stored physical-volume centroid; no separate "
+                "C_BC divisor"
+            ),
+            combined_reference_q2=np.asarray(
+                result["radiative_reference_q2"], dtype=float
+            ),
+            combined_reference_xB=np.asarray(
+                result["radiative_reference_xB"], dtype=float
             ),
         )
     for name in (

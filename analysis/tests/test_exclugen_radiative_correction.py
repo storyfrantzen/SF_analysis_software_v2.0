@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -14,9 +15,12 @@ from analysis.eppi0.generators import GeneratorCampaign, GeneratorRunRecord
 from analysis.eppi0.phase_space import AnalysisPhaseSpace
 from analysis.eppi0.radiative_correction import (
     DirectInternalRadiativeResult,
+    ExclugenModeEstimate,
     EXCLUGEN_NORMALIZATION_METHOD,
     EXCLUGEN_UNCERTAINTY_MODEL,
+    combined_correction_closure,
     compute_direct_internal_radiative_correction,
+    compute_exclugen_combined_correction,
     compute_exclugen_radiative_closure,
     compute_exclugen_radiative_correction,
     estimate_exclugen_mode,
@@ -128,6 +132,80 @@ def _binning() -> AnalysisBinning:
 
 
 class ExclugenRadiativeCorrectionTests(unittest.TestCase):
+    def test_combined_correction_uses_only_r1_and_one_b0_center_value(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            radiative_record = _record(
+                directory,
+                "rad",
+                0,
+                2.0,
+                [_lund_event(particle_count=6)],
+                itarg=1,
+            )
+            campaign = GeneratorCampaign(directory, (radiative_record,))
+            binning = AnalysisBinning(
+                [1.4, 1.6],
+                [0.28, 0.32],
+                [0.2, 0.3],
+                [0.0, 180.0],
+            )
+            estimate = ExclugenModeEstimate(
+                cross_section=np.asarray([0.25]),
+                standard_error=np.asarray([0.025]),
+                counts=np.asarray([100.0]),
+                effective_counts=np.asarray([100.0]),
+                run_estimates=np.asarray([[0.25], [0.25]]),
+                records=(radiative_record,),
+                generated_events=1000,
+                selected_events=900,
+                in_range_events=100,
+            )
+            calls = []
+
+            def evaluator(points: np.ndarray) -> np.ndarray:
+                calls.append(points.copy())
+                return np.full(points.shape[0], 5.0)
+
+            with patch(
+                "analysis.eppi0.radiative_correction.estimate_exclugen_mode",
+                return_value=estimate,
+            ):
+                result = compute_exclugen_combined_correction(
+                    campaign,
+                    binning,
+                    BEAM_ENERGY,
+                    evaluator,
+                    min_counts=1,
+                    reference_samples_per_dimension=2,
+                    phase_space=AnalysisPhaseSpace(q2_min=1.0, w_min=2.0),
+                )
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0].shape, (1, 4))
+            expected = 0.25 / (
+                result.physical_volume.item()
+                * result.born_center_electron.item()
+            )
+            self.assertAlmostEqual(result.correction_raw.item(), expected)
+            self.assertTrue(result.reliable.item())
+
+    def test_combined_factorization_cancels_b0_bin_integral(self) -> None:
+        closure = combined_correction_closure(
+            np.asarray([12.0, 6.0]),
+            np.asarray([8.0, 4.0]),
+            np.asarray([2.0, 2.0]),
+            np.asarray([3.0, 1.0]),
+        )
+        np.testing.assert_allclose(closure.direct, [2.0, 3.0])
+        np.testing.assert_allclose(
+            closure.radiative_over_born_average, [1.5, 1.5]
+        )
+        np.testing.assert_allclose(
+            closure.born_average_over_center, [4.0 / 3.0, 2.0]
+        )
+        np.testing.assert_allclose(closure.product, closure.direct)
+        np.testing.assert_allclose(closure.residual, 0.0, atol=1.0e-15)
+
     def test_lund_reader_accepts_five_and_six_particle_records(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "mixed.lund"

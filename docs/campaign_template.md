@@ -402,29 +402,37 @@ For each correction record source samples, code commit, config, reference
 current or model settings, uncertainty definition, validity mask, and checksum.
 Use unit-correction artifacts only for named systematic variants.
 
-EXCLUGEN is the maintained radiative-correction provider. Its production root
-must contain the validated `born/` and `rad/` LUND/config pairs; the command
-records the per-run `sigma_nb`, event counts, seeds, hashes, revision state,
-generation `vcut`, and the separate offline radiative-only `v` cut:
+EXCLUGEN is the maintained radiative-correction provider. The nominal combined
+correction is `C_RBC = <R1> / B0(x_c)`: the generated finite-bin average from
+the `itarg=1` full-radiative sample divided by the Born model evaluated at the
+physical-volume centroid `x_c`. Its production root therefore needs only the
+validated `rad/` LUND/config pairs. The command records the per-run `sigma_nb`,
+event counts, seeds, hashes, revision state, generation `vcut`, separate offline
+radiative-only `v` cut, centroid, physical bin volume, and pinned model identity:
 
 ```tcsh
 python3 "$repo/analysis/run_analysis.py" radiative-correction \
   --production-root "$exclugen_production_root" \
   --generator-model pi0.amp2614 \
   --generator-revision "$exclugen_revision" \
+  --exclugen-root "$EXCLUGEN_ROOT" \
+  --model-revision "$exclugen_revision" \
   --expected-runs 200 \
   --v-max 0.2 \
+  --reference-N 20 \
   --config "$analysis_config" \
   --output "$radiative_correction_npz" \
   --diagnostic-pdf "$radiative_correction_pdf"
 ```
 
 Use `--allow-mixed-dirty-state` only for a reviewed historical production whose
-mixed stamps have been documented in campaign provenance. AAO corrections are
-legacy/reference-only and require the explicit `--generator aao` selection.
+mixed stamps have been documented in campaign provenance. The artifact exposes
+the combined divisor as `C_RBC` and the downstream-compatible `C_rad` alias.
+AAO corrections are legacy/reference-only, require the explicit `--generator
+aao` selection, and retain a separate `C_BC` step.
 
-Before adopting a new nominal definition, generate matched `itarg=0` and
-`itarg=1` Born/full-RC campaigns and preserve the four-sample closure artifact:
+For validation and systematics, generate matched `itarg=0` and `itarg=1`
+Born/full-RC campaigns and preserve the four-sample closure artifact:
 
 ```tcsh
 python3 "$repo/analysis/run_analysis.py" radiative-correction-closure \
@@ -437,18 +445,18 @@ python3 "$repo/analysis/run_analysis.py" radiative-correction-closure \
   --output "$radiative_closure_npz" \
   --exclugen-root "$EXCLUGEN_ROOT" \
   --model-revision "$exclugen_revision" \
+  --combined-reference-N 20 \
   --direct-samples-per-dimension 2 \
   --direct-bin-start 97 --direct-bin-stop 98
 ```
 
-Start with a representative bin and increase the direct midpoint order before
-expanding its bin range. Review `R1/B0` as the leading total-correction
-candidate, `R1/B1` as the existing external-folded convention, `B1/B0` and
-`R1/R0` as target-radiation diagnostics, and generated versus direct-integral
-`R0/B0` as the internal-kernel closure. The closure file deliberately stores
-`C_rad_candidate` rather than production `C_rad`; do not pass it to `unfold` or
-change the nominal correction until support, numerical convergence, and
-end-to-end extraction closure are documented.
+Review `R1/B1`, `B1/B0`, `R0/B0`, and `R1/R0` as external/internal-radiation
+systematics. Require the combined bookkeeping identity
+`<R1>/B0(x_c) = (<R1>/<B0>)(<B0>/B0(x_c))` to close to floating-point precision.
+Start the optional direct internal-kernel check with a representative bin and
+increase its midpoint order before expanding the range. The closure file stores
+`C_rad_candidate`, not a production correction, and must not be passed to
+`unfold`.
 
 ## 10. Run the extraction
 
@@ -475,7 +483,6 @@ python3 "$repo/analysis/run_analysis.py" unfold \
 python3 "$repo/analysis/run_analysis.py" cross-section \
   "$unfolding_npz" \
   --config "$analysis_config" \
-  --bin-centering "$bin_centering_npz" \
   --output "$cross_section_npz"
 
 python3 "$repo/analysis/run_analysis.py" fit-harmonics \
@@ -488,6 +495,13 @@ python3 "$repo/analysis/run_analysis.py" structure-functions \
   --config "$analysis_config" \
   --output "$structure_functions_npz"
 ```
+
+Do not pass `--bin-centering` in the nominal EXCLUGEN path: the combined
+correction already maps the generated finite-bin radiative cross section to the
+Born value at the stored centroid, and `cross-section` uses that same centroid
+for the virtual-photon flux. A separate `--bin-centering` artifact remains
+appropriate only for legacy correction artifacts that explicitly declare that
+they do not include bin centering.
 
 Keep the background-negative policy at its default `error` for the first run.
 If small statistical deficits are inspected and clipping is adopted, set the
