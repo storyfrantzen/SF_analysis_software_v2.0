@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from eppi0.exclugen_model import (
     EXCLUGEN_CROSS_SECTION_QUANTITY,
     EXCLUGEN_CROSS_SECTION_UNITS,
+    ExclugenInternalRadiativeEvaluator,
     ExclugenModelEvaluator,
 )
 from run_analysis import command_bin_centering, parser
@@ -75,6 +76,37 @@ class _ReferenceModels:
         return model
 
 
+class _InternalRadiativeModel:
+    channel = "pi0"
+    mU = 0.1349768
+    t_nucl = -0.1
+    topology = type("Topology", (), {"t_kind": "target"})()
+
+
+class _InternalRadiativeModels:
+    def __init__(self, model):
+        self.model = model
+
+    def get(self, name, **kwargs):
+        if name != "pi0.amp2614":
+            raise KeyError(name)
+        return self.model
+
+
+class _InternalRadiativeRuntime:
+    def __init__(self):
+        self.model = _InternalRadiativeModel()
+        self.models = _InternalRadiativeModels(self.model)
+        self.calls = []
+
+    def rc_factor(self, **kwargs):
+        self.calls.append(kwargs)
+        helicity = kwargs["h"]
+        born = 2.0 + kwargs["Q2"] + 0.25 * helicity
+        correction = 1.1 + 0.1 * helicity
+        return {"sigma_born": born, "sigma_obs": correction * born}
+
+
 class ExclugenModelEvaluatorTests(unittest.TestCase):
     def _evaluator(
         self, beam_energy: float = 10.604, **kwargs
@@ -130,6 +162,51 @@ class ExclugenModelEvaluatorTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "source tree is dirty"):
                 ExclugenModelEvaluator("/unused/exclugen", 10.604)
+
+    def test_internal_radiative_evaluator_calls_exact_itarg0_kernel(self) -> None:
+        runtime = _InternalRadiativeRuntime()
+        identity = patch(
+            "eppi0.exclugen_model._source_identity",
+            return_value=("50a5074da87718d5588d429b57468489aca75e6c", "clean"),
+        )
+        loader = patch(
+            "eppi0.exclugen_model._load_exclugen_runtime",
+            return_value=runtime,
+        )
+        with identity, loader:
+            evaluator = ExclugenInternalRadiativeEvaluator(
+                "/unused/exclugen",
+                10.604,
+                v_max=0.2,
+                expected_revision="50a5074",
+            )
+        points = np.asarray(
+            [
+                [0.3, 1.5, -0.2, 45.0],
+                [0.35, 2.0, -0.4, 270.0],
+            ]
+        )
+        born, observed = evaluator(points)
+        np.testing.assert_allclose(born, [3.5, 4.0])
+        np.testing.assert_allclose(observed, 1.1 * born + 0.025)
+        self.assertEqual(len(runtime.calls), 4)
+        self.assertEqual(
+            [call["h"] for call in runtime.calls],
+            [-1, 1, -1, 1],
+        )
+        self.assertTrue(all(call["t_kind"] == "target" for call in runtime.calls))
+        self.assertAlmostEqual(
+            runtime.calls[0]["mx2_cut"], runtime.model.mU**2 + 0.2
+        )
+        self.assertAlmostEqual(runtime.model.t_nucl, -0.4)
+        self.assertEqual(
+            evaluator.metadata()["integration_scope"],
+            "internal QED radiation only; itarg=0",
+        )
+        self.assertEqual(
+            evaluator.metadata()["helicity_mode"],
+            "equal-weight average of physical h=-1 and h=+1 cross sections",
+        )
 
     def test_cli_defaults_to_exclugen_and_keeps_alternatives_explicit(self) -> None:
         bin_centering = parser().parse_args(
@@ -225,6 +302,25 @@ class PinnedAmp2614IntegrationTests(unittest.TestCase):
             rtol=1.0e-12,
             atol=1.0e-12,
         )
+
+    def test_pinned_source_tree_internal_rc_point_is_physical(self) -> None:
+        evaluator = ExclugenInternalRadiativeEvaluator(
+            os.environ["EXCLUGEN_ROOT"],
+            10.6,
+            v_max=0.2,
+            expected_revision=os.environ.get("EXCLUGEN_REVISION", "50a5074"),
+        )
+        born, observed = evaluator(
+            np.asarray([[0.3, 1.5, -0.3, 45.0]], dtype=float)
+        )
+        self.assertTrue(np.isfinite(born[0]))
+        self.assertTrue(np.isfinite(observed[0]))
+        self.assertGreater(born[0], 0.0)
+        self.assertGreater(observed[0], 0.0)
+        correction = observed[0] / born[0]
+        self.assertGreater(correction, 0.1)
+        self.assertLess(correction, 10.0)
+        self.assertEqual(evaluator.n_failed, 0)
 
 
 if __name__ == "__main__":

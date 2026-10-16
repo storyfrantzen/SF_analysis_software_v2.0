@@ -1329,6 +1329,57 @@ post-selection thresholds can be studied. The native `C_rad.npz` artifact is
 consumed by `unfold --radiative-correction`; reliability masks and correction
 uncertainties are propagated into the self-contained unfolding result.
 
+Before changing that production convention, validate the complete matched
+four-sample matrix with `radiative-correction-closure`. Write `B0/R0` for Born
+and full-RC samples generated with `itarg=0`, and `B1/R1` for the corresponding
+`itarg=1` samples. The closure artifact records five related ratios:
+
+- `R1/B0`: leading total-correction candidate, including internal radiation
+  and the target-radiation migration retained by the generated truth
+  coordinates;
+- `R1/B1`: internal correction folded through the external-radiation sample,
+  and the current production convention;
+- `B1/B0`: external-radiation effect on the Born sample;
+- `R0/B0`: internal correction without external radiation;
+- `R1/R0`: external-radiation effect on the full-RC sample.
+
+The command labels `R1/B0` as a validation candidate and stores it as
+`C_rad_candidate`, not as production `C_rad`, so the closure artifact cannot be
+silently substituted into `unfold`. The exact identity
+`R1/B0 = (R1/B1)(B1/B0)` is retained as a bookkeeping check, not as an
+independent statistical validation because the ratios share samples.
+
+Optionally add a direct finite-bin integration of EXCLUGEN's internal-only
+`rc_factor()` result. It integrates `sigma_obs` and `sigma_born` separately in
+each analysis bin, including `abs(dW2/dxB) = Q2/xB^2`, and compares their ratio
+to generated `R0/B0`. At every integration point, the unpolarized Born and
+observed cross sections are each the equal-weight average of the physical
+`h=-1` and `h=+1` results; `h=0` is not a physical `rc_factor()` spin state.
+The final correction is the ratio of the two averaged cross sections, not the
+average of the two helicity-specific ratios. It deliberately has no `itarg=1`
+target convolution and therefore checks only the internal component:
+
+```bash
+python3 analysis/run_analysis.py radiative-correction-closure \
+  --production-root-itarg0 /path/to/matched/itarg0_campaign \
+  --production-root-itarg1 /path/to/matched/itarg1_campaign \
+  --generator-model pi0.amp2614 --generator-revision 50a5074 \
+  --expected-runs 200 --v-max 0.2 \
+  --config configs/analysis/rga/10.604.json \
+  --output results/radiative_closure.npz \
+  --exclugen-root /path/to/pinned/exclurad_py \
+  --model-revision 50a5074 \
+  --direct-samples-per-dimension 2 \
+  --direct-bin-start 97 --direct-bin-stop 98
+```
+
+Use a narrow bin range first because the direct kernel is substantially more
+expensive than reading generated events. Promote `R1/B0` to the nominal
+correction only after the generated `R0/B0` versus direct-integral comparison,
+midpoint convergence, four-sample support, and downstream extraction closure
+are satisfactory. Until then, the existing `radiative-correction` command and
+its production artifact remain unchanged.
+
 AAO is retained only as an explicit legacy/reference provider: pass
 `--generator aao` plus the Born and radiative positional inputs. Its
 statistical uncertainties remain cluster-aware: exact consecutive LUND records
