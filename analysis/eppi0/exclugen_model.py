@@ -65,6 +65,42 @@ def _load_exclugen_models(source_root: Path) -> ModuleType:
             sys.path.remove(str(source_root))
 
 
+def _load_exclugen_runtime(source_root: Path) -> ModuleType:
+    """Import the complete EXCLUGEN runtime from one explicit source tree."""
+    source_root = source_root.resolve()
+    package = source_root / "exclurad_py"
+    if not (package / "core").is_dir():
+        raise FileNotFoundError(
+            f"EXCLUGEN source tree does not contain exclurad_py/core: {source_root}"
+        )
+    loaded = sys.modules.get("exclurad_py")
+    if loaded is not None:
+        loaded_name = getattr(loaded, "__file__", None)
+        if not loaded_name:
+            raise RuntimeError("loaded exclurad_py package has no source path")
+        loaded_file = Path(loaded_name).resolve()
+        if package not in loaded_file.parents:
+            raise RuntimeError(
+                "exclurad_py is already imported from a different source tree: "
+                f"{loaded_file}"
+            )
+
+    inserted = str(source_root) not in sys.path
+    if inserted:
+        sys.path.insert(0, str(source_root))
+    previous_backend = os.environ.get("RC_NUMBA")
+    os.environ["RC_NUMBA"] = "0"
+    try:
+        return importlib.import_module("exclurad_py")
+    finally:
+        if previous_backend is None:
+            os.environ.pop("RC_NUMBA", None)
+        else:
+            os.environ["RC_NUMBA"] = previous_backend
+        if inserted:
+            sys.path.remove(str(source_root))
+
+
 def _deployed_revision(source_root: Path) -> str | None:
     deployed = source_root / "exclurad_py" / "DEPLOYED_VERSION"
     if not deployed.is_file():
@@ -298,4 +334,150 @@ class ExclugenModelEvaluator:
             ),
             "model_validity_json": json.dumps(validity, sort_keys=True),
             "model_provenance": provenance,
+        }
+
+
+class ExclugenInternalRadiativeEvaluator:
+    """Evaluate Born and internally radiated electron-level cross sections.
+
+    Input columns are ``(xB, Q2, signed_t, phi_deg)``.  The returned arrays
+    are ``d sigma/(dQ2 dW2 dt dphi)`` in ``nb/GeV^6``.  This evaluator has no
+    target-radiation convolution: it is intentionally the direct ``itarg=0``
+    closure reference for generated ``R0/B0`` corrections.  Unpolarized
+    cross sections are formed by averaging the physical ``h=-1`` and ``h=+1``
+    cross sections separately for Born and observed terms.  EXCLUGEN's
+    ``rc_factor`` kernel does not define ``h=0`` as a physical spin state.
+    """
+
+    def __init__(
+        self,
+        source_root: str | Path,
+        beam_energy: float,
+        *,
+        v_max: float,
+        model_name: str = EXCLUGEN_DEFAULT_MODEL,
+        expected_revision: str | None = None,
+        channel: str = EXCLUGEN_DEFAULT_CHANNEL,
+        allow_dirty: bool = False,
+    ) -> None:
+        self.source_root = Path(source_root).expanduser().resolve()
+        self.beam_energy = float(beam_energy)
+        self.v_max = float(v_max)
+        self.model_name = str(model_name)
+        self.channel = str(channel)
+        if not np.isfinite(self.beam_energy) or self.beam_energy <= 0.0:
+            raise ValueError("beam energy must be finite and positive")
+        if not np.isfinite(self.v_max) or self.v_max <= 0.0:
+            raise ValueError("v_max must be finite and positive")
+        if self.channel != EXCLUGEN_DEFAULT_CHANNEL:
+            raise ValueError("the direct radiative evaluator supports only pi0p")
+
+        self.revision, self.dirty_state = _source_identity(self.source_root)
+        if expected_revision and not self.revision.startswith(str(expected_revision)):
+            raise ValueError(
+                f"EXCLUGEN revision {self.revision} does not match expected "
+                f"revision {expected_revision}"
+            )
+        if self.dirty_state == "dirty" and not allow_dirty:
+            raise ValueError(
+                "EXCLUGEN source tree is dirty; commit/stash its changes or pass "
+                "--allow-dirty-model for an explicitly non-production evaluation"
+            )
+
+        runtime = _load_exclugen_runtime(self.source_root)
+        self._rc_factor = runtime.rc_factor
+        self._model = runtime.models.get(
+            self.model_name,
+            t_nucl=-0.1,
+            Ebeam=self.beam_energy,
+        )
+        if getattr(self._model, "channel", None) != "pi0":
+            raise ValueError(f"model {self.model_name!r} is not a proton pi0 model")
+        self._missing_mass2_cut = float(self._model.mU) ** 2 + self.v_max
+        self._t_kind = getattr(self._model.topology, "t_kind", "photon")
+        self.n_calls = 0
+        self.n_points = 0
+        self.n_failed = 0
+
+    def __enter__(self) -> "ExclugenInternalRadiativeEvaluator":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+    def __call__(self, points: Array) -> tuple[Array, Array]:
+        points = np.asarray(points, dtype=float)
+        if points.ndim != 2 or points.shape[1] != 4:
+            raise ValueError(
+                "EXCLUGEN radiative points must have columns "
+                "(xB, Q2, signed_t, phi_deg)"
+            )
+        born = np.full(points.shape[0], np.nan, dtype=float)
+        observed = np.full(points.shape[0], np.nan, dtype=float)
+        self.n_calls += 1
+        self.n_points += points.shape[0]
+        for index, (xb, q2, signed_t, phi_deg) in enumerate(points):
+            if not (
+                np.all(np.isfinite((xb, q2, signed_t, phi_deg)))
+                and 0.0 < xb < 1.0
+                and q2 > 0.0
+                and signed_t <= 0.0
+            ):
+                self.n_failed += 1
+                continue
+            w2 = PROTON_MASS_GEV**2 + q2 * (1.0 / xb - 1.0)
+            if hasattr(self._model, "t_nucl"):
+                self._model.t_nucl = float(signed_t)
+            try:
+                helicity_results = [
+                    self._rc_factor(
+                        Ebeam=self.beam_energy,
+                        Q2=float(q2),
+                        W2=float(w2),
+                        t=float(signed_t),
+                        phi=float(np.deg2rad(phi_deg)),
+                        sfmodel=self._model,
+                        h=helicity,
+                        mx2_cut=self._missing_mass2_cut,
+                        t_kind=self._t_kind,
+                    )
+                    for helicity in (-1, 1)
+                ]
+                born_value = 0.5 * sum(
+                    float(result["sigma_born"]) for result in helicity_results
+                )
+                observed_value = 0.5 * sum(
+                    float(result["sigma_obs"]) for result in helicity_results
+                )
+            except (ValueError, ZeroDivisionError, FloatingPointError):
+                self.n_failed += 1
+                continue
+            if (
+                not np.isfinite(born_value)
+                or not np.isfinite(observed_value)
+                or born_value <= 0.0
+                or observed_value <= 0.0
+            ):
+                self.n_failed += 1
+                continue
+            born[index] = born_value
+            observed[index] = observed_value
+        return born, observed
+
+    def metadata(self) -> dict[str, object]:
+        return {
+            "model_provider": "exclugen",
+            "model_name": self.model_name,
+            "model_revision": self.revision,
+            "channel": self.channel,
+            "beam_energy": self.beam_energy,
+            "v_max_GeV2": self.v_max,
+            "cross_section_quantity": "d4sigma/(dQ2 dW2 dt dphi)",
+            "cross_section_units": "nb/GeV^6",
+            "integration_scope": "internal QED radiation only; itarg=0",
+            "helicity_mode": (
+                "equal-weight average of physical h=-1 and h=+1 cross sections"
+            ),
+            "model_source_path": str(self.source_root),
+            "model_dirty_state": self.dirty_state,
         }

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import glob
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -16,6 +16,7 @@ from .event_sample import (
     _minus_t,
     _trento_phi,
 )
+from .exclusive_kinematics import physical_mask
 from .generators import GeneratorCampaign, GeneratorRunRecord
 from .phase_space import AnalysisPhaseSpace
 
@@ -101,6 +102,428 @@ class ExclugenRadiativeCorrectionResult:
     born_integrated_cross_section: float
     radiative_integrated_cross_section: float
     v_max_GeV2: float
+
+
+@dataclass(frozen=True)
+class ExclugenCorrectionRatio:
+    """One cross-section ratio in the four-sample closure matrix."""
+
+    correction: Array
+    uncertainty: Array
+    correction_raw: Array
+    uncertainty_raw: Array
+    reliable: Array
+    support_overlap: Array
+    support_status: Array
+    numerator: str
+    denominator: str
+
+
+@dataclass(frozen=True)
+class ExclugenRadiativeClosureResult:
+    """Four-sample EXCLUGEN correction closure for ``itarg=0`` and ``itarg=1``."""
+
+    estimates: Mapping[str, ExclugenModeEstimate]
+    ratios: Mapping[str, ExclugenCorrectionRatio]
+    campaign_itarg0: GeneratorCampaign
+    campaign_itarg1: GeneratorCampaign
+    v_max_GeV2: float
+
+
+EXCLUGEN_CLOSURE_RATIO_DEFINITIONS = {
+    "total": ("rad_itarg1", "born_itarg0"),
+    "internal_external_folded": ("rad_itarg1", "born_itarg1"),
+    "external_born": ("born_itarg1", "born_itarg0"),
+    "internal_no_external": ("rad_itarg0", "born_itarg0"),
+    "external_radiative": ("rad_itarg1", "rad_itarg0"),
+}
+
+
+@dataclass(frozen=True)
+class DirectInternalRadiativeResult:
+    """Direct bin integrals of the ``itarg=0`` Born and observed models."""
+
+    correction: Array
+    correction_raw: Array
+    reliable: Array
+    computed: Array
+    born_integral_nb: Array
+    observed_integral_nb: Array
+    n_physical: Array
+    n_valid: Array
+    n_failed: Array
+    failure_fraction: Array
+    samples_per_dimension: int
+    bin_start: int
+    bin_stop: int
+
+
+InternalRadiativeEvaluator = Callable[[Array], tuple[Array, Array]]
+
+
+def compute_direct_internal_radiative_correction(
+    binning: AnalysisBinning,
+    beam_energy: float,
+    evaluator: InternalRadiativeEvaluator,
+    *,
+    samples_per_dimension: int = 1,
+    max_failure_fraction: float = 0.0,
+    bin_start: int = 0,
+    bin_stop: int | None = None,
+    progress_bins: int = 0,
+    phase_space: AnalysisPhaseSpace | None = None,
+) -> DirectInternalRadiativeResult:
+    """Integrate ``R0/B0`` directly over finite analysis bins.
+
+    The evaluator supplies cross sections differential in ``Q2, W2, t, phi``.
+    The integral is performed in the analysis coordinates ``Q2, xB, -t,
+    phi`` and therefore includes ``abs(dW2/dxB) = Q2/xB**2``.  This function
+    deliberately contains no pre-vertex target-radiation convolution.
+    """
+    if samples_per_dimension <= 0:
+        raise ValueError("samples_per_dimension must be positive")
+    if not 0.0 <= max_failure_fraction <= 1.0:
+        raise ValueError("max_failure_fraction must be between 0 and 1")
+    if progress_bins < 0:
+        raise ValueError("progress_bins must be non-negative")
+    total_bins = binning.size
+    if bin_stop is None:
+        bin_stop = total_bins
+    if bin_start < 0 or bin_stop < bin_start or bin_stop > total_bins:
+        raise ValueError(
+            f"invalid 4D bin range [{bin_start}, {bin_stop}) for {total_bins} bins"
+        )
+
+    shape = binning.shape
+    correction_raw = np.full(shape, np.nan, dtype=float)
+    correction = np.ones(shape, dtype=float)
+    reliable = np.zeros(shape, dtype=bool)
+    computed = np.zeros(shape, dtype=bool)
+    born_integral = np.full(shape, np.nan, dtype=float)
+    observed_integral = np.full(shape, np.nan, dtype=float)
+    n_physical = np.zeros(shape, dtype=np.int64)
+    n_valid = np.zeros(shape, dtype=np.int64)
+    n_failed = np.zeros(shape, dtype=np.int64)
+    failure_fraction = np.ones(shape, dtype=float)
+
+    edge_sets = (
+        binning.q2_edges,
+        binning.xb_edges,
+        binning.t_edges,
+        binning.phi_edges,
+    )
+    processed = 0
+    assigned = bin_stop - bin_start
+    for index in np.ndindex(shape):
+        flat_index = int(np.ravel_multi_index(index, shape))
+        if flat_index < bin_start or flat_index >= bin_stop:
+            continue
+        computed[index] = True
+        processed += 1
+        points_1d = [
+            _midpoint_grid(edges[position], edges[position + 1], samples_per_dimension)
+            for edges, position in zip(edge_sets, index)
+        ]
+        q2, xb, minus_t, phi_deg = np.meshgrid(*points_1d, indexing="ij")
+        signed_t = -minus_t
+        physical = physical_mask(xb, q2, signed_t, beam_energy)
+        if phase_space is not None and phase_space.enabled:
+            physical &= phase_space.mask(q2, xb, beam_energy)
+        n_physical[index] = int(np.count_nonzero(physical))
+        if n_physical[index] > 0:
+            evaluation_points = np.column_stack(
+                (xb[physical], q2[physical], signed_t[physical], phi_deg[physical])
+            )
+            born_values, observed_values = evaluator(evaluation_points)
+            born_values = np.asarray(born_values, dtype=float)
+            observed_values = np.asarray(observed_values, dtype=float)
+            expected_shape = (evaluation_points.shape[0],)
+            if born_values.shape != expected_shape or observed_values.shape != expected_shape:
+                raise ValueError(
+                    "direct radiative evaluator returned incompatible shapes: "
+                    f"born={born_values.shape}, observed={observed_values.shape}, "
+                    f"expected={expected_shape}"
+                )
+            valid = (
+                np.isfinite(born_values)
+                & np.isfinite(observed_values)
+                & (born_values > 0.0)
+                & (observed_values > 0.0)
+            )
+            n_valid[index] = int(np.count_nonzero(valid))
+            n_failed[index] = n_physical[index] - n_valid[index]
+            failure_fraction[index] = n_failed[index] / n_physical[index]
+            if np.any(valid):
+                jacobian = (
+                    evaluation_points[valid, 1]
+                    / np.square(evaluation_points[valid, 0])
+                )
+                widths = [
+                    float(edges[position + 1] - edges[position])
+                    for edges, position in zip(edge_sets, index)
+                ]
+                cell_volume = (
+                    widths[0]
+                    * widths[1]
+                    * widths[2]
+                    * np.deg2rad(widths[3])
+                    / samples_per_dimension**4
+                )
+                born_integral[index] = float(
+                    cell_volume * np.sum(born_values[valid] * jacobian)
+                )
+                observed_integral[index] = float(
+                    cell_volume * np.sum(observed_values[valid] * jacobian)
+                )
+                if born_integral[index] > 0.0:
+                    correction_raw[index] = (
+                        observed_integral[index] / born_integral[index]
+                    )
+                    reliable[index] = (
+                        np.isfinite(correction_raw[index])
+                        and correction_raw[index] > 0.0
+                        and failure_fraction[index] <= max_failure_fraction
+                    )
+                    if reliable[index]:
+                        correction[index] = correction_raw[index]
+        if progress_bins > 0 and (
+            processed % progress_bins == 0 or processed == assigned
+        ):
+            print(
+                f"[PROGRESS] direct internal-RC bins {processed}/{assigned} "
+                f"({100.0 * processed / max(assigned, 1):.1f}%), "
+                f"reliable={int(np.count_nonzero(reliable & computed))}"
+            )
+
+    return DirectInternalRadiativeResult(
+        correction=correction,
+        correction_raw=correction_raw,
+        reliable=reliable,
+        computed=computed,
+        born_integral_nb=born_integral,
+        observed_integral_nb=observed_integral,
+        n_physical=n_physical,
+        n_valid=n_valid,
+        n_failed=n_failed,
+        failure_fraction=failure_fraction,
+        samples_per_dimension=samples_per_dimension,
+        bin_start=bin_start,
+        bin_stop=bin_stop,
+    )
+
+
+def _midpoint_grid(low: float, high: float, points: int) -> Array:
+    edges = np.linspace(float(low), float(high), int(points) + 1)
+    return 0.5 * (edges[:-1] + edges[1:])
+
+
+def compute_exclugen_radiative_closure(
+    campaign_itarg0: GeneratorCampaign,
+    campaign_itarg1: GeneratorCampaign,
+    binning: AnalysisBinning,
+    *,
+    v_max: float = 0.2,
+    min_counts: int = 5,
+    max_files: int | None = None,
+    progress_runs: int = 0,
+    phase_space: AnalysisPhaseSpace | None = None,
+) -> ExclugenRadiativeClosureResult:
+    """Evaluate the matched ``B0``, ``R0``, ``B1``, and ``R1`` ratio matrix.
+
+    ``B`` and ``R`` denote Born and full-RC samples; the suffix is the EXCLUGEN
+    ``itarg`` setting.  The leading total-correction candidate is ``R1/B0``.
+    All mode estimates retain their independent per-run cross-section
+    normalization.  The radiative-only offline ``v`` cut is applied to both
+    ``R0`` and ``R1`` and never renormalized away.
+    """
+    if not np.isfinite(v_max):
+        raise ValueError("v_max must be finite")
+    if min_counts < 0:
+        raise ValueError("min_counts must be non-negative")
+    if max_files is not None and max_files <= 0:
+        raise ValueError("max_files must be positive when provided")
+    if progress_runs < 0:
+        raise ValueError("progress_runs must be non-negative")
+    _validate_closure_campaigns(campaign_itarg0, campaign_itarg1)
+
+    estimates = {
+        "born_itarg0": estimate_exclugen_mode(
+            campaign_itarg0,
+            "born",
+            binning,
+            v_max=v_max,
+            max_files=max_files,
+            progress_runs=progress_runs,
+            phase_space=phase_space,
+        ),
+        "rad_itarg0": estimate_exclugen_mode(
+            campaign_itarg0,
+            "rad",
+            binning,
+            v_max=v_max,
+            max_files=max_files,
+            progress_runs=progress_runs,
+            phase_space=phase_space,
+        ),
+        "born_itarg1": estimate_exclugen_mode(
+            campaign_itarg1,
+            "born",
+            binning,
+            v_max=v_max,
+            max_files=max_files,
+            progress_runs=progress_runs,
+            phase_space=phase_space,
+        ),
+        "rad_itarg1": estimate_exclugen_mode(
+            campaign_itarg1,
+            "rad",
+            binning,
+            v_max=v_max,
+            max_files=max_files,
+            progress_runs=progress_runs,
+            phase_space=phase_space,
+        ),
+    }
+    ratios = {
+        name: _exclugen_estimate_ratio(
+            estimates[numerator],
+            estimates[denominator],
+            binning,
+            min_counts=min_counts,
+            numerator=numerator,
+            denominator=denominator,
+        )
+        for name, (numerator, denominator) in EXCLUGEN_CLOSURE_RATIO_DEFINITIONS.items()
+    }
+    return ExclugenRadiativeClosureResult(
+        estimates=estimates,
+        ratios=ratios,
+        campaign_itarg0=campaign_itarg0,
+        campaign_itarg1=campaign_itarg1,
+        v_max_GeV2=float(v_max),
+    )
+
+
+def _exclugen_estimate_ratio(
+    numerator_estimate: ExclugenModeEstimate,
+    denominator_estimate: ExclugenModeEstimate,
+    binning: AnalysisBinning,
+    *,
+    min_counts: int,
+    numerator: str,
+    denominator: str,
+) -> ExclugenCorrectionRatio:
+    ratio_flat, uncertainty_flat = _ratio_and_error(
+        numerator_estimate.cross_section,
+        numerator_estimate.standard_error,
+        denominator_estimate.cross_section,
+        denominator_estimate.standard_error,
+    )
+    support_overlap = (
+        (numerator_estimate.counts > 0.0)
+        & (denominator_estimate.counts > 0.0)
+    )
+    reliable_flat = (
+        support_overlap
+        & (numerator_estimate.effective_counts >= min_counts)
+        & (denominator_estimate.effective_counts >= min_counts)
+        & np.isfinite(ratio_flat)
+        & np.isfinite(uncertainty_flat)
+    )
+    support_status = support_status_codes(
+        denominator_estimate.counts,
+        numerator_estimate.counts,
+        min_counts,
+        born_effective_counts=denominator_estimate.effective_counts,
+        radiative_effective_counts=numerator_estimate.effective_counts,
+    )
+    return ExclugenCorrectionRatio(
+        correction=binning.unflatten(np.where(reliable_flat, ratio_flat, 1.0)),
+        uncertainty=binning.unflatten(
+            np.where(reliable_flat, uncertainty_flat, 1.0)
+        ),
+        correction_raw=binning.unflatten(ratio_flat),
+        uncertainty_raw=binning.unflatten(uncertainty_flat),
+        reliable=binning.unflatten(reliable_flat),
+        support_overlap=binning.unflatten(support_overlap),
+        support_status=binning.unflatten(support_status),
+        numerator=numerator,
+        denominator=denominator,
+    )
+
+
+def _validate_closure_campaigns(
+    campaign_itarg0: GeneratorCampaign,
+    campaign_itarg1: GeneratorCampaign,
+) -> None:
+    for label, campaign, expected_itarg in (
+        ("itarg=0", campaign_itarg0, 0),
+        ("itarg=1", campaign_itarg1, 1),
+    ):
+        if campaign.provider != "exclugen":
+            raise ValueError(f"{label} closure campaign is not EXCLUGEN")
+        values = {_record_itarg(record) for record in campaign.runs}
+        if values != {expected_itarg}:
+            raise ValueError(
+                f"{label} closure campaign has physics-card itarg values "
+                f"{sorted(values)}"
+            )
+        for mode in ("born", "rad"):
+            if not campaign.runs_for_mode(mode):
+                raise ValueError(f"{label} closure campaign has no {mode} runs")
+
+    for field_name in ("provider", "channel", "model"):
+        if getattr(campaign_itarg0, field_name) != getattr(campaign_itarg1, field_name):
+            raise ValueError(
+                f"closure campaigns have different {field_name}: "
+                f"{getattr(campaign_itarg0, field_name)!r} versus "
+                f"{getattr(campaign_itarg1, field_name)!r}"
+            )
+    for field_name in (
+        "generator_revision",
+        "dirty_state",
+        "execution_path",
+        "beam_energy_GeV",
+        "generation_vcut_GeV2",
+        "t_nucl_GeV2",
+    ):
+        values0 = {getattr(record, field_name) for record in campaign_itarg0.runs}
+        values1 = {getattr(record, field_name) for record in campaign_itarg1.runs}
+        if values0 != values1:
+            raise ValueError(
+                f"closure campaigns have different {field_name}: "
+                f"{sorted(values0)} versus {sorted(values1)}"
+            )
+
+    card0 = _closure_card(campaign_itarg0.runs[0].physics_card)
+    card1 = _closure_card(campaign_itarg1.runs[0].physics_card)
+    if card0 != card1:
+        differing = sorted(
+            key for key in set(card0) | set(card1) if card0.get(key) != card1.get(key)
+        )
+        raise ValueError(
+            "closure campaign physics cards differ beyond itarg: "
+            + ", ".join(differing)
+        )
+
+
+def _record_itarg(record: GeneratorRunRecord) -> int:
+    value = record.physics_card.get("itarg")
+    if isinstance(value, bool):
+        raise ValueError(f"{record.config_path}: physics-card itarg is not 0 or 1")
+    try:
+        result = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"{record.config_path}: physics-card itarg is not 0 or 1"
+        ) from error
+    if result not in (0, 1) or float(value) != float(result):
+        raise ValueError(f"{record.config_path}: physics-card itarg is not 0 or 1")
+    return result
+
+
+def _closure_card(card: Mapping[str, object]) -> dict[str, object]:
+    return {key: value for key, value in card.items() if key != "itarg"}
 
 
 def compute_exclugen_radiative_correction(

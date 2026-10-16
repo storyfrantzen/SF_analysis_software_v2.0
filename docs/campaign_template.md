@@ -423,6 +423,33 @@ Use `--allow-mixed-dirty-state` only for a reviewed historical production whose
 mixed stamps have been documented in campaign provenance. AAO corrections are
 legacy/reference-only and require the explicit `--generator aao` selection.
 
+Before adopting a new nominal definition, generate matched `itarg=0` and
+`itarg=1` Born/full-RC campaigns and preserve the four-sample closure artifact:
+
+```tcsh
+python3 "$repo/analysis/run_analysis.py" radiative-correction-closure \
+  --production-root-itarg0 "$exclugen_itarg0_root" \
+  --production-root-itarg1 "$exclugen_itarg1_root" \
+  --generator-model pi0.amp2614 \
+  --generator-revision "$exclugen_revision" \
+  --expected-runs 200 --v-max 0.2 \
+  --config "$analysis_config" \
+  --output "$radiative_closure_npz" \
+  --exclugen-root "$EXCLUGEN_ROOT" \
+  --model-revision "$exclugen_revision" \
+  --direct-samples-per-dimension 2 \
+  --direct-bin-start 97 --direct-bin-stop 98
+```
+
+Start with a representative bin and increase the direct midpoint order before
+expanding its bin range. Review `R1/B0` as the leading total-correction
+candidate, `R1/B1` as the existing external-folded convention, `B1/B0` and
+`R1/R0` as target-radiation diagnostics, and generated versus direct-integral
+`R0/B0` as the internal-kernel closure. The closure file deliberately stores
+`C_rad_candidate` rather than production `C_rad`; do not pass it to `unfold` or
+change the nominal correction until support, numerical convergence, and
+end-to-end extraction closure are documented.
+
 ## 10. Run the extraction
 
 Use the closure-qualified iteration and uncertainty method. Keep the unfolding,

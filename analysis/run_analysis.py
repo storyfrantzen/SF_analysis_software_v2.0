@@ -44,6 +44,7 @@ from eppi0.exclugen_model import (
     EXCLUGEN_DEFAULT_CHANNEL,
     EXCLUGEN_DEFAULT_MODEL,
     EXCLUGEN_T_CONVENTION,
+    ExclugenInternalRadiativeEvaluator,
     ExclugenModelEvaluator,
 )
 from eppi0.current_efficiency import (
@@ -58,8 +59,12 @@ from eppi0.radiative_correction import (
     EXCLUGEN_NORMALIZATION_METHOD,
     EXCLUGEN_UNCERTAINTY_MODEL,
     EXCLUGEN_V_DEFINITION,
+    DirectInternalRadiativeResult,
     ExclugenModeEstimate,
+    ExclugenRadiativeClosureResult,
     ExclugenRadiativeCorrectionResult,
+    compute_direct_internal_radiative_correction,
+    compute_exclugen_radiative_closure,
     compute_exclugen_radiative_correction,
     compute_radiative_correction,
 )
@@ -446,6 +451,120 @@ def parser() -> argparse.ArgumentParser:
         "--max-normalization-files",
         type=int,
         help="Use at most this many .norm/.sum sidecars from each normalization directory",
+    )
+
+    radclosure = commands.add_parser(
+        "radiative-correction-closure",
+        help=(
+            "Compare matched EXCLUGEN itarg=0/1 Born and full-RC samples; "
+            "the leading candidate is rad(itarg=1)/born(itarg=0)"
+        ),
+    )
+    radclosure.add_argument("--config", type=Path, required=True)
+    radclosure.add_argument("--output", type=Path, required=True)
+    radclosure.add_argument(
+        "--production-root-itarg0",
+        type=Path,
+        required=True,
+        help="EXCLUGEN itarg=0 production root containing born/ and rad/",
+    )
+    radclosure.add_argument(
+        "--production-root-itarg1",
+        type=Path,
+        required=True,
+        help="EXCLUGEN itarg=1 production root containing born/ and rad/",
+    )
+    radclosure.add_argument(
+        "--execution-path",
+        choices=("farm", "local", "local-parallel"),
+        default="farm",
+    )
+    radclosure.add_argument("--generator-channel", default="pi0p")
+    radclosure.add_argument("--generator-model", default="pi0.amp2614")
+    radclosure.add_argument("--generator-revision")
+    radclosure.add_argument(
+        "--expected-runs",
+        type=int,
+        default=200,
+        help="Expected EXCLUGEN runs per mode and itarg state; use 0 to disable",
+    )
+    radclosure.add_argument("--allow-revision-mismatch", action="store_true")
+    radclosure.add_argument("--allow-mixed-dirty-state", action="store_true")
+    radclosure.add_argument(
+        "--v-max",
+        type=float,
+        default=0.2,
+        help="Offline EXCLUGEN radiative-only v cut in GeV2",
+    )
+    radclosure.add_argument(
+        "--progress-runs",
+        type=int,
+        default=25,
+        help="Print discovery/estimation progress every N runs; use 0 to disable",
+    )
+    radclosure.add_argument(
+        "--max-files",
+        type=int,
+        help="Use at most this many complete runs from every mode for a smoke test",
+    )
+    radclosure.add_argument(
+        "--min-counts",
+        type=int,
+        default=5,
+        help="Minimum sigma_nb-weighted effective count in each ratio input",
+    )
+    radclosure.add_argument(
+        "--direct-samples-per-dimension",
+        type=int,
+        default=0,
+        help=(
+            "Also integrate the internal-only EXCLUGEN rc_factor over each finite "
+            "bin with N midpoint samples per dimension, averaging physical h=-1 "
+            "and h=+1 cross sections; 0 disables this cross-check"
+        ),
+    )
+    radclosure.add_argument(
+        "--exclugen-root",
+        type=Path,
+        help=(
+            "Pinned exclurad_py checkout for the direct internal-RC cross-check "
+            "(or set EXCLUGEN_ROOT)"
+        ),
+    )
+    radclosure.add_argument(
+        "--model-revision",
+        help=(
+            "Required revision for the direct model source; defaults to "
+            "--generator-revision"
+        ),
+    )
+    radclosure.add_argument(
+        "--allow-dirty-model",
+        action="store_true",
+        help="Allow an explicitly non-production direct evaluation from a dirty tree",
+    )
+    radclosure.add_argument(
+        "--direct-bin-start",
+        type=int,
+        default=0,
+        help="First flattened 4D bin included in the direct cross-check",
+    )
+    radclosure.add_argument(
+        "--direct-bin-stop",
+        type=int,
+        help="Exclusive flattened 4D-bin endpoint for the direct cross-check",
+    )
+    radclosure.add_argument(
+        "--direct-max-failure-fraction",
+        type=float,
+        default=0.0,
+        help="Maximum failed rc_factor fraction accepted in a direct bin",
+    )
+    radclosure.add_argument(
+        "--direct-progress-bins",
+        type=int,
+        default=1,
+        help="Print direct-integration progress every N assigned bins; 0 disables",
     )
 
     radcorr_plots = commands.add_parser(
@@ -1813,6 +1932,335 @@ def _command_exclugen_radiative_correction(args: argparse.Namespace) -> None:
         )
     _print_exclugen_radiative_summary(result, phase_space, args.min_counts)
     print(f"Wrote {args.output}")
+
+
+def command_radiative_correction_closure(args: argparse.Namespace) -> None:
+    """Compare the complete EXCLUGEN ``B0/R0/B1/R1`` correction matrix."""
+    if args.expected_runs < 0:
+        raise ValueError("--expected-runs must be non-negative")
+    if args.progress_runs < 0:
+        raise ValueError("--progress-runs must be non-negative")
+    if args.direct_samples_per_dimension < 0:
+        raise ValueError("--direct-samples-per-dimension must be non-negative")
+    if args.direct_progress_bins < 0:
+        raise ValueError("--direct-progress-bins must be non-negative")
+    config = load_config(args.config)
+    binning = from_config(args.config)
+    phase_space = AnalysisPhaseSpace.from_config(config)
+    progress = print if args.progress_runs > 0 else None
+    discovery = {
+        "execution_path": args.execution_path,
+        "expected_runs": args.expected_runs or None,
+        "expected_channel": args.generator_channel,
+        "expected_model": args.generator_model,
+        "expected_revision": args.generator_revision,
+        "allow_revision_mismatch": args.allow_revision_mismatch,
+        "allow_mixed_dirty_state": args.allow_mixed_dirty_state,
+        "progress": progress,
+        "progress_interval": max(1, args.progress_runs),
+    }
+    campaign_itarg0 = discover_exclugen_campaign(
+        args.production_root_itarg0,
+        **discovery,
+    )
+    campaign_itarg1 = discover_exclugen_campaign(
+        args.production_root_itarg1,
+        **discovery,
+    )
+    result = compute_exclugen_radiative_closure(
+        campaign_itarg0,
+        campaign_itarg1,
+        binning,
+        v_max=args.v_max,
+        min_counts=args.min_counts,
+        max_files=args.max_files,
+        progress_runs=args.progress_runs,
+        phase_space=phase_space,
+    )
+    generator_beam_energy = float(campaign_itarg0.runs[0].beam_energy_GeV)
+    direct_result = None
+    direct_metadata = None
+    if args.direct_samples_per_dimension > 0:
+        source_root = args.exclugen_root or os.environ.get("EXCLUGEN_ROOT")
+        if not source_root:
+            raise ValueError(
+                "the direct internal-RC cross-check requires --exclugen-root or "
+                "EXCLUGEN_ROOT"
+            )
+        evaluator = ExclugenInternalRadiativeEvaluator(
+            source_root,
+            generator_beam_energy,
+            v_max=args.v_max,
+            model_name=args.generator_model,
+            expected_revision=args.model_revision or args.generator_revision,
+            channel=args.generator_channel,
+            allow_dirty=args.allow_dirty_model,
+        )
+        direct_result = compute_direct_internal_radiative_correction(
+            binning,
+            generator_beam_energy,
+            evaluator,
+            samples_per_dimension=args.direct_samples_per_dimension,
+            max_failure_fraction=args.direct_max_failure_fraction,
+            bin_start=args.direct_bin_start,
+            bin_stop=args.direct_bin_stop,
+            progress_bins=args.direct_progress_bins,
+            phase_space=phase_space,
+        )
+        direct_metadata = {
+            **evaluator.metadata(),
+            "evaluator_calls": evaluator.n_calls,
+            "evaluator_points": evaluator.n_points,
+            "evaluator_failed_points": evaluator.n_failed,
+        }
+    _write_exclugen_radiative_closure(
+        args.output,
+        args.config,
+        config,
+        binning,
+        phase_space,
+        result,
+        min_counts=args.min_counts,
+        max_files=args.max_files,
+        direct_result=direct_result,
+        direct_metadata=direct_metadata,
+    )
+    _print_exclugen_radiative_closure_summary(
+        result,
+        args.min_counts,
+        direct_result=direct_result,
+    )
+    print(f"Wrote {args.output}")
+
+
+def _write_exclugen_radiative_closure(
+    output: Path,
+    analysis_config: Path,
+    config: dict,
+    binning: AnalysisBinning,
+    phase_space: AnalysisPhaseSpace,
+    result: ExclugenRadiativeClosureResult,
+    *,
+    min_counts: int,
+    max_files: int | None,
+    direct_result: DirectInternalRadiativeResult | None = None,
+    direct_metadata: dict[str, object] | None = None,
+) -> None:
+    fields: dict[str, object] = {
+        "schema": "sf-exclugen-radiative-closure-v1",
+        "candidate_ratio_name": "total",
+        "candidate_definition": "rad_itarg1 / born_itarg0",
+        "candidate_status": "validation_only_not_production_default",
+        "candidate_target": "pure Born reference without pre-vertex target radiation",
+        "normalization_quantity": "integrated_generated_cross_section",
+        "normalization_units": "nb",
+        "normalization_method": EXCLUGEN_NORMALIZATION_METHOD,
+        "uncertainty_model": EXCLUGEN_UNCERTAINTY_MODEL,
+        "offline_radiative_v_definition": EXCLUGEN_V_DEFINITION,
+        "offline_radiative_v_max_GeV2": result.v_max_GeV2,
+        "radiative_histograms_renormalized_after_v_cut": False,
+        "analysis_config_beam_energy_GeV": float(config["beam_energy"]),
+        "generator_coordinate_beam_energy_GeV": float(
+            result.campaign_itarg0.runs[0].beam_energy_GeV
+        ),
+        "analysis_coordinate_beam_energy_GeV": float(
+            result.campaign_itarg0.runs[0].beam_energy_GeV
+        ),
+        "analysis_config_minus_generator_beam_energy_GeV": (
+            float(config["beam_energy"])
+            - float(result.campaign_itarg0.runs[0].beam_energy_GeV)
+        ),
+        "analysis_coordinate_definition": (
+            "generated final-state electron/proton evaluated with the generator-card "
+            "beam energy; the analysis-config beam energy is recorded separately"
+        ),
+        "minimum_effective_count": min_counts,
+        "max_files": -1 if max_files is None else max_files,
+        "analysis_config": str(Path(analysis_config).resolve()),
+        "q2_edges": binning.q2_edges,
+        "xb_edges": binning.xb_edges,
+        "t_edges": binning.t_edges,
+        "phi_edges": binning.phi_edges,
+        "phase_space_definition": (
+            "4D bin"
+            if not phase_space.enabled
+            else f"4D bin and {phase_space.description()}"
+        ),
+        "campaign_itarg0_manifest_json": json.dumps(
+            result.campaign_itarg0.to_manifest(), sort_keys=True
+        ),
+        "campaign_itarg1_manifest_json": json.dumps(
+            result.campaign_itarg1.to_manifest(), sort_keys=True
+        ),
+        "campaign_itarg0_production_root": str(
+            result.campaign_itarg0.production_root
+        ),
+        "campaign_itarg1_production_root": str(
+            result.campaign_itarg1.production_root
+        ),
+        **phase_space.as_npz_fields(),
+    }
+    for name, estimate in result.estimates.items():
+        fields[f"{name}_cross_section_nb"] = binning.unflatten(
+            estimate.cross_section
+        )
+        fields[f"{name}_cross_section_sem_nb"] = binning.unflatten(
+            estimate.standard_error
+        )
+        fields[f"{name}_counts"] = binning.unflatten(estimate.counts)
+        fields[f"{name}_effective_counts"] = binning.unflatten(
+            estimate.effective_counts
+        )
+        fields[f"{name}_integrated_cross_section_nb"] = float(
+            np.mean([record.sigma_value for record in estimate.records])
+        )
+        fields[f"{name}_generated_events"] = estimate.generated_events
+        fields[f"{name}_selected_events"] = estimate.selected_events
+        fields[f"{name}_in_range_events"] = estimate.in_range_events
+        fields.update(_exclugen_mode_npz_fields(name, estimate))
+    for name, ratio in result.ratios.items():
+        fields[f"C_{name}"] = ratio.correction
+        fields[f"delta_C_{name}"] = ratio.uncertainty
+        fields[f"C_{name}_raw"] = ratio.correction_raw
+        fields[f"delta_C_{name}_raw"] = ratio.uncertainty_raw
+        fields[f"reliable_{name}"] = ratio.reliable
+        fields[f"support_overlap_{name}"] = ratio.support_overlap
+        fields[f"support_status_{name}"] = ratio.support_status
+        fields[f"{name}_numerator"] = ratio.numerator
+        fields[f"{name}_denominator"] = ratio.denominator
+
+    total = result.ratios["total"]
+    fields["C_rad_candidate"] = total.correction
+    fields["delta_C_rad_candidate"] = total.uncertainty
+    fields["reliable_candidate"] = total.reliable
+    product = (
+        result.ratios["internal_external_folded"].correction_raw
+        * result.ratios["external_born"].correction_raw
+    )
+    fields["factorized_total_raw"] = product
+    fields["factorization_residual_raw"] = total.correction_raw - product
+    fields["direct_internal_enabled"] = direct_result is not None
+    if direct_result is not None:
+        generated = result.ratios["internal_no_external"]
+        overlap = (
+            direct_result.reliable
+            & generated.reliable
+            & np.isfinite(direct_result.correction_raw)
+            & np.isfinite(generated.correction_raw)
+            & (generated.correction_raw > 0.0)
+        )
+        direct_over_generated = np.full(binning.shape, np.nan, dtype=float)
+        direct_over_generated[overlap] = (
+            direct_result.correction_raw[overlap]
+            / generated.correction_raw[overlap]
+        )
+        direct_minus_generated = np.full(binning.shape, np.nan, dtype=float)
+        direct_minus_generated[overlap] = (
+            direct_result.correction_raw[overlap]
+            - generated.correction_raw[overlap]
+        )
+        fields.update(
+            {
+                "direct_internal_definition": (
+                    "finite-bin integral of helicity-averaged rc_factor sigma_obs "
+                    "divided by finite-bin integral of helicity-averaged rc_factor "
+                    "sigma_born; equal h=-1 and h=+1 weights; itarg=0 only"
+                ),
+                "direct_internal_metadata_json": json.dumps(
+                    direct_metadata or {}, sort_keys=True
+                ),
+                "direct_internal_samples_per_dimension": (
+                    direct_result.samples_per_dimension
+                ),
+                "direct_internal_bin_start": direct_result.bin_start,
+                "direct_internal_bin_stop": direct_result.bin_stop,
+                "C_internal_no_external_direct": direct_result.correction,
+                "C_internal_no_external_direct_raw": direct_result.correction_raw,
+                "reliable_internal_no_external_direct": direct_result.reliable,
+                "computed_internal_no_external_direct": direct_result.computed,
+                "born_internal_no_external_direct_integral_nb": (
+                    direct_result.born_integral_nb
+                ),
+                "observed_internal_no_external_direct_integral_nb": (
+                    direct_result.observed_integral_nb
+                ),
+                "physical_points_internal_no_external_direct": (
+                    direct_result.n_physical
+                ),
+                "valid_points_internal_no_external_direct": direct_result.n_valid,
+                "failed_points_internal_no_external_direct": direct_result.n_failed,
+                "failure_fraction_internal_no_external_direct": (
+                    direct_result.failure_fraction
+                ),
+                "direct_generated_internal_overlap": overlap,
+                "direct_over_generated_internal_no_external_raw": (
+                    direct_over_generated
+                ),
+                "direct_minus_generated_internal_no_external_raw": (
+                    direct_minus_generated
+                ),
+            }
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(output, **fields)
+
+
+def _print_exclugen_radiative_closure_summary(
+    result: ExclugenRadiativeClosureResult,
+    min_counts: int,
+    *,
+    direct_result: DirectInternalRadiativeResult | None = None,
+) -> None:
+    labels = {
+        "total": "R1/B0 total candidate",
+        "internal_external_folded": "R1/B1 internal, external-folded",
+        "external_born": "B1/B0 external on Born",
+        "internal_no_external": "R0/B0 internal without external",
+        "external_radiative": "R1/R0 external on full RC",
+    }
+    for name, ratio in result.ratios.items():
+        valid = ratio.reliable & np.isfinite(ratio.correction_raw)
+        values = ratio.correction_raw[valid]
+        mean = float(np.mean(values)) if values.size else float("nan")
+        print(
+            f"{labels[name]}: reliable={int(np.count_nonzero(valid))}/"
+            f"{valid.size}, mean={mean:.8g}"
+        )
+    residual = (
+        result.ratios["total"].correction_raw
+        - result.ratios["internal_external_folded"].correction_raw
+        * result.ratios["external_born"].correction_raw
+    )
+    finite = np.isfinite(residual)
+    maximum = float(np.max(np.abs(residual[finite]))) if np.any(finite) else float("nan")
+    print(f"Factorization identity max absolute residual: {maximum:.3g}")
+    if direct_result is not None:
+        generated = result.ratios["internal_no_external"]
+        overlap = (
+            direct_result.reliable
+            & generated.reliable
+            & np.isfinite(direct_result.correction_raw)
+            & np.isfinite(generated.correction_raw)
+            & (generated.correction_raw > 0.0)
+        )
+        ratios = (
+            direct_result.correction_raw[overlap]
+            / generated.correction_raw[overlap]
+        )
+        mean_ratio = float(np.mean(ratios)) if ratios.size else float("nan")
+        maximum_delta = (
+            float(np.max(np.abs(ratios - 1.0))) if ratios.size else float("nan")
+        )
+        print(
+            "Direct rc_factor R0/B0 closure: "
+            f"overlap={int(np.count_nonzero(overlap))}/{overlap.size}, "
+            f"mean direct/generated={mean_ratio:.8g}, "
+            f"max |direct/generated - 1|={maximum_delta:.3g}"
+        )
+    print(
+        f"Reliability threshold: sigma_nb-weighted effective count >= {min_counts} "
+        "in both inputs to each ratio"
+    )
 
 
 def _exclugen_mode_npz_fields(
@@ -7151,6 +7599,8 @@ def main() -> int:
         command_unfold(args)
     elif args.command == "radiative-correction":
         command_radiative_correction(args)
+    elif args.command == "radiative-correction-closure":
+        command_radiative_correction_closure(args)
     elif args.command == "radiative-correction-plots":
         command_radiative_correction_plots(args)
     elif args.command == "bin-centering":
