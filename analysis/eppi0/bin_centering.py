@@ -52,6 +52,24 @@ class BinCenteringResult:
     failure_fraction: Array
 
 
+@dataclass(frozen=True)
+class PhysicalBinReference:
+    """Model-independent reference coordinates for selected physical bins.
+
+    The coordinates are equal-volume centroids of the midpoint cells that pass
+    the exclusive-kinematics and configured analysis phase-space masks.  No
+    cross-section model is evaluated while constructing this object.
+    """
+
+    xB_center: Array
+    q2_center: Array
+    minus_t_center: Array
+    phi_center: Array
+    n_physical: Array
+    physical_fraction: Array
+    samples_per_dimension: int
+
+
 TheoryEvaluator = Callable[[Array], Array]
 
 
@@ -63,6 +81,87 @@ def midpoint_grid(lo: float, hi: float, points: int) -> Array:
 def circular_mean_deg(values: Array) -> float:
     radians = np.deg2rad(np.asarray(values, float))
     return float(np.rad2deg(np.arctan2(np.mean(np.sin(radians)), np.mean(np.cos(radians)))) % 360.0)
+
+
+def compute_physical_bin_reference(
+    binning: AnalysisBinning,
+    beam_energy: float,
+    *,
+    samples_per_dimension: int = 20,
+    phase_space: AnalysisPhaseSpace | None = None,
+) -> PhysicalBinReference:
+    """Compute physical-volume centroids without evaluating a physics model."""
+    if samples_per_dimension <= 0:
+        raise ValueError("samples_per_dimension must be positive")
+
+    shape = binning.shape
+    xb_center = np.full(shape, np.nan, dtype=float)
+    q2_center = np.full(shape, np.nan, dtype=float)
+    minus_t_center = np.full(shape, np.nan, dtype=float)
+    phi_center = np.full(shape, np.nan, dtype=float)
+    n_physical = np.zeros(shape, dtype=np.int64)
+    physical_fraction = np.zeros(shape, dtype=float)
+    total_grid_points = samples_per_dimension**4
+
+    for iq2, (q2_lo, q2_hi) in enumerate(
+        zip(binning.q2_edges[:-1], binning.q2_edges[1:])
+    ):
+        q2_points = midpoint_grid(q2_lo, q2_hi, samples_per_dimension)
+        for ixb, (xb_lo, xb_hi) in enumerate(
+            zip(binning.xb_edges[:-1], binning.xb_edges[1:])
+        ):
+            xb_points = midpoint_grid(xb_lo, xb_hi, samples_per_dimension)
+            for it, (mt_lo, mt_hi) in enumerate(
+                zip(binning.t_edges[:-1], binning.t_edges[1:])
+            ):
+                minus_t_points = midpoint_grid(
+                    mt_lo, mt_hi, samples_per_dimension
+                )
+                q2_mesh, xb_mesh, minus_t_mesh = np.meshgrid(
+                    q2_points,
+                    xb_points,
+                    minus_t_points,
+                    indexing="ij",
+                )
+                physical = physical_mask(
+                    xb_mesh, q2_mesh, -minus_t_mesh, beam_energy
+                )
+                if phase_space is not None and phase_space.enabled:
+                    physical &= phase_space.mask(q2_mesh, xb_mesh, beam_energy)
+                physical_count_3d = int(np.count_nonzero(physical))
+                if physical_count_3d == 0:
+                    continue
+
+                q2_ref = float(np.mean(q2_mesh[physical]))
+                xb_ref = float(np.mean(xb_mesh[physical]))
+                minus_t_ref = float(np.mean(minus_t_mesh[physical]))
+                for iphi, (phi_lo, phi_hi) in enumerate(
+                    zip(binning.phi_edges[:-1], binning.phi_edges[1:])
+                ):
+                    index = (iq2, ixb, it, iphi)
+                    phi_points = midpoint_grid(
+                        phi_lo, phi_hi, samples_per_dimension
+                    )
+                    q2_center[index] = q2_ref
+                    xb_center[index] = xb_ref
+                    minus_t_center[index] = minus_t_ref
+                    phi_center[index] = circular_mean_deg(phi_points)
+                    n_physical[index] = (
+                        physical_count_3d * samples_per_dimension
+                    )
+                    physical_fraction[index] = (
+                        n_physical[index] / total_grid_points
+                    )
+
+    return PhysicalBinReference(
+        xB_center=xb_center,
+        q2_center=q2_center,
+        minus_t_center=minus_t_center,
+        phi_center=phi_center,
+        n_physical=n_physical,
+        physical_fraction=physical_fraction,
+        samples_per_dimension=samples_per_dimension,
+    )
 
 
 def aao_sigma0_to_reduced_cross_section(

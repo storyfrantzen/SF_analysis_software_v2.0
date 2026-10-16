@@ -8,7 +8,11 @@ from .base import (
     GeneratorRunRecord,
     merge_campaign_metadata,
 )
-from .exclugen import ExclugenProvider, discover_exclugen_campaign
+from .exclugen import (
+    ExclugenProvider,
+    discover_exclugen_campaign,
+    discover_exclugen_mode,
+)
 from .source_manifest import (
     SOURCE_MANIFEST_SCHEMA,
     GeneratorSourceManifest,
@@ -29,6 +33,7 @@ __all__ = [
     "SOURCE_MANIFEST_SCHEMA",
     "build_generator_source_manifest",
     "discover_exclugen_campaign",
+    "discover_exclugen_mode",
     "hipo_run_index",
     "merge_campaign_metadata",
 ]

@@ -8,6 +8,8 @@ from typing import Callable, Iterable, Mapping, Sequence
 import numpy as np
 
 from .binning import AnalysisBinning
+from .bin_centering import PhysicalBinReference, compute_physical_bin_reference
+from .cross_section import physical_bin_volumes, virtual_photon_flux
 from .event_sample import (
     ELECTRON_MASS,
     PI0_MASS,
@@ -102,6 +104,44 @@ class ExclugenRadiativeCorrectionResult:
     born_integrated_cross_section: float
     radiative_integrated_cross_section: float
     v_max_GeV2: float
+
+
+@dataclass(frozen=True)
+class ExclugenCombinedCorrectionResult:
+    """Generated ``R1`` mapped directly to Born model reference points.
+
+    ``C_rad`` remains the downstream-compatible field name, but the stored
+    quantity includes both the radiative and bin-centering transforms:
+
+    ``C_RBC = R1_bin / (V_physical * Gamma(reference) * B0_reduced(reference))``.
+    """
+
+    correction: Array
+    uncertainty: Array
+    correction_raw: Array
+    uncertainty_raw: Array
+    reliable: Array
+    support_status: Array
+    radiative: ExclugenModeEstimate
+    campaign: GeneratorCampaign
+    reference: PhysicalBinReference
+    physical_volume: Array
+    born_center_reduced: Array
+    born_center_electron: Array
+    radiative_bin_average: Array
+    v_max_GeV2: float
+
+
+@dataclass(frozen=True)
+class CombinedCorrectionClosure:
+    """Algebraic decomposition of the combined correction through ``<B0>``."""
+
+    direct: Array
+    radiative_over_born_average: Array
+    born_average_over_center: Array
+    product: Array
+    residual: Array
+    reliable: Array
 
 
 @dataclass(frozen=True)
@@ -618,6 +658,218 @@ def compute_exclugen_radiative_correction(
         born_integrated_cross_section=born_sigma,
         radiative_integrated_cross_section=radiative_sigma,
         v_max_GeV2=float(v_max),
+    )
+
+
+def compute_exclugen_combined_correction(
+    campaign: GeneratorCampaign,
+    binning: AnalysisBinning,
+    beam_energy: float,
+    born_evaluator: Callable[[Array], Array],
+    *,
+    v_max: float = 0.2,
+    min_counts: int = 5,
+    max_files: int | None = None,
+    progress_runs: int = 0,
+    reference_samples_per_dimension: int = 20,
+    phase_space: AnalysisPhaseSpace | None = None,
+) -> ExclugenCombinedCorrectionResult:
+    """Map generated ``R1`` bin averages to Born values at physical centroids.
+
+    Only radiative ``itarg=1`` records are consumed.  The model is evaluated
+    once per physical four-dimensional bin, at a model-independent physical-
+    volume centroid.  No generated or quadrature-integrated Born denominator
+    enters the nominal correction.
+    """
+    if campaign.provider != "exclugen":
+        raise ValueError("combined correction requires an EXCLUGEN campaign")
+    if min_counts < 0:
+        raise ValueError("min_counts must be non-negative")
+    if reference_samples_per_dimension <= 0:
+        raise ValueError("reference_samples_per_dimension must be positive")
+    radiative_records = campaign.runs_for_mode("rad")
+    if not radiative_records:
+        raise ValueError("EXCLUGEN campaign has no radiative runs")
+    itarg_values = {_record_itarg(record) for record in radiative_records}
+    if itarg_values != {1}:
+        raise ValueError(
+            "combined correction requires radiative itarg=1 records; "
+            f"found {sorted(itarg_values)}"
+        )
+
+    phase_space = phase_space or AnalysisPhaseSpace()
+    radiative = estimate_exclugen_mode(
+        campaign,
+        "rad",
+        binning,
+        v_max=v_max,
+        max_files=max_files,
+        progress_runs=progress_runs,
+        phase_space=phase_space,
+    )
+    reference = compute_physical_bin_reference(
+        binning,
+        beam_energy,
+        samples_per_dimension=reference_samples_per_dimension,
+        phase_space=phase_space,
+    )
+    physical_volume = physical_bin_volumes(
+        binning,
+        beam_energy,
+        q2_minimum=1.0 if phase_space.q2_min is None else phase_space.q2_min,
+        w_minimum=2.0 if phase_space.w_min is None else phase_space.w_min,
+        electron_p_minimum=(
+            0.0
+            if phase_space.electron_p_min is None
+            else phase_space.electron_p_min
+        ),
+    )
+
+    valid_reference = (
+        (reference.n_physical > 0)
+        & np.isfinite(reference.xB_center)
+        & np.isfinite(reference.q2_center)
+        & np.isfinite(reference.minus_t_center)
+        & np.isfinite(reference.phi_center)
+        & np.isfinite(physical_volume)
+        & (physical_volume > 0.0)
+    )
+    center_reduced = np.full(binning.shape, np.nan, dtype=float)
+    if np.any(valid_reference):
+        points = np.column_stack(
+            (
+                reference.xB_center[valid_reference],
+                reference.q2_center[valid_reference],
+                -reference.minus_t_center[valid_reference],
+                reference.phi_center[valid_reference],
+            )
+        )
+        values = np.asarray(born_evaluator(points), dtype=float)
+        expected_shape = (points.shape[0],)
+        if values.shape != expected_shape:
+            raise ValueError(
+                f"Born evaluator returned shape {values.shape}; expected {expected_shape}"
+            )
+        center_reduced[valid_reference] = values
+
+    flux = virtual_photon_flux(
+        reference.q2_center, reference.xB_center, beam_energy
+    )
+    center_electron = flux * center_reduced
+    denominator = physical_volume * center_electron
+    radiative_cross_section = binning.unflatten(radiative.cross_section)
+    radiative_sem = binning.unflatten(radiative.standard_error)
+    radiative_counts = binning.unflatten(radiative.counts)
+    radiative_effective = binning.unflatten(radiative.effective_counts)
+    correction_raw = np.divide(
+        radiative_cross_section,
+        denominator,
+        out=np.full(binning.shape, np.nan, dtype=float),
+        where=np.isfinite(denominator) & (denominator > 0.0),
+    )
+    uncertainty_raw = np.divide(
+        radiative_sem,
+        denominator,
+        out=np.full(binning.shape, np.nan, dtype=float),
+        where=np.isfinite(denominator) & (denominator > 0.0),
+    )
+    radiative_bin_average = np.divide(
+        radiative_cross_section,
+        physical_volume,
+        out=np.full(binning.shape, np.nan, dtype=float),
+        where=np.isfinite(physical_volume) & (physical_volume > 0.0),
+    )
+    reliable = (
+        valid_reference
+        & (radiative_counts > 0.0)
+        & (radiative_effective >= min_counts)
+        & np.isfinite(center_reduced)
+        & (center_reduced > 0.0)
+        & np.isfinite(correction_raw)
+        & (correction_raw > 0.0)
+        & np.isfinite(uncertainty_raw)
+        & (uncertainty_raw >= 0.0)
+    )
+    support_status = np.zeros(binning.shape, dtype=np.uint8)
+    support_status[radiative_counts <= 0.0] = 1
+    support_status[
+        (radiative_counts > 0.0) & (radiative_effective < min_counts)
+    ] = 2
+    support_status[(radiative_counts > 0.0) & ~valid_reference] = 3
+    support_status[
+        (radiative_counts > 0.0)
+        & valid_reference
+        & (~np.isfinite(center_reduced) | (center_reduced <= 0.0))
+    ] = 4
+
+    return ExclugenCombinedCorrectionResult(
+        correction=np.where(reliable, correction_raw, 1.0),
+        uncertainty=np.where(reliable, uncertainty_raw, 1.0),
+        correction_raw=correction_raw,
+        uncertainty_raw=uncertainty_raw,
+        reliable=reliable,
+        support_status=support_status,
+        radiative=radiative,
+        campaign=campaign,
+        reference=reference,
+        physical_volume=physical_volume,
+        born_center_reduced=center_reduced,
+        born_center_electron=center_electron,
+        radiative_bin_average=radiative_bin_average,
+        v_max_GeV2=float(v_max),
+    )
+
+
+def combined_correction_closure(
+    radiative_bin_cross_section: Array,
+    born_bin_cross_section: Array,
+    physical_volume: Array,
+    born_center_electron: Array,
+) -> CombinedCorrectionClosure:
+    """Check ``<R1>/B0c = (<R1>/<B0>)*(<B0>/B0c)`` bin by bin."""
+    radiative_bin_cross_section, born_bin_cross_section, physical_volume, born_center_electron = (
+        np.broadcast_arrays(
+            np.asarray(radiative_bin_cross_section, dtype=float),
+            np.asarray(born_bin_cross_section, dtype=float),
+            np.asarray(physical_volume, dtype=float),
+            np.asarray(born_center_electron, dtype=float),
+        )
+    )
+    center_integral = physical_volume * born_center_electron
+    result_shape = radiative_bin_cross_section.shape
+    direct = np.divide(
+        radiative_bin_cross_section,
+        center_integral,
+        out=np.full(result_shape, np.nan),
+        where=np.isfinite(center_integral) & (center_integral > 0.0),
+    )
+    radiative_over_born = np.divide(
+        radiative_bin_cross_section,
+        born_bin_cross_section,
+        out=np.full(result_shape, np.nan),
+        where=np.isfinite(born_bin_cross_section) & (born_bin_cross_section > 0.0),
+    )
+    born_average_over_center = np.divide(
+        born_bin_cross_section,
+        center_integral,
+        out=np.full(result_shape, np.nan),
+        where=np.isfinite(center_integral) & (center_integral > 0.0),
+    )
+    product = radiative_over_born * born_average_over_center
+    residual = direct - product
+    reliable = (
+        np.isfinite(direct)
+        & np.isfinite(radiative_over_born)
+        & np.isfinite(born_average_over_center)
+        & np.isfinite(product)
+    )
+    return CombinedCorrectionClosure(
+        direct=direct,
+        radiative_over_born_average=radiative_over_born,
+        born_average_over_center=born_average_over_center,
+        product=product,
+        residual=residual,
+        reliable=reliable,
     )
 
 
